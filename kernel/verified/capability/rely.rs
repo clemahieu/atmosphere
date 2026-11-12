@@ -19,11 +19,13 @@ use crate::capability::operation::*;
 use crate::capability::position::*;
 use crate::capability::probe::*;
 use crate::capability::reach::*;
+use crate::capability::refs::*;
 use crate::capability::revoke::*;
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::arch::Registers;
+use crate::define::*;
 
 /// Two slots hold the same capability as the process reads it: kind, block and rights. The parent may
 /// differ, since a move of an ancestor renames it.
@@ -906,6 +908,348 @@ impl CapKernel {
         ensures
             Self::space_kept(pre, post, root),
     {
+    }
+
+    /// No table but root's holds a frame capability with a page in the block br: every capability that
+    /// holds br is root's, so no other caller can map a page of br or derive from a capability of it.
+    pub open spec fn held_by(&self, br: BlockRef, root: usize) -> bool {
+        forall|t: usize, j: usize, page: usize|
+            t != root && self.table_view(t).contains_key(j) && self.table_view(t)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(self.table_view(t)[j].order)
+                ==> #[trigger] block_ref(&self.blocks, view_frame(self.table_view(t)[j], page)) != br
+    }
+
+    /// From pre to post, as the process at root relies on steps it does not take for the counts of its
+    /// own blocks: while root is sealed, each page of a frame capability root's table holds in pre and
+    /// still holds in post, whose block no other table holds a capability of, lies in that block in
+    /// post, at a count no higher than it had, and still no other table holds a capability of it. A
+    /// revoke of an ancestor may lower the count; no other caller can raise it, so a frame token's count
+    /// stays true while its entry does (design/region-map-owns-the-address-space/).
+    pub open spec fn count_kept(pre: Self, post: Self, root: usize) -> bool {
+        pre.sealed(root) ==> forall|j: usize, page: usize|
+            pre.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
+                && pre.table_view(root)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
+                && pre.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) ==> {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page)) == br
+                &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                &&& post.held_by(br, root)
+            }
+    }
+
+    /// A page of a frame capability in any table's view is tracked and lies in a typed block that
+    /// counts it.
+    pub proof fn lemma_view_frame_counted(&self, t: usize, j: usize, page: usize)
+        requires
+            self.wf(),
+            self.table_view(t).contains_key(j),
+            self.table_view(t)[j].kind is Frame,
+            (page as int) * PAGE_SZ < block_bytes(self.table_view(t)[j].order),
+        ensures
+            self.blocks.tracks(view_frame(self.table_view(t)[j], page) as int),
+            block_typed(&self.blocks, block_ref(&self.blocks, view_frame(self.table_view(t)[j], page))),
+            block_refs(&self.blocks, block_ref(&self.blocks, view_frame(self.table_view(t)[j], page))) > 0,
+    {
+        self.lemma_table_view(t, j);
+        let n = self.tables.node_of(t, j);
+        self.lemma_frame_page(n, page);
+        let br = block_ref(&self.blocks, view_frame(self.table_view(t)[j], page));
+        assert(self.tables.is_cap(&self.list, n));
+        assert(holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@));
+        assert(self.holders@[br].contains(n));
+        if self.holders@[br].len() == 0 {
+            self.holders@[br].lemma_len0_is_empty();
+        }
+    }
+
+    pub proof fn lemma_count_kept_reflexive(k: Self, root: usize)
+        ensures
+            Self::count_kept(k, k, root),
+    {
+    }
+
+    /// Composes under the rely, which keeps root sealed and each slot root still holds saying what it
+    /// said.
+    pub proof fn lemma_count_kept_transitive(a: Self, b: Self, c: Self, root: usize)
+        requires
+            Self::count_kept(a, b, root),
+            Self::count_kept(b, c, root),
+            Self::rely(a, b, root),
+            Self::rely(b, c, root),
+        ensures
+            Self::count_kept(a, c, root),
+    {
+        if a.sealed(root) {
+            assert forall|j: usize, page: usize|
+                a.table_view(root).contains_key(j) && c.table_view(root).contains_key(j)
+                    && a.table_view(root)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(a.table_view(root)[j].order)
+                    && a.held_by(block_ref(&a.blocks, view_frame(a.table_view(root)[j], page)), root) implies {
+                    let br = block_ref(&a.blocks, view_frame(a.table_view(root)[j], page));
+                    &&& #[trigger] block_ref(&c.blocks, view_frame(a.table_view(root)[j], page)) == br
+                    &&& block_refs(&c.blocks, br) <= block_refs(&a.blocks, br)
+                    &&& c.held_by(br, root)
+                } by {
+                assert(b.table_view(root).contains_key(j));
+                assert(same_cap(b.table_view(root)[j], a.table_view(root)[j]));
+                assert(view_frame(b.table_view(root)[j], page) == view_frame(a.table_view(root)[j], page));
+                assert(block_ref(&b.blocks, view_frame(a.table_view(root)[j], page))
+                    == block_ref(&a.blocks, view_frame(a.table_view(root)[j], page)));
+                assert(block_ref(&c.blocks, view_frame(b.table_view(root)[j], page))
+                    == block_ref(&b.blocks, view_frame(b.table_view(root)[j], page)));
+            }
+        }
+    }
+
+    /// A step that leaves every table's view as it was and changes the block table at most in the count
+    /// and the death of block x, raising a counted x's count only if some table but root's holds a
+    /// capability of it, keeps count_kept for root.
+    pub proof fn lemma_counted_keeps_count(pre: Self, post: Self, root: usize, x: BlockRef, refs: usize, dead: bool)
+        requires
+            pre.wf(),
+            forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+            blocks_refs_changed(&pre.blocks, &post.blocks, x, refs, dead),
+            (block_refs(&pre.blocks, x) > 0 ==> refs <= block_refs(&pre.blocks, x)) || !pre.held_by(x, root),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        assert forall|j: usize, page: usize|
+            pre.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
+                && pre.table_view(root)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
+                && pre.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) implies {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page)) == br
+                &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                &&& post.held_by(br, root)
+            } by {
+            let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
+            pre.lemma_view_frame_counted(root, j, page);
+            assert forall|t: usize, i: usize, p: usize|
+                t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
+                    && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
+                    implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
+                assert(post.table_view(t) == pre.table_view(t));
+                pre.lemma_view_frame_counted(t, i, p);
+                assert(block_ref(&pre.blocks, view_frame(pre.table_view(t)[i], p)) != br);
+            }
+        }
+    }
+
+    /// A step that leaves every table's view and the block table as they were keeps count_kept.
+    pub proof fn lemma_blocks_kept_keeps_count(pre: Self, post: Self, root: usize)
+        requires
+            forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+            post.blocks == pre.blocks,
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        assert forall|j: usize, page: usize|
+            pre.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
+                && pre.table_view(root)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
+                && pre.held_by(#[trigger] block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) implies
+                post.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) by {
+            let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
+            assert forall|t: usize, i: usize, p: usize|
+                t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
+                    && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
+                    implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
+                assert(post.table_view(t) == pre.table_view(t));
+                assert(block_ref(&pre.blocks, view_frame(pre.table_view(t)[i], p)) != br);
+            }
+        }
+    }
+
+    /// A step that leaves the list, the tables and the block table as they were keeps count_kept.
+    pub proof fn lemma_tables_blocks_kept_keeps_count(pre: Self, post: Self, root: usize)
+        requires
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.blocks == pre.blocks,
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
+        Self::lemma_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// A map, by a caller other than root, keeps count_kept of root: the block whose count it raises
+    /// holds the frame the caller maps from its own table, so some table but root's holds a
+    /// capability of it.
+    pub proof fn lemma_map_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_mapped(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        let slot = frame.slot() as usize;
+        let va = frame.argument(1);
+        let level = frame.argument(2);
+        let from = frame.argument(3) as usize;
+        let page = frame.argument(4) as usize;
+        Self::lemma_map_contract(pre, post, caller, frame, out);
+        if pre.map_allowed(caller, slot, va, level, from, page) {
+            let v = pre.table_view(caller);
+            let br = block_ref(&pre.blocks, view_frame(v[from], page));
+            if level == 2 {
+                assert((page as int) * PAGE_SZ < (page as int) * PAGE_SZ + SIZE_2M);
+            }
+            assert(block_ref(&pre.blocks, view_frame(pre.table_view(caller)[from], page)) == br);
+            Self::lemma_counted_keeps_count(pre, post, root, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+        } else {
+            Self::lemma_blocks_kept_keeps_count(pre, post, root);
+        }
+    }
+
+    /// An unmap, by any caller, keeps count_kept of every process: it lowers one block's count.
+    pub proof fn lemma_unmap_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_unmapped(pre, post, caller, frame, out),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        let slot = frame.slot() as usize;
+        let va = frame.argument(1);
+        let level = frame.argument(2);
+        Self::lemma_unmap_contract(pre, post, caller, frame, out);
+        if pre.unmap_allowed(caller, slot, va, level) {
+            let s = pre.table_view(caller)[slot].base;
+            let a = tree_of(&pre.table_pages, &pre.spaces);
+            let br = block_ref(&pre.blocks, space_mapping(a, s)[address_path(va)].addr / PAGE_SZ);
+            let refs = (block_refs(&pre.blocks, br) - 1) as usize;
+            Self::lemma_counted_keeps_count(pre, post, root, br, refs, block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1);
+        } else {
+            Self::lemma_blocks_kept_keeps_count(pre, post, root);
+        }
+    }
+
+    /// A link, by any caller, keeps count_kept of every process: it changes no slot and no block.
+    pub proof fn lemma_link_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_linked(pre, post, caller, frame, out),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_link_contract(pre, post, caller, frame, out);
+        Self::lemma_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// An inspect, by any caller, keeps count_kept of every process: it changes nothing.
+    pub proof fn lemma_inspect_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            spec_operation(frame.operation_number()) == Some(Operation::Inspect),
+            Self::invoked(pre, post, caller, frame, out),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_count_kept_reflexive(pre, root);
+    }
+
+    /// A probe, by any caller, keeps count_kept of every process: it writes only accessed and dirty bits.
+    pub proof fn lemma_probe_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_probed(pre, post, caller, frame, out),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        if pre.allows_probe(caller, frame) {
+            let read = choose|read: Seq<usize>| Self::probe_done(pre, post, caller, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] probed_of(out, read));
+            assert(post.list == pre.list && post.tables == pre.tables && post.blocks == pre.blocks);
+        }
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    // The kernel's entries that are no capability operation, as for the rely above: each leaves the
+    // list, the tables and the block table as they were.
+
+    /// start, refused or setting the thread Runnable.
+    pub proof fn lemma_start_keeps_count(pre: Self, post: Self, t: usize, core: usize, root: usize)
+        requires
+            post == pre || Self::state_written(pre, post, t, ThreadState::Runnable { core }),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// suspend, refused, or with the thread's record written Inactive, or its stop pending.
+    pub proof fn lemma_suspend_keeps_count(pre: Self, post: Self, t: usize, r: ThreadRecord, root: usize)
+        requires
+            post == pre || Self::record_written(pre, post, t, r),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// write_registers, refused or with the thread's saved frame written.
+    pub proof fn lemma_write_registers_keeps_count(pre: Self, post: Self, t: usize, frame: Registers, root: usize)
+        requires
+            post == pre || Self::frame_written(pre, post, t, frame),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// switch_in, switch_out and enter_boot_thread, on any core.
+    pub proof fn lemma_switch_keeps_count(pre: Self, post: Self, c: int, t: usize, root: usize)
+        requires
+            Self::switch_frame(pre, post, c, t),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// acknowledge, on any core.
+    pub proof fn lemma_acknowledge_keeps_count(pre: Self, post: Self, c: int, root: usize)
+        requires
+            Self::only_core_changed(pre, post, c),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// check_current, on any core, and dispatch when it reaches no operation.
+    pub proof fn lemma_check_current_keeps_count(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+        requires
+            post == pre || Self::moved_off(pre, post, c, frame),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// destroy of a process, by any caller.
+    pub proof fn lemma_destroy_keeps_count(pre: Self, post: Self, p: usize, root: usize)
+        requires
+            Self::process_destroyed(pre, post, p),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    /// destroy of a thread, by any caller and from any core.
+    pub proof fn lemma_destroy_thread_keeps_count(pre: Self, post: Self, c: usize, t: usize, root: usize)
+        requires
+            Self::thread_destroyed(pre, post, c, t),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        assert(post.list == pre.list && post.tables == pre.tables && post.blocks == pre.blocks);
+        Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
     }
 
     /// A thread bound to the process at p, as bound_threads reads the binding, is one of the threads
