@@ -7,9 +7,11 @@
 //! a span holds, and the spans by base. `Record` is what the source knows of its untyped: each page
 //! free, held as a frame for reuse, mapped, parked, or taken by a table page or by a retype the kernel
 //! refused, and which tables of the window's path are linked. The record decides nothing the view
-//! states, so its proof is that every index and address it computes is in range and that a parked
-//! page's permission is the one it hands out when that page's address is backed again; whether a frame
-//! is there to back a page is the kernel's to say, and a refusal anywhere refuses the run.
+//! states, so its proof is that every index and address it computes is in range, that every page a
+//! span holds backed is one the record maps at its address, and that a released page is parked at its
+//! address, its permission the one the record hands out when that address is backed again with no
+//! system call, so that back is granted; whether a frame is there to back any other page is the
+//! kernel's to say, and a refusal anywhere refuses the run.
 //!
 //! A released page stays mapped at its address, parked with the permission to its bytes, and backs
 //! that address again without a system call. A frame for another address is a held one, else a free
@@ -240,6 +242,51 @@ proof fn lemma_scale(a: int, b: int, c: int)
             0 <= c,
     ;
     assert((a + b) * c == a * c + b * c) by (nonlinear_arith);
+}
+
+/// A run of pages from an aligned start grows by the page after it, which no shorter run holds and
+/// every longer one does.
+proof fn lemma_run_step(start: int, k: int, n: int)
+    requires
+        start % PAGE_BYTES as int == 0,
+        0 <= k < n,
+    ensures
+        run_pages(start, (k + 1) as nat) =~= run_pages(start, k as nat).insert(start + k * PAGE_BYTES),
+        !run_pages(start, k as nat).contains(start + k * PAGE_BYTES),
+        run_pages(start, n as nat).contains(start + k * PAGE_BYTES),
+{
+    let p = PAGE_BYTES as int;
+    let b = start + k * p;
+    assert(b == p * k + start) by (nonlinear_arith)
+        requires
+            b == start + k * p,
+    ;
+    lemma_mod_multiples_vanish(k, start, p);
+    lemma_scale(k + 1, n, p);
+    lemma_scale(k, 1, p);
+    assert forall|a: int| #[trigger] run_pages(start, (k + 1) as nat).contains(a) && a >= b implies a == b by {
+        lemma_fundamental_div_mod(a, p);
+        lemma_fundamental_div_mod(b, p);
+        let qa = a / p;
+        let qb = b / p;
+        assert(qa == qb) by (nonlinear_arith)
+            requires
+                a == p * qa,
+                b == p * qb,
+                b <= a < b + p,
+                p > 0,
+        ;
+    }
+}
+
+/// A run of pages lies in every longer run from the same start.
+proof fn lemma_run_within(start: int, k: int, n: int)
+    requires
+        0 <= k <= n,
+    ensures
+        forall|a: int| #[trigger] run_pages(start, k as nat).contains(a) ==> run_pages(start, n as nat).contains(a),
+{
+    lemma_scale(k, n, PAGE_BYTES as int);
 }
 
 /// The window's bookkeeping: its base, which of its blocks a span holds, the length of the span
@@ -528,6 +575,24 @@ impl Record {
         ISet::new(|a: usize| exists|i: int| 0 <= i < self.pages && occupied(#[trigger] self.state@[i]) && self.owner@[i] == a)
     }
 
+    /// A page is mapped at `addr`, its permission handed out.
+    spec fn maps(&self, addr: int) -> bool {
+        exists|i: int| 0 <= i < self.pages && #[trigger] self.state@[i] == MAPPED && self.owner@[i] == addr
+    }
+
+    /// A page is parked at `addr`, its permission held here.
+    spec fn parks(&self, addr: int) -> bool {
+        exists|i: int| 0 <= i < self.pages && #[trigger] self.state@[i] == PARKED && self.owner@[i] == addr
+    }
+
+    /// Every page mapped in `old`, its permission handed out, still is, at the same address.
+    spec fn keeps_mapped(&self, old: &Record) -> bool {
+        &&& self.pages == old.pages
+        &&& forall|i: int|
+            0 <= i < self.pages && #[trigger] old.state@[i] == MAPPED ==> self.state@[i] == MAPPED && self.owner@[i]
+                == old.owner@[i]
+    }
+
     /// Every page this record maps at an address was mapped there, with the same state, in `old`.
     spec fn keeps(&self, old: &Record) -> bool {
         &&& self.pages == old.pages
@@ -572,6 +637,7 @@ impl Record {
             final(self).provenance == old(self).provenance,
             final(self).inv(),
             final(self).keeps(old(self)),
+            final(self).keeps_mapped(old(self)),
             match r {
                 Some(i) => i < final(self).pages && final(self).state@[i as int] == HELD,
                 None => true,
@@ -584,6 +650,7 @@ impl Record {
                 self.inv(),
                 i <= self.pages,
                 self.keeps(old(self)),
+                self.keeps_mapped(old(self)),
             decreases self.pages - i,
         {
             if self.state[i] == HELD {
@@ -597,6 +664,7 @@ impl Record {
                 self.inv(),
                 i <= self.pages,
                 self.keeps(old(self)),
+                self.keeps_mapped(old(self)),
             decreases i,
         {
             i -= 1;
@@ -618,6 +686,7 @@ impl Record {
                 i <= self.pages,
                 self.provenance == old(self).provenance,
                 self.keeps(old(self)),
+                self.keeps_mapped(old(self)),
             decreases self.pages - i,
         {
             if self.state[i] == PARKED {
@@ -645,6 +714,7 @@ impl Record {
             final(self).provenance == old(self).provenance,
             final(self).inv(),
             final(self).keeps(old(self)),
+            final(self).keeps_mapped(old(self)),
         no_unwind
     {
         let mut group: usize = 0;
@@ -654,6 +724,7 @@ impl Record {
                 group <= self.pages,
                 2 <= level <= 4,
                 self.keeps(old(self)),
+                self.keeps_mapped(old(self)),
             decreases self.pages - group,
         {
             let mut k: usize = 0;
@@ -665,6 +736,8 @@ impl Record {
                     k <= TABLE_PAGES,
                     2 <= level <= 4,
                     self.keeps(old(self)),
+                    self.keeps_mapped(old(self)),
+                    free ==> forall|u: int| group <= u < group + k ==> #[trigger] self.state@[u] == FREE,
                 decreases TABLE_PAGES - k,
             {
                 if self.state[group + k] != FREE {
@@ -681,8 +754,11 @@ impl Record {
                         k <= TABLE_PAGES,
                         2 <= level <= 4,
                         self.keeps(old(self)),
+                        self.keeps_mapped(old(self)),
+                        forall|u: int| group + k <= u < group + TABLE_PAGES ==> #[trigger] self.state@[u] == FREE,
                     decreases TABLE_PAGES - k,
                 {
+                    assert(self.state@[group + k] == FREE);
                     self.state[group + k] = TAKEN;
                     k += 1;
                 }
@@ -694,19 +770,14 @@ impl Record {
         false
     }
 
-    /// Backs the page at `addr` of the window: links the tables its path lacks, takes a frame and
-    /// maps it there. The permission to the page's bytes, or none when anything was refused.
-    fn back_page(&mut self, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
+    /// The page occupied at `addr`, mapped or parked there; or `pages` when there is none.
+    fn find(&self, addr: usize) -> (r: usize)
         requires
-            old(self).inv(),
-            provenance@ == old(self).provenance@,
+            self.inv(),
         ensures
-            final(self).provenance == old(self).provenance,
-            final(self).inv(),
-            match r {
-                Some(perm) => perm@.is_range(addr as int, PAGE_BYTES as int) && perm@.provenance() == provenance@,
-                None => true,
-            },
+            r <= self.pages,
+            r < self.pages ==> occupied(self.state@[r as int]) && self.owner@[r as int] == addr,
+            r == self.pages ==> !self.maps(addr as int) && !self.parks(addr as int),
         no_unwind
     {
         let mut i: usize = 0;
@@ -714,31 +785,137 @@ impl Record {
             invariant
                 self.inv(),
                 i <= self.pages,
-                provenance@ == self.provenance@,
-                self.provenance == old(self).provenance,
                 forall|j: int| 0 <= j < i ==> !(occupied(#[trigger] self.state@[j]) && self.owner@[j] == addr),
             decreases self.pages - i,
         {
-            if self.state[i] == MAPPED && self.owner[i] == addr {
-                return None;
-            }
-            if self.state[i] == PARKED && self.owner[i] == addr {
-                assert(self.state@[i as int] == PARKED && self.owner@[i as int] == addr);
-                let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
-                self.state[i] = MAPPED;
-                return Some(Tracked(perm));
+            if (self.state[i] == MAPPED || self.state[i] == PARKED) && self.owner[i] == addr {
+                return i;
             }
             i += 1;
         }
+        proof {
+            if self.parks(addr as int) {
+                let j = choose|j: int| 0 <= j < self.pages && #[trigger] self.state@[j] == PARKED && self.owner@[j] == addr;
+                assert(occupied(self.state@[j]));
+            }
+            if self.maps(addr as int) {
+                let j = choose|j: int| 0 <= j < self.pages && #[trigger] self.state@[j] == MAPPED && self.owner@[j] == addr;
+                assert(occupied(self.state@[j]));
+            }
+        }
+        i
+    }
+
+    /// Backs the page at `addr` of the window: hands out the page parked there, or links the tables
+    /// its path lacks, takes a frame and maps it there. The permission to the page's bytes, or none
+    /// when a page is mapped there already or anything was refused. A page parked at `addr` backs it
+    /// again with no system call, so that back is granted and leaves every other parked page parked.
+    fn back_page(&mut self, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
+        requires
+            old(self).inv(),
+            provenance@ == old(self).provenance@,
+        ensures
+            final(self).provenance == old(self).provenance,
+            final(self).inv(),
+            final(self).keeps_mapped(old(self)),
+            match r {
+                Some(perm) => {
+                    &&& perm@.is_range(addr as int, PAGE_BYTES as int)
+                    &&& perm@.provenance() == provenance@
+                    &&& final(self).maps(addr as int)
+                    &&& !old(self).maps(addr as int)
+                },
+                None => true,
+            },
+            old(self).parks(addr as int) ==> {
+                &&& r is Some
+                &&& forall|b: int| b != addr && #[trigger] old(self).parks(b) ==> final(self).parks(b)
+            },
+        no_unwind
+    {
+        let i = self.find(addr);
+        if i == self.pages {
+            return self.map_new(addr, provenance);
+        }
+        if self.state[i] == MAPPED {
+            proof {
+                if self.parks(addr as int) {
+                    let j = choose|j: int| 0 <= j < self.pages && #[trigger] self.state@[j] == PARKED && self.owner@[j] == addr;
+                    assert(occupied(self.state@[j]));
+                }
+            }
+            return None;
+        }
+        assert(self.state@[i as int] == PARKED && self.owner@[i as int] == addr);
+        let ghost before = *self;
+        let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
+        self.state[i] = MAPPED;
+        proof {
+            assert(self.state@[i as int] == MAPPED);
+            if before.maps(addr as int) {
+                let j = choose|j: int| 0 <= j < before.pages && #[trigger] before.state@[j] == MAPPED && before.owner@[j] == addr;
+                assert(occupied(before.state@[j]));
+            }
+            assert forall|b: int| b != addr && #[trigger] before.parks(b) implies self.parks(b) by {
+                let j = choose|j: int| 0 <= j < before.pages && #[trigger] before.state@[j] == PARKED && before.owner@[j] == b;
+                assert(self.state@[j] == PARKED);
+            }
+        }
+        Some(Tracked(perm))
+    }
+
+    /// Links the tables the path to `addr` lacks, takes a frame and maps it at `addr`, where no page
+    /// is mapped or parked. The permission to the page's bytes, or none when anything was refused.
+    fn map_new(&mut self, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
+        requires
+            old(self).inv(),
+            provenance@ == old(self).provenance@,
+            !old(self).maps(addr as int),
+            !old(self).parks(addr as int),
+        ensures
+            final(self).provenance == old(self).provenance,
+            final(self).inv(),
+            final(self).keeps_mapped(old(self)),
+            match r {
+                Some(perm) => {
+                    &&& perm@.is_range(addr as int, PAGE_BYTES as int)
+                    &&& perm@.provenance() == provenance@
+                    &&& final(self).maps(addr as int)
+                },
+                None => true,
+            },
+        no_unwind
+    {
+        let ghost start = *self;
+        proof {
+            assert forall|j: int| 0 <= j < self.pages implies !(occupied(#[trigger] self.state@[j]) && self.owner@[j] == addr) by {
+                if self.state@[j] == MAPPED && self.owner@[j] == addr {
+                    assert(self.maps(addr as int));
+                }
+                if self.state@[j] == PARKED && self.owner@[j] == addr {
+                    assert(self.parks(addr as int));
+                }
+            }
+        }
         let window = self.window;
         if !self.top {
-            if !self.table(window, 4) {
+            let ghost before = *self;
+            let linked = self.table(window, 4);
+            proof {
+                lemma_mapped_trans(*self, before, start);
+            }
+            if !linked {
                 return None;
             }
             self.top = true;
         }
         if !self.middle {
-            if !self.table(window, 3) {
+            let ghost before = *self;
+            let linked = self.table(window, 3);
+            proof {
+                lemma_mapped_trans(*self, before, start);
+            }
+            if !linked {
                 return None;
             }
             self.middle = true;
@@ -756,12 +933,22 @@ impl Record {
             proof {
                 lemma_scale(block as int, WINDOW_BLOCKS as int, BLOCK_BYTES as int);
             }
-            if !self.table(window + block * BLOCK_BYTES, 2) {
+            let ghost before = *self;
+            let linked = self.table(window + block * BLOCK_BYTES, 2);
+            proof {
+                lemma_mapped_trans(*self, before, start);
+            }
+            if !linked {
                 return None;
             }
             self.tabled[block] = true;
         }
-        let i = match self.frame() {
+        let ghost before = *self;
+        let found = self.frame();
+        proof {
+            lemma_mapped_trans(*self, before, start);
+        }
+        let i = match found {
             Some(i) => i,
             None => return None,
         };
@@ -772,51 +959,77 @@ impl Record {
             Some(perm) => {
                 self.state[i] = MAPPED;
                 self.owner[i] = addr;
+                assert(self.state@[i as int] == MAPPED);
                 Some(perm)
             },
             None => None,
         }
     }
 
-    /// Parks the page at `addr`, taking the permission to its bytes, which it hands out again when that
-    /// address is backed. A page the record does not name as mapped there stays as it is.
+    /// Parks the page mapped at `addr`, taking the permission to its bytes, which it hands out again
+    /// when that address is backed. Every other page stays as it is.
     fn release_page(&mut self, addr: usize, perm: Tracked<PointsToRaw>)
         requires
             old(self).inv(),
+            old(self).maps(addr as int),
             perm@.is_range(addr as int, PAGE_BYTES as int),
             perm@.provenance() == old(self).provenance@,
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).parks(addr as int),
+            forall|a: int| a != addr && #[trigger] old(self).maps(a) ==> final(self).maps(a),
+            forall|a: int| #[trigger] old(self).parks(a) ==> final(self).parks(a),
         no_unwind
     {
         let mut i: usize = 0;
         while i < self.pages && !(self.state[i] == MAPPED && self.owner[i] == addr)
             invariant
+                self == old(self),
                 self.inv(),
                 i <= self.pages,
+                forall|j: int| 0 <= j < i ==> !(#[trigger] self.state@[j] == MAPPED && self.owner@[j] == addr),
             decreases self.pages - i,
         {
             i += 1;
         }
-        if i < self.pages {
-            self.state[i] = PARKED;
-            proof {
-                self.parked.borrow_mut().tracked_insert(i as int, perm.get());
+        assert(i < self.pages) by {
+            let j = choose|j: int| 0 <= j < self.pages && #[trigger] self.state@[j] == MAPPED && self.owner@[j] == addr;
+            if i >= self.pages {
+                assert(self.state@[j] == MAPPED);
+            }
+        }
+        let ghost before = *self;
+        self.state[i] = PARKED;
+        proof {
+            self.parked.borrow_mut().tracked_insert(i as int, perm.get());
+            assert(self.state@[i as int] == PARKED);
+            assert forall|a: int| a != addr && #[trigger] before.maps(a) implies self.maps(a) by {
+                let j = choose|j: int| 0 <= j < before.pages && #[trigger] before.state@[j] == MAPPED && before.owner@[j] == a;
+                assert(self.state@[j] == MAPPED);
+            }
+            assert forall|a: int| #[trigger] before.parks(a) implies self.parks(a) by {
+                let j = choose|j: int| 0 <= j < before.pages && #[trigger] before.state@[j] == PARKED && before.owner@[j] == a;
+                assert(self.state@[j] == PARKED);
             }
         }
     }
 
-    /// Parks the run of `pages` pages from `start`, taking the permission to its bytes.
+    /// Parks the run of `pages` pages from `start`, each mapped, taking the permission to its bytes.
     fn release_run(&mut self, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
         requires
             old(self).inv(),
+            start as int % PAGE_BYTES as int == 0,
             start + pages * PAGE_BYTES <= usize::MAX + 1,
             perm@.is_range(start as int, pages * PAGE_BYTES),
             perm@.provenance() == old(self).provenance@,
+            forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).maps(a),
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).parks(a),
+            forall|a: int| !run_pages(start as int, pages as nat).contains(a) && #[trigger] old(self).maps(a) ==> final(self).maps(a),
+            forall|a: int| #[trigger] old(self).parks(a) ==> final(self).parks(a),
         no_unwind
     {
         let tracked mut rest = perm.get();
@@ -825,76 +1038,177 @@ impl Record {
             invariant
                 self.inv(),
                 k <= pages,
+                start as int % PAGE_BYTES as int == 0,
                 start + pages * PAGE_BYTES <= usize::MAX + 1,
                 rest.dom() =~= Set::range(start + k * PAGE_BYTES, start + pages * PAGE_BYTES),
                 rest.provenance() == self.provenance@,
                 self.provenance == old(self).provenance,
+                forall|a: int|
+                    #[trigger] run_pages(start as int, pages as nat).contains(a) && !run_pages(start as int, k as nat).contains(a)
+                        ==> self.maps(a),
+                forall|a: int| #[trigger] run_pages(start as int, k as nat).contains(a) ==> self.parks(a),
+                forall|a: int| !run_pages(start as int, pages as nat).contains(a) && #[trigger] old(self).maps(a) ==> self.maps(a),
+                forall|a: int| #[trigger] old(self).parks(a) ==> self.parks(a),
             decreases pages - k,
         {
             proof {
                 lemma_scale(k as int + 1, pages as int, PAGE_BYTES as int);
                 lemma_scale(k as int, 1, PAGE_BYTES as int);
+                lemma_run_step(start as int, k as int, pages as int);
             }
             let addr = start + k * PAGE_BYTES;
             let tracked (page, others) = rest.split(Set::range(addr as int, addr + PAGE_BYTES));
             proof {
                 rest = others;
             }
+            let ghost before = *self;
             self.release_page(addr, Tracked(page));
+            proof {
+                assert forall|a: int|
+                    #[trigger] run_pages(start as int, pages as nat).contains(a) && !run_pages(start as int, (k + 1) as nat).contains(a)
+                        implies self.maps(a) by {
+                    assert(before.maps(a));
+                }
+                assert forall|a: int| #[trigger] run_pages(start as int, (k + 1) as nat).contains(a) implies self.parks(a) by {
+                    if a != addr {
+                        assert(before.parks(a));
+                    }
+                }
+                assert forall|a: int| !run_pages(start as int, pages as nat).contains(a) && #[trigger] old(self).maps(a) implies self.maps(a) by {
+                    assert(before.maps(a));
+                }
+                assert forall|a: int| #[trigger] old(self).parks(a) implies self.parks(a) by {
+                    assert(before.parks(a));
+                }
+            }
             k += 1;
             assert(rest.dom() =~= Set::range(start + k * PAGE_BYTES, start + pages * PAGE_BYTES));
         }
     }
 
     /// Backs the run of `pages` pages from `start` a page at a time: the permission to its bytes, or
-    /// none, with each page backed so far given back, when a page was refused.
+    /// none, with each page backed so far given back, when a page was refused. A run whose every page
+    /// is parked is granted.
     fn back_run(&mut self, start: usize, pages: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
         requires
             old(self).inv(),
             provenance@ == old(self).provenance@,
+            start as int % PAGE_BYTES as int == 0,
             start + pages * PAGE_BYTES <= usize::MAX + 1,
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            forall|a: int| #[trigger] old(self).maps(a) ==> final(self).maps(a),
             match r {
-                Some(perm) => perm@.is_range(start as int, pages * PAGE_BYTES) && perm@.provenance() == provenance@,
+                Some(perm) => {
+                    &&& perm@.is_range(start as int, pages * PAGE_BYTES)
+                    &&& perm@.provenance() == provenance@
+                    &&& forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).maps(a)
+                },
                 None => true,
             },
+            (forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a)) ==> r is Some,
         no_unwind
     {
+        let ghost parked = forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a);
         let tracked mut run = PointsToRaw::empty(provenance@);
         let mut k: usize = 0;
         while k < pages
             invariant
                 self.inv(),
                 k <= pages,
+                start as int % PAGE_BYTES as int == 0,
                 start + pages * PAGE_BYTES <= usize::MAX + 1,
                 run.dom() =~= Set::range(start as int, start + k * PAGE_BYTES),
                 run.provenance() == provenance@,
                 provenance@ == self.provenance@,
                 self.provenance == old(self).provenance,
+                parked == forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a),
+                forall|a: int| #[trigger] old(self).maps(a) ==> self.maps(a),
+                forall|a: int| #[trigger] run_pages(start as int, k as nat).contains(a) ==> self.maps(a) && !old(self).maps(a),
+                parked ==> forall|a: int|
+                    #[trigger] run_pages(start as int, pages as nat).contains(a) && !run_pages(start as int, k as nat).contains(a)
+                        ==> self.parks(a),
             decreases pages - k,
         {
             proof {
                 lemma_scale(k as int + 1, pages as int, PAGE_BYTES as int);
                 lemma_scale(k as int, 1, PAGE_BYTES as int);
+                lemma_run_step(start as int, k as int, pages as int);
             }
             let addr = start + k * PAGE_BYTES;
+            let ghost before = *self;
+            proof {
+                if parked {
+                    assert(before.parks(addr as int));
+                }
+            }
             match self.back_page(addr, provenance) {
                 Some(page) => {
                     proof {
                         run = run.join(page.get());
+                        lemma_keeps_mapped(*self, before);
+                        if old(self).maps(addr as int) {
+                            assert(before.maps(addr as int));
+                        }
+                        if parked {
+                            assert forall|a: int|
+                                #[trigger] run_pages(start as int, pages as nat).contains(a) && !run_pages(start as int, (k + 1) as nat).contains(a)
+                                    implies self.parks(a) by {
+                                assert(before.parks(a));
+                            }
+                        }
                     }
                     k += 1;
                     assert(run.dom() =~= Set::range(start as int, start + k * PAGE_BYTES));
                 },
                 None => {
+                    proof {
+                        lemma_keeps_mapped(*self, before);
+                        lemma_run_within(start as int, k as int, pages as int);
+                    }
+                    let ghost released = *self;
                     self.release_run(start, k, Tracked(run));
+                    proof {
+                        assert forall|a: int| #[trigger] old(self).maps(a) implies self.maps(a) by {
+                            assert(released.maps(a));
+                            if run_pages(start as int, k as nat).contains(a) {
+                                assert(!old(self).maps(a));
+                            }
+                        }
+                    }
                     return None;
                 },
             }
         }
         Some(Tracked(run))
+    }
+}
+
+/// Keeping every mapped page is transitive.
+proof fn lemma_mapped_trans(c: Record, b: Record, a: Record)
+    requires
+        c.keeps_mapped(&b),
+        b.keeps_mapped(&a),
+    ensures
+        c.keeps_mapped(&a),
+{
+    assert forall|i: int| 0 <= i < c.pages && #[trigger] a.state@[i] == MAPPED implies c.state@[i] == MAPPED && c.owner@[i]
+        == a.owner@[i] by {
+        assert(b.state@[i] == MAPPED);
+    }
+}
+
+/// A record that keeps every mapped page of another maps every address that one maps.
+proof fn lemma_keeps_mapped(new: Record, old: Record)
+    requires
+        new.keeps_mapped(&old),
+    ensures
+        forall|a: int| #[trigger] old.maps(a) ==> new.maps(a),
+{
+    assert forall|a: int| #[trigger] old.maps(a) implies new.maps(a) by {
+        let j = choose|j: int| 0 <= j < old.pages && #[trigger] old.state@[j] == MAPPED && old.owner@[j] == a;
+        assert(new.state@[j] == MAPPED);
     }
 }
 
@@ -912,9 +1226,21 @@ pub struct Eager {
 }
 
 impl Eager {
+    /// Every page a span holds backed is a page the record maps at its address: the permission
+    /// handed out for it is that page's.
     #[verifier::type_invariant]
     spec fn wf(self) -> bool {
-        self.spans.inv() && self.record.inv() && self.record.provenance@ == self.exposed@@
+        &&& self.spans.inv()
+        &&& self.record.inv()
+        &&& self.record.provenance@ == self.exposed@@
+        &&& forall|base: int, a: int|
+            self.spans.map@.contains_key(base) && #[trigger] self.spans.map@[base].backed.contains(a) ==> self.record.maps(a)
+    }
+
+    /// A page is parked at `addr`: its run was released, and a back of it is granted with no system
+    /// call.
+    pub closed spec fn parks(&self, addr: int) -> bool {
+        self.record.parks(addr)
     }
 
     /// The source that backs runs in the space at `space` with frames and table pages retyped from the
@@ -1025,16 +1351,25 @@ impl SpanSource for Eager {
         }
     }
 
-    fn back(&mut self, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>) {
+    /// A run whose every page is parked is granted.
+    fn back(&mut self, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
+        ensures
+            (forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a)) ==> r is Some,
+    {
         proof {
             use_type_invariant(&*self);
         }
         let ghost before = self@;
+        let ghost record = self.record;
         proof {
             assert(before.released_span(span@).fits(span@, before.spans[span@].blocks));
         }
         match self.record.back_run(start, pages, Ghost(self.exposed@@)) {
             None => {
+                assert forall|base: int, a: int|
+                    self.spans.map@.contains_key(base) && #[trigger] self.spans.map@[base].backed.contains(a) implies self.record.maps(a) by {
+                    assert(record.maps(a));
+                }
                 let ghost r = Refusal { request: Request::Back { span: span@, start: start as int, pages: pages as nat }, spans: before.spans };
                 proof {
                     lemma_recorded_wf(before, r);
@@ -1048,22 +1383,56 @@ impl SpanSource for Eager {
                 }
                 self.spans.rewrite(Ghost(before.backed_run(span@, start as int, pages as nat).spans));
                 self.grants = Ghost(self.grants@.push(Request::Back { span: span@, start: start as int, pages: pages as nat }));
+                assert forall|base: int, a: int|
+                    self.spans.map@.contains_key(base) && #[trigger] self.spans.map@[base].backed.contains(a) implies self.record.maps(a) by {
+                    if !run_pages(start as int, pages as nat).contains(a) || base != span@ {
+                        assert(before.spans[base].backed.contains(a) || run_pages(start as int, pages as nat).contains(a));
+                        if before.spans[base].backed.contains(a) {
+                            assert(record.maps(a));
+                        }
+                    }
+                }
                 Some(perm)
             },
         }
     }
 
-    fn release(&mut self, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>) {
+    /// Each page of the run is parked.
+    fn release(&mut self, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
+        ensures
+            forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).parks(a),
+    {
         proof {
             use_type_invariant(&*self);
         }
         let ghost before = self@;
+        let ghost record = self.record;
         proof {
             assert(before.released_span(span@).fits(span@, before.spans[span@].blocks));
             lemma_released_run_wf(before, span@, start as int, pages as nat);
+            assert forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) implies record.maps(a) by {
+                assert(before.spans[span@].backed.contains(a));
+            }
         }
+        let ghost after = before.released_run(span@, start as int, pages as nat).spans;
+        assert forall|base: int, a: int|
+            after.contains_key(base) && #[trigger] after[base].backed.contains(a) implies record.maps(a) && !run_pages(
+                start as int,
+                pages as nat,
+            ).contains(a) by {
+            assert(before.spans[base].backed.contains(a));
+            assert(record.maps(a));
+            if base != span@ {
+                assert(before.released_span(base).fits(base, before.spans[base].blocks));
+                assert(before.released_span(base).spans.contains_key(span@));
+                assert(before.released_span(base).apart(base, before.spans[base].blocks, span@));
+                if run_pages(start as int, pages as nat).contains(a) {
+                    assert(false);
+                }
+            }
+        }
+        self.spans.rewrite(Ghost(after));
         self.record.release_run(start, pages, perm);
-        self.spans.rewrite(Ghost(before.released_run(span@, start as int, pages as nat).spans));
     }
 
     fn release_span(&mut self, span: usize) {
@@ -1071,8 +1440,45 @@ impl SpanSource for Eager {
             use_type_invariant(&*self);
             lemma_released_span_wf(self@, span as int);
         }
+        let ghost before = self.spans.map@;
         self.spans.release(span, Ghost(self@));
+        assert forall|base: int, a: int|
+            self.spans.map@.contains_key(base) && #[trigger] self.spans.map@[base].backed.contains(a) implies self.record.maps(a) by {
+            assert(before[base].backed.contains(a));
+        }
     }
+}
+
+/// The witness that a released page backs its address again, built into no image: from any
+/// well-formed eager source holding a span in which the page at `x` is unbacked, back that page,
+/// release it and back it again. When the first back is granted the second is, and the source ends
+/// with the spans it started with. Whether the first back was granted is the kernel's to say.
+#[cfg(verus_keep_ghost)]
+pub fn witness_back_again(src: &mut Eager, span: Ghost<int>, x: usize) -> (granted: bool)
+    requires
+        old(src)@.wf(),
+        old(src)@.runs_in(span@, x as int, 1),
+        old(src)@.unbacked(span@, x as int, 1),
+    ensures
+        final(src)@.wf(),
+        final(src)@.spans == old(src)@.spans,
+{
+    let ghost start = src@;
+    let first = match src.back(span, x, 1) {
+        None => return false,
+        Some(perm) => perm,
+    };
+    src.release(span, x, 1, first);
+    assert(src@.spans[span@].backed =~= start.spans[span@].backed);
+    assert(src@.spans =~= start.spans);
+    let second = src.back(span, x, 1);
+    assert(second is Some);
+    if let Some(perm) = second {
+        src.release(span, x, 1, perm);
+    }
+    assert(src@.spans[span@].backed =~= start.spans[span@].backed);
+    assert(src@.spans =~= start.spans);
+    true
 }
 
 } // verus!
