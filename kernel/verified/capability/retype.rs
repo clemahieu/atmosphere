@@ -659,7 +659,7 @@ impl CapKernel {
     /// untyped's child in that slot, the one entry the parent map gains and the only node whose kind,
     /// liveness or capability changed, no root entry changed, the page is zero, the block table changed
     /// in that page alone, which is a block of its own, Small(page) with kind Base, with a count of one,
-    /// and the step discharges the retype's effect.
+    /// the processes are as they were, and the step discharges the retype's effect.
     pub open spec fn frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
@@ -682,16 +682,17 @@ impl CapKernel {
             &&& block_refs(&post.blocks, br) == 1
             &&& !block_dead(&post.blocks, br)
         }
+        &&& post.processes == pre.processes
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: 1, into: None })
     }
 
     /// What a step of a large retype that has not found its block all zero yet did, under the untyped at
     /// index from of the table at root, for the block at base of order into the slot at index to: the
-    /// retype was allowed, no capability was made and no slot changed, and the step discharges the
-    /// retype's effect. The region is being zeroed, its cursor rose, from 0 when it was not being
-    /// zeroed before, and is short of the region's pages, and the same retype is allowed again: so a
-    /// caller that repeats it while it says Again has a measure that falls and reaches Done. The block
-    /// table changed in that region's entry alone.
+    /// retype was allowed, no capability was made, no slot changed and the processes are as they were,
+    /// and the step discharges the retype's effect. The region is being zeroed, its cursor rose, from 0
+    /// when it was not being zeroed before, and is short of the region's pages, and the same retype is
+    /// allowed again: so a caller that repeats it while it says Again has a measure that falls and reaches
+    /// Done. The block table changed in that region's entry alone.
     pub open spec fn large_frame_zeroing(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         let parent = pre.tables.node_of(root, from);
         let level = large_level(order);
@@ -706,6 +707,7 @@ impl CapKernel {
         &&& post.zeroing.active(level, r)
         &&& pre.zeroing.active(level, r) ==> pre.zeroing.cursor@[page as int] < post.zeroing.cursor@[page as int]
         &&& 0 < post.zeroing.cursor@[page as int] < level_pages(level)
+        &&& post.processes == pre.processes
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None })
     }
 
@@ -713,7 +715,8 @@ impl CapKernel {
     /// frame capability of that order is the untyped's child in the slot at index to, the one entry the
     /// parent map gains and the only node whose kind, liveness or capability changed, no root entry
     /// changed, every page of the block is zero, the block table changed in the block's region entry
-    /// alone, which is typed with a count of one, and the step discharges the retype's effect.
+    /// alone, which is typed with a count of one, the processes are as they were, and the step discharges
+    /// the retype's effect.
     pub open spec fn large_frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
@@ -735,6 +738,7 @@ impl CapKernel {
             &&& block_refs(&post.blocks, br) == 1
             &&& !block_dead(&post.blocks, br)
         }
+        &&& post.processes == pre.processes
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None })
     }
 
@@ -2074,6 +2078,7 @@ impl CapKernel {
             assert(pow2(order as nat) == level_pages(level));
             lemma_level_pages(level, r);
             assert(same_but_contents(pre.view(), mid.view()));
+            assert(level_base(level, r) == base / PAGE_SZ);
             assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), mid.view(), o)
                 implies in_pages(base, pow2(order as nat), o) by {
                 lemma_contents_in_pages(pre.frames@, mid.frames@, base, pow2(order as nat), o);

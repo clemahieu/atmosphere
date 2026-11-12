@@ -203,12 +203,14 @@ impl CapKernel {
     }
 
     /// What a derive from the capability at index from of the caller's table, at root, into the empty
-    /// position to did: the derive was allowed, the child is in the position's table, and the step
-    /// discharges the derive's effect there, a local step in the caller's own table.
+    /// position to did: the derive was allowed, the child is in the position's table, every process's record
+    /// is as it was, and the step discharges the derive's effect there, a local step in the caller's own
+    /// table.
     pub open spec fn cap_derived_at(pre: Self, post: Self, root: usize, from: usize, to: Position, rights: u32, base: usize, order: u8) -> bool {
         &&& pre.can_derive_at(root, from, to, rights, base, order)
         &&& Self::cap_derived_between(pre, post, root, from, pre.table_at(root, to.through)->0, to.index, rights, base, order)
         &&& discharges(pre.view(), post.view(), root, pre.derive_effect(root, from, to))
+        &&& post.processes.records == pre.processes.records
     }
 
     /// A console or power capability derives a child naming its object, with rights no wider, so its
@@ -345,6 +347,7 @@ impl CapKernel {
             final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).tables.roots == old(self).tables.roots,
             final(self).devices == old(self).devices,
+            final(self).processes.records == old(self).processes.records,
             ret && !tracked_kind(old(self).payload_of(old(self).tables.node_of(src, from)).kind) ==> {
                 &&& final(self).blocks == old(self).blocks
                 &&& final(self).holders == old(self).holders

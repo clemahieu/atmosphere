@@ -949,6 +949,186 @@ impl CapKernel {
     {
     }
 
+    /// From pre to post, the process at root is still recorded: no step but the freeing of a process
+    /// removes a record, and that is a step only a holder of the process's capability takes, so
+    /// space_kept and count_kept, whose premise is that root is a process, compose across the steps of
+    /// other callers.
+    pub open spec fn record_kept(pre: Self, post: Self, root: usize) -> bool {
+        pre.processes.records@.contains_key(root) ==> post.processes.records@.contains_key(root)
+    }
+
+    pub proof fn lemma_record_kept_reflexive(k: Self, root: usize)
+        ensures
+            Self::record_kept(k, k, root),
+    {
+    }
+
+    pub proof fn lemma_record_kept_transitive(a: Self, b: Self, c: Self, root: usize)
+        requires
+            Self::record_kept(a, b, root),
+            Self::record_kept(b, c, root),
+        ensures
+            Self::record_kept(a, c, root),
+    {
+    }
+
+    // Each kind of step, by any caller, keeps record_kept of every process: its specification says
+    // what it leaves of the records.
+
+    pub proof fn lemma_revoke_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_revoked(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_unmap_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_unmapped(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_map_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_mapped(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_link_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_linked(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_inspect_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            spec_operation(frame.operation_number()) == Some(Operation::Inspect),
+            Self::invoked(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_probe_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_probed(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_retype_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_retyped(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_derive_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_derived(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_delete_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_deleted(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_move_keeps_record(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_moved(pre, post, caller, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_start_keeps_record(pre: Self, post: Self, t: usize, core: usize, root: usize)
+        requires
+            post == pre || Self::state_written(pre, post, t, ThreadState::Runnable { core }),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_suspend_keeps_record(pre: Self, post: Self, t: usize, r: ThreadRecord, root: usize)
+        requires
+            post == pre || Self::record_written(pre, post, t, r),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_write_registers_keeps_record(pre: Self, post: Self, t: usize, frame: Registers, root: usize)
+        requires
+            post == pre || Self::frame_written(pre, post, t, frame),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_switch_keeps_record(pre: Self, post: Self, c: int, t: usize, root: usize)
+        requires
+            Self::switch_frame(pre, post, c, t),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_acknowledge_keeps_record(pre: Self, post: Self, c: int, root: usize)
+        requires
+            Self::only_core_changed(pre, post, c),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_check_current_keeps_record(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+        requires
+            post == pre || Self::moved_off(pre, post, c, frame),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_destroy_keeps_record(pre: Self, post: Self, p: usize, root: usize)
+        requires
+            Self::process_destroyed(pre, post, p),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
+    pub proof fn lemma_destroy_thread_keeps_record(pre: Self, post: Self, c: usize, t: usize, root: usize)
+        requires
+            Self::thread_destroyed(pre, post, c, t),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+    }
+
     /// No table but root's holds a frame capability with a page in the block br: every capability that
     /// holds br is root's, so no other caller can map a page of br or derive from a capability of it.
     pub open spec fn held_by(&self, br: BlockRef, root: usize) -> bool {

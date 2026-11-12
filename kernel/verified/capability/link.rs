@@ -1089,13 +1089,15 @@ impl CapKernel {
         assert(tree.child_slot(self.payload_of(n).base, entry));
     }
 
-    /// What a link leaves: the capabilities, the list and the blocks as they were, and the tables linked.
+    /// What a link leaves: the capabilities, the list, the blocks and the processes as they were, and the tables
+    /// linked.
     pub open spec fn link_done(pre: Self, post: Self, parent: usize, entry: usize, child: usize, s: usize) -> bool {
         let tree = tree_of(&post.table_pages, &post.spaces);
         &&& post.list == pre.list
         &&& post.tables == pre.tables
         &&& post.blocks == pre.blocks
         &&& post.holders == pre.holders
+        &&& post.processes == pre.processes
         &&& tree.entry(parent, entry) == child_entry(child)
         &&& tree.record(child).parent == Some(TableParent { table: parent, entry })
         &&& tree.record(child).space == Some(s)

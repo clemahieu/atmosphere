@@ -298,8 +298,8 @@ impl CapKernel {
     /// process whose table is at root: the position names a capability, which stays one, at most
     /// REVOKE_BUDGET nodes of its run went and no other node, no mapping appeared, the tables are as they
     /// were, no node changed its parent, the threads bound are those that were whose bindings are still
-    /// live, the devices unbound are those whose binding nodes went, and the step discharges the
-    /// revoke's effect for the caller, which commands the capability.
+    /// live, the devices unbound are those whose binding nodes went, every process's record is as it was, and
+    /// the step discharges the revoke's effect for the caller, which commands the capability.
     pub open spec fn cap_revoking_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
         let c = pre.cap_at(root, at)->0;
         &&& pre.cap_at(root, at) is Some
@@ -312,6 +312,7 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c })
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&post.list))
         &&& Self::devices_revoked(pre, post)
+        &&& post.processes.records == pre.processes.records
     }
 
     /// The devices after revoke steps from pre: a device whose binding node went is bound to nothing,

@@ -1048,6 +1048,7 @@ impl CapKernel {
     /// and points the register straight at the second space's root, with no write of the kernel's root
     /// between. The second load hands out a fresh PCID in the generation, so no id the register's tag
     /// stands for is handed to another space. See design/core-names-a-space-while-running-its-thread/.
+    #[verifier::spinoff_prover]
     pub fn witness_switch_between_processes(
         &mut self,
         root: Ghost<usize>,

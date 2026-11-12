@@ -436,7 +436,8 @@ impl CapKernel {
     /// table of that level that no space links and no capability names, the untyped's child, its node
     /// not live before and hidden after, the one entry the parent map gains and the only node whose
     /// liveness or kind changed, no thread bound but as it was, the block table changed in the block's
-    /// pages alone, every space's mapping as it was, and the step discharges the retype's effect.
+    /// pages alone, every space's mapping and the processes as they were, and the step discharges the
+    /// retype's effect.
     pub open spec fn table_page_retyped(pre: Self, post: Self, root: usize, from: usize, base: usize, level: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         &&& pre.can_retype_table_page(root, from, base, level)
@@ -460,6 +461,7 @@ impl CapKernel {
         &&& forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
             space_mapping(tree_of(&post.table_pages, &post.spaces), r) == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
         &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 3)
+        &&& post.processes == pre.processes
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
     }
 

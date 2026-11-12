@@ -90,11 +90,12 @@ impl CapKernel {
             ==> pre.flush_targets(s).contains(d as usize)
     }
 
-    /// What an unmap leaves: the entry is gone as entry_unmapped says, and a flush IPI went to each core
-    /// that loaded the space.
+    /// What an unmap leaves: the entry is gone as entry_unmapped says, a flush IPI went to each core that
+    /// loaded the space, and the processes are as they were.
     pub open spec fn unmap_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath) -> bool {
         &&& Self::entry_unmapped(pre, post, root, slot, p)
         &&& Self::flush_sent(pre, post, pre.payload_of(pre.tables.node_of(root, slot)).base)
+        &&& post.processes == pre.processes
     }
 
     /// What clearing the entry leaves: the entry the path reaches is empty, its mapping node is the only
@@ -363,6 +364,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             ret is Some == old(self).can_unmap(root, slot, kind, SpacePath { l4, l3, l2, l1 }),
             final(self).spaces == old(self).spaces,
+            final(self).processes == old(self).processes,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> {
                 &&& (ret->0).0 == old(self).payload_of(old(self).tables.node_of(root, slot)).base
