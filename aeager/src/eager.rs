@@ -925,6 +925,73 @@ impl Record {
         Some(Tracked(perm))
     }
 
+    /// Links the tables the path to `addr` lacks, at each level the record has not linked yet; false
+    /// when a link was refused. Every page keeps its state and address.
+    fn path_tables(&mut self, caller: &mut Tracked<Caller>, addr: usize) -> (r: bool)
+        requires
+            old(self).inv(),
+            old(self).serves(old(caller)@),
+        ensures
+            final(self).provenance == old(self).provenance,
+            final(self).inv(),
+            final(self).serves(final(caller)@),
+            final(self).keeps(old(self)),
+            final(self).keeps_mapped(old(self)),
+        no_unwind
+    {
+        let ghost start = *self;
+        let window = self.window;
+        if !self.top {
+            let ghost before = *self;
+            let linked = self.table(caller, window, 4);
+            proof {
+                lemma_mapped_trans(*self, before, start);
+                lemma_keeps_trans(*self, before, start);
+            }
+            if !linked {
+                return false;
+            }
+            self.top = true;
+        }
+        if !self.middle {
+            let ghost before = *self;
+            let linked = self.table(caller, window, 3);
+            proof {
+                lemma_mapped_trans(*self, before, start);
+                lemma_keeps_trans(*self, before, start);
+            }
+            if !linked {
+                return false;
+            }
+            self.middle = true;
+        }
+        let offset = if addr >= window {
+            addr - window
+        } else {
+            0
+        };
+        let mut block = offset / BLOCK_BYTES;
+        if block >= WINDOW_BLOCKS {
+            block = WINDOW_BLOCKS - 1;
+        }
+        if !self.tabled[block] {
+            proof {
+                lemma_scale(block as int, WINDOW_BLOCKS as int, BLOCK_BYTES as int);
+            }
+            let ghost before = *self;
+            let linked = self.table(caller, window + block * BLOCK_BYTES, 2);
+            proof {
+                lemma_mapped_trans(*self, before, start);
+                lemma_keeps_trans(*self, before, start);
+            }
+            if !linked {
+                return false;
+            }
+            self.tabled[block] = true;
+        }
+        true
+    }
+
     /// Links the tables the path to `addr` lacks, takes a frame and maps it at `addr`, where no page
     /// is mapped or parked. The permission to the page's bytes, or none when anything was refused.
     fn map_new(&mut self, caller: &mut Tracked<Caller>, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
@@ -960,51 +1027,16 @@ impl Record {
                 }
             }
         }
-        let window = self.window;
-        if !self.top {
-            let ghost before = *self;
-            let linked = self.table(caller, window, 4);
-            proof {
-                lemma_mapped_trans(*self, before, start);
+        let linked = self.path_tables(caller, addr);
+        proof {
+            assert forall|j: int| 0 <= j < self.pages implies !(occupied(#[trigger] self.state@[j]) && self.owner@[j] == addr) by {
+                if occupied(self.state@[j]) {
+                    assert(start.state@[j] == self.state@[j]);
+                }
             }
-            if !linked {
-                return None;
-            }
-            self.top = true;
         }
-        if !self.middle {
-            let ghost before = *self;
-            let linked = self.table(caller, window, 3);
-            proof {
-                lemma_mapped_trans(*self, before, start);
-            }
-            if !linked {
-                return None;
-            }
-            self.middle = true;
-        }
-        let offset = if addr >= window {
-            addr - window
-        } else {
-            0
-        };
-        let mut block = offset / BLOCK_BYTES;
-        if block >= WINDOW_BLOCKS {
-            block = WINDOW_BLOCKS - 1;
-        }
-        if !self.tabled[block] {
-            proof {
-                lemma_scale(block as int, WINDOW_BLOCKS as int, BLOCK_BYTES as int);
-            }
-            let ghost before = *self;
-            let linked = self.table(caller, window + block * BLOCK_BYTES, 2);
-            proof {
-                lemma_mapped_trans(*self, before, start);
-            }
-            if !linked {
-                return None;
-            }
-            self.tabled[block] = true;
+        if !linked {
+            return None;
         }
         let ghost before = *self;
         let found = self.frame(caller);
@@ -1258,6 +1290,20 @@ impl Record {
             }
         }
         Some(Tracked(run))
+    }
+}
+
+/// Keeping every occupied page's state and address is transitive.
+proof fn lemma_keeps_trans(c: Record, b: Record, a: Record)
+    requires
+        c.keeps(&b),
+        b.keeps(&a),
+    ensures
+        c.keeps(&a),
+{
+    assert forall|i: int| 0 <= i < c.pages && occupied(#[trigger] c.state@[i]) implies c.state@[i] == a.state@[i] && c.owner@[i]
+        == a.owner@[i] by {
+        assert(occupied(b.state@[i]));
     }
 }
 
