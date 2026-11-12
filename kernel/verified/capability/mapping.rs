@@ -256,6 +256,10 @@ impl CapKernel {
                 &&& final(self).tlb@[c as int] == Set::<TlbEntry>::empty()
                 &&& final(self).acked(c as int) == old(self).flush_epoch
             }),
+            !holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s) && old(self).cores@[c as int].next_pcid == PCID_MAX ==> {
+                &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation + 1
+                &&& final(self).tlb@.tags(c as int) == Set::<usize>::empty()
+            },
             forall|r: usize| r != s && #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c as int, r) ==> {
                 &&& holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, r)
                 &&& final(self).spaces.loaded@[r] == old(self).spaces.loaded@[r]
