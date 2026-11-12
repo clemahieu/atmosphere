@@ -5150,8 +5150,9 @@ impl CapKernel {
     /// that address with map_device. Then revoke the frame capability, which unlinks the mapping, delete
     /// it, its block's last reference, and retype the frame's page under the root's untyped: after every
     /// core acknowledges, the retype waits, since the IOMMU may still hold the mapping's translation,
-    /// and after every present IOMMU flushes, it frees the page. Every step succeeds. The use is a VMM
-    /// taking back a page it gave a passthrough device.
+    /// and after every present IOMMU flushes, it frees the page, which a frame in slot 3 of the leaf
+    /// takes again. Every step succeeds. The use is a VMM taking back a page it gave a passthrough
+    /// device.
     #[verifier::spinoff_prover]
     pub fn witness_device_frame_reused_after_iommu_flush(
         &mut self,
@@ -5725,11 +5726,33 @@ impl CapKernel {
 
         // The retype frees the page.
         let r2 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, bf, Tracked(&mut steps));
+        let ghost s10 = *self;
         proof {
             assert(r2 is Freed);
-            assert(s9.frame_freed(*self, 0, process, ROOT_UNTYPED_SLOT, bf));
+            assert(s9.frame_freed(s10, 0, process, ROOT_UNTYPED_SLOT, bf));
+            assert(s10.list == s9.list && s10.tables == s9.tables && s10.processes == s9.processes);
+            assert(s10.root_live(process));
+            assert(s10.tables.roots@.contains_key(process));
+            assert(s10.blocks.small_free(fp, 0));
+            // Slot 3 of the leaf holds nothing again.
+            assert(s6.tables.has_slot(&s6.list, process, WITNESS_FRAME_SLOT));
+            assert(s6.tables.node_of(process, WITNESS_FRAME_SLOT) == nf);
+            lemma_slot_kept_but(s6, s7, process, WITNESS_FRAME_SLOT, nf);
+            assert(s10.tables.has_slot(&s10.list, process, WITNESS_FRAME_SLOT));
+            assert(s10.tables.node_of(process, WITNESS_FRAME_SLOT) == nf);
+            assert(!s7.is_cap(nf));
+            assert(!s10.is_cap(nf));
+            lemma_deleted_dead(s10, nf);
+            assert(s10.can_retype_under(process, ROOT_UNTYPED_SLOT, bf, 0));
+            assert(s10.can_retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf));
         }
-        (r1, r2, ok1 && ok2 && ok3 && ok4 && ok5 && ok6.is_some())
+
+        // The page as a frame in slot 3 again.
+        let ok7 = self.retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf, Tracked(&mut steps));
+        proof {
+            assert(ok7);
+        }
+        (r1, r2, ok1 && ok2 && ok3 && ok4 && ok5 && ok6.is_some() && ok7)
     }
 
     /// From the state boot leaves, when boot was given the IOMMU the device sits behind as present, as the root

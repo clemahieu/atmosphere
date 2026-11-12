@@ -271,7 +271,11 @@ impl CapKernel {
     }
 
     /// What freeing the 4K frame at `base` did to self, under the untyped at index `from` of the table
-    /// at `root`.
+    /// at `root`: the page is out of frames and free in the block table, and the tree, the tables, the
+    /// processes and the spaces are as they were, so the next retype of the page can succeed. The
+    /// zeroing, the epochs, the cores and the IOMMUs are as they were, and so is the block table but
+    /// for the freed page, so what a caller knew of another block, or of an acknowledgement, holds
+    /// after the free.
     pub open spec fn frame_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / PAGE_SZ;
@@ -279,7 +283,20 @@ impl CapKernel {
         &&& self.frame_is_dead(page)
         &&& self.no_stale_translation(page)
         &&& post.blocks.pages@[page as int].kind is Free
+        &&& post.blocks.small_free(page as int, 0)
         &&& !post.frames@.contains_key(page)
+        &&& post.list == self.list
+        &&& post.tables == self.tables
+        &&& post.processes == self.processes
+        &&& post.spaces == self.spaces
+        &&& post.zeroing == self.zeroing
+        &&& post.stale_epoch == self.stale_epoch
+        &&& post.flush_epoch == self.flush_epoch
+        &&& post.cores == self.cores
+        &&& post.iommus == self.iommus
+        &&& post.blocks.regions_2m@ == self.blocks.regions_2m@
+        &&& post.blocks.regions_1g@ == self.blocks.regions_1g@
+        &&& forall|i: int| self.blocks.tracks(i) && i != page ==> #[trigger] post.blocks.pages@[i] == self.blocks.pages@[i]
         &&& Self::step_ok(*self, post, c as int)
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 1 })
@@ -5134,9 +5151,24 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
             final(self).blocks.pages@[page as int].kind is Free,
+            final(self).blocks.small_free(page as int, 0),
             final(self).frames@ == old(self).frames@.remove(page),
+            final(self).processes == old(self).processes,
+            final(self).spaces == old(self).spaces,
+            final(self).zeroing == old(self).zeroing,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
+            final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
+            forall|i: int| old(self).blocks.tracks(i) && i != page
+                ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
     {
         let ghost pre = *old(self);
+        proof {
+            pre.blocks.lemma_not_free_uncovered(page as int);
+        }
         self.blocks.mark_torn_down(page);
         let tracked mut perm;
         proof {
@@ -5162,6 +5194,10 @@ impl CapKernel {
                 }
             }
             Self::lemma_small_freed(pre, post, page);
+            assert(!post.blocks.covered(page as int));
+            assert forall|k: int| 0 <= k < order_pages(0) implies #[trigger] post.blocks.pages@[page + k].kind is Free by {
+                assert(k == 0);
+            }
         }
     }
 }
