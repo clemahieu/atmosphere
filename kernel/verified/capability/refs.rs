@@ -941,6 +941,34 @@ pub open spec fn blocks_refs_changed(a: &BlockTable, b: &BlockTable, br: BlockRe
     &&& forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed
 }
 
+/// A table that typed a free run and changed nothing else keeps every tracked page that lay in a typed
+/// block in that block, at the count it had: a typed block's pages are not free, and neither is its base.
+pub proof fn lemma_run_keeps_block(a: &BlockTable, b: &BlockTable, page: int, order: usize, i: usize)
+    requires
+        forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] a.pages@[page + k].kind is Free,
+        a.kept_but_run(*b, page, order),
+        a.tracks(i as int),
+        block_typed(a, block_ref(a, i)),
+    ensures
+        block_ref(b, i) == block_ref(a, i),
+        block_refs(b, block_ref(a, i)) == block_refs(a, block_ref(a, i)),
+{
+    if !a.regions_2m@[(i / PAGES_PER_2M) as int].typed && !a.regions_1g@[(i / PAGES_PER_1G) as int].typed {
+        if page <= i < page + order_pages(order) {
+            assert(a.pages@[page + (i - page)].kind is Free);
+            assert(false);
+        }
+        assert(b.pages@[i as int] == a.pages@[i as int]);
+        if let BlockRef::Small(x) = block_ref(a, i) {
+            if page <= x < page + order_pages(order) {
+                assert(a.pages@[page + (x - page)].kind is Free);
+                assert(false);
+            }
+            assert(b.pages@[x as int] == a.pages@[x as int]);
+        }
+    }
+}
+
 /// Tables with the same page kinds, member bases and typed regions put every page in the same block and
 /// have typed the same blocks.
 pub proof fn lemma_same_structure(a: &BlockTable, b: &BlockTable)

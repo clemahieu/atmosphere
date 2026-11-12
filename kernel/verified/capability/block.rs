@@ -552,6 +552,14 @@ impl BlockTable {
         }
     }
 
+    /// post is this table changed in the pages of the small run of this order at page alone: every
+    /// region's entry, at either level, and every page outside the run is as it was.
+    pub open spec fn kept_but_run(&self, post: BlockTable, page: int, order: usize) -> bool {
+        &&& post.regions_2m@ == self.regions_2m@
+        &&& post.regions_1g@ == self.regions_1g@
+        &&& forall|i: int| self.tracks(i) && !(page <= i < page + order_pages(order)) ==> #[trigger] post.pages@[i] == self.pages@[i]
+    }
+
     /// post is this table changed in the entry of the large block that is region r of this level
     /// alone: every page entry and every other region's entry, at either level, is as it was.
     pub open spec fn kept_but_region(&self, post: BlockTable, level: Large, r: int) -> bool {

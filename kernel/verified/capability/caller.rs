@@ -14,7 +14,7 @@ verus! {
 #[cfg(verus_keep_ghost)]
 use crate::arch::Registers;
 #[cfg(verus_keep_ghost)]
-use crate::capability::block::{Large, NUM_2M};
+use crate::capability::block::{order_pages, Large, NUM_2M};
 #[cfg(verus_keep_ghost)]
 use crate::define::*;
 #[cfg(verus_keep_ghost)]
@@ -959,11 +959,50 @@ impl CapKernel {
         }
     }
 
-    /// Retype's contract over the caller's view. Refused, with every table's view as it was, exactly
-    /// when retype_allowed fails. A 4K frame: ok, with the caller's slot the word names now holding
-    /// the frame, the untyped's child, and every other slot of every table as it was. A 2M frame:
-    /// again, with every table's view as it was, or ok as a 4K frame is with the 2M block. A table
-    /// page: ok, with every table's view as it was and an empty table page of the level at base. A
+    /// Every page of every frame capability in any table's view in pre lies in the block it did in post,
+    /// and that block's count is as it was.
+    pub open spec fn frame_blocks_kept(pre: Self, post: Self) -> bool {
+        forall|t: usize, j: usize, page: usize|
+            pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) ==> {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], page)) == br
+                &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br)
+            }
+    }
+
+    /// A step that typed a free small run and changed no other page and no region of the block table
+    /// keeps the block and the count of every page of every frame capability in pre's view.
+    pub proof fn lemma_run_keeps_frame_blocks(pre: Self, post: Self, page: int, order: usize)
+        requires
+            pre.wf(),
+            forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
+            pre.blocks.kept_but_run(post.blocks, page, order),
+        ensures
+            Self::frame_blocks_kept(pre, post),
+    {
+        assert forall|t: usize, j: usize, p: usize|
+            pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                && (p as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) implies {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], p));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], p)) == br
+                &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br)
+            } by {
+            pre.lemma_table_view(t, j);
+            let n = pre.tables.node_of(t, j);
+            pre.lemma_frame_page(n, p);
+            lemma_run_keeps_block(&pre.blocks, &post.blocks, page, order, view_frame(pre.table_view(t)[j], p));
+        }
+    }
+
+    /// Retype's contract over the caller's view. Refused, with every table's view and the block table
+    /// as they were, exactly when retype_allowed fails. A 4K frame: ok, with the caller's slot the word
+    /// names now holding the frame, the untyped's child, its page a block with a count of one, every
+    /// other slot of every table as it was, and every frame capability's blocks and their counts as
+    /// they were. A 2M frame:
+    /// again, with every table's view as it was, or ok as a 4K frame is with the 2M block, saying nothing
+    /// of the counts. A table page: ok, with every table's view and every frame capability's blocks and
+    /// their counts as they were and an empty table page of the level at base. A
     /// leaf: ok, with every table's view as it was and every index of the root entry it fills an empty
     /// slot of the position's table.
     pub open spec fn retype_contract(pre: Self, post: Self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize, out: Outcome) -> bool {
@@ -975,6 +1014,7 @@ impl CapKernel {
             &&& !allowed
             &&& out == status_only(STATUS_REFUSED)
             &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& post.blocks == pre.blocks
         }
         ||| {
             &&& kind == RETYPE_FRAME
@@ -982,6 +1022,8 @@ impl CapKernel {
             &&& out == status_only(STATUS_OK)
             &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 0, parent))
             &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& block_refs(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ)) == 1
+            &&& Self::frame_blocks_kept(pre, post)
         }
         ||| {
             &&& kind == RETYPE_LARGE_FRAME
@@ -1001,6 +1043,7 @@ impl CapKernel {
             &&& allowed
             &&& out == status_only(STATUS_OK)
             &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& Self::frame_blocks_kept(pre, post)
             &&& post.table_pages.maps@.contains_key(base)
             &&& post.table_pages.records@[base].value() == fresh_table(level)
         }
@@ -1168,6 +1211,7 @@ impl CapKernel {
             assert(post.is_cap(child));
             assert(post.slot_view(root, to) == frame_view(base, 0, parent));
             Self::lemma_slot_added(pre, post, root, to, frame_view(base, 0, parent));
+            Self::lemma_run_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, 0);
         } else if kind == RETYPE_LARGE_FRAME && out == status_only(STATUS_AGAIN) {
             Self::lemma_views_same(pre, post);
         } else if kind == RETYPE_LARGE_FRAME {
@@ -1179,6 +1223,7 @@ impl CapKernel {
                 assert(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base);
             }
             Self::lemma_unslotted_node(pre, post, base);
+            Self::lemma_run_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, 3);
         } else {
             let at = spec_position(word)->0;
             Self::lemma_leaf_views(pre, post, root, from, at, base);
