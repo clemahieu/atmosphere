@@ -531,13 +531,30 @@ pub open spec fn tags_tlb(core: int) -> bool {
     true
 }
 
+/// Writes `value` to this core's TTBR0_EL1, whose base register `register` is, then synchronises the
+/// context with an ISB. Bits 47:12 of `value` are the base of the table whose top level the walks from
+/// TTBR0_EL1 start at, a 4 KiB table, whose bits 11:1 are then RES0 and must be zero, as must CnP, bit 0,
+/// which the kernel leaves clear; bits 63:48 are the ASID. The instructions after the ISB translate
+/// through the new table under that ASID, so the core may hold entries under it from then on and it
+/// joins the core's tags in `model`; the write removes no entry, so the model keeps them all.
+// cite: arm-arm D24.2.208 TTBR0_EL1, Translation Table Base Register 0 (EL1)
+// cite: arm-arm B2.6.1 Instruction Synchronization Barrier
+pub assume_specification[write_ttbr0](Tracked(register): Tracked<&mut BaseRegister>, Tracked(model): Tracked<&mut TlbModel>, value: usize)
+    requires
+        value & 0xfffusize == 0,
+    ensures
+        final(register).core() == old(register).core(),
+        final(register).root() == value & 0x0000_ffff_ffff_f000usize,
+        final(register).tag() == tag_written(old(register).core(), value >> 48usize),
+        final(model).len() == old(model).len(),
+        forall|d: int| #[trigger] final(model)[d] == old(model)[d],
+        final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), value >> 48usize)),
+        forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d);
+
 /// Points this core's TTBR0_EL1 at the table whose top level is at physical address `root`, as ASID
-/// `id` in bits 63:48: one write changes the table and the id together and flushes nothing, and the
-/// instructions after the ISB translate through the new table. Arm ARM D24.2.208, B2.6.1.
-/// From then on the core may hold entries under the tag written, tag_written(core, id), so it joins the
-/// core's tags in `model`.
-#[verifier(external_body)]
-// external_body(glue): only the hardware can attest which root a core translates through, so only this changes a BaseRegister
+/// `id` in bits 63:48: one write changes the table and the id together and flushes nothing. From then
+/// on the core may hold entries under the tag written, tag_written(core, id), so it joins the core's
+/// tags in `model`.
 pub fn load_translation_root(
     Tracked(register): Tracked<&mut BaseRegister>,
     Tracked(model): Tracked<&mut TlbModel>,
@@ -545,7 +562,7 @@ pub fn load_translation_root(
     id: usize,
 )
     requires
-        root % PAGE_SZ == 0,
+        root & (!MEM_MASK) as usize == 0,
         id < PCID_MAX,
     ensures
         final(register).core() == old(register).core(),
@@ -556,10 +573,15 @@ pub fn load_translation_root(
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), id)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
-    let base = (id as u64) << 48 | root as u64;
-    unsafe {
-        core::arch::asm!("msr TTBR0_EL1, {base}", "isb", base = in(reg) base, options(nostack, preserves_flags));
-    }
+    assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
+    let base = id << 48usize | root;
+    assert(base & 0xfffusize == 0 && base & 0x0000_ffff_ffff_f000usize == root && base >> 48usize == id) by (bit_vector)
+        requires
+            base == id << 48usize | root,
+            root & 0xffff_0000_0000_0fffusize == 0,
+            id < 4096,
+    ;
+    write_ttbr0(Tracked(register), Tracked(model), base);
 }
 
 // The IOMMU's command ring: the command queue of an SMMUv3, the IOMMU QEMU virt offers. capability/
@@ -1234,6 +1256,12 @@ pub fn serial_write_byte(byte: u8) {
             byte = in(reg) byte as u32,
             options(nostack, preserves_flags),
         );
+    }
+}
+
+fn write_ttbr0(_register: Tracked<&mut BaseRegister>, _model: Tracked<&mut TlbModel>, value: usize) {
+    unsafe {
+        core::arch::asm!("msr TTBR0_EL1, {value}", "isb", value = in(reg) value, options(nostack, preserves_flags));
     }
 }
 

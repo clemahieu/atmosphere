@@ -27,6 +27,10 @@ use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::define::*;
 #[cfg(verus_keep_ghost)]
+use crate::util::page_ptr_util_u::mem_valid;
+#[cfg(verus_keep_ghost)]
+use crate::arch::MEM_MASK;
+#[cfg(verus_keep_ghost)]
 use crate::pagetable::entry::PageEntry;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
@@ -380,6 +384,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             root % PAGE_SZ == 0,
+            space is None ==> mem_valid(root),
             match space {
                 Some(s) => {
                     &&& root == s + SPACE_ROOT_PAGE * PAGE_SZ
@@ -452,6 +457,13 @@ impl CapKernel {
             reveal(registers_wf);
             assert(pre.spaces.registers@.contains_key(c as int));
             assert(pre.spaces.registers@[c as int].core() == c as int);
+        }
+        proof {
+            if let Some(s) = space {
+                assert(pre.spaces.roots@.contains_key(s));
+                assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+                lemma_space_root_valid(s);
+            }
         }
         let tracked mut register = self.spaces.registers.borrow_mut().tracked_remove(c as int);
         load_translation_root(Tracked(&mut register), Tracked(self.tlb.borrow_mut()), root, tag);
@@ -2469,6 +2481,19 @@ pub proof fn lemma_table_node_place(t: usize, k: usize, i: usize)
     assert(n == PAGE_SZ * (q + k) + i);
     lemma_fundamental_div_mod_converse(n as int, (PAGE_SZ as int), q + k, i as int);
     assert(page_of(n) == n - i);
+}
+
+/// A space's root lies within memory: the space's block is TABLE_PAGE_BYTES aligned and starts on a
+/// tracked page, so its root page, SPACE_ROOT_PAGE pages in, has no bit outside MEM_MASK.
+pub proof fn lemma_space_root_valid(s: usize)
+    requires
+        s % TABLE_PAGE_BYTES == 0,
+        s / PAGE_SZ < NUM_PAGES,
+    ensures
+        mem_valid((s + SPACE_ROOT_PAGE * PAGE_SZ) as usize),
+{
+    assert(s / PAGE_SZ < NUM_PAGES && s % TABLE_PAGE_BYTES == 0 ==> ((s + SPACE_ROOT_PAGE * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
+    assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
 }
 
 } // verus!

@@ -663,14 +663,40 @@ pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbMo
 /// the bit is fixed for each core while verified code runs; which value it has is not known here.
 pub uninterp spec fn tags_tlb(core: int) -> bool;
 
-/// Points this core's CR3 at the table whose top level is at physical address `root`. Where CR4.PCIDE,
-/// bit 17, is set, the write tags it with PCID `id` and sets bit 63, which keeps the entries the TLB
-/// holds under every PCID; where it is clear, CR3 holds the root alone and the write flushes the
-/// non-global entries. APM 2, the CR3 register in its PCID format.
-/// From then on the core may hold entries under the tag written, tag_written(core, id), so it joins the
-/// core's tags in `model`.
-#[verifier(external_body)]
-// external_body(glue): only the hardware can attest which root a core translates through, so only this changes a BaseRegister
+/// Reads this core's CR4, whose bit 17, PCIDE, is set exactly where the core tags its TLB entries with
+/// the PCID its CR3 is written with: tags_tlb. `register` is the core's base register, which names the
+/// core the read runs on.
+// cite: amd-apm2 3.1.3 CR4 Register, Processor Context Identifier Enable (PCIDE), Bit 17
+// cite: amd-apm2 5.5.1 Process Context Identifier
+pub assume_specification[read_cr4](Tracked(register): Tracked<&BaseRegister>) -> (ret: u64)
+    ensures
+        (ret & (1u64 << 17u64) != 0) == tags_tlb(register.core());
+
+/// Writes `value` to this core's CR3, whose base register `register` is. Bits 62:52 are reserved and
+/// must be zero; where CR4.PCIDE is clear, so are bits 11:5, 2:0 and 63. CR3 then names the table whose
+/// top level is at bits 51:12 of `value`, and where PCIDE is set the current PCID is bits 11:0 of it;
+/// where it is clear the current PCID is always 0. From then on the core may hold entries under that
+/// PCID, so it joins the core's tags in `model`; the write removes entries the TLB holds, or with bit
+/// 63 set keeps them, and the model, which may hold more than the TLB does, keeps them all.
+// cite: amd-apm2 5.3.2 CR3, Figure 5-16 Control Register 3 (CR3)—Long Mode
+// cite: amd-apm2 5.5.1 Process Context Identifier
+pub assume_specification[write_cr3](Tracked(register): Tracked<&mut BaseRegister>, Tracked(model): Tracked<&mut TlbModel>, value: usize)
+    requires
+        value & 0x7ff0_0000_0000_0000usize == 0,
+        tags_tlb(old(register).core()) || value & 0x8000_0000_0000_0fe7usize == 0,
+    ensures
+        final(register).core() == old(register).core(),
+        final(register).root() == value & 0x000f_ffff_ffff_f000usize,
+        final(register).tag() == tag_written(old(register).core(), value & 0xfffusize),
+        final(model).len() == old(model).len(),
+        forall|d: int| #[trigger] final(model)[d] == old(model)[d],
+        final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), value & 0xfffusize)),
+        forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d);
+
+/// Points this core's CR3 at the table whose top level is at physical address `root`. Where CR4.PCIDE
+/// is set, the write tags it with PCID `id` and sets bit 63, which keeps the entries the TLB holds under
+/// every PCID; where it is clear, CR3 holds the root alone. From then on the core may hold entries under
+/// the tag written, tag_written(core, id), so it joins the core's tags in `model`.
 pub fn load_translation_root(
     Tracked(register): Tracked<&mut BaseRegister>,
     Tracked(model): Tracked<&mut TlbModel>,
@@ -678,7 +704,7 @@ pub fn load_translation_root(
     id: usize,
 )
     requires
-        root % PAGE_SZ == 0,
+        root & (!MEM_MASK) as usize == 0,
         id < PCID_MAX,
     ensures
         final(register).core() == old(register).core(),
@@ -689,13 +715,23 @@ pub fn load_translation_root(
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), id)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
-    let cr4: u64;
-    unsafe {
-        core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
-    }
-    let cr3 = if cr4 & (1 << 17) != 0 { (root | id) as u64 | 1 << 63 } else { root as u64 };
-    unsafe {
-        core::arch::asm!("mov cr3, {cr3}", cr3 = in(reg) cr3, options(nostack, preserves_flags));
+    assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
+    let cr4 = read_cr4(Tracked(&*register));
+    if cr4 & (1u64 << 17u64) != 0 {
+        let cr3 = root | id | 0x8000_0000_0000_0000usize;
+        assert(cr3 & 0x7ff0_0000_0000_0000usize == 0 && cr3 & 0x000f_ffff_ffff_f000usize == root && cr3 & 0xfffusize == id) by (bit_vector)
+            requires
+                cr3 == root | id | 0x8000_0000_0000_0000usize,
+                root & 0xffff_0000_0000_0fffusize == 0,
+                id < 4096,
+        ;
+        write_cr3(Tracked(register), Tracked(model), cr3);
+    } else {
+        assert(root & 0x7ff0_0000_0000_0000usize == 0 && root & 0x8000_0000_0000_0fe7usize == 0 && root & 0x000f_ffff_ffff_f000usize == root) by (bit_vector)
+            requires
+                root & 0xffff_0000_0000_0fffusize == 0,
+        ;
+        write_cr3(Tracked(register), Tracked(model), root);
     }
 }
 
@@ -1346,6 +1382,20 @@ pub fn serial_write_byte(byte: u8) {
             }
         }
         core::arch::asm!("out dx, al", in("dx") COM1, in("al") byte, options(nomem, nostack));
+    }
+}
+
+fn read_cr4(_register: Tracked<&BaseRegister>) -> u64 {
+    let cr4: u64;
+    unsafe {
+        core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
+    }
+    cr4
+}
+
+fn write_cr3(_register: Tracked<&mut BaseRegister>, _model: Tracked<&mut TlbModel>, value: usize) {
+    unsafe {
+        core::arch::asm!("mov cr3, {value}", value = in(reg) value, options(nostack, preserves_flags));
     }
 }
 

@@ -48,6 +48,7 @@ use crate::capability::mapping::*;
 use crate::capability::position::*;
 use crate::capability::process::*;
 use crate::capability::reach::*;
+use crate::util::page_ptr_util_u::mem_valid;
 use crate::capability::reclaim::*;
 use crate::capability::reclaim_process::*;
 use crate::capability::reclaim_thread::*;
@@ -763,6 +764,7 @@ impl CapKernel {
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             old(self).spaces.kernel_root@ == kernel_root,
+            mem_valid(kernel_root),
         ensures
             final(self).wf(),
             final(self).cores@[0].space is None,
@@ -1468,6 +1470,7 @@ impl CapKernel {
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             kernel_root % PAGE_SZ == 0,
             kernel_root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ,
+            mem_valid(kernel_root),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
