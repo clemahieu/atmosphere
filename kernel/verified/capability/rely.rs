@@ -603,6 +603,55 @@ impl CapKernel {
         assert(post.list == pre.list && post.tables == pre.tables);
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
+
+    /// A thread bound to the process at p, as bound_threads reads the binding, is one of the threads
+    /// p's record counts as bound, and its record names p.
+    pub proof fn lemma_bound_thread(&self, x: usize, p: usize)
+        requires
+            self.wf(),
+            bound_threads(&self.list, &self.tables).contains_key(x),
+            bound_threads(&self.list, &self.tables)[x] == p,
+        ensures
+            self.processes.records@.contains_key(p),
+            self.processes.bound@[p].contains(x),
+            self.threads.records@.contains_key(x),
+            self.threads.records@[x].value().process == Some(p),
+    {
+        broadcast use vstd::set::lemma_set_filter, vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
+        assert(x < NODE_SPACE && self.list.nodes@[x as int].live && self.list.nodes@[x as int].kind is Binding);
+        reveal(binding_parents);
+        assert(binding_parent(&self.list, &self.tables, &self.threads, x));
+    }
+
+    /// The process at p is sealed when every capability naming it, and every capability to a thread
+    /// bound to it, lies in a leaf of its own table: a slot of any other table holds a node of a leaf
+    /// that table owns, so none of them.
+    pub proof fn lemma_sealed_by_holders(&self, p: usize)
+        requires
+            self.wf(),
+            forall|n: usize| #[trigger] self.processes.holders@[p].contains(n) ==> self.tables.owner@[page_of(n)].0 == p,
+            forall|x: usize, n: usize| self.processes.bound@[p].contains(x) && #[trigger] self.threads.holders@[x].contains(n)
+                ==> self.tables.owner@[page_of(n)].0 == p,
+        ensures
+            self.sealed(p),
+    {
+        assert forall|t: usize, j: usize| t != p && #[trigger] self.table_view(t).contains_key(j)
+            implies !self.names_process(self.table_view(t)[j], p) by {
+            self.lemma_table_view(t, j);
+            let n = self.tables.node_of(t, j);
+            self.lemma_slot(t, j);
+            let v = self.table_view(t)[j];
+            assert(self.is_cap(n));
+            if v.kind is Process && v.base == p {
+                assert(self.processes.holders@[p].contains(n));
+            }
+            let bound = bound_threads(&self.list, &self.tables);
+            if v.kind is Thread && bound.contains_key(v.base) && bound[v.base] == p {
+                self.lemma_bound_thread(v.base, p);
+                assert(self.threads.holders@[v.base].contains(n));
+            }
+        }
+    }
 }
 
 } // verus!

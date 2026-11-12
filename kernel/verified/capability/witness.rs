@@ -99,6 +99,14 @@ pub const WITNESS_BOUND_DEVICE_SLOT: usize = 2;
 /// process moves its device from one space to another: slot 3 of its root entry 0.
 pub const WITNESS_SECOND_SPACE_SLOT: usize = 3;
 
+/// The index of the new process's table its own thread's capability is moved to, when its creator hands
+/// the process itself: slot 2 of its root entry 0.
+pub const WITNESS_SEALED_THREAD_SLOT: usize = 2;
+
+/// The index of the new process's table its own capability is moved to, when its creator hands the
+/// process itself: slot 3 of its root entry 0.
+pub const WITNESS_SEALED_PROCESS_SLOT: usize = 3;
+
 /// The index of the root's table a 2M frame's capability goes in, when the root frees one and types it
 /// again: slot 1 of root entry 2.
 pub const WITNESS_LARGE_FRAME_SLOT: usize = 257;
@@ -314,6 +322,69 @@ proof fn lemma_cursor_block(b: usize, j: int)
     lemma_fundamental_div_mod_converse(b + j * PROCESS_BYTES, PROCESS_BYTES as int, q + j, 0);
     lemma_fundamental_div_mod_converse(b + j * PROCESS_BYTES, PAGE_SZ as int, 8 * q + 8 * j, 0);
     lemma_fundamental_div_mod_converse(b as int, PAGE_SZ as int, 8 * q, 0);
+}
+
+/// The process at p is sealed when its block's two references are one capability, pn, and one bound
+/// thread, x, whose block's one reference is its capability, tn, and both lie in p's table: a second
+/// holder of either would be a third reference, or a second one.
+proof fn lemma_sealed_held_once(k: CapKernel, p: usize, pn: usize, x: usize, tn: usize)
+    requires
+        k.wf(),
+        k.is_cap(pn),
+        k.payload_of(pn).kind is Process,
+        k.payload_of(pn).base == p,
+        k.tables.owner@[page_of(pn)].0 == p,
+        k.is_cap(tn),
+        k.payload_of(tn).kind is Thread,
+        k.payload_of(tn).base == x,
+        k.tables.owner@[page_of(tn)].0 == p,
+        bound_threads(&k.list, &k.tables).contains_key(x),
+        bound_threads(&k.list, &k.tables)[x] == p,
+        block_refs(&k.blocks, BlockRef::Small(p / PAGE_SZ)) == 2,
+        block_refs(&k.blocks, BlockRef::Small(x / PAGE_SZ)) == 1,
+    ensures
+        k.sealed(p),
+{
+    broadcast use vstd::set::lemma_set_remove_len, vstd::set::lemma_set_remove_different;
+    k.lemma_bound_thread(x, p);
+    reveal(CapKernel::wf);
+    assert(process_wf(&k.processes, &k.blocks, p));
+    assert(thread_wf(&k.list, &k.threads, &k.blocks, x));
+    let ph = k.processes.holders@[p];
+    let pb = k.processes.bound@[p];
+    let th = k.threads.holders@[x];
+    assert(ph.contains(pn));
+    assert(th.contains(tn));
+    assert(ph.len() + pb.len() == 2);
+    assert(th.len() == 1);
+    assert(pb.len() >= 1) by {
+        assert(pb.len() == pb.remove(x).len() + 1);
+    }
+    assert forall|n: usize| #[trigger] ph.contains(n) implies n == pn by {
+        if n != pn {
+            assert(ph.remove(pn).contains(n));
+            assert(ph.remove(pn).len() == ph.remove(pn).remove(n).len() + 1);
+            assert(ph.len() == ph.remove(pn).len() + 1);
+        }
+    }
+    assert(pb.len() == 1) by {
+        assert(ph.len() == ph.remove(pn).len() + 1);
+    }
+    assert forall|y: usize| #[trigger] pb.contains(y) implies y == x by {
+        if y != x {
+            assert(pb.remove(x).contains(y));
+            assert(pb.remove(x).len() == pb.remove(x).remove(y).len() + 1);
+            assert(pb.len() == pb.remove(x).len() + 1);
+        }
+    }
+    assert forall|n: usize| #[trigger] th.contains(n) implies n == tn by {
+        if n != tn {
+            assert(th.remove(tn).contains(n));
+            assert(th.remove(tn).len() == th.remove(tn).remove(n).len() + 1);
+            assert(th.len() == th.remove(tn).len() + 1);
+        }
+    }
+    k.lemma_sealed_by_holders(p);
 }
 
 /// Process p has a record, and it is live.
@@ -1160,6 +1231,7 @@ impl CapKernel {
                 &&& witness_alive(*final(self), base)
                 &&& final(self).threads.records@.contains_key(thread)
                 &&& final(self).threads.records@[thread].value().state is Inactive
+                &&& !final(self).threads.records@[thread].value().dying
                 &&& final(self).threads.records@[thread].value().process == Some(base)
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& forall|i: usize| i < ENTRIES && !holds_kernel(SpaceKind::Process, i)
@@ -1695,6 +1767,131 @@ impl CapKernel {
             }
         }
         ok1 && ok2 && ok3 && ok4 && ok5
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// of two free ones past those boot's tables took from the first untyped: build a process at `base`
+    /// with a thread bound to it, as witness_process_holds_capability does; move the thread capability,
+    /// with control, into slot 2 of the process's leaf, through the process capability; then move the
+    /// process capability into slot 3 of that leaf, through itself. Both moves succeed, and at the end
+    /// the process is sealed: no table but its own names it, so the rely of
+    /// kernel/verified/capability/rely.rs holds for it from the second move on. The use is a creator
+    /// handing a built process itself. The thread is not started: start needs a placement, which no
+    /// operation makes yet. See design/region-map-owns-the-address-space/.
+    pub fn witness_built_process_sealed(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret,
+            ({
+                let thread = (base + 10 * PAGE_SZ) as usize;
+                let bl = (base + 12 * PAGE_SZ) as usize;
+                &&& final(self).wf()
+                &&& base != process
+                &&& final(self).slot_holds(base, WITNESS_SEALED_THREAD_SLOT, (bl + 2) as usize, thread_of(thread))
+                &&& final(self).slot_holds(base, WITNESS_SEALED_PROCESS_SLOT, (bl + 3) as usize, process_of(base))
+                &&& bound_threads(&final(self).list, &final(self).tables).contains_key(thread)
+                &&& bound_threads(&final(self).list, &final(self).tables)[thread] == base
+                &&& final(self).sealed(base)
+            }),
+    {
+        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let ghost s1 = *self;
+        let ghost np = (base + 8 * PAGE_SZ + 1) as usize;
+        let ghost nt = (base + 8 * PAGE_SZ + 2) as usize;
+        let ghost thread = (base + 10 * PAGE_SZ) as usize;
+        let ghost bl = (base + 12 * PAGE_SZ) as usize;
+        let ghost tn = (bl + 2) as usize;
+        let ghost pn = (bl + 3) as usize;
+        proof {
+            assert(s1.processes.records@.contains_key(base));
+            assert(s1.tables.roots@.contains_key(base)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(index_ok(WITNESS_SEALED_THREAD_SLOT) && index_entry(WITNESS_SEALED_THREAD_SLOT) == 0 && index_slot(WITNESS_SEALED_THREAD_SLOT) == 2) by (compute_only);
+            assert(index_ok(WITNESS_SEALED_PROCESS_SLOT) && index_entry(WITNESS_SEALED_PROCESS_SLOT) == 0 && index_slot(WITNESS_SEALED_PROCESS_SLOT) == 3) by (compute_only);
+            assert(s1.tables.has_slot(&s1.list, base, WITNESS_SEALED_THREAD_SLOT));
+            assert(s1.tables.has_slot(&s1.list, base, WITNESS_SEALED_PROCESS_SLOT));
+            s1.lemma_slot(base, WITNESS_SEALED_THREAD_SLOT);
+            s1.lemma_slot(base, WITNESS_SEALED_PROCESS_SLOT);
+            assert(s1.tables.node_of(base, WITNESS_SEALED_THREAD_SLOT) == tn);
+            assert(s1.tables.node_of(base, WITNESS_SEALED_PROCESS_SLOT) == pn);
+            assert(!s1.list.nodes@[tn as int].live);
+            assert(!s1.list.nodes@[pn as int].live);
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(s1.table_at(process, Some(WITNESS_PROCESS_SLOT)) == Some(base));
+            assert(s1.destination_at(process, Some(WITNESS_PROCESS_SLOT)) == Some(base));
+            assert(!s1.cap_dead(nt));
+            assert(s1.can_move_between(process, WITNESS_THREAD_SLOT, base, WITNESS_SEALED_THREAD_SLOT));
+        }
+
+        // The thread capability, with control, into slot 2 of the process's leaf, through the process
+        // capability.
+        let from1 = Position { through: None, index: WITNESS_THREAD_SLOT };
+        let to1 = Position { through: Some(WITNESS_PROCESS_SLOT), index: WITNESS_SEALED_THREAD_SLOT };
+        let ok1 = self.move_cap(process, from1, to1);
+        let ghost s2 = *self;
+        proof {
+            assert(ok1);
+            assert(Self::cap_moved_between(s1, s2, process, WITNESS_THREAD_SLOT, base, WITNESS_SEALED_THREAD_SLOT));
+            assert(Self::caps_frame(s1, s2, nt, tn));
+            assert(s2.payload_of(tn) == thread_of(thread));
+            assert(s2.is_cap(tn));
+            lemma_slot_kept_two(s1, s2, process, WITNESS_PROCESS_SLOT, nt, tn);
+            lemma_slot_kept_two(s1, s2, base, WITNESS_SEALED_THREAD_SLOT, nt, tn);
+            lemma_slot_kept_two(s1, s2, base, WITNESS_SEALED_PROCESS_SLOT, nt, tn);
+            s1.lemma_slot(process, WITNESS_PROCESS_SLOT);
+            Self::lemma_caps_frame(s1, s2, nt, tn, np);
+            assert(s2.slot_holds(process, WITNESS_PROCESS_SLOT, np, process_of(base)));
+            assert(!s2.list.nodes@[pn as int].live);
+            assert(s2.processes.records == s1.processes.records);
+            assert(s2.root_live(process));
+            assert(s2.table_at(process, Some(WITNESS_PROCESS_SLOT)) == Some(base));
+            assert(s2.destination_at(process, Some(WITNESS_PROCESS_SLOT)) == Some(base));
+            assert(!s2.cap_dead(np));
+            assert(s2.can_move_between(process, WITNESS_PROCESS_SLOT, base, WITNESS_SEALED_PROCESS_SLOT));
+        }
+
+        // The process capability into slot 3 of the process's leaf, through itself: the destination is
+        // found before the source goes.
+        let from2 = Position { through: None, index: WITNESS_PROCESS_SLOT };
+        let to2 = Position { through: Some(WITNESS_PROCESS_SLOT), index: WITNESS_SEALED_PROCESS_SLOT };
+        let ok2 = self.move_cap(process, from2, to2);
+        proof {
+            let s3 = *self;
+            assert(ok2);
+            assert(Self::cap_moved_between(s2, s3, process, WITNESS_PROCESS_SLOT, base, WITNESS_SEALED_PROCESS_SLOT));
+            assert(Self::caps_frame(s2, s3, np, pn));
+            assert(s3.payload_of(pn) == process_of(base));
+            assert(s3.is_cap(pn));
+            s2.lemma_slot(base, WITNESS_SEALED_THREAD_SLOT);
+            lemma_slot_kept_two(s2, s3, base, WITNESS_SEALED_THREAD_SLOT, np, pn);
+            lemma_slot_kept_two(s2, s3, base, WITNESS_SEALED_PROCESS_SLOT, np, pn);
+            Self::lemma_caps_frame(s2, s3, np, pn, tn);
+            assert(s3.slot_holds(base, WITNESS_SEALED_THREAD_SLOT, tn, thread_of(thread)));
+            assert(s3.slot_holds(base, WITNESS_SEALED_PROCESS_SLOT, pn, process_of(base)));
+            assert(block_refs(&s3.blocks, BlockRef::Small(base / PAGE_SZ)) == 2);
+            assert(block_refs(&s3.blocks, BlockRef::Small(thread / PAGE_SZ)) == 1);
+            s3.lemma_slot(base, WITNESS_SEALED_THREAD_SLOT);
+            s3.lemma_slot(base, WITNESS_SEALED_PROCESS_SLOT);
+            lemma_sealed_held_once(s3, base, pn, thread, tn);
+        }
+        ok0 && ok1 && ok2
     }
 
     /// From the end of the spawn witness, as the root: destroy the process through its capability in
