@@ -25,6 +25,8 @@ use aheap::arch::*;
 #[cfg(verus_keep_ghost)]
 use verified::capability::reach::Right;
 #[cfg(verus_keep_ghost)]
+use verified::capability::caller::view_frame;
+#[cfg(verus_keep_ghost)]
 use verified::capability::view::right_bit;
 use verified::capability::kernel::CapKernel;
 use verified::capability::operation::*;
@@ -122,10 +124,11 @@ pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame:
 /// The permission to the bytes of the page at `address`, once the kernel accepted a map of the frame
 /// at `frame` there in the space at `space`, as the map contract says of the call by the process whose
 /// table is at `root` that took the kernel from `before` to `after`, with the frame's capability
-/// holding the write right, so the entry the map wrote is writable. `live` holds every address of the
-/// window whose page's permission the caller holds or has handed out, and `address` is not among them.
+/// holding the write right, so the entry the map wrote is writable, and the kernel holding the
+/// permission of the frame's page, as it has since boot. `live` holds every address of the window whose
+/// page's permission the caller holds or has handed out, and `address` is not among them.
 #[verifier(external_body)]
-// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, and nothing proves that the calling thread runs in that space, that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that no other entry, in this space or another, maps the frame's page, which the kernel's map does not refuse, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, or that the page is memory Rust may read and write
+// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, with the kernel holding that page's permission as it has since boot, and nothing proves that the calling thread runs in that space, that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that no other entry, in this space or another, maps the frame's page, which the kernel's map does not refuse, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, that a core loads and stores the page's bytes through that entry, or that those bytes may be held as a PointsToRaw
 fn page_permission(
     before: Ghost<CapKernel>,
     after: Ghost<CapKernel>,
@@ -142,6 +145,7 @@ fn page_permission(
         !live@.contains(address),
         CapKernel::map_contract(before@, after@, root@, space as usize, address as u64, PAGE_LEVEL, frame as usize, 0, out@),
         before@.table_view(root@)[frame as usize].rights & right_bit(Right::Write) != 0,
+        after@.frames@.contains_key(view_frame(before@.table_view(root@)[frame as usize], 0)),
     ensures
         perm@.is_range(address as int, PAGE_BYTES as int),
         perm@.provenance() == provenance@,
