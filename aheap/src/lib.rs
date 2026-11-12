@@ -20,8 +20,9 @@
 //! uses of the contract, of the buddies, of the size classes, of the slab, of the large-object map,
 //! of the record store and of the heap, built into no image.
 #![no_std]
-// A cargo build erases specifications and proofs, so there a variable only they read looks unused.
-#![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
+// A cargo build erases specifications and proofs, so there a variable only they read looks unused,
+// and one only they borrow mutably looks as if it need not be mutable.
+#![cfg_attr(not(verus_keep_ghost), allow(unused_variables, unused_mut))]
 
 pub mod arch;
 pub mod buddy;

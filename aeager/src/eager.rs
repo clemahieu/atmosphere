@@ -540,9 +540,13 @@ struct Record {
     tabled: [bool; WINDOW_BLOCKS],
     state: [u8; MAX_PAGES],
     owner: [usize; MAX_PAGES],
-    /// The permission to each parked page's bytes, by page.
+    /// The permission to each parked page's bytes, by page. Only proofs read it, and a cargo build
+    /// erases them.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     parked: Tracked<Map<int, PointsToRaw>>,
-    /// The provenance of every permission the record hands out.
+    /// The provenance of every permission the record hands out. Only proofs read it, and a cargo
+    /// build erases them.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     provenance: Ghost<Provenance>,
 }
 
