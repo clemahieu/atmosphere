@@ -136,21 +136,65 @@ def blockers(issue):
     return sorted({link["depends_on_id"] for link in issue.get("dependencies", []) if link["type"] == "blocks"}, key=order)
 
 
+def loops(issues):
+    """Each set of issues not closed that wait on one another, as its ids in order, the sets in
+    order of their first id. An issue waits on its blockers not closed and on its parent: a loop
+    holds a `blocks` dependency, so the parent on it waits, and bd counts its child as blocked by it.
+    `bd dep cycles` reads `blocks` edges alone and does not see a loop through a parent. Tarjan's
+    strongly connected components, kept on a stack of its own so a deep tree does not recurse."""
+    live = {issue["id"]: issue for issue in issues if issue["status"] != "closed"}
+    edges = {name: [other for other in blockers(issue) + [issue.get("parent")] if other in live] for name, issue in live.items()}
+    index, low, stack, held, found = {}, {}, [], set(), []
+    for start in live:
+        if start in index:
+            continue
+        index[start] = low[start] = len(index)
+        stack.append(start)
+        held.add(start)
+        walk = [(start, iter(edges[start]))]
+        while walk:
+            name, rest = walk[-1]
+            other = next(rest, None)
+            if other is None:
+                walk.pop()
+                if walk:
+                    low[walk[-1][0]] = min(low[walk[-1][0]], low[name])
+                if low[name] == index[name]:
+                    group = []
+                    while not group or group[-1] != name:
+                        group.append(stack.pop())
+                        held.discard(group[-1])
+                    if len(group) > 1 or name in edges[name]:
+                        found.append(sorted(group, key=order))
+            elif other not in index:
+                index[other] = low[other] = len(index)
+                stack.append(other)
+                held.add(other)
+                walk.append((other, iter(edges[other])))
+            elif other in held:
+                low[name] = min(low[name], index[other])
+    return sorted(found, key=lambda group: order(group[0]))
+
+
 def graph(issues, ready):
     """Every issue not closed as a node under what it waits on: its blockers, the issues not closed
     that a `blocks` dependency of it names, and its parent when the parent waits, since bd counts
     the child of a blocked epic as blocked by it. The rank is the longest chain of waits above the
-    issue, so rank 0 waits on nothing. Ready is bd's word, given as the issues `bd ready` lists."""
+    issue, so rank 0 waits on nothing. A wait between two issues of one loop (loops()) is left out,
+    so every rank is finite; the page names the loops beside the graph. Ready is bd's word, given
+    as the issues `bd ready` lists."""
     live = {issue["id"]: issue for issue in issues if issue["status"] != "closed"}
     ready = {issue["id"] for issue in ready}
+    loop = {name: number for number, group in enumerate(loops(issues)) for name in group}
+    apart = lambda name, other: other in live and (name not in loop or loop.get(other) != loop[name])
     nodes = {}
 
     def node(name):
         if name not in nodes:
             issue = live[name]
-            waits = [other for other in blockers(issue) if other in live]
+            waits = [other for other in blockers(issue) if apart(name, other)]
             parent = issue.get("parent")
-            under = parent if parent in live and node(parent)["rank"] else None
+            under = parent if apart(name, parent) and node(parent)["rank"] else None
             above = waits + [under] if under else waits
             nodes[name] = {
                 "id": name,
@@ -299,6 +343,7 @@ def summary(issues, ready, seen, running, root, now, own={}, hours=()):
         "questions": [{**brief(issue, by_id), "created": seconds(issue["created_at"])} for issue in questions],
         "ready": [brief(issue, by_id) for issue in ready if issue["issue_type"] != "epic"],
         "graph": graph(issues, ready),
+        "loops": loops(issues),
         "epics": progress(issues, spent),
         "tokens": {"roots": [{**brief(by_id[name], by_id), "tokens": spent[name]} for name in sorted(roots, key=order)], "hours": list(hours)},
         "closed": [
@@ -598,6 +643,23 @@ class Tests(unittest.TestCase):
         # An epic that waits on nothing passes nothing down, whatever waits below it.
         self.assertEqual((found["a.2"]["rank"], found["a.2.2"]["under"], found["a.2.1"]["under"], found["a"]["rank"]), (0, None, None, 0))
         self.assertEqual((found["a.1"]["ready"], found["a.1.2"]["ready"], found["a.1.2"]["status"]), (True, False, "in_progress"))
+
+    def test_a_loop_of_waits_ends_the_graph_and_is_named(self):
+        """An epic that waits on an issue waiting on the epic's own child: the child waits through
+        the epic, so the three wait on one another, though no `blocks` dependency closes a loop."""
+        issues = self.waits()
+        issues += [self.issue("b", kind="epic"), self.issue("b.1", "blocked"), self.issue("b.1.1"), self.issue("c", needs=["b.1"])]
+        issues[-4] = self.issue("b", kind="epic", needs=["c"])
+        by_id = {issue["id"]: issue for issue in issues}
+        found = {node["id"]: node for node in graph(issues, [])}
+        self.assertEqual(sorted(found), sorted(issue["id"] for issue in issues if issue["status"] != "closed"))
+        # The waits inside the loop are not drawn, so every rank is finite; a wait out of the loop is.
+        self.assertEqual((found["b"]["blockers"], found["c"]["blockers"], found["b.1"]["under"]), ([], [], None))
+        self.assertEqual((found["b.1.1"]["under"], found["b.1.1"]["rank"]), (None, 0))
+        self.assertEqual(found["a.4"]["rank"], 3)
+        self.assertEqual(loops(issues), [["b", "b.1", "c"]])
+        self.assertEqual(loops(self.waits()), [])
+        self.assertEqual(summary(issues, [], {}, alive, self.root, 0)["loops"], [["b", "b.1", "c"]])
 
     def test_the_details_of_an_issue_are_its_texts_and_the_issues_around_it(self):
         issues = self.waits()

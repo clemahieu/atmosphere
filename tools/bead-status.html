@@ -179,6 +179,7 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
     <section id="waits">
       <div class="head"><h2>What waits on what</h2><div class="legend keys" id="keys"></div></div>
       <div class="chart"><div id="graph"></div><div class="tip wide" id="graphtip" hidden></div></div>
+      <div id="loops" hidden></div>
       <p class="note" style="margin: 12px 0 0">Every issue not closed sits under the ones it waits on, so nothing blocks the top rows; a dashed line is a wait its epic passes down. Point at an issue to light its chain, and click it for its details.</p>
     </section>
     <section id="historybox">
@@ -520,6 +521,10 @@ function drawLists() {
   $("questionsbox").hidden = !data.questions.length;
   fill("questions", data.questions.map(row => h("div", {class: "row plain"}, h("div", {}, issue(row), line(`asked ${span(data.now - row.created)} ago`, trail(row))))));
   fill("ready", data.ready.length ? data.ready.slice(0, READY_SHOWN).map(row => h("div", {class: "row plain"}, h("div", {}, issue(row), line(`P${row.priority}`, row.type, trail(row))))) : h("p", {class: "empty"}, "No leaf is ready."));
+  // A loop of waits is a deadlock bd does not report; the graph leaves its waits out, so it is named here.
+  $("loops").hidden = !data.loops.length;
+  fill("loops", data.loops.map(group => h("p", {class: "warn"}, "These wait on one another, through a blocker or an epic that waits: ",
+    group.flatMap((name, at) => [at ? ", " : null, h("a", {href: `#${name}`}, h("span", {class: "id"}, name))]))));
   $("readynote").textContent = data.ready.length > READY_SHOWN ? `the first ${READY_SHOWN} of ${data.ready.length}, in bd's order` : "in bd's order";
   fill("closed", data.closed.map(row => h("div", {class: "row plain"}, h("div", {},
     issue(row),
