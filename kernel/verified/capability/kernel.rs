@@ -696,6 +696,7 @@ pub use command_page::CommandPage;
 /// page through it. The arch module's command glue writes a ring slot by its address and records the
 /// command it wrote, so that record is the only way a slot changes, and the IOMMU reads the slot.
 mod command_page {
+    #[cfg(verus_keep_ghost)]
     use vstd::prelude::*;
     #[cfg(verus_keep_ghost)]
     use crate::define::PagePerm4k;
@@ -726,6 +727,7 @@ pub use iommu_registers::IommuRegisters;
 /// it over, and the IOMMU it names keeps it from standing for another IOMMU's. The arch module's
 /// command glue loads and stores those registers and writes that ring.
 mod iommu_registers {
+    #[cfg(verus_keep_ghost)]
     use vstd::prelude::*;
 
     // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.

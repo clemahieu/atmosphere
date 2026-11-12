@@ -815,7 +815,9 @@ pub use queue::QueuedCommands;
 /// a head it names is only what read_head's specification says the register read gave, and a slot it
 /// names is only what store_command's specification says the store wrote.
 mod queue {
+    #[cfg(verus_keep_ghost)]
     use vstd::prelude::*;
+    #[cfg(verus_keep_ghost)]
     use super::IommuCommand;
 
     /// What was read from the IOMMUs' head registers and stored into their command rings since the

@@ -664,7 +664,9 @@ pub use queue::QueuedCommands;
 /// literal, a producer it names is only what read_producer's specification says the register read
 /// gave, and a slot it names is only what store_command's specification says the store wrote.
 mod queue {
+    #[cfg(verus_keep_ghost)]
     use vstd::prelude::*;
+    #[cfg(verus_keep_ghost)]
     use super::SmmuCommand;
 
     /// What was read from the SMMUs' producer registers and stored into their command queues since the
