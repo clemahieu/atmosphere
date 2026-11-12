@@ -18,6 +18,11 @@ its own and those of every issue below it; the root epic's are every call's, sin
 no issue the tree has are its own. The page has each of the last HOURLY seconds' hours by who spent
 its tokens, and each day before them.
 
+The server follows the tree. The page is read from disk at each request, and the server's own code
+is what the process loaded, so a change landing under a running server would put a new page over
+old data. Every RENEW seconds the server looks at its script and the two it loads, and once a
+change to them has settled it executes itself again, so the page and its data are of one commit.
+
 Beads is private, so the server listens on this machine alone unless --bind says otherwise.
 
 usage: tools/bead-status.py [--bind ADDRESS] [--port PORT]   (serve the page)
@@ -48,6 +53,7 @@ PAGE = Path(__file__).with_suffix(".html")
 CLOSED_SHOWN = 10
 TEXT_SHOWN = 240
 HARVEST = 60
+RENEW = 2
 # How far back the page has the tokens by the hour. It draws at most 30 periods over any stretch of
 # time, so whatever it draws from further back than 31 days is in periods of a day or more.
 HOURLY = 31 * 86400
@@ -69,6 +75,37 @@ def round_status():
 
 def token_ledger():
     return tool("token-ledger")
+
+
+# The code a running server holds: this script and the two it loads. The page is not among them,
+# since each request reads it.
+WATCHED = (Path(__file__).resolve(), Path(__file__).resolve().with_name("round-status.py"), Path(__file__).resolve().with_name("token-ledger.py"))
+
+
+def stamp(path):
+    """What says a file changed: its time of change and its size, or None while it is not there."""
+    try:
+        found = path.stat()
+    except FileNotFoundError:
+        return None
+    return found.st_mtime_ns, found.st_size
+
+
+def stamps(paths):
+    return [stamp(path) for path in paths]
+
+
+def renewing(paths, renew, pause=RENEW):
+    """Call renew once the files differ from what they were at the start. A checkout takes a file
+    away and writes it again, so a change counts only when every file is there and two looks, pause
+    seconds apart, agree."""
+    started = seen = stamps(paths)
+    while True:
+        time.sleep(pause)
+        now = stamps(paths)
+        if now != started and now == seen and None not in now:
+            return renew()
+        seen = now
 
 
 def owned(issues, own):
@@ -459,6 +496,8 @@ def main(arguments):
     root = Path(__file__).resolve().parents[2]
     serving = server(root, options.bind, options.port)
     threading.Thread(target=harvesting, args=(root, Path.home() / ".claude" / "projects"), daemon=True).start()
+    # The same command again, in this process: the listening socket closes with the old image.
+    threading.Thread(target=renewing, args=(WATCHED, lambda: os.execv(sys.executable, [sys.executable, *sys.argv])), daemon=True).start()
     print(f"bead status: http://{options.bind}:{serving.server_address[1]}/", flush=True)
     try:
         serving.serve_forever()
@@ -804,6 +843,38 @@ class Tests(unittest.TestCase):
         for path in ("/data", "/issue/a.1"):
             self.assertEqual(self.refused(f"{address}{path}"), (503, "bd list exited 3: database is locked"))
         self.assertEqual((self.root / "calls").read_text(), "list --all --json --limit 0\n" * 2)
+
+    def test_a_change_to_the_server_s_code_renews_it_once_the_file_has_settled(self):
+        script = self.root / "script.py"
+        script.write_text("one\n")
+        renewed = threading.Event()
+        watch = threading.Thread(target=renewing, args=([script], renewed.set, 0.05), daemon=True)
+        watch.start()
+        self.assertFalse(renewed.wait(0.4))
+        # A file a checkout has taken away and not yet written is not a change to act on.
+        script.unlink()
+        self.assertFalse(renewed.wait(0.4))
+        script.write_text("two, and longer\n")
+        self.assertTrue(renewed.wait(5))
+        watch.join(5)
+        self.assertFalse(watch.is_alive())
+
+    def test_a_running_server_whose_script_changes_executes_the_new_one(self):
+        tools = self.root / "main" / "tools"
+        tools.mkdir(parents=True)
+        for path in (*WATCHED, PAGE):
+            (tools / path.name).write_bytes(path.read_bytes())
+        script = tools / Path(__file__).name
+        running = subprocess.Popen([sys.executable, str(script), "--port", "0"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   text=True, env={**os.environ, "HOME": str(self.root)})
+        self.addCleanup(running.wait)
+        self.addCleanup(running.kill)
+        limit = threading.Timer(30, running.kill)  # a server that does not renew ends the read below, not the test run
+        limit.start()
+        self.addCleanup(limit.cancel)
+        self.assertTrue(running.stdout.readline().startswith("bead status: http://127.0.0.1:"))
+        script.write_text(script.read_text().replace('print(f"bead status: ', 'print(f"bead status renewed: '))
+        self.assertTrue(running.stdout.readline().startswith("bead status renewed: http://127.0.0.1:"))
 
 
 if __name__ == "__main__":
