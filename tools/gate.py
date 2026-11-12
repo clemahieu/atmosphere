@@ -24,7 +24,7 @@ import sys
 import tempfile
 import time
 import unittest
-from collections import namedtuple
+from collections import Counter, namedtuple
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -49,6 +49,10 @@ SOURCE_LICENSE_CHECK = "tools/check-spdx.py"
 HOOK_TESTS = (".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh")
 EXTERNAL_BODY_CHECK = "tools/check-external-body.py"
 THROWAWAY_CHECK = "tools/check-throwaways.py"
+WITNESS_INVENTORY = "tools/witness-inventory.py"
+# Every way an operation succeeds that no witness reaches, one line each: path, operation and way,
+# separated by tabs.
+UNWITNESSED = "tools/unwitnessed"
 PAGE_LITERALS_CHECK = "tools/check-page-literals.py"
 ARCH_SOURCES_CHECK = "tools/check-arch-sources.py"
 UPSTREAM_COPIES_CHECK = "tools/check-upstream-copies.py"
@@ -353,6 +357,30 @@ def verify(gate):
     return verify_for()(gate)
 
 
+def unit_lines(units):
+    return "".join(f"\n  {unit}" for unit in sorted(units.elements()))
+
+
+def unwitnessed(gate):
+    """The witness inventory's own tests, then the inventory, held to the list: the step fails unless
+    the units the inventory finds with no witness, each an operation and one way it succeeds, are
+    exactly the lines of tools/unwitnessed. So a way that loses its witness and an operation that
+    lands without one fail it, as does a line left behind by the change that witnessed its way, and
+    the list's length is the number unwitnessed (design/witness-per-way-an-operation-succeeds/)."""
+    run_check(gate, WITNESS_INVENTORY, "--test")
+    rows = [line.split("\t") for line in check_output(gate, WITNESS_INVENTORY).splitlines() if "\t" in line]
+    found = Counter("\t".join(row[:3]) for row in rows if row[3] == "none")
+    listed = Counter(line for line in (gate.root / UNWITNESSED).read_text().splitlines()
+                     if line and not line.startswith("#"))
+    unlisted, stale = found - listed, listed - found
+    if unlisted or stale:
+        raise Failure("\n".join(
+            said + unit_lines(units) for said, units in (
+                (f"no witness and no line in {UNWITNESSED}:", unlisted),
+                (f"a line in {UNWITNESSED} and not without a witness, to remove:", stale)) if units))
+    return f"{len(found)} of {len(rows)} lines have no witness, each a line of {UNWITNESSED}"
+
+
 def design_index(gate):
     """design/INDEX.md is generated from the records, so a record edited without regenerating it
     would leave the index saying something the records do not."""
@@ -428,6 +456,7 @@ STEPS = (
     Step("verify", X86_64, verify),
     # After verify, whose exported crates a throwaway run of a crate that depends on one reads.
     Step("throwaways", X86_64, self_tested(THROWAWAY_CHECK)),
+    Step("unwitnessed", X86_64, unwitnessed),
     Step("verify aarch64", AARCH64, verify_for("--target", AARCH64)),
     Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK)),
     Step("page literals", X86_64, self_tested(PAGE_LITERALS_CHECK)),
@@ -522,6 +551,7 @@ class Tests(unittest.TestCase):
         self.root = Path(directory.name)
         (self.root / "tools").mkdir()
         (self.root / VERIFY_ALLOWANCE).write_text("2\n")
+        (self.root / UNWITNESSED).write_text("# a comment\n")
 
     def test_runs_both_targets_unless_one_is_named(self):
         self.assertIsNone(arguments([]).target)
@@ -596,6 +626,51 @@ class Tests(unittest.TestCase):
         (self.root / VERIFY_ALLOWANCE).write_text("two\n")
         with self.assertRaisesRegex(Failure, "does not hold a number"):
             verify_for()(FakeGate(self.root))
+
+    # An inventory's listing: a witnessed way, two with none, one of them wired, and a wrapper with none.
+    INVENTORY = ("k/retype.rs\tretype\tFreed\twitness_root_frees_a_frame\n"
+                 "k/retype.rs\tretype\tSlice\tnone\n"
+                 "k/unmap.rs\tunmap_at\tSome\tnone\tno lemma_entry_reaches_unmap_at; claimed by witness_root_unmaps\n"
+                 "acall/src/m.rs\tnap\tOPERATION_NAP=9\tnone\n"
+                 "witness inventory: 3 of 4 lines are none\n")
+    LISTED = ("k/retype.rs\tretype\tSlice\n", "k/unmap.rs\tunmap_at\tSome\n", "acall/src/m.rs\tnap\tOPERATION_NAP=9\n")
+
+    def unwitnessed_with(self, *lines):
+        (self.root / UNWITNESSED).write_text("# a comment\n" + "".join(lines))
+        return unwitnessed(FakeGate(self.root, {WITNESS_INVENTORY: (0, self.INVENTORY)}))
+
+    def test_the_units_with_no_witness_are_the_lists_lines(self):
+        self.assertEqual(self.unwitnessed_with(*self.LISTED),
+                         "3 of 4 lines have no witness, each a line of tools/unwitnessed")
+        # The order of the list's lines decides nothing.
+        self.assertEqual(self.unwitnessed_with(*reversed(self.LISTED)),
+                         "3 of 4 lines have no witness, each a line of tools/unwitnessed")
+
+    def test_a_unit_with_no_witness_that_the_list_lacks_fails(self):
+        with self.assertRaisesRegex(Failure, "^no witness and no line in tools/unwitnessed:\n  k/unmap.rs\tunmap_at\tSome$"):
+            self.unwitnessed_with(self.LISTED[0], self.LISTED[2])
+
+    def test_a_listed_unit_that_has_a_witness_or_is_gone_fails(self):
+        witnessed = "k/retype.rs\tretype\tFreed\n"
+        with self.assertRaisesRegex(Failure, "^a line in tools/unwitnessed and not without a witness, to remove:\n  k/retype.rs\tretype\tFreed$"):
+            self.unwitnessed_with(*self.LISTED, witnessed)
+        with self.assertRaisesRegex(Failure, "to remove:\n  k/gone.rs\tgone\ttrue$"):
+            self.unwitnessed_with(*self.LISTED, "k/gone.rs\tgone\ttrue\n")
+        # A line twice is one line too many, so the list's length is the count.
+        with self.assertRaisesRegex(Failure, "to remove:\n  k/retype.rs\tretype\tSlice$"):
+            self.unwitnessed_with(*self.LISTED, self.LISTED[0])
+
+    def test_a_change_that_witnesses_one_way_and_loses_another_fails_on_both(self):
+        with self.assertRaisesRegex(Failure, "^no witness and no line in tools/unwitnessed:\n  k/retype.rs\tretype\tSlice\n"
+                                             "a line in tools/unwitnessed and not without a witness, to remove:\n  k/retype.rs\tretype\tFreed$"):
+            self.unwitnessed_with("k/retype.rs\tretype\tFreed\n", *self.LISTED[1:])
+
+    def test_the_unwitnessed_step_runs_the_inventorys_tests_and_comes_after_the_throwaways(self):
+        gate = FakeGate(self.root, {WITNESS_INVENTORY: (0, "witness inventory: 0 of 0 lines are none\n")})
+        self.assertEqual(unwitnessed(gate), "0 of 0 lines have no witness, each a line of tools/unwitnessed")
+        self.assertEqual(gate.calls, [[WITNESS_INVENTORY, "--test"], [WITNESS_INVENTORY]])
+        names = [step.name for step in chosen(X86_64)]
+        self.assertEqual(names.index("unwitnessed"), names.index("throwaways") + 1)
 
     def test_test_totals_add_up_each_binarys_line(self):
         output = ("running 2 tests\ntest a ... ok\nfree page ranges: rejected x\ntest result: ok. 2 passed; 0 failed; 0 ignored\n\n"
