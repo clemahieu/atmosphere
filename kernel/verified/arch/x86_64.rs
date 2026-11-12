@@ -742,12 +742,12 @@ fn completion_wait_command(address: u64, data: u64) -> (ret: IommuCommand)
 }
 
 pub use queue::QueuedCommands;
-use queue::{read_head, store_command};
+use queue::store_command;
 
 /// The record of what was read from the IOMMUs' head registers and stored into their command rings,
-/// alone in a module with the head read and the one store, so its fields are private to them: code
-/// outside cannot write a record by literal, a head it names is only what the register read gave, and
-/// a record names a slot only once store_command has written it.
+/// alone in a module with the one store, so its fields are private to it: code outside cannot write a
+/// record by literal, a head it names is only what read_head's specification says the register read
+/// gave, and a record names a slot only once store_command has written it.
 mod queue {
     use vstd::prelude::*;
     use super::IommuCommand;
@@ -757,8 +757,6 @@ mod queue {
     use crate::define::NUM_IOMMUS;
     #[cfg(verus_keep_ghost)]
     use super::IOMMU_COMMAND_SIZE;
-    #[cfg(verus_keep_ghost)]
-    use super::IOMMU_COMMAND_HEAD;
 
     /// What was read from the IOMMUs' head registers and stored into their command rings since the
     /// last submit: each head register read, by its address, and the value read; each slot written, by
@@ -786,27 +784,6 @@ mod queue {
         }
     }
 
-    /// Reads the head register at `register`, which is IOMMU i's Command Buffer Head Pointer Register,
-    /// so the load is of that register and no other address: the offset of the command the IOMMU
-    /// fetches next. It promises nothing about the value, and records it in `model`'s queued commands
-    /// as that register's head.
-    #[verifier(external_body)]
-    // external_body(glue): a load of the IOMMU's head register, of which nothing is promised but its width
-    pub fn read_head(commands: &CommandBuffers, i: usize, register: usize, Tracked(model): Tracked<&mut IotlbModel>) -> (ret: u64)
-        requires
-            i < NUM_IOMMUS,
-            commands.buffers.wf(),
-            commands.buffer_wf(i as int),
-            register == commands.buffers@[i as int].mmio + IOMMU_COMMAND_HEAD,
-        ensures
-            final(model).len() == old(model).len(),
-            forall|j: int| #[trigger] final(model)[j] == old(model)[j],
-            final(model).queued().heads() == old(model).queued().heads().insert(register as int, ret),
-            final(model).queued().slots() == old(model).queued().slots(),
-    {
-        unsafe { core::ptr::read_volatile(register as *const u64) }
-    }
-
     /// Stores `command` into the ring slot at `address`, a command's aligned 16 bytes inside IOMMU i's
     /// ring, so the store lands in a slot and nowhere else, and records it in `model`'s queued commands.
     #[verifier(external_body)]
@@ -831,6 +808,25 @@ mod queue {
         }
     }
 }
+
+
+/// Reads the head register at `register`, which is IOMMU i's Command Buffer Head Pointer Register, so
+/// the load is of that register and no other address: the offset of the command the IOMMU fetches
+/// next. The cited passage defines the register at that offset from the IOMMU's base; the
+/// specification promises nothing of the value but its 64-bit width, and records it in `model`'s
+/// queued commands as that register's head.
+// cite: amd-iommu 3.4.15 Command and Event Log Pointer Registers, MMIO Offset 2000h Command Buffer Head Pointer Register
+pub assume_specification[read_head](commands: &CommandBuffers, i: usize, register: usize, Tracked(model): Tracked<&mut IotlbModel>) -> (ret: u64)
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+        register == commands.buffers@[i as int].mmio + IOMMU_COMMAND_HEAD,
+    ensures
+        final(model).len() == old(model).len(),
+        forall|j: int| #[trigger] final(model)[j] == old(model)[j],
+        final(model).queued().heads() == old(model).queued().heads().insert(register as int, ret),
+        final(model).queued().slots() == old(model).queued().slots();
 
 /// The address of the ring slot `slot` names, modulo the ring's length, in the ring of `b`.
 pub open spec fn command_slot(b: CommandBuffer, slot: int) -> int {
@@ -1343,4 +1339,8 @@ pub fn spin_hint() {
     unsafe {
         core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
     }
+}
+
+pub fn read_head(_commands: &CommandBuffers, _i: usize, register: usize, _model: Tracked<&mut IotlbModel>) -> u64 {
+    unsafe { core::ptr::read_volatile(register as *const u64) }
 }

@@ -14,14 +14,14 @@
 # unproven  plain code or a lemma with no proof yet, or a wait with no termination proof yet, so proof debt
 kernel/verified/arch/aarch64.rs	flush_every_context	assume_specification	hardware	arm-arm C5.5.77 TLBI VMALLE1, TLBI VMALLE1NXS; arm-arm D8.17.8 Ordering and completion of TLB maintenance instructions
 kernel/verified/arch/aarch64.rs	load_translation_root	external_body	glue	only the hardware can attest which root a core translates through, so only this changes a BaseRegister
-kernel/verified/arch/aarch64.rs	read_producer	external_body	glue	a load of the SMMU's producer register, of which nothing is promised but its width
+kernel/verified/arch/aarch64.rs	read_producer	assume_specification	hardware	arm-smmu 6.3.27 SMMU_CMDQ_PROD
 kernel/verified/arch/aarch64.rs	serial_write_byte	assume_specification	hardware	arm-pl011 3.3.3 Flag register, UARTFR, bit 5 TXFF; arm-pl011 3.3.1 Data register, UARTDR
 kernel/verified/arch/aarch64.rs	spin_hint	assume_specification	hardware	arm-arm B1.5.3 The YIELD instruction
 kernel/verified/arch/aarch64.rs	store_command	external_body	glue	the SMMU reads the queue, so only this can say what one of its slots holds
 kernel/verified/arch/aarch64.rs	submit_invalidate	external_body	glue	only the SMMU can attest an invalidate, so only this empties its IOTLB model
 kernel/verified/arch/x86_64.rs	flush_every_context	assume_specification	hardware	amd-apm2 5.5.1 Process Context Identifier; amd-apm2 5.5.3 TLB Management, Implicit Invalidations; amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
 kernel/verified/arch/x86_64.rs	load_translation_root	external_body	glue	only the hardware can attest which root a core translates through, so only this changes a BaseRegister
-kernel/verified/arch/x86_64.rs	read_head	external_body	glue	a load of the IOMMU's head register, of which nothing is promised but its width
+kernel/verified/arch/x86_64.rs	read_head	assume_specification	hardware	amd-iommu 3.4.15 Command and Event Log Pointer Registers, MMIO Offset 2000h Command Buffer Head Pointer Register
 kernel/verified/arch/x86_64.rs	serial_write_byte	assume_specification	hardware	ns-16550 6.0 Register addresses, A0 to A2: address 0 the Transmitter Holding Register on write, address 5 the Line Status Register; ns-16550 8.4 Line Status Register, bit 5 THRE
 kernel/verified/arch/x86_64.rs	spin_hint	assume_specification	hardware	amd-apm3 3 General-Purpose Instruction Reference, PAUSE
 kernel/verified/arch/x86_64.rs	store_command	external_body	glue	the IOMMU reads the ring, so only this can say what one of its slots holds

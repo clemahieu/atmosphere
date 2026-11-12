@@ -605,12 +605,12 @@ pub const SMMU_CMDQ_PROD: usize = 0x98;
 pub const SMMU_CMDQ_CONS: usize = 0x9c;
 
 pub use queue::QueuedCommands;
-use queue::{read_producer, store_command};
+use queue::store_command;
 
 /// The record of what was read from the SMMUs' producer registers and stored into their command
-/// queues, alone in a module with the producer read and the one store, so its fields are private to
-/// them: code outside cannot write a record by literal, a producer it names is only what the register
-/// read gave, and a record names a slot only once store_command has written it.
+/// queues, alone in a module with the one store, so its fields are private to it: code outside cannot
+/// write a record by literal, a producer it names is only what read_producer's specification says the
+/// register read gave, and a record names a slot only once store_command has written it.
 mod queue {
     use vstd::prelude::*;
     use super::SmmuCommand;
@@ -620,8 +620,6 @@ mod queue {
     use crate::define::NUM_IOMMUS;
     #[cfg(verus_keep_ghost)]
     use super::IOMMU_COMMAND_SIZE;
-    #[cfg(verus_keep_ghost)]
-    use super::SMMU_CMDQ_PROD;
 
     /// What was read from the SMMUs' producer registers and stored into their command queues since the
     /// last submit: each producer register read, by its address, and the value read; each slot
@@ -649,36 +647,6 @@ mod queue {
         }
     }
 
-    /// Reads the producer register at `register`, which is SMMU i's SMMU_CMDQ_PROD, so the load is of
-    /// that register and no other address: the queue's index and its wrap bit, which is where the SMMU
-    /// will look for the next command. It promises nothing about the value, and records it in
-    /// `model`'s queued commands as that register's producer.
-    #[verifier(external_body)]
-    // external_body(glue): a load of the SMMU's producer register, of which nothing is promised but its width
-    pub fn read_producer(commands: &CommandBuffers, i: usize, register: usize, Tracked(model): Tracked<&mut IotlbModel>) -> (ret: u32)
-        requires
-            i < NUM_IOMMUS,
-            commands.buffers.wf(),
-            commands.buffer_wf(i as int),
-            register == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
-        ensures
-            final(model).len() == old(model).len(),
-            forall|j: int| #[trigger] final(model)[j] == old(model)[j],
-            final(model).queued().producers() == old(model).queued().producers().insert(register as int, ret),
-            final(model).queued().slots() == old(model).queued().slots(),
-    {
-        let value: u32;
-        unsafe {
-            core::arch::asm!(
-                "ldr {value:w}, [{register}]",
-                register = in(reg) register,
-                value = out(reg) value,
-                options(nostack, readonly, preserves_flags),
-            );
-        }
-        value
-    }
-
     /// Stores `command` into the queue slot at `address`, a command's aligned 16 bytes inside SMMU i's
     /// queue, so the store lands in a slot and nowhere else, and records it in `model`'s queued commands.
     #[verifier(external_body)]
@@ -703,6 +671,24 @@ mod queue {
         }
     }
 }
+
+/// Reads the producer register at `register`, which is SMMU i's SMMU_CMDQ_PROD, so the load is of that
+/// register and no other address: the queue's index and its wrap bit, which is where the SMMU will look
+/// for the next command. The cited passage defines the 32-bit register at that offset from the SMMU's
+/// base; the specification promises nothing of the value but its width, and records it in `model`'s
+/// queued commands as that register's producer.
+// cite: arm-smmu 6.3.27 SMMU_CMDQ_PROD
+pub assume_specification[read_producer](commands: &CommandBuffers, i: usize, register: usize, Tracked(model): Tracked<&mut IotlbModel>) -> (ret: u32)
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+        register == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
+    ensures
+        final(model).len() == old(model).len(),
+        forall|j: int| #[trigger] final(model)[j] == old(model)[j],
+        final(model).queued().producers() == old(model).queued().producers().insert(register as int, ret),
+        final(model).queued().slots() == old(model).queued().slots();
 
 /// The address of the queue slot `slot` names, modulo the queue's length, in the queue of `b`.
 pub open spec fn command_slot(b: CommandBuffer, slot: int) -> int {
@@ -1251,4 +1237,17 @@ pub fn spin_hint() {
     unsafe {
         core::arch::asm!("yield", options(nomem, nostack, preserves_flags));
     }
+}
+
+pub fn read_producer(_commands: &CommandBuffers, _i: usize, register: usize, _model: Tracked<&mut IotlbModel>) -> u32 {
+    let value: u32;
+    unsafe {
+        core::arch::asm!(
+            "ldr {value:w}, [{register}]",
+            register = in(reg) register,
+            value = out(reg) value,
+            options(nostack, readonly, preserves_flags),
+        );
+    }
+    value
 }
