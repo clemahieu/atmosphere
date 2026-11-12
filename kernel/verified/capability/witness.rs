@@ -451,13 +451,13 @@ pub open spec fn witness_run(k: CapKernel, b: usize, lo: int, hi: int, first: Pa
     forall|j: int| lo <= j < hi ==> #[trigger] witness_block(k, cursor_block(b, j), first)
 }
 
-/// What the teardown of witness_dead_table_page_freed needs of the state map_large leaves, with the
+/// What witness_dead_table_page_freed's setup leaves, with the
 /// root's leaf at the 64th order-3 block past `big`, the level 3 table at the 65th and the level 2
 /// table at the 66th: the root and its untyped u, first, which still holds the leaf; the level 2 table
 /// live and unlinkable under u, its parent entry 0 of the level 3 table, its entry 0 naming the level 1
 /// table, its entry 1 the 2M frame at `big`, which a mapping record names, and every other entry
 /// empty; and no flush yet.
-pub open spec fn dead_table_ready(k: CapKernel, process: usize, u: usize, first: Payload, big: usize) -> bool {
+pub open spec fn dead_table_mapped(k: CapKernel, process: usize, u: usize, first: Payload, big: usize) -> bool {
     let lb = (big + 64 * PROCESS_BYTES) as usize;
     let c0 = (big + 65 * PROCESS_BYTES) as usize;
     let c1 = (big + 66 * PROCESS_BYTES) as usize;
@@ -484,6 +484,13 @@ pub open spec fn dead_table_ready(k: CapKernel, process: usize, u: usize, first:
     &&& a.entry(c1, 1).addr == big
     &&& forall|i: usize| 1 < i < ENTRIES ==> #[trigger] a.entry(c1, i).is_empty()
     &&& k.mappings@.contains_key(mapping_node(c1, 1))
+}
+
+/// What the teardown of witness_dead_table_page_freed needs: what its setup leaves, and core 0 having
+/// loaded a space, so that an unmap has a core's acknowledgement to wait for.
+pub open spec fn dead_table_ready(k: CapKernel, process: usize, u: usize, first: Payload, big: usize) -> bool {
+    &&& dead_table_mapped(k, process, u, first, big)
+    &&& has_loaded(k.cores@[0])
 }
 
 /// A free block stays free across a step that kept the regions and every page's kind outside lo up to
@@ -3756,6 +3763,7 @@ impl CapKernel {
             ret,
             final(self).wf(),
             final(self).tables == old(self).tables,
+            final(self).cores == old(self).cores,
             final(self).processes == old(self).processes,
             final(self).threads == old(self).threads,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -6892,7 +6900,7 @@ impl CapKernel {
             assert(s0.region_acknowledged(Large::Two, r));
             assert(s3.stale_epoch == s0.stale_epoch && s3.cores == s0.cores && s3.iommus == s0.iommus);
             let epoch = s0.stale_epoch.region(Large::Two, r) as int;
-            assert forall|c: int| 0 <= c < NUM_CPUS implies epoch <= #[trigger] s3.acked(c) by {
+            assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(s3.cores@[c]) implies epoch <= #[trigger] s3.acked(c) by {
                 assert(s0.acked(c) == s3.acked(c));
             }
             assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] s3.iommu_present(i) implies epoch <= s3.iommu_acked(i) by {
@@ -7098,7 +7106,7 @@ impl CapKernel {
     /// capability, bind the device to the space and unbind it, which marks the space's root page stale at
     /// a new epoch, and delete the space's capability, its last reference. Then retype the space's block
     /// under the root's untyped until it is free: the first retype cuts the table from the dead space, the
-    /// second waits, since no core has acknowledged the unbind's epoch, and after every core acknowledges
+    /// second waits, since the device's IOMMU has not acknowledged the unbind's epoch, and after every core acknowledges
     /// and every present IOMMU flushes, the third frees the block. A device space at `base` into slot 2
     /// again closes it. Every step succeeds. The use is a VMM taking back a passthrough guest's IOMMU
     /// tables. See design/device-binding-under-the-space-capability/.
@@ -7592,18 +7600,22 @@ impl CapKernel {
             s9.lemma_spent_space_is_empty(base);
             assert(s9.list == s8.list && s9.tables == s8.tables && s9.blocks == s8.blocks);
             assert(s9.can_retype_under(process, ROOT_UNTYPED_SLOT, base, 3));
-            // The root page's stale epoch is the unbind's, which no core has acknowledged.
+            // The root page's stale epoch is the unbind's, which the device's IOMMU has not acknowledged.
             assert(s9.stale_epoch.pages@[p] == e) by {
                 assert(child_at(a, base, 0) == bt);
                 assert(0 <= p < NUM_PAGES);
             }
-            assert(s9.cores == s6.cores);
-            assert(s9.acked(0) < e);
+            assert(s9.iommus.acked == s6.iommus.acked && s9.iommus.present == s6.iommus.present);
+            assert(s9.iommu_present(info.iommu as int));
+            assert(s6.iommu_acked(info.iommu as int) <= s6.flush_epoch) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s9.iommu_acked(info.iommu as int) < e);
             assert(!s9.acknowledged(p as usize));
             assert(s9.root_live(process));
         }
 
-        // The second retype waits: no core has acknowledged the unbind's epoch.
+        // The second retype waits: the device's IOMMU has not acknowledged the unbind's epoch.
         let r2 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, base, Tracked(&mut steps));
         proof {
             assert(r2 is Again);
@@ -7617,7 +7629,7 @@ impl CapKernel {
             assert(s9.flush_epoch >= s8.flush_epoch);
             assert(s8.flush_epoch == e);
             assert(s10.acknowledged(p as usize)) by {
-                assert forall|c: int| 0 <= c < NUM_CPUS implies e <= #[trigger] s10.acked(c) by {}
+                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(s10.cores@[c]) implies e <= #[trigger] s10.acked(c) by {}
                 assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] s10.iommu_present(i) implies e <= s10.iommu_acked(i) by {}
             }
             assert(s10.space_is_empty(base));
@@ -7692,7 +7704,8 @@ impl CapKernel {
 
     /// The setup of witness_dead_table_page_freed: from the state boot leaves, as its requires say, the
     /// leaf at the 65th block, the path tables at the last three and the 2M frame at `big` mapped at entry 1
-    /// of the level 2 table. It leaves what dead_table_ready says the teardown needs.
+    /// of the level 2 table. It leaves what dead_table_mapped says, the root's process as it was and core 0 as
+    /// boot left it.
     #[verifier::spinoff_prover]
     fn witness_dead_table_page_setup(
         &mut self,
@@ -7720,13 +7733,17 @@ impl CapKernel {
             !image_l4(image@, l4),
         ensures
             ret,
-            dead_table_ready(
+            dead_table_mapped(
                 *final(self),
                 process,
                 (leaf@ + ROOT_UNTYPED_SLOT) as usize,
                 page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]),
                 big,
             ),
+            final(self).processes.records@.contains_key(process),
+            final(self).cores@[0].generation == 1,
+            final(self).cores@[0].next_pcid == 1,
+            final(self).cores@[0].space is None,
     {
         hide(CapKernel::wf);
         hide(entries_translatable);
@@ -8023,7 +8040,15 @@ impl CapKernel {
                 assert(a2.entry(c1, i).is_empty());
             }
             assert(s4.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
-            assert(dead_table_ready(s4, process, u, first, big));
+            assert(dead_table_mapped(s4, process, u, first, big));
+            // No step loaded a space or named one, and none made or took a process.
+            assert(s1.cores == s0.cores);
+            assert(s2.cores == s1.cores);
+            assert(s3.cores == s2.cores);
+            assert(s4.cores == s3.cores);
+            assert(s2.processes == s1.processes);
+            assert(s3.processes == s2.processes);
+            assert(s4.processes == s3.processes);
         }
         ok1 && ok2 && ok4
     }
@@ -8102,9 +8127,7 @@ impl CapKernel {
             assert(su.root_live(process));
             assert(su.tables.roots@.contains_key(process));
             assert(su.stale_epoch.pages@[p] == e);
-            assert(!su.acknowledged(p as usize));
             assert(su.blocks.tracks(p));
-            assert(!su.all_acknowledged(e as int));
             assert(e == 1);
             assert(su.can_cut_table(process, ROOT_UNTYPED_SLOT, c1));
             // The one mapping in the page is the frame's at entry 1.
@@ -8241,7 +8264,7 @@ impl CapKernel {
             assert(sp.can_retype_under(process, ROOT_UNTYPED_SLOT, c1, 3));
             assert(sp.root_live(process));
             assert(sp.tables.roots@.contains_key(process));
-            // The page's word is the unlink's, which nothing has acknowledged.
+            // The page's word is the unlink's, which core 0, having loaded a space, has not acknowledged.
             assert(ac.entry(c1, 1) == a4.entry(c1, 1));
             assert(sc.mappings@[mn].frame * PAGE_SZ == big);
             assert(sc.mappings@[mn].frame == big / PAGE_SZ);
@@ -8251,23 +8274,18 @@ impl CapKernel {
             assert(sp.stale_epoch.pages@[p] == e);
             assert(sp.cores == su.cores);
             assert(sp.iommus.acked == su.iommus.acked && sp.iommus.present == su.iommus.present);
-            assert(!sp.all_acknowledged(e as int)) by {
-                if sp.all_acknowledged(e as int) {
-                    assert forall|c: int| 0 <= c < NUM_CPUS implies e <= #[trigger] su.acked(c) by {
-                        assert(sp.acked(c) == su.acked(c));
-                    }
-                    assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] su.iommu_present(i) implies e <= su.iommu_acked(i) by {
-                        assert(sp.iommu_present(i));
-                        assert(sp.iommu_acked(i) == su.iommu_acked(i));
-                    }
-                    assert(su.all_acknowledged(e as int));
-                }
+            assert(su.cores == s4.cores);
+            assert(has_loaded(sp.cores@[0]));
+            assert(s4.acked(0) <= s4.flush_epoch) by {
+                reveal(CapKernel::wf);
             }
+            assert(sp.acked(0) < e);
+            assert(!sp.all_acknowledged(e as int));
             assert(!sp.acknowledged(p as usize));
             assert(e < sp.flush_epoch);
         }
 
-        // The fourth waits: nothing has acknowledged the unlink's epoch.
+        // The fourth waits: core 0 has not acknowledged the unlink's epoch.
         let r4 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, c1, Tracked(&mut steps));
         proof {
             assert(r4 is Again);
@@ -8279,7 +8297,7 @@ impl CapKernel {
         let ghost sa = *self;
         proof {
             assert(sa.acknowledged(p as usize)) by {
-                assert forall|c: int| 0 <= c < NUM_CPUS implies e <= #[trigger] sa.acked(c) by {}
+                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(sa.cores@[c]) implies e <= #[trigger] sa.acked(c) by {}
                 assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] sa.iommu_present(i) implies e <= sa.iommu_acked(i) by {}
             }
             assert(sa.table_is_empty(c1));
@@ -8327,10 +8345,11 @@ impl CapKernel {
     /// leaf into root entry 2 of the root's table at the 65th block, give the root's own space the level
     /// 3, 2 and 1 tables of the first page under entry l4 at the last three blocks, through its process
     /// capability, retype the region as a 2M frame into slot 1 of the leaf and map it at entry 1 of the
-    /// level 2 table, whose entry 0 names the level 1 table. Then retype the level 2 table's block under
+    /// level 2 table, whose entry 0 names the level 1 table. Core 0 then loads the root's space, as a core
+    /// entering the root's thread does. Then retype the level 2 table's block under
     /// the root's untyped until it is free: the first retype unlinks the page from its parent, the second
-    /// cuts its child, the third unlinks the mapping, the fourth waits, since nothing has acknowledged the
-    /// unlink's epoch, and after every core acknowledges and every present IOMMU flushes, the fifth frees
+    /// cuts its child, the third unlinks the mapping, the fourth waits, since core 0 has loaded a space and
+    /// has not acknowledged the unlink's epoch, and after every core acknowledges and every present IOMMU flushes, the fifth frees
     /// the block. A table page at the same block closes it. Every step succeeds. The use is a process
     /// taking back the tables of a range it unmapped. See design/teardown-driven-by-retype/.
     #[verifier::spinoff_prover]
@@ -8381,7 +8400,23 @@ impl CapKernel {
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
         let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
         let ok = self.witness_dead_table_page_setup(root, process, leaf, frames, t, free, image, untyped, frame, present, big, jb, l4);
+        let ghost sm = *self;
+        proof {
+            assert(process_spaces_wf(&sm.spaces, &sm.processes));
+        }
+        // Core 0 loads the root's space, so a core may hold what the space's tables say and an unmap
+        // there has an acknowledgement to wait for.
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.load_space(0, process, Tracked(&mut steps));
         let ghost s4 = *self;
+        proof {
+            s4.lemma_loaded_a_space(0);
+            assert(tree_of(&s4.table_pages, &s4.spaces) == tree_of(&sm.table_pages, &sm.spaces));
+            assert(s4.can_retype_under(process, ROOT_UNTYPED_SLOT, (big + 66 * PROCESS_BYTES) as usize, 3)
+                == sm.can_retype_under(process, ROOT_UNTYPED_SLOT, (big + 66 * PROCESS_BYTES) as usize, 3));
+            assert(dead_table_mapped(s4, process, u, first, big));
+        }
         let c1 = big + 66 * PROCESS_BYTES;
         let (r1, r2, r3, r4, r5, ok5, states) = self.witness_dead_table_page_teardown(process, c1, Ghost(u), Ghost(first), Ghost(big));
         let ghost (su, sc, sp, sa, s5) = states@;

@@ -1981,7 +1981,7 @@ impl CapKernel {
         let space = tree.record(t).space;
         &&& post.flush_epoch == pre.flush_epoch + 1
         &&& post.stale_epoch.written(post.flush_epoch, t / PAGE_SZ)
-        &&& !post.acknowledged(t / PAGE_SZ)
+        &&& post.flush_awaited() ==> !post.acknowledged(t / PAGE_SZ)
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
             0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
@@ -2176,9 +2176,9 @@ impl CapKernel {
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
                 assert(pre.acked(d) <= pre.flush_epoch);
             }
-            assert(pre.acked(0) <= pre.flush_epoch);
-            assert(self.acked(0) == pre.acked(0));
-            assert(!self.acknowledged(t / PAGE_SZ));
+            if self.flush_awaited() {
+                Self::lemma_unmap_unacknowledged(pre, *self, t / PAGE_SZ);
+            }
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.depends(d, e.space) by {
                 assert(pre.depends(d, e.space));
             }
@@ -2350,9 +2350,10 @@ impl CapKernel {
         ensures
             Self::cut_recorded(pre, post, t),
     {
-        assert(pre.acked(0) <= pre.flush_epoch);
-        assert(post.acked(0) == pre.acked(0));
-        assert(!post.acknowledged(t / PAGE_SZ));
+        if post.flush_awaited() {
+            assert(mid.stale_epoch.written(mid.flush_epoch, t / PAGE_SZ));
+            Self::lemma_unmap_unacknowledged(pre, post, t / PAGE_SZ);
+        }
         assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) implies post.core_may_hold(c, e) by {
             assert(mid.core_may_hold(c, e));
         }
@@ -2510,9 +2511,10 @@ impl CapKernel {
             let a = tree_of(&pre.table_pages, &pre.spaces);
             assert(Self::tables_cut(pre, *self, t));
             assert(self.cores == pre.cores);
-            assert(self.acked(0) == pre.acked(0));
-            assert(pre.acked(0) <= pre.flush_epoch);
-            assert(!self.acknowledged(t / PAGE_SZ));
+            if self.flush_awaited() {
+                assert(self.stale_epoch.written(self.flush_epoch, t / PAGE_SZ));
+                Self::lemma_unmap_unacknowledged(pre, *self, t / PAGE_SZ);
+            }
             assert(Self::cut_stale_noted(pre, *self, t));
             assert forall|g: usize| #[trigger] cut_walk_finds(a, t, g) implies self.mapped@.contains(g) && self.blocks.tracks(g as int) by {
                 pre.lemma_cut_walks_mapped(t, g);

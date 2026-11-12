@@ -715,33 +715,70 @@ const FREED_FRAME_BELOW_TOP: u64 = 6 * 8 * 4096;
 /// What dom0 prints through the console once it retyped a freed frame's page, which the gate looks for.
 const FREED_HELD: [u64; 5] = operation::print_words(b"dom0 freed frame retyped\n");
 
-/// Whether a dead frame's page comes back: dom0 retypes the page of `untyped`, the table check's,
-/// FREED_FRAME_BELOW_TOP below its top, into the empty slot `slot`, and retype's free kind is refused
-/// while the capability names the frame. dom0 deletes the capability, the frame's last, after which a
-/// retype of the page is refused, since a dead page is not free; the free kind then frees it, and a
-/// second free is refused, the page being free and no longer dead. The retype of the page into `slot`
-/// is then accepted, and inspect finds the frame there. The frame was never mapped, so no core holds a
-/// translation to it and the free does not return again. dom0 prints that it held.
+/// The entry of the level 1 table at PATH_ADDRESS where the free check maps its frame, the one after the
+/// remap check's two.
+const FREED_ENTRY: u64 = UNMAPPED_ENTRY + 2;
+
+/// How many again returns the free check allows its free. A free returns again while a core that has
+/// loaded a space has not acknowledged the unmap's flush, and each such core acknowledges on its next
+/// entry to the kernel, which the unmap's IPI forces. On this boot dom0's core alone has loaded a space
+/// and it acknowledged on the unmap's own entry, so none is expected; a free still returning again
+/// after this many is waiting for a core that will not acknowledge, and fails.
+const FREED_AGAIN_MAX: u64 = 64;
+
+/// Whether a frame that was mapped can be freed and its page retyped: dom0 retypes a page of `untyped`,
+/// the table check's, FREED_FRAME_BELOW_TOP below its top, into the empty slot `slot`, maps it at
+/// FREED_ENTRY, writes MAPPED_WORD through it and unmaps it, so the page's last unmap raised the flush
+/// epoch. Retype's free kind is refused while the capability names the frame. dom0 deletes the
+/// capability, the frame's last, after which a retype of the page is refused, since a dead page is not
+/// free; the free kind then frees it within FREED_AGAIN_MAX again returns, and a second free is
+/// refused, the page being free and no longer dead. The retype of the page into `slot` is then accepted,
+/// inspect finds the frame there, and the page mapped at FREED_ENTRY again reads zero. The free waits
+/// only for cores that have loaded a space: design/flush-without-waiting/. dom0 prints that it held.
 fn freed_frame_retyped(caller: &mut Tracked<Caller>, untyped: u64, slot: u64) -> bool {
     let base = match inspect(caller, untyped) {
         Ok(block) => block.base + (4096 << block.order) - FREED_FRAME_BELOW_TOP,
         Err(_) => return false,
     };
+    let page = entry_address(FREED_ENTRY) as *mut u64;
     let retype_frame = |caller: &mut Tracked<Caller>| {
         retype(caller, untyped, operation::RETYPE_FRAME, base, slot, 0).status
     };
     let free = |caller: &mut Tracked<Caller>| retype(caller, untyped, operation::RETYPE_FREE, base, 0, 0).status;
-    retype_frame(caller) == operation::STATUS_OK
-        && free(caller) == operation::STATUS_REFUSED
-        && delete(caller, slot).status == operation::STATUS_OK
-        && retype_frame(caller) == operation::STATUS_REFUSED
-        && free(caller) == operation::STATUS_OK
+    let map_page = |caller: &mut Tracked<Caller>| {
+        map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, slot, 0).status
+    };
+    if retype_frame(caller) != operation::STATUS_OK || map_page(caller) != operation::STATUS_OK {
+        return false;
+    }
+    // The map just made the page the frame's, writable, and nothing else names it.
+    unsafe { page.write_volatile(MAPPED_WORD) };
+    // dom0 uses nothing at the page between this unmap and the map below.
+    if unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, page as u64, 1) }.is_err()
+        || free(caller) != operation::STATUS_REFUSED
+        || delete(caller, slot).status != operation::STATUS_OK
+        || retype_frame(caller) != operation::STATUS_REFUSED
+    {
+        return false;
+    }
+    let mut again = 0;
+    let freed = loop {
+        let status = free(caller);
+        if status != operation::STATUS_AGAIN || again == FREED_AGAIN_MAX {
+            break status;
+        }
+        again += 1;
+    };
+    freed == operation::STATUS_OK
         && free(caller) == operation::STATUS_REFUSED
         && retype_frame(caller) == operation::STATUS_OK
         && matches!(
             inspect(caller, slot),
             Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 0
         )
+        && map_page(caller) == operation::STATUS_OK
+        // The map just made the page the frame's, which the retype zeroed.
+        && unsafe { page.read_volatile() } == 0
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, FREED_HELD) } == operation::STATUS_OK
 }
 

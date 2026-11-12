@@ -351,7 +351,7 @@ impl CapKernel {
     }
 
     /// What unlinking the hidden node of the table page at `base` did to self: as table_unlinked says.
-    /// Every capability is as it was, and a device space shares no more, having lost the walks through
+    /// Every capability and every core is as it was, and a device space shares no more, having lost the walks through
     /// the page: exactly what a walk not through the entry naming the page still finds, since another
     /// path may map the same frame.
     pub open spec fn table_page_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
@@ -360,6 +360,7 @@ impl CapKernel {
         let q = a.record(base).parent;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& Self::table_unlinked(*self, post, base)
+        &&& post.cores == self.cores
         &&& Self::caps_frame(*self, post, base, base)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
         &&& sheds_shares(self.view(), post.view())
@@ -3533,6 +3534,7 @@ impl CapKernel {
             assert(!cut.is_cap(base));
             assert(post.processes == pre.processes);
             assert(post.tables == pre.tables);
+            assert(post.cores == pre.cores);
         }
         true
     }
@@ -3549,7 +3551,7 @@ impl CapKernel {
         &&& b.record(c).space == s
         &&& s is Some
         &&& post.stale_epoch.above(pre.flush_epoch as int, c / PAGE_SZ)
-        &&& !post.acknowledged(c / PAGE_SZ)
+        &&& post.flush_awaited() ==> !post.acknowledged(c / PAGE_SZ)
         &&& forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })]
             0 <= d < NUM_CPUS && pre.depends(d, s->Some_0)
             ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })
@@ -3842,8 +3844,6 @@ impl CapKernel {
         assert(a.record(c).space == s) by {
             assert(a.is_page(c));
         }
-        assert(pre.acked(0) <= pre.flush_epoch);
-        assert(post.acked(0) == pre.acked(0));
         assert forall|i: usize| #[trigger] a.names_child(base, i) && !b.names_child(base, i) implies {
             &&& b.entry(base, i).is_empty()
             &&& Self::child_cut(pre, post, child_at(a, base, i))
@@ -3994,6 +3994,9 @@ impl CapKernel {
             assert(mid.spaces.records@[s].value().kind is Device);
         }
         assert(post.stale_epoch.written(post.flush_epoch, g));
+        if post.flush_awaited() {
+            Self::lemma_unmap_unacknowledged(pre, post, g);
+        }
     }
 
     /// A child an earlier step cut stays cut through this one: its record is not this child's, and the
@@ -4027,8 +4030,9 @@ impl CapKernel {
         assert(b.record(old_child).parent == m.record(old_child).parent);
         assert(b.record(old_child).space == m.record(old_child).space);
         assert(post.stale_epoch.above(pre.flush_epoch as int, g));
-        assert(pre.acked(0) <= pre.flush_epoch);
-        assert(post.acked(0) == pre.acked(0));
+        if post.flush_awaited() {
+            Self::lemma_unmap_unacknowledged(pre, post, g);
+        }
         assert forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s, page: g })]
             0 <= d < NUM_CPUS && pre.depends(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
             assert(mid.tlb@[d].contains(TlbEntry { space: s, page: g }));

@@ -305,19 +305,21 @@ impl CapKernel {
         let pages = record_pages(pre.mappings@[node]);
         assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&mid.table_pages, &mid.spaces));
         assert(Self::mapping_unlinked(pre, post, node));
-        assert forall|g: usize| #[trigger] pages.contains(g) implies !post.acknowledged(g) by {
+        assert(post.cores == mid.cores && post.iommus == mid.iommus && post.stale_epoch == mid.stale_epoch && post.blocks == mid.blocks);
+        if post.flush_awaited() {
+            if exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]) {
+                let c = choose|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]);
+                assert(has_loaded(mid.cores@[c]));
+            } else {
+                let i = choose|i: int| 0 <= i < NUM_IOMMUS && #[trigger] post.iommu_present(i);
+                assert(mid.iommu_present(i));
+            }
+            assert(mid.flush_awaited());
+        }
+        assert forall|g: usize| #[trigger] pages.contains(g) && post.flush_awaited() implies !post.acknowledged(g) by {
             assert(!mid.acknowledged(g));
-            if mid.blocks.tracks(g as int) {
-                let epoch = mid.stale_epoch.pages@[g as int] as int;
-                assert(!mid.all_acknowledged(epoch));
-                if exists|c: int| 0 <= c < NUM_CPUS && !(epoch <= #[trigger] mid.acked(c)) {
-                    let c = choose|c: int| 0 <= c < NUM_CPUS && !(epoch <= #[trigger] mid.acked(c));
-                    assert(post.acked(c) == mid.acked(c));
-                } else {
-                    let i = choose|i: int| 0 <= i < NUM_IOMMUS && #[trigger] mid.iommu_present(i) && !(epoch <= mid.iommu_acked(i));
-                    assert(post.iommu_present(i) == mid.iommu_present(i));
-                    assert(post.iommu_acked(i) == mid.iommu_acked(i));
-                }
+            if post.acknowledged(g) {
+                Self::lemma_acknowledged_kept(post, mid, g);
             }
         }
         assert(Self::mapping_stale_noted(pre, post, node));

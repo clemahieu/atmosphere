@@ -75,6 +75,17 @@ pub open spec fn has_loaded(state: CoreState) -> bool {
     state.generation != 1 || state.next_pcid != 1
 }
 
+impl CoreState {
+    /// Whether this core has loaded a space since boot. A free asks only such a core for its
+    /// acknowledgement, and only such a core is sent the flush IPI: design/flush-without-waiting/.
+    pub fn loaded_a_space(&self) -> (ret: bool)
+        ensures
+            ret == has_loaded(*self),
+    {
+        self.generation != 1 || self.next_pcid != 1
+    }
+}
+
 /// Space s holds a valid id on core c.
 pub open spec fn holds_id(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceCores>>, c: int, s: usize) -> bool {
     &&& lists.contains_key(s)
@@ -1791,11 +1802,46 @@ impl CapKernel {
         }
     }
 
-    /// Every core and every present IOMMU has acknowledged this epoch, and an absent one holds nothing
-    /// to acknowledge. Either kind of space may have mapped a page, and the word records only when.
+    /// Every core that has loaded a space and every present IOMMU has acknowledged this epoch. A core
+    /// that has not loaded one holds no translation of any space (lemma_loaded_a_space), an absent IOMMU
+    /// holds none either, and neither is sent a flush, so neither has anything to acknowledge. Either
+    /// kind of space may have mapped a page, and the word records only when.
+    /// See design/flush-without-waiting/.
     pub open spec fn all_acknowledged(&self, epoch: int) -> bool {
-        &&& forall|c: int| 0 <= c < NUM_CPUS ==> epoch <= #[trigger] self.acked(c)
+        &&& forall|c: int| 0 <= c < NUM_CPUS && has_loaded(self.cores@[c]) ==> epoch <= #[trigger] self.acked(c)
         &&& forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] self.iommu_present(i) ==> epoch <= self.iommu_acked(i)
+    }
+
+    /// Something can hold a translation: a core has loaded a space, or an IOMMU is present. An unmap
+    /// then leaves its pages unacknowledged; with neither, nothing holds a translation of any space
+    /// and no acknowledgement is waited for.
+    pub open spec fn flush_awaited(&self) -> bool {
+        ||| exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] self.cores@[c])
+        ||| exists|i: int| 0 <= i < NUM_IOMMUS && #[trigger] self.iommu_present(i)
+    }
+
+    /// A page whose word was written past the epoch `pre` stood at, by a step that left every
+    /// acknowledgement as it was, is unacknowledged while anything can hold a translation.
+    pub proof fn lemma_unmap_unacknowledged(pre: Self, post: Self, f: usize)
+        requires
+            pre.tlb_wf(),
+            post.cores == pre.cores,
+            post.iommus.acked == pre.iommus.acked,
+            pre.flush_epoch < post.stale_epoch.pages@[f as int],
+            post.flush_awaited(),
+        ensures
+            !post.acknowledged(f),
+    {
+        let epoch = post.stale_epoch.pages@[f as int] as int;
+        if exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]) {
+            let c = choose|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]);
+            assert(pre.acked(c) <= pre.flush_epoch);
+            assert(post.acked(c) < epoch);
+        } else {
+            let i = choose|i: int| 0 <= i < NUM_IOMMUS && #[trigger] post.iommu_present(i);
+            assert(pre.iommu_acked(i) <= pre.flush_epoch);
+            assert(post.iommu_acked(i) < epoch);
+        }
     }
 
     /// Every core and IOMMU has acknowledged f's last unmap.
@@ -1930,6 +1976,7 @@ impl CapKernel {
     {
         assert forall|c: int, s: usize| 0 <= c < NUM_CPUS implies !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: f }) by {
             if self.tlb@[c].contains(TlbEntry { space: s, page: f }) {
+                self.lemma_loaded_a_space(c);
                 assert(self.stale_epoch.above(self.acked(c), f));
                 assert(self.stale_epoch.pages@[f as int] <= self.acked(c));
             }
@@ -1955,7 +2002,7 @@ impl CapKernel {
             post.acknowledged(f),
     {
         let epoch = pre.stale_epoch.pages@[f as int] as int;
-        assert forall|c: int| 0 <= c < NUM_CPUS implies epoch <= #[trigger] post.acked(c) by {
+        assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(post.cores@[c]) implies epoch <= #[trigger] post.acked(c) by {
             assert(pre.acked(c) == post.acked(c));
         }
         assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] post.iommu_present(i) implies epoch <= post.iommu_acked(i) by {
@@ -1990,6 +2037,7 @@ impl CapKernel {
             }
             assert forall|c: int, s: usize| 0 <= c < NUM_CPUS implies !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: i }) by {
                 if self.tlb@[c].contains(TlbEntry { space: s, page: i }) {
+                    self.lemma_loaded_a_space(c);
                     assert(!self.mapped@.contains(i));
                     assert(self.stale_epoch.above(self.acked(c), i));
                     assert(self.stale_epoch.region(level, r) <= self.acked(c));
@@ -2153,7 +2201,8 @@ impl CapKernel {
         self.has_acknowledged(epoch, Tracked(steps))
     }
 
-    /// Whether every core and IOMMU has reached this epoch, which is a bounded number of loads.
+    /// Whether every core that has loaded a space and every present IOMMU has reached this epoch, which
+    /// is a bounded number of loads.
     fn has_acknowledged(&self, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
@@ -2169,10 +2218,12 @@ impl CapKernel {
                 0 <= c <= NUM_CPUS,
                 steps.count == start + c,
                 start == old(steps).count,
-                forall|d: int| 0 <= d < c ==> epoch <= #[trigger] self.acked(d),
+                forall|d: int| 0 <= d < c && has_loaded(self.cores@[d]) ==> epoch <= #[trigger] self.acked(d),
             decreases NUM_CPUS - c,
         {
-            if self.cores.get(c).acked_epoch < epoch {
+            let state = self.cores.get(c);
+            if state.loaded_a_space() && state.acked_epoch < epoch {
+                assert(has_loaded(self.cores@[c as int]));
                 assert(self.acked(c as int) < epoch);
                 return false;
             }
@@ -2188,7 +2239,7 @@ impl CapKernel {
                 0 <= i <= NUM_IOMMUS,
                 steps.count == start + NUM_CPUS + i,
                 start == old(steps).count,
-                forall|d: int| 0 <= d < NUM_CPUS ==> epoch <= #[trigger] self.acked(d),
+                forall|d: int| 0 <= d < NUM_CPUS && has_loaded(self.cores@[d]) ==> epoch <= #[trigger] self.acked(d),
                 forall|j: int| 0 <= j < i && #[trigger] self.iommu_present(j) ==> epoch <= self.iommu_acked(j),
             decreases NUM_IOMMUS - i,
         {

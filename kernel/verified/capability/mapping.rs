@@ -812,7 +812,8 @@ impl CapKernel {
     }
 
     /// Node n's unmap is recorded: the epoch rose past every acknowledgement and is written for each page
-    /// the node mapped, each a tracked one, and for no other, so no such page counts as acknowledged, and
+    /// the node mapped, each a tracked one, and for no other, so no such page counts as acknowledged while
+    /// a core that has loaded a space or an IOMMU is there to hold it (flush_awaited), and
     /// a page above an older acknowledgement stays above it; each such page is in the TLB of every core
     /// that loaded the space and only a flush takes it out, and a page leaves mapped when no other mapping
     /// names it.
@@ -827,7 +828,7 @@ impl CapKernel {
         &&& forall|g: int| 0 <= g < NUM_PAGES && !pages.contains(g as usize) ==> #[trigger] post.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g]
         &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
-        &&& forall|g: usize| #[trigger] pages.contains(g) ==> !post.acknowledged(g)
+        &&& forall|g: usize| #[trigger] pages.contains(g) && post.flush_awaited() ==> !post.acknowledged(g)
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
             0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
@@ -1773,9 +1774,9 @@ impl CapKernel {
             Self::mapping_stale_noted(pre, post, n),
     {
         let pages = record_pages(pre.mappings@[n]);
-        assert forall|g: usize| #[trigger] pages.contains(g) implies !post.acknowledged(g) by {
-            assert(pre.acked(0) <= pre.flush_epoch);
-            assert(post.acked(0) == pre.acked(0));
+        assert forall|g: usize| #[trigger] pages.contains(g) && post.flush_awaited() implies !post.acknowledged(g) by {
+            assert(mid.stale_epoch.written(mid.flush_epoch, g));
+            Self::lemma_unmap_unacknowledged(pre, post, g);
         }
     }
 
@@ -1910,9 +1911,9 @@ impl CapKernel {
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
                 assert(pre.acked(d) <= pre.flush_epoch);
             }
-            assert forall|g: usize| #[trigger] pages.contains(g) implies !self.acknowledged(g) by {
-                assert(pre.acked(0) <= pre.flush_epoch);
-                assert(self.acked(0) == pre.acked(0));
+            assert forall|g: usize| #[trigger] pages.contains(g) && self.flush_awaited() implies !self.acknowledged(g) by {
+                assert(self.stale_epoch.written(self.flush_epoch, g));
+                Self::lemma_unmap_unacknowledged(pre, *self, g);
             }
             assert forall|g: int| 0 <= g < NUM_PAGES && !pages.contains(g as usize)
                 implies #[trigger] self.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g] by {
