@@ -1747,7 +1747,8 @@ impl CapKernel {
     /// level 2 table and, at its first page, gains the large entry, written with its accessed and dirty
     /// bits clear, and nothing else changes in any space;
     /// the node is the capability's child, names the entry and counts on the block, and its record is the
-    /// one the mappings gain; the table page changes in that entry alone; all 512 pages are mapped. Every
+    /// one the mappings gain, and every other block's count and every page's block are as they were; the
+    /// table page changes in that entry alone; all 512 pages are mapped. Every
     /// other node keeps its liveness, kind, depth and parent. A large map into a device
     /// space adds the space with each of the frame's 512 pages to the shares.
     pub open spec fn map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
@@ -1773,6 +1774,7 @@ impl CapKernel {
         &&& post.mappings@ == pre.mappings@.insert(node, MappingRecord { table: t, entry: p.l2, frame, large: true })
         &&& Self::entry_set(pre.table_pages, post.table_pages, t, p.l2, frame_map_entry(frame, cap.rights, true))
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
+        &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
         &&& post.holders@[br] == pre.holders@[br].insert(node)
         &&& forall|g: usize| frame <= g < frame + PAGES_PER_2M ==> #[trigger] post.mapped@.contains(g)
         &&& post.list.parent@ == pre.list.parent@.insert(node, f)

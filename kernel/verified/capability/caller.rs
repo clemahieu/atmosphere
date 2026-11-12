@@ -573,9 +573,11 @@ impl CapKernel {
     }
 
     /// Map's contract over the caller's view: no slot of any table changes, whatever the status. Refused,
-    /// with every space's tables as they were, exactly when map_allowed fails; otherwise ok, with the
-    /// space the slot names gaining, at the path the address names, the entry that maps the frame's page
-    /// with the frame's rights, large at level 2, and every other space's mappings as they were.
+    /// with every space's tables and every block's count as they were, exactly when map_allowed fails;
+    /// otherwise ok, with the space the slot names gaining, at the path the address names, the entry that
+    /// maps the frame's page with the frame's rights, large at level 2, every other space's mappings as
+    /// they were, the count of the block that holds the page one higher, for the entry, and every other
+    /// block's count and every page's block as they were.
     pub open spec fn map_contract(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize, out: Outcome) -> bool {
         &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
         &&& {
@@ -583,16 +585,19 @@ impl CapKernel {
                 &&& !pre.map_allowed(root, slot, va, level, from, page)
                 &&& out == status_only(STATUS_REFUSED)
                 &&& tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces)
+                &&& post.blocks == pre.blocks
             }
             ||| {
                 let v = pre.table_view(root);
                 let s = v[slot].base;
                 let a = tree_of(&pre.table_pages, &pre.spaces);
                 let b = tree_of(&post.table_pages, &post.spaces);
+                let br = block_ref(&pre.blocks, view_frame(v[from], page));
                 &&& pre.map_allowed(root, slot, va, level, from, page)
                 &&& out == status_only(STATUS_OK)
                 &&& space_mapping(b, s) == space_mapping(a, s).insert(address_path(va), frame_map_entry(view_frame(v[from], page), v[from].rights, level == 2))
                 &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
+                &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
             }
         }
     }
@@ -631,6 +636,7 @@ impl CapKernel {
                 pre.lemma_map_node_place(t, p.l2);
                 Self::lemma_map_slots(pre, post, mapping_node(t, p.l2), f);
             }
+            assert(view_frame(pre.table_view(root)[from], page) == frame_of(pre.payload_of(f), page));
         }
     }
 
