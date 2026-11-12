@@ -1,6 +1,6 @@
 ---
 title: "A skeptic pass is a review, a leaf under the epic it judges"
-date: 2026-11-11
+date: 2026-11-12
 status: active
 tags: [process, skeptic, tracker]
 one_line: "The skeptic pass that an epic closes on is its own issue: a task labelled review under the epic, waiting on the epic's other children; one review is one pass, a refuting review files a repeat, and the epic closes when its newest review passed after everything else below it closed. An epic is never claimed for a pass."
@@ -11,6 +11,8 @@ confidence: "A judgement about structure. Coverage is the same by construction: 
 ## Decision
 
 The skeptic pass is a review: a task with the label `review`, a child of the epic whose acceptance criteria it judges. A round claims it from the ready list like any leaf, writes where the evidence is and hands it to the driver, which runs the skeptic and appends the report. The round that claims it next closes it: `skeptic pass:` when every criterion stands, or `refuted:` after filing a leaf per refuted criterion and a repeat review that waits on those leaves. One review is one pass.
+
+Before it hands a review over, the round matches each of the epic's criteria to the commits, logs and verify output recorded under it, as it does to close a small epic, and for tier 1 each use to its witness and to a throwaway run since that witness last changed. `tools/review-evidence.py` does the mechanical part. A criterion nothing shows becomes a leaf the review waits on: no pass runs, and since the review stays open it is not a refuted review, so the count of `design/third-refuted-review-waits-on-the-human/` does not move. The match is the round's own reading, so it finds what is absent and not what is weak.
 
 Which epic needs one is unchanged: more than three children, depth 1, or the label `skeptic`. A review is written with the leaves at a split, waiting on each of them, and otherwise when the epic finishes. An issue filed under an epic later is added to what the open review waits on.
 
@@ -34,6 +36,8 @@ Measured on 2026-11-11 from the token ledger (`tools/token-ledger.py`, the calls
 - Nothing about the epic predicted a first pass's output: over the 49 epics with a pass when it was taken, the correlation was 0.39 with its number of children, 0.38 with the commits its children's close reasons name, and -0.09 with the lines those commits changed.
 - 120 of the 168 epics below the star needed a pass by the rule. 89 of them were open, 76 with no pass in the ledger, and 32 were finished and waiting for one. None of that was in the ready list.
 - The passes find things. Of those 49 epics, 20 had at least one child whose description cites a refutation, 69 such leaves in all.
+
+Measured on 2026-11-12, after a day of reviews as leaves: 59 reviews had closed, 32 of them refuted, and in about a third of those the pass found no hole in a proof. The evidence a criterion needed was absent or older than the tree: no witness reached a use from boot, a throwaway had been run only against an earlier form of its witness, a criterion named a number or a type nothing under the epic recorded or built, a test had gone from the tree. Each cost a pass, a triage round and a repeat review, and counted toward the third refutation. A fresh reader is needed for a specification weaker than the epic's intent; what is merely missing, the round that hands the review over can see, which is why the match comes before the pass.
 
 A review as a leaf answers each point with what the tracker already does. It is claimed atomically, so the claim that keeps two loops off one pass needs no rule of its own. It waits on tasks, which the tracker allows, so the ready list holds a review exactly when its pass is due, and an edge to a child survives that child's split. It has an id, so the ledger counts one pass under one issue and the status page shows who holds it. A repeat is a new review whose description names what it repeats and which waits on the leaves that answer the refutations, so its scope is written down.
 
