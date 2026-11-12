@@ -2,7 +2,7 @@
 
 # Design decisions
 
-39 records: 39 active, 0 superseded.
+40 records: 40 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -112,6 +112,9 @@ in `revisit if` what would make it worth reopening.
 - **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-10): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
   - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
   - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
+- **[third-refuted-review-waits-on-the-human](./third-refuted-review-waits-on-the-human/DECISION.md)** (2026-11-12): A round that triages a refuting review counts the epic's refuted reviews: the second is reported to the human with the kind of refutation it is and nothing waits; from the third, the leaves it files wait on a question that asks whether to go on, reword the criterion or decide the design first; a leaf filed for a refutation is not split into an epic that needs its own review without the same question.
+  - *confidence:* The thresholds are a judgement from eight days of history, measured below. That a repeated refutation marks something a pass cannot close is what the history shows; that the human's look is cheaper than the passes it stops is a bet the first questions will settle.
+  - *revisit if:* Most of the questions are answered `go on`, counted as questions titled `has been refuted` whose answer is that against those answered otherwise; or an epic still reaches a fifth refuted review; or the second refutation's report is never acted on, so it could be dropped or made to wait.
 - **[thread-bound-at-retype](./thread-bound-at-retype/DECISION.md)** (2026-11-10): Retyping a thread names a process capability too: the thread capability goes under the untyped and the process binding under the process capability in one step, so the only holder of the new control capability already controls the process and no reach grows. There is no bind operation. Revoking the binding leaves an inert thread that cannot be bound again; its registers stay readable, and its untyped's holder retypes its block.
   - *confidence:* Reasoned over kernel/verified/capability/reach.rs and the landed retype and bind, not yet proven: the widened retype lemma and the fact it needs are named below. That the step grows no reach is arithmetic on the model. Choosing construction over a sole-holder bind, which keeps the same theorem, is judgement.
   - *revisit if:* A workload needs a thread moved to another process without being recreated, carrying its registers in the kernel rather than through its supervisor reading and writing them; or a binding that reach reads must be set on an object that exists before the authority it binds, as a device does, for which the sole-holder rule below is the shape to use instead.
@@ -155,7 +158,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
-- `process`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, thread-bound-at-retype
+- `process`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, region-map-owns-the-address-space, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
 - `purity`: untyped-memory
 - `reach`: device-binding-under-the-space-capability
@@ -164,11 +167,11 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
 - `security`: divider-proven-by-invariant, fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
-- `skeptic`: committer-is-not-the-adversary, review-is-a-leaf-of-its-epic
+- `skeptic`: committer-is-not-the-adversary, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
-- `tracker`: review-is-a-leaf-of-its-epic
+- `tracker`: review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `trusted-base`: region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
 - `verified`: arch-module, committer-is-not-the-adversary, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
