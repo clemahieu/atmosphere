@@ -184,7 +184,7 @@ impl CapKernel {
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
     /// stale, and so is every 2M and 1G region; the root's thread is its process's and inactive, so a
-    /// core may enter it; the root's process is live, as is the page of its space; no flush has run, so the flush
+    /// core may enter it; the root's process is live, as is the page of its space, and its table is the only one, so it is sealed; no flush has run, so the flush
     /// epoch is 0; no core runs a thread, and each is at generation 1 and names no space, so a load may start on any; every root entry of its table past the two boot filled is empty; the root's space
     /// maps exactly the image, and its level 4 entries outside the kernel slots that no image run
     /// reaches are empty, so a table built there is the root's own to fill; of
@@ -216,6 +216,7 @@ impl CapKernel {
         &&& frame <= ROOT_FRAME_SLOTS
         &&& self.wf()
         &&& self.list.seq@[0] == root
+        &&& self.tables.roots@.dom() == set![process]
         &&& self.slot_holds(process, ROOT_PROCESS_SLOT, (leaf + 1) as usize, process_of(process))
         &&& self.slot_holds(process, ROOT_THREAD_SLOT, (leaf + 2) as usize, thread_of(t))
         &&& self.slot_holds(process, ROOT_CONSOLE_SLOT, (leaf + 3) as usize, console_payload())
@@ -736,6 +737,33 @@ impl CapKernel {
             }
         }
         Some((untyped, frame))
+    }
+
+    /// Boot leaves the root's process sealed: its table is the only one, so no other table holds a
+    /// slot naming it, and the rely serves it from its first step. See
+    /// design/region-map-owns-the-address-space/.
+    pub proof fn lemma_booted_sealed(
+        &self,
+        root: usize,
+        process: usize,
+        leaf: usize,
+        frames: usize,
+        t: usize,
+        free: Seq<(usize, usize)>,
+        image: Seq<ImageRun>,
+        untyped: usize,
+        frame: usize,
+        present: Seq<bool>,
+    )
+        requires
+            self.booted(root, process, leaf, frames, t, free, image, untyped, frame, present),
+        ensures
+            self.sealed(process),
+    {
+        assert forall|q: usize, j: usize| q != process && #[trigger] self.table_view(q).contains_key(j)
+            implies !self.names_process(self.table_view(q)[j], process) by {
+            assert(self.tables.roots@.dom().contains(q));
+        }
     }
 }
 

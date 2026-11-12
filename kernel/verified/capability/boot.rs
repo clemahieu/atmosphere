@@ -154,6 +154,7 @@ impl CapKernel {
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots@.contains_key(base),
+            final(self).tables.roots@.dom() == set![base],
             final(self).tables.leaf(base, 0) == leaf,
             forall|e: int| 0 < e < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(base, e) == NO_LEAF,
             final(self).tables.has_slot(&final(self).list, base, ROOT_PROCESS_SLOT),
@@ -932,6 +933,7 @@ impl CapKernel {
             final(self).processes.records@.contains_key(process),
             !final(self).processes.records@[process].value().dead,
             final(self).tables.roots@.contains_key(process),
+            final(self).tables.roots@.dom() == set![process],
             final(self).list.pages@.dom() == set![root, leaf, frames, t],
             forall|j: int| leaf + ROOT_POWER_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[j].live,
     {
