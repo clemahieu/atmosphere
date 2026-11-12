@@ -18,11 +18,23 @@ reads the Beads tree and the landing logs, and prints, for the leaves closed in 
 
 A landed leaf is a closed issue that is not an epic, a decision or a review, whose close reason names
 a commit and which the ledger has a round for. Its cost is every call the ledger counts under its
-id, at each model's list price per million tokens (PRICES), dollars being the one unit that compares
-models: the plan's own weights are not published. Its model is the one its rounds cost most on.
-Rework is a leaf labelled `refuted`, filed for a criterion a skeptic pass refuted. The ledger counts
-by the hour, so a day's spend starts at the hour the window does. A model PRICES does not hold is
-named on a last line, and its calls are left out.
+id, in weekly points: a point is one percent of the plan's seven-day limit, which is what runs out
+and what the human budgets in. List dollars are not given, since the meter does not charge by list
+price and a dollar on one model moves it further than a dollar on another. Its model is the one its
+rounds cost most on. Rework is a leaf labelled `refuted`, filed for a criterion a skeptic pass
+refuted. The ledger counts by the hour, so a day's spend starts at the hour the window does. A model
+RATES does not hold is named on a last line, and its calls are left out.
+
+The plan does not publish what a call costs it, so RATES is measured: a call's tokens are weighted
+(WEIGHTS: input 1, cache write 1.25, cache read 0.1, output 5, the weights the rates were fitted
+under), and a model's rate is the points the meter moved for a million weighted tokens of it. The meter is
+`cachedUsageUtilization.utilization.seven_day.utilization` in ~/.claude.json, a percentage that
+Claude Code refreshes with `fetchedAtMs` beside it. To measure again, note that figure and its time
+at both ends of a stretch of hours in which the meter did not reset (`resets_at`), sum the ledger's
+weighted tokens by model over the same hours (the `totals` table of logs/token-ledger.sqlite, every
+kind, since the meter counts sessions outside the loop too), and divide. A stretch on one model
+gives that model's rate directly; stretches that mix models give one equation each, points moved =
+the sum over models of rate times weighted millions, solved together. Put the date beside the rate.
 
 usage: tools/leaf-cost.py [--since WHEN] [--until WHEN]   (local time: 2026-11-12 or 2026-11-12T20:00)
        tools/leaf-cost.py --test                          (this script's own tests)
@@ -45,14 +57,13 @@ from pathlib import Path
 TREE = Path(__file__).resolve().parents[1]
 ROOT = TREE.parent
 LEDGER = Path(__file__).with_name("token-ledger.py")
-# Dollars per million tokens, in the order of the ledger's columns: input, cache write (the
-# five-minute rate), cache read, output.
-PRICES = {
-    "claude-fable-5-2": (8.00, 10.00, 0.20, 40.00),
-    "claude-fable-5-1": (10.00, 12.50, 0.25, 50.00),
-    "claude-opus-5-5": (4.00, 5.00, 0.20, 20.00),
-    "claude-sonnet-5-5": (2.00, 2.50, 0.10, 10.00),
-    "claude-haiku-5-5": (0.10, 0.125, 0.01, 0.50),
+# What a token counts for, in the order of the ledger's columns: input, cache write, cache read, output.
+WEIGHTS = (1, 1.25, 0.1, 5)
+# Weekly points a million weighted tokens, and the day the rate was measured.
+RATES = {
+    "claude-fable-5-2": (0.40, "2026-11-10"),
+    "claude-fable-5-1": (0.64, "2026-11-10"),
+    "claude-opus-5-5": (0.12, "2026-11-10"),
 }
 LOOP = ("round", "prover", "skeptic")
 NOT_LEAVES = ("epic", "decision")
@@ -66,7 +77,7 @@ class Leaf:
     id: str
     closed: float
     model: str
-    dollars: float
+    points: float
     rounds: int
     rework: bool
     prover: bool
@@ -75,23 +86,24 @@ class Leaf:
     fault: bool
 
 
-def dollars(model, counts):
-    """Token counts at the model's list price, or None for a model PRICES does not hold."""
-    price = PRICES.get(model)
-    return None if price is None else sum(count * rate for count, rate in zip(counts, price)) / 1e6
+def points(model, counts):
+    """Token counts in weekly points at the model's rate, or None for a model RATES does not hold."""
+    if model not in RATES:
+        return None
+    return RATES[model][0] * sum(count * weight for count, weight in zip(counts, WEIGHTS)) / 1e6
 
 
 def spent(ledger):
-    """From the ledger: each issue's dollars by agent kind and model, each issue's round sessions,
-    the loop's dollars by hour, and the models with no price."""
+    """From the ledger: each issue's points by agent kind and model, each issue's round sessions,
+    the loop's points by hour, and the models with no rate."""
     db = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True)
-    issues, hours, unpriced = {}, [], set()
+    issues, hours, unrated = {}, [], set()
     for issue, kind, model, hour, *counts in db.execute(
             "select issue, kind, model, hour, sum(input), sum(cache_write), sum(cache_read), sum(output) "
             "from totals group by issue, kind, model, hour"):
-        cost = dollars(model, counts)
+        cost = points(model, counts)
         if cost is None:
-            unpriced.add(model)
+            unrated.add(model)
             continue
         by = issues.setdefault(issue, {})
         by[kind, model] = by.get((kind, model), 0.0) + cost
@@ -99,7 +111,7 @@ def spent(ledger):
             hours.append((hour, cost))
     sessions = dict(db.execute("select issue, count(distinct file) from calls where kind = 'round' group by issue"))
     db.close()
-    return issues, sessions, hours, unpriced
+    return issues, sessions, hours, unrated
 
 
 def landed(issue):
@@ -120,7 +132,7 @@ def leaves(tracker, issues, sessions, logs):
         notes = issue.get("notes") or ""
         log = logs / f"{issue['id']}-gate.log"
         found.append(Leaf(
-            id=issue["id"], closed=closed(issue), model=max(rounds, key=rounds.get), dollars=sum(costs.values()),
+            id=issue["id"], closed=closed(issue), model=max(rounds, key=rounds.get), points=sum(costs.values()),
             rounds=sessions[issue["id"]], rework="refuted" in (issue.get("labels") or []),
             prover="Prover input" in notes, attempt=re.search(r"Attempt \d+:", notes) is not None,
             recovered="Recovered at orient" in notes,
@@ -141,18 +153,19 @@ def share(group, sign):
     return f"{100 * sum(getattr(leaf, sign) for leaf in group) / len(group):.0f}%"
 
 
-def report(found, hours, tracker, since, until, unpriced=()):
+def report(found, hours, tracker, since, until, unrated=()):
     """The lines for the leaves, the spend and the reviews of the window."""
     window = [leaf for leaf in found if since <= leaf.closed < until]
-    lines = ["landed leaves by the model of their rounds; dollars a leaf at list price, every session counted",
+    lines = ["landed leaves by the model of their rounds; weekly points a leaf, every session counted, at the rates of "
+             + ", ".join(sorted({measured for _, measured in RATES.values()})),
              f"{'model':<20}{'leaves':>7}{'rework':>8}{'mean':>8}{'median':>8}{'p90':>8}{'rounds':>8}{'prover':>8}"
              f"{'attempt':>9}{'recovered':>11}{'fault':>7}"]
     for model in sorted({leaf.model for leaf in window}):
         group = [leaf for leaf in window if leaf.model == model]
-        costs = sorted(leaf.dollars for leaf in group)
+        costs = sorted(leaf.points for leaf in group)
         lines.append(
-            f"{model:<20}{len(group):>7}{share(group, 'rework'):>8}{statistics.mean(costs):>8.2f}{statistics.median(costs):>8.2f}"
-            f"{costs[math.ceil(0.9 * len(costs)) - 1]:>8.2f}{sum(leaf.rounds for leaf in group) / len(group):>8.2f}"
+            f"{model:<20}{len(group):>7}{share(group, 'rework'):>8}{statistics.mean(costs):>8.3f}{statistics.median(costs):>8.3f}"
+            f"{costs[math.ceil(0.9 * len(costs)) - 1]:>8.3f}{sum(leaf.rounds for leaf in group) / len(group):>8.2f}"
             f"{share(group, 'prover'):>8}{share(group, 'attempt'):>9}{share(group, 'recovered'):>11}{share(group, 'fault'):>7}")
     days = {}
     for hour, cost in hours:
@@ -164,12 +177,12 @@ def report(found, hours, tracker, since, until, unpriced=()):
         day[2] += not leaf.rework
     lines.append(f"{'day':<12}{'spent':>9}{'landed':>8}{'not rework':>12}{'a leaf not rework':>19}")
     for day, (cost, count, fresh) in sorted(days.items()):
-        lines.append(f"{day:<12}{cost:>9.2f}{count:>8}{fresh:>12}{(f'{cost / fresh:.2f}' if fresh else '-'):>19}")
+        lines.append(f"{day:<12}{cost:>9.2f}{count:>8}{fresh:>12}{(f'{cost / fresh:.3f}' if fresh else '-'):>19}")
     reviews = [issue.get("close_reason") or "" for issue in tracker
                if issue["status"] == "closed" and "review" in (issue.get("labels") or []) and since <= closed(issue) < until]
     lines.append(f"reviews closed: {sum(reason.startswith('skeptic pass') for reason in reviews)} passed, "
                  f"{sum(reason.startswith('refuted') for reason in reviews)} refuted")
-    lines += [f"no price for {model}: its calls are left out" for model in sorted(unpriced)]
+    lines += [f"no rate for {model}: its calls are left out" for model in sorted(unrated)]
     return lines
 
 
@@ -186,10 +199,10 @@ def main(arguments):
     if listed.returncode != 0:
         sys.exit(f"leaf-cost: bd list exited {listed.returncode}: {(listed.stderr or listed.stdout).strip()}")
     tracker = json.loads(listed.stdout)
-    issues, sessions, hours, unpriced = spent(ledger)
+    issues, sessions, hours, unrated = spent(ledger)
     since = options.since.timestamp() if options.since else -math.inf
     until = options.until.timestamp() if options.until else math.inf
-    print("\n".join(report(leaves(tracker, issues, sessions, ROOT / "logs"), hours, tracker, since, until, unpriced)))
+    print("\n".join(report(leaves(tracker, issues, sessions, ROOT / "logs"), hours, tracker, since, until, unrated)))
     return 0
 
 
@@ -223,16 +236,24 @@ class Tests(unittest.TestCase):
         return {"id": id, "status": status, "issue_type": type, "labels": labels, "notes": notes, "close_reason": reason, "closed_at": stamp}
 
     def found(self, *tracker):
-        issues, sessions, hours, unpriced = spent(self.ledger)
-        return leaves(list(tracker), issues, sessions, self.logs), hours, unpriced
+        issues, sessions, hours, unrated = spent(self.ledger)
+        return leaves(list(tracker), issues, sessions, self.logs), hours, unrated
 
-    def test_a_leaf_costs_every_session_under_its_id_at_each_models_price(self):
+    def test_a_leaf_costs_every_session_under_its_id_at_each_models_rate(self):
         self.spend("a-1", "round", self.OPUS, sessions=("s1", "s2"), output=1_000_000, cache_read=10_000_000)
         self.spend("a-1", "prover", self.FABLE, sessions=("s3",), input=1_000_000, cache_write=1_000_000)
         self.spend("a-2", "round", self.OPUS, sessions=("s4",), output=500_000)
         (leaf,), _, _ = self.found(self.issue("a-1"))
         self.assertEqual((leaf.id, leaf.model, leaf.rounds, leaf.closed), ("a-1", self.OPUS, 2, self.noon))
-        self.assertAlmostEqual(leaf.dollars, 20 + 2 + 8 + 10)
+        self.assertAlmostEqual(leaf.points, 0.12 * (5 + 1) + 0.40 * (1 + 1.25))
+
+    def test_the_same_tokens_are_more_points_on_the_model_the_meter_charges_more_for(self):
+        tokens = dict(input=1_000_000, cache_write=1_000_000, cache_read=10_000_000, output=1_000_000)
+        self.spend("a-1", "round", self.OPUS, **tokens)
+        self.spend("a-2", "round", self.FABLE, sessions=("s2",), **tokens)
+        opus, fable = self.found(self.issue("a-1"), self.issue("a-2"))[0]
+        self.assertAlmostEqual(opus.points, 0.12 * 8.25)
+        self.assertAlmostEqual(fable.points, 0.40 * 8.25)
 
     def test_a_leafs_model_is_the_one_its_rounds_cost_most_on(self):
         self.spend("a-1", "round", self.OPUS, output=100_000)
@@ -268,8 +289,8 @@ class Tests(unittest.TestCase):
         found, hours, _ = self.found(*tracker, self.issue("b-1"))
         lines = report(found, hours, tracker, -math.inf, math.inf)
         self.assertEqual(lines[1].split(), ["model", "leaves", "rework", "mean", "median", "p90", "rounds", "prover", "attempt", "recovered", "fault"])
-        self.assertEqual(lines[2].split(), [self.FABLE, "1", "0%", "4.00", "4.00", "4.00", "1.00", "0%", "0%", "0%", "0%"])
-        self.assertEqual(lines[3].split(), [self.OPUS, "5", "20%", "4.00", "3.00", "10.00", "1.20", "40%", "0%", "0%", "0%"])
+        self.assertEqual(lines[2].split(), [self.FABLE, "1", "0%", "0.200", "0.200", "0.200", "1.00", "0%", "0%", "0%", "0%"])
+        self.assertEqual(lines[3].split(), [self.OPUS, "5", "20%", "0.120", "0.090", "0.300", "1.20", "40%", "0%", "0%", "0%"])
 
     def test_a_day_is_the_loops_spend_over_its_leaves_that_are_not_rework(self):
         self.spend("a-1", "round", self.OPUS, output=250_000)
@@ -282,7 +303,7 @@ class Tests(unittest.TestCase):
         found, hours, _ = self.found(*tracker)
         lines = report(found, hours, tracker, -math.inf, math.inf)
         day = lines[lines.index(next(line for line in lines if line.startswith("day"))) + 1]
-        self.assertEqual(day.split(), ["2026-11-12", "21.00", "3", "2", "10.50"])
+        self.assertEqual(day.split(), ["2026-11-12", "0.63", "3", "2", "0.315"])
         self.assertEqual(lines[-1], "reviews closed: 1 passed, 1 refuted")
 
     def test_the_window_bounds_the_leaves_the_spend_and_the_reviews(self):
@@ -299,15 +320,15 @@ class Tests(unittest.TestCase):
         self.spend("a-1", "round", self.OPUS, output=50_000)
         tracker = [self.issue("a-1", labels=["refuted"])]
         found, hours, _ = self.found(*tracker)
-        self.assertEqual(report(found, hours, tracker, -math.inf, math.inf)[-2].split(), ["2026-11-12", "1.00", "1", "0", "-"])
+        self.assertEqual(report(found, hours, tracker, -math.inf, math.inf)[-2].split(), ["2026-11-12", "0.03", "1", "0", "-"])
 
-    def test_a_model_without_a_price_is_named_and_left_out(self):
+    def test_a_model_without_a_rate_is_named_and_left_out(self):
         self.spend("a-1", "round", self.OPUS, output=50_000)
         self.spend("a-1", "round", "claude-next-9", sessions=("s2",), output=9_000_000)
         tracker = [self.issue("a-1")]
-        found, hours, unpriced = self.found(*tracker)
-        self.assertAlmostEqual(found[0].dollars, 1.0)
-        self.assertEqual(report(found, hours, tracker, -math.inf, math.inf, unpriced)[-1], "no price for claude-next-9: its calls are left out")
+        found, hours, unrated = self.found(*tracker)
+        self.assertAlmostEqual(found[0].points, 0.03)
+        self.assertEqual(report(found, hours, tracker, -math.inf, math.inf, unrated)[-1], "no rate for claude-next-9: its calls are left out")
 
 
 if __name__ == "__main__":
