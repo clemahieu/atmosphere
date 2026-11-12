@@ -94,7 +94,8 @@ pub open spec fn table_addr(t: usize) -> usize {
 }
 
 /// A present entry above level 1, outside the kernel slots, names a child table whose record names that
-/// entry, and a child's record names a present entry that names it, one level up and in the same space.
+/// entry and allows a write and a user access, so the leaf below decides what a walk grants, and a
+/// child's record names a present entry that names it, one level up and in the same space.
 /// A table page with a parent has a space. A table page with a space and no parent has been cut off with
 /// what is below it, which still names that space, and a dead table page can outlast the space it names.
 pub open spec fn table_links_wf(tree: TableTree) -> bool {
@@ -103,6 +104,8 @@ pub open spec fn table_links_wf(tree: TableTree) -> bool {
         let c = (tree.entry(t, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& tree.is_page(c)
         &&& tree.record(c).parent == Some(TableParent { table: t, entry: i })
+        &&& tree.entry(t, i).perm.write
+        &&& tree.entry(t, i).perm.user
     }
     &&& forall|t: usize, i: usize| #![trigger tree.entry(t, i)]
         tree.child_slot(t, i) && tree.entry(t, i).perm.present && tree.entry(t, i).perm.ps ==> tree.record(t).level == 2
@@ -168,6 +171,8 @@ pub proof fn lemma_links_space_removed(a: TableTree, b: TableTree, s: usize)
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
+        &&& b.entry(u, i).perm.write
+        &&& b.entry(u, i).perm.user
     } by {
         assert(u != s);
         lemma_space_removed_others(a, b, s, u);
@@ -304,6 +309,8 @@ pub proof fn lemma_links_table_removed(a: TableTree, b: TableTree, t: usize)
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
+        &&& b.entry(u, i).perm.write
+        &&& b.entry(u, i).perm.user
     } by {
         assert(u != t);
         lemma_table_removed_others(a, b, t, u);
@@ -413,6 +420,8 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
+        &&& post.entry(u, i).perm.write
+        &&& post.entry(u, i).perm.user
     } by {
         if u == t {
             assert(post.entry(t, i).is_empty());
@@ -482,6 +491,8 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
+        &&& post.entry(u, i).perm.write
+        &&& post.entry(u, i).perm.user
     } by {
         if u == s {
             assert(post.entry(s, i).is_empty());
@@ -594,6 +605,8 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
+        &&& post.entry(u, i).perm.write
+        &&& post.entry(u, i).perm.user
     } by {
         if u == parent && i == entry {
             assert(post.entry(parent, entry) == child_entry(child));
@@ -704,6 +717,8 @@ pub proof fn lemma_links_detached(pre: TableTree, post: TableTree, parent: usize
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
+        &&& post.entry(u, i).perm.write
+        &&& post.entry(u, i).perm.user
     } by {
         assert(!(u == parent && i == entry));
         assert(post.entry(u, i) == pre.entry(u, i));

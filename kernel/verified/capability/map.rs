@@ -422,6 +422,8 @@ pub proof fn lemma_links_entry_written(a: TableTree, b: TableTree, t: usize, e: 
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
+        &&& b.entry(u, i).perm.write
+        &&& b.entry(u, i).perm.user
     } by {
         assert(a.child_slot(u, i));
         assert(!(u == t && i == e));

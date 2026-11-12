@@ -106,6 +106,51 @@ pub open spec fn space_mapping(tree: TableTree, s: usize) -> IMap<SpacePath, Pag
     IMap::new(|p: SpacePath| walk(tree, s, p) is Some, |p: SpacePath| walk(tree, s, p)->0)
 }
 
+/// Entry i of table t allows a write and a user access, as each entry a walk traverses above its leaf
+/// must for the leaf's own permission to be the access the hardware grants: on x86_64 R/W and U/S of
+/// every entry the walk reads decide it, on aarch64 a table descriptor's APTable limits every level below.
+pub open spec fn entry_open(tree: TableTree, t: usize, i: usize) -> bool {
+    &&& tree.entry(t, i).perm.write
+    &&& tree.entry(t, i).perm.user
+}
+
+/// Every entry the walk of path p of space s traverses above the leaf it ends at allows a write and a
+/// user access.
+pub open spec fn walk_open(tree: TableTree, s: usize, p: SpacePath) -> bool {
+    match step(tree, s, p.l4) {
+        None => true,
+        Some(t3) => {
+            &&& entry_open(tree, s, p.l4)
+            &&& match step(tree, t3, p.l3) {
+                None => true,
+                Some(t2) => {
+                    &&& entry_open(tree, t3, p.l3)
+                    &&& match step(tree, t2, p.l2) {
+                        None => true,
+                        Some(_) => entry_open(tree, t2, p.l2),
+                    }
+                },
+            }
+        },
+    }
+}
+
+/// Every entry that names a child allows a write and a user access, so every walk is open above its leaf.
+pub proof fn lemma_walk_open(tree: TableTree, s: usize, p: SpacePath)
+    requires
+        table_links_wf(tree),
+    ensures
+        walk_open(tree, s, p),
+{
+    let _ = tree.entry(s, p.l4);
+    if let Some(t3) = step(tree, s, p.l4) {
+        let _ = tree.entry(t3, p.l3);
+        if let Some(t2) = step(tree, t3, p.l3) {
+            let _ = tree.entry(t2, p.l2);
+        }
+    }
+}
+
 /// The walk of path p of space s finds page g, in the frame it ends at.
 pub open spec fn walk_finds(tree: TableTree, s: usize, p: SpacePath, g: usize) -> bool {
     &&& walk(tree, s, p) is Some
@@ -120,6 +165,18 @@ pub open spec fn space_says(tree: TableTree, s: usize, g: usize) -> bool {
 }
 
 impl CapKernel {
+    /// Every path a space of a well-formed kernel maps is reached through entries that each allow a
+    /// write and a user access, so the leaf's permission is the access a core is granted there.
+    pub proof fn lemma_mapping_open(&self, s: usize, p: SpacePath)
+        requires
+            self.wf(),
+        ensures
+            space_mapping(tree_of(&self.table_pages, &self.spaces), s).contains_key(p)
+                ==> walk_open(tree_of(&self.table_pages, &self.spaces), s, p),
+    {
+        lemma_walk_open(tree_of(&self.table_pages, &self.spaces), s, p);
+    }
+
     /// What core c may hold: anything of a space it loaded that the space's tables say now, since it can
     /// walk them whenever it likes, and whatever has left them that it has not flushed. A map or a link
     /// after the load is covered with no write here.
@@ -2097,6 +2154,8 @@ pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: 
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
+        &&& b.entry(u, i).perm.write
+        &&& b.entry(u, i).perm.user
     } by {
         assert(!(u == t && i == e));
         assert(b.entry(u, i) == a.entry(u, i));
