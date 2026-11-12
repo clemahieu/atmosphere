@@ -1207,6 +1207,261 @@ impl CapKernel {
         Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
     }
 
+    /// A step keeps count_kept for root when it keeps every frame capability's pages in their blocks,
+    /// raises the count of no block that only root holds and, while root is sealed, leaves in every
+    /// other table only frame capabilities that some table but root's held, but for the slot at index
+    /// xj of the table at xt, whose pages lie in no block that only root held.
+    pub proof fn lemma_frames_kept_keeps_count(pre: Self, post: Self, root: usize, xt: usize, xj: usize)
+        requires
+            pre.wf(),
+            forall|t: usize, j: usize, page: usize|
+                pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) ==> {
+                    let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page));
+                    &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], page)) == br
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br) || !pre.held_by(br, root)
+                },
+            pre.sealed(root) ==> forall|t: usize, j: usize|
+                t != root && !(t == xt && j == xj) && #[trigger] post.table_view(t).contains_key(j)
+                    && post.table_view(t)[j].kind is Frame
+                    ==> exists|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
+                        && same_cap(pre.table_view(t2)[j2], post.table_view(t)[j]),
+            pre.sealed(root) && xt != root && post.table_view(xt).contains_key(xj) && post.table_view(xt)[xj].kind is Frame
+                ==> forall|j: usize, page: usize, k: usize|
+                    #![trigger block_ref(&post.blocks, view_frame(post.table_view(xt)[xj], k)), block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page))]
+                    pre.table_view(root).contains_key(j) && pre.table_view(root)[j].kind is Frame
+                        && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
+                        && pre.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root)
+                        && (k as int) * PAGE_SZ < block_bytes(post.table_view(xt)[xj].order)
+                        ==> block_ref(&post.blocks, view_frame(post.table_view(xt)[xj], k))
+                            != block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        if pre.sealed(root) {
+            assert forall|j: usize, page: usize|
+                pre.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
+                    && pre.table_view(root)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
+                    && pre.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) implies {
+                    let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
+                    &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page)) == br
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                    &&& post.held_by(br, root)
+                } by {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
+                assert forall|t: usize, i: usize, p: usize|
+                    t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
+                        && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
+                        implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
+                    if !(t == xt && i == xj) {
+                        let (t2, j2) = choose|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
+                            && same_cap(pre.table_view(t2)[j2], post.table_view(t)[i]);
+                        let f = view_frame(pre.table_view(t2)[j2], p);
+                        assert(f == view_frame(post.table_view(t)[i], p));
+                        assert(block_ref(&pre.blocks, view_frame(pre.table_view(t2)[j2], p)) != br);
+                        assert(block_ref(&post.blocks, view_frame(pre.table_view(t2)[j2], p)) == block_ref(&pre.blocks, f));
+                    }
+                }
+            }
+        }
+    }
+
+    /// A revoke, by any caller, keeps count_kept of every process: it takes slots and holders and
+    /// gives none.
+    pub proof fn lemma_revoke_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_revoked(pre, post, caller, frame, out),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_revoke_contract(pre, post, caller, frame, out);
+        if pre.revoke_allowed(caller, spec_position(frame.slot())) {
+            assert forall|t: usize, j: usize|
+                t != root && #[trigger] post.table_view(t).contains_key(j) && post.table_view(t)[j].kind is Frame
+                    implies exists|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
+                        && same_cap(pre.table_view(t2)[j2], post.table_view(t)[j]) by {
+                assert(pre.table_view(t).contains_key(j));
+            }
+            Self::lemma_frames_kept_keeps_count(pre, post, root, root, 0);
+        } else {
+            Self::lemma_blocks_kept_keeps_count(pre, post, root);
+        }
+    }
+
+    /// A delete, by any caller, keeps count_kept of every process: it takes one slot and at most one
+    /// holder and gives none.
+    pub proof fn lemma_delete_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_deleted(pre, post, caller, frame, out),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_delete_contract(pre, post, caller, frame, out);
+        if pre.delete_allowed(caller, spec_position(frame.slot())) {
+            assert forall|t: usize, j: usize|
+                t != root && #[trigger] post.table_view(t).contains_key(j) && post.table_view(t)[j].kind is Frame
+                    implies exists|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
+                        && same_cap(pre.table_view(t2)[j2], post.table_view(t)[j]) by {
+                assert(pre.table_view(t).contains_key(j));
+            }
+            Self::lemma_frames_kept_keeps_count(pre, post, root, root, 0);
+        } else {
+            Self::lemma_blocks_kept_keeps_count(pre, post, root);
+        }
+    }
+
+    /// A derive, by a caller other than root, keeps count_kept of root: the block whose count a frame's
+    /// child raises holds the source, a frame of the caller's own table, and the child's pages are
+    /// pages of that source, so no block that only root holds gains a count or a holder elsewhere.
+    pub proof fn lemma_derive_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_derived(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_derive_contract(pre, post, caller, frame, out);
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        let rights = frame.argument(2);
+        let base = frame.argument(3) as usize;
+        let order = frame.argument(4);
+        if pre.derive_allowed(caller, from, to, rights, base, order) {
+            let i = from->0.index;
+            let source = pre.table_view(caller)[i];
+            let table = pre.view_table_at(caller, to->0.through)->0;
+            let slot = to->0.index;
+            let child = derived_view(source, rights as u32, base, order as u8, pre.tables.node_of(caller, i));
+            assert(post.table_view(table)[slot] == child);
+            if source.kind is Frame {
+                let br = block_ref(&pre.blocks, view_frame(source, 0));
+                let n = vstd::arithmetic::power2::pow2(child.order as nat) as int;
+                let m = vstd::arithmetic::power2::pow2(source.order as nat) as int;
+                vstd::arithmetic::power2::lemma_pow2_pos(source.order as nat);
+                assert(block_bytes(child.order) == n * PAGE_SZ);
+                assert(block_bytes(source.order) == m * PAGE_SZ);
+                assert((0usize as int) * PAGE_SZ < block_bytes(source.order));
+                assert(block_ref(&pre.blocks, view_frame(pre.table_view(caller)[i], 0)) == br);
+                assert(!pre.held_by(br, root));
+                assert forall|t: usize, j: usize, page: usize|
+                    pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                        && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) implies {
+                        let x = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page));
+                        &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], page)) == x
+                        &&& block_refs(&post.blocks, x) <= block_refs(&pre.blocks, x) || !pre.held_by(x, root)
+                    } by {
+                    pre.lemma_view_frame_counted(t, j, page);
+                }
+                if pre.sealed(root) {
+                    assert forall|j: usize, page: usize, k: usize|
+                        #![trigger block_ref(&post.blocks, view_frame(post.table_view(table)[slot], k)), block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page))]
+                        pre.table_view(root).contains_key(j) && pre.table_view(root)[j].kind is Frame
+                            && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
+                            && pre.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root)
+                            && (k as int) * PAGE_SZ < block_bytes(post.table_view(table)[slot].order)
+                            implies block_ref(&post.blocks, view_frame(post.table_view(table)[slot], k))
+                                != block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)) by {
+                        // The child's page k is a page of the source, which the caller's table holds.
+                        let q = (base / PAGE_SZ + k - source.base / PAGE_SZ) as usize;
+                        assert(k < n);
+                        assert((base + n * PAGE_SZ) / (PAGE_SZ as int) == base / PAGE_SZ + n);
+                        assert((source.base + m * PAGE_SZ) / (PAGE_SZ as int) == source.base / PAGE_SZ + m);
+                        assert(0 <= base / PAGE_SZ + k - source.base / PAGE_SZ < m);
+                        assert((q as int) * PAGE_SZ < block_bytes(source.order));
+                        assert(view_frame(child, k) == view_frame(source, q));
+                        pre.lemma_view_frame_counted(caller, i, q);
+                        assert(block_ref(&pre.blocks, view_frame(pre.table_view(caller)[i], q))
+                            != block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+                    }
+                }
+            }
+            assert forall|t: usize, j: usize|
+                t != root && !(t == table && j == slot) && #[trigger] post.table_view(t).contains_key(j)
+                    && post.table_view(t)[j].kind is Frame
+                    implies exists|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
+                        && same_cap(pre.table_view(t2)[j2], post.table_view(t)[j]) by {
+                assert(pre.table_view(t).contains_key(j));
+            }
+            Self::lemma_frames_kept_keeps_count(pre, post, root, table, slot);
+        } else {
+            Self::lemma_blocks_kept_keeps_count(pre, post, root);
+        }
+    }
+
+    /// A move, by a caller other than root, keeps count_kept of root: the block table is as it was, and
+    /// while root is sealed the capability moved goes from one table that is not root's to another.
+    pub proof fn lemma_move_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_moved(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        broadcast use vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
+        Self::lemma_move_contract(pre, post, caller, frame, out);
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        if pre.move_allowed(caller, from, to) {
+            let f = from->0;
+            let d = to->0;
+            let src = pre.view_table_at(caller, f.through)->0;
+            let dst = pre.view_table_at(caller, d.through)->0;
+            if pre.sealed(root) {
+                pre.lemma_sealed_table_not_root(caller, f.through, root);
+                pre.lemma_sealed_table_not_root(caller, d.through, root);
+                assert forall|t: usize, j: usize|
+                    t != root && #[trigger] post.table_view(t).contains_key(j) && post.table_view(t)[j].kind is Frame
+                        implies exists|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
+                            && same_cap(pre.table_view(t2)[j2], post.table_view(t)[j]) by {
+                    assert(post.table_view(t) == pre.moved_table_view(src, f.index, dst, d.index, t));
+                    if t == dst && j == d.index {
+                        assert(pre.table_view(src).contains_key(f.index));
+                    } else {
+                        assert(pre.table_view(t).contains_key(j));
+                    }
+                }
+            }
+            Self::lemma_frames_kept_keeps_count(pre, post, root, root, 0);
+        } else {
+            Self::lemma_blocks_kept_keeps_count(pre, post, root);
+        }
+    }
+
+    /// A retype, by any caller, keeps count_kept of every process: every frame capability's block and
+    /// count are as they were, and the frame it may add lies in a block no frame capability had a page
+    /// in.
+    pub proof fn lemma_retype_keeps_count(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_retyped(pre, post, caller, frame, out),
+        ensures
+            Self::count_kept(pre, post, root),
+    {
+        Self::lemma_retype_contract(pre, post, caller, frame, out);
+        let kind = frame.argument(1);
+        let to = frame.argument(3) as usize;
+        let added = out == status_only(STATUS_OK) && (kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME);
+        let (xt, xj) = if added { (caller, to) } else { (root, 0usize) };
+        assert(post.blocks == pre.blocks || Self::frame_blocks_kept(pre, post));
+        assert forall|t: usize, j: usize|
+            t != root && !(t == xt && j == xj) && #[trigger] post.table_view(t).contains_key(j)
+                && post.table_view(t)[j].kind is Frame
+                implies exists|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
+                    && same_cap(pre.table_view(t2)[j2], post.table_view(t)[j]) by {
+            assert(pre.table_view(t).contains_key(j));
+        }
+        if added {
+            let v = post.table_view(caller)[to];
+            assert(Self::frame_block_new(pre, post, v));
+        }
+        Self::lemma_frames_kept_keeps_count(pre, post, root, xt, xj);
+    }
+
     // The kernel's entries that are no capability operation, as for the rely above: each leaves the
     // list, the tables and the block table as they were.
 
