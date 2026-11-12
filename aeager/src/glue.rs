@@ -11,6 +11,8 @@
 //! unmap that moves the flush epoch has the calling core acknowledge before it returns, and the other
 //! cores only once an IPI reaches them (design/flush-without-waiting/), so the item relies on the
 //! source's thread running on the core that made each of the source's unmaps.
+//! It also relies on no other entry mapping the frame's page, and on the entry at the address keeping
+//! that frame or none until `unmap_page` takes the permission back.
 use vstd::prelude::*;
 use vstd::iset::ISet;
 use vstd::raw_ptr::*;
@@ -124,7 +126,7 @@ pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame:
 /// holding the write right, so the entry the map wrote is writable. `live` holds every address of the
 /// window whose page's permission the caller holds or has handed out, and `address` is not among them.
 #[verifier(external_body)]
-// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, and nothing proves that the calling thread runs in that space, that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, or that the page is memory Rust may read and write
+// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, and nothing proves that the calling thread runs in that space, that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that no other entry, in this space or another, maps the frame's page, which the kernel's map does not refuse, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, or that the page is memory Rust may read and write
 fn page_permission(
     before: Ghost<CapKernel>,
     after: Ghost<CapKernel>,
