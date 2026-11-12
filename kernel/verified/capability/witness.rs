@@ -987,6 +987,10 @@ impl CapKernel {
                 &&& final(self).blocks.tracks_addr_run(base, order_pages(PROCESS_ORDER as usize))
                 &&& base + 2 * PROCESS_BYTES <= NODE_SPACE
                 &&& final(self).tables.owner@.contains_key((base + 12 * PAGE_SZ) as usize)
+                &&& image_tables_bound(image@) + 3 <= untyped_tables(first)
+                    ==> witness_block(*final(self), (base + 2 * PROCESS_BYTES) as usize, first)
+                &&& !final(self).blocks.pages@[(base / PAGE_SZ) as int].dead
+                &&& final(self).list.nodes@[u as int].depth == 1
             }),
     {
         hide(CapKernel::wf);
@@ -1450,6 +1454,7 @@ impl CapKernel {
             Self::lemma_slot_stays(s4, s5, process, ROOT_UNTYPED_SLOT);
             Self::lemma_caps_frame(s4, s5, child, child, u);
             assert(s5.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s5.list.nodes@[u as int].depth == 1);
             assert(s3.processes.records@.contains_key(process));
             assert(s4.root_live(process));
             assert(witness_alive(s5, process));
@@ -1466,6 +1471,31 @@ impl CapKernel {
             ;
             assert(s4.tables.owner@.contains_key(bl));
             assert(s5.tables.owner@.contains_key(bl));
+        }
+        proof {
+            // The third block, when the untyped reaches past the second, is still free: every step took
+            // pages of the first two.
+            let s5 = *self;
+            // The process's block is not dead: the bind and the steps after it kept its flag.
+            assert(!s2.blocks.pages@[(base / PAGE_SZ) as int].dead);
+            assert(!s3.blocks.pages@[(base / PAGE_SZ) as int].dead);
+            assert(!s4.blocks.pages@[(base / PAGE_SZ) as int].dead);
+            assert(!s5.blocks.pages@[(base / PAGE_SZ) as int].dead);
+            let b3 = (base + 2 * PROCESS_BYTES) as usize;
+            if itb + 3 <= untyped_tables(first) {
+                assert((itb + 3) * PROCESS_BYTES <= block_bytes(first.order));
+                assert(cursor_block(first.base, itb + 2) == b3);
+                assert(s0.root_table_block(process, cursor_block(first.base, itb + 2)));
+                assert(witness_block(s0, b3, first));
+                lemma_block_page(b3, 0);
+                assert(b3 / PAGE_SZ == base / PAGE_SZ + 16);
+                lemma_witness_block_kept(s0, s1, b3, first, (b2 / PAGE_SZ) as int, b2 / PAGE_SZ + 2);
+                lemma_witness_block_kept(s1, s2, b3, first, (base / PAGE_SZ) as int, base / PAGE_SZ + 8);
+                lemma_witness_block_kept(s2, s3, b3, first, (bt / PAGE_SZ) as int, bt / PAGE_SZ + 2);
+                lemma_witness_block_kept(s3, s4, b3, first, (bl / PAGE_SZ) as int, bl / PAGE_SZ + 2);
+                assert(s5.blocks == s4.blocks);
+                assert(witness_block(s5, b3, first));
+            }
         }
         ok1 && ok2 && ok3 && ok4 && ok5
     }
@@ -2078,6 +2108,651 @@ impl CapKernel {
         (ok1, ok2.is_some(), ok3, ok4.is_some(), ok5, ok6, ok7, ok8a, ok8b, ok8, ok9)
     }
 
+    /// From the end of the spawn witness, as the root, with a third free order-3 block past the two the
+    /// spawn took: give the process's space a level 3 table at entry KERNEL_MEM_END_L4INDEX of its root,
+    /// the first entry outside the kernel's, through the capability to the process in slot 257, and
+    /// tear the process down by retype as the spawn's teardown does, up to its space: destroy the
+    /// process, delete the thread's capability, retype the thread's block, which unbinds the thread,
+    /// delete the process's capability, its last reference, and retype the leaf in the process's table
+    /// until it is free. No core ran the process, so its space is released. The process is dead and its
+    /// root still names the table, so the first retype of its block cuts the table from the root:
+    /// the table's parent record goes and the root names no child. After every core and IOMMU
+    /// acknowledges the cut's flush, the next retype frees the block, and a process is retyped at the
+    /// same block into slot 257 again. The use is a process whose space grew tables before it died.
+    /// See design/teardown-driven-by-retype/.
+    #[verifier::spinoff_prover]
+    pub fn witness_process_space_cut(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+    ) -> (ret: (ReclaimStep, ReclaimStep, bool, Ghost<CapKernel>, Ghost<CapKernel>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) + 3 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret.0 is Slice,
+            ret.1 is Freed,
+            ret.2,
+            ret.3@.process_is_dead(base),
+            tree_of(&ret.3@.table_pages, &ret.3@.spaces).names_child(base, KERNEL_MEM_END_L4INDEX),
+            ret.3@.process_space_cut(ret.4@, process, ROOT_UNTYPED_SLOT, base),
+            tree_of(&ret.4@.table_pages, &ret.4@.spaces).record((base + 2 * PROCESS_BYTES) as usize).parent is None,
+            forall|e: usize| !#[trigger] tree_of(&ret.4@.table_pages, &ret.4@.spaces).names_child(base, e),
+            final(self).wf(),
+            final(self).view().holds(process, (base + 8 * PAGE_SZ + 1) as usize),
+            final(self).payload_of((base + 8 * PAGE_SZ + 1) as usize) == process_of(base),
+            witness_alive(*final(self), base),
+    {
+        hide(CapKernel::wf);
+        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let ghost h0 = *self;
+        let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
+        let ghost itb = image_tables_bound(image@);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let b2 = base + PROCESS_BYTES;
+        let bt = b2 + 2 * PAGE_SZ;
+        let bl = b2 + 4 * PAGE_SZ;
+        let b3 = base + 2 * PROCESS_BYTES;
+        let ghost np = (b2 + 1) as usize;
+        let ghost nt = (b2 + 2) as usize;
+        let ghost child = (bl + 1) as usize;
+        let ghost dp = h0.list.nodes@[np as int].depth;
+        let ghost dt = h0.list.nodes@[nt as int].depth;
+        let ghost dc = h0.list.nodes@[child as int].depth;
+        let ghost ta = tree_of(&h0.table_pages, &h0.spaces);
+        proof {
+            assert(ok0);
+            lemma2_to64();
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(base % PROCESS_BYTES == 0);
+            assert(b2 % PROCESS_BYTES == 0);
+            lemma_block_page(base, 0);
+            lemma_block_page(b2, 0);
+            lemma_block_page(b2, 2);
+            lemma_block_page(b2, 4);
+            lemma_block_page(b3, 0);
+            assert(b2 / PAGE_SZ == base / PAGE_SZ + 8);
+            assert(bt / PAGE_SZ == base / PAGE_SZ + 10);
+            assert(bl / PAGE_SZ == base / PAGE_SZ + 12);
+            assert(b3 / PAGE_SZ == base / PAGE_SZ + 16);
+            assert(bt == base + 10 * PAGE_SZ);
+            assert(bl == base + 12 * PAGE_SZ);
+            assert(np == base + 8 * PAGE_SZ + 1);
+            assert(nt == base + 8 * PAGE_SZ + 2);
+            assert(witness_block(h0, b3, first));
+            // The process's space is a root of kind Process at level 4, whose entry past the kernel's is
+            // empty and can hold a child.
+            assert(h0.blocks.tracks_addr(base));
+            h0.lemma_process_block(base);
+            assert(!ta.is_page(base));
+            assert(ta.is_table(base));
+            h0.lemma_table_base(base);
+            assert(ta.record(base).space == Some(base));
+            assert(ta.record(base).level == 4);
+            assert(!holds_kernel(SpaceKind::Process, KERNEL_MEM_END_L4INDEX));
+            assert(ta.child_slot(base, KERNEL_MEM_END_L4INDEX));
+            assert(ta.entry(base, KERNEL_MEM_END_L4INDEX).is_empty());
+            assert(witness_slot(h0, process, ROOT_UNTYPED_SLOT, u, first, 1));
+            assert(witness_root(h0, process, u, first));
+            assert(witness_slot(h0, process, WITNESS_PROCESS_SLOT, np, process_of(base), dp));
+        }
+
+        // Give the process's space a table at the first entry past the kernel's, through its capability.
+        self.witness_table(process, WITNESS_PROCESS_SLOT, base, KERNEL_MEM_END_L4INDEX, 3, b3, Ghost(base), Ghost(np), Ghost(dp), Ghost(u), Ghost(first));
+        let ghost r0 = *self;
+        let ghost tk = tree_of(&r0.table_pages, &r0.spaces);
+        proof {
+            assert(r0.wf());
+            assert(step(tk, base, KERNEL_MEM_END_L4INDEX) == Some(b3));
+            assert(tk.names_child(base, KERNEL_MEM_END_L4INDEX));
+            assert(child_at(tk, base, KERNEL_MEM_END_L4INDEX) == b3);
+            // What the teardown reads of the spawn's end, kept by the table's retype and link.
+            assert(h0.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(r0.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(witness_slot(h0, process, WITNESS_THREAD_SLOT, nt, thread_of(bt), dt));
+            assert(witness_slot(h0, base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, (base + 14 * PAGE_SZ) as usize, 1), dc));
+            lemma_witness_slot_kept(h0, r0, process, ROOT_UNTYPED_SLOT, u, first, 1);
+            lemma_witness_slot_kept(h0, r0, process, WITNESS_PROCESS_SLOT, np, process_of(base), dp);
+            lemma_witness_slot_kept(h0, r0, process, WITNESS_THREAD_SLOT, nt, thread_of(bt), dt);
+            lemma_witness_slot_kept(h0, r0, base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, (base + 14 * PAGE_SZ) as usize, 1), dc);
+            h0.lemma_slot_bound(u);
+            assert(u != b3);
+            lemma_added_children(h0.list, r0.list, b3, u);
+            assert(r0.list.parent@[b3] == u);
+            assert(r0.list.parent@[child] == h0.list.parent@[child]);
+            assert forall|c: usize| !#[trigger] r0.list.is_child(nt, c) by {
+                if r0.list.is_child(nt, c) && c != b3 {
+                    assert(h0.list.is_child(nt, c));
+                }
+            }
+            assert forall|c: usize| #[trigger] r0.list.is_child(np, c) implies c == bt by {
+                if c != b3 {
+                    assert(h0.list.is_child(np, c));
+                }
+            }
+            assert forall|c: usize| !#[trigger] r0.list.is_child(child, c) by {
+                if r0.list.is_child(child, c) && c != b3 {
+                    assert(h0.list.is_child(child, c));
+                }
+            }
+            assert(r0.list.nodes@[nt as int].live);
+            assert(r0.list.nodes@[child as int].live);
+            if !r0.list.childless(nt) {
+                r0.list.lemma_next_is_child(nt);
+            }
+            if !r0.list.childless(child) {
+                r0.list.lemma_next_is_child(child);
+            }
+            assert(r0.list.childless(nt));
+            assert(r0.list.childless(child));
+            // The leaf in the process's table is live and hidden, with no live node past its slot 1.
+            lemma_listed_live(h0.list, child);
+            h0.list.lemma_live_valid(bl);
+            assert(r0.list.nodes@[bl as int].live);
+            assert(r0.list.nodes@[bl as int].kind is Hidden);
+            assert forall|x: int| bl + 1 < x < bl + NODES_PER_PAGE implies !#[trigger] r0.list.nodes@[x].live by {
+                assert(!h0.list.nodes@[x].live);
+            }
+            // The blocks outside the table's are as they were.
+            assert(r0.blocks.pages@[(bt / PAGE_SZ) as int] == h0.blocks.pages@[(bt / PAGE_SZ) as int]);
+            assert(r0.blocks.pages@[(base / PAGE_SZ) as int] == h0.blocks.pages@[(base / PAGE_SZ) as int]);
+            assert(r0.blocks.pages@[(bl / PAGE_SZ) as int] == h0.blocks.pages@[(bl / PAGE_SZ) as int]);
+            assert(block_refs(&r0.blocks, BlockRef::Small(bt / PAGE_SZ)) == 1);
+            assert(block_refs(&r0.blocks, BlockRef::Small(base / PAGE_SZ)) == 2);
+            assert(r0.process_unloaded(base));
+            assert(bound_threads(&r0.list, &r0.tables).contains_key(bt));
+            assert(bound_threads(&r0.list, &r0.tables)[bt] == base);
+            assert(r0.flush_epoch == 0);
+            assert(witness_alive(r0, base));
+            assert(witness_alive(r0, process));
+            assert(r0.tables.owner@[bl] == (base, 0int));
+        }
+        proof {
+            // Where the four slots' nodes lie, and whose leaves they are in.
+            r0.lemma_slot(process, ROOT_UNTYPED_SLOT);
+            r0.lemma_slot(process, WITNESS_PROCESS_SLOT);
+            r0.lemma_slot(process, WITNESS_THREAD_SLOT);
+            r0.lemma_slot(base, WITNESS_CHILD_SLOT);
+            assert(index_slot(ROOT_UNTYPED_SLOT) == 5 && index_slot(WITNESS_PROCESS_SLOT) == 1);
+            assert(index_slot(WITNESS_THREAD_SLOT) == 2 && index_slot(WITNESS_CHILD_SLOT) == 1);
+            assert(index_entry(WITNESS_CHILD_SLOT) == 0);
+            assert(u % PAGE_SZ == 5 && np % PAGE_SZ == 1 && nt % PAGE_SZ == 2 && child % PAGE_SZ == 1);
+            r0.lemma_slot_bound(u);
+            r0.lemma_slot_bound(np);
+            r0.lemma_slot_bound(nt);
+            r0.lemma_slot_bound(child);
+            // The root's leaf holding its untyped is the root's, the process's leaf the process's.
+            assert(r0.tables.owner@[page_of(u)].0 == process);
+            assert(r0.tables.owner@[bl].0 == base);
+            assert(page_of(u) != bl);
+            r0.lemma_process_cap(np);
+            assert(r0.blocks.tracks_addr(base));
+            assert(block_typed(&r0.blocks, BlockRef::Small(base / PAGE_SZ)));
+            assert(r0.processes.records@.contains_key(base));
+            assert(r0.tables.roots@.contains_key(base)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(r0.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(r0.list.parent@[child] == u);
+            assert(r0.payload_of(child).kind is Untyped);
+            assert(r0.can_destroy(process, WITNESS_PROCESS_SLOT));
+        }
+
+        // Destroy the process, through its capability in slot 257 of the root's table.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.destroy(0, process, WITNESS_PROCESS_SLOT, Tracked(&mut steps));
+        let ghost r1 = *self;
+        let at_thread = Position { through: None, index: WITNESS_THREAD_SLOT };
+        proof {
+            assert(ok1);
+            assert(r0.payload_of(np).base == base);
+            assert(Self::process_destroyed(r0, r1, base));
+            assert(r1.list == r0.list && r1.tables == r0.tables && r1.blocks == r0.blocks);
+            assert(r1.processes.records@[process] == r0.processes.records@[process]);
+            assert(r1.processes.records@.contains_key(base));
+            assert(r1.root_live(process));
+            // The thread's capability can go: it is in the root's slot 258, deeper than the first node,
+            // and has no child.
+            assert(r1.table_at(process, None) == Some(process));
+            assert(r1.slot_holds(process, WITNESS_THREAD_SLOT, nt, thread_of(bt)));
+            lemma_owned_listed(r1, nt);
+            assert(r1.list.childless(nt));
+            assert(r1.cap_at(process, at_thread) == Some(nt));
+            assert(r1.can_delete_at(process, at_thread));
+        }
+
+        // Delete the thread's capability.
+        let ok2 = self.delete(process, at_thread);
+        let ghost r2 = *self;
+        proof {
+            assert(ok2 is Some);
+            assert(Self::cap_deleted_at(r1, r2, process, at_thread));
+            assert(Self::object_dropped(r1, r2, nt));
+            assert(r1.payload_of(nt).kind is Thread);
+            assert(blocks_refs_changed(&r1.blocks, &r2.blocks, BlockRef::Small(bt / PAGE_SZ), 0, block_dead(&r1.blocks, BlockRef::Small(bt / PAGE_SZ)) || true));
+            assert(r2.blocks.pages@[(bt / PAGE_SZ) as int].refs == 0);
+            assert(block_typed(&r2.blocks, BlockRef::Small(base / PAGE_SZ)));
+            assert(block_refs(&r2.blocks, BlockRef::Small(base / PAGE_SZ)) == 2);
+            lemma_deleted_dead(r2, nt);
+            assert forall|i: int| 0 <= i < NODE_SPACE && #[trigger] r2.list.nodes@[i].live implies r0.list.nodes@[i].live by {
+                if i != nt {
+                    assert(r2.list.nodes@[i].live == r1.list.nodes@[i].live);
+                }
+            }
+            assert(r2.list.parent@ == r0.list.parent@);
+            assert(r2.tables == r0.tables);
+            assert(r2.processes == r1.processes);
+            assert(r2.spaces == r0.spaces);
+            assert(r2.threads.records == r0.threads.records);
+            assert(r2.root_live(process));
+            assert(r2.tables.roots@.contains_key(process));
+            // The root's untyped is still its slot 5, and can retype the thread's block.
+            lemma_slot_kept_but(r1, r2, process, ROOT_UNTYPED_SLOT, nt);
+            Self::lemma_caps_frame(r1, r2, nt, nt, u);
+            assert(r2.list.nodes@[child as int].live == r1.list.nodes@[child as int].live);
+            assert(r2.list.nodes@[child as int].live);
+            assert(r2.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_owned_listed(r2, child);
+            assert(r2.list.d(u) < MAX_DEPTH);
+            assert(r2.can_retype_under(process, ROOT_UNTYPED_SLOT, bt, THREAD_ORDER));
+            assert(r2.threads.records@[bt].value().process == Some(base));
+            assert(r2.thread_is_dead(bt));
+            assert(r2.can_unbind_thread(process, ROOT_UNTYPED_SLOT, bt));
+        }
+
+        // Retype the thread's block: the thread is dead, so the retype unbinds it from the process.
+        let ok3 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, bt, Tracked(&mut steps));
+        let ghost r3 = *self;
+        let at_process = Position { through: None, index: WITNESS_PROCESS_SLOT };
+        proof {
+            assert(ok3 is Slice);
+            assert(r2.thread_unbound(r3, process, ROOT_UNTYPED_SLOT, bt));
+            assert(Self::unbound(r2, r3, bt));
+            assert(block_refs(&r3.blocks, BlockRef::Small(base / PAGE_SZ)) == 1);
+            assert(block_typed(&r3.blocks, BlockRef::Small(base / PAGE_SZ)));
+            assert forall|i: int| 0 <= i < NODE_SPACE && #[trigger] r3.list.nodes@[i].live implies r0.list.nodes@[i].live by {
+                if i != bt {
+                    assert(r3.list.nodes@[i].live == r2.list.nodes@[i].live);
+                    assert(r2.list.nodes@[i].live ==> r0.list.nodes@[i].live);
+                }
+            }
+            assert(r3.list.parent@ == r0.list.parent@);
+            assert(r3.tables == r0.tables);
+            assert(r3.processes.records == r0.processes.records || r3.processes.records == r1.processes.records);
+            assert(r3.root_live(process));
+            assert(r3.spaces == r0.spaces);
+            // The slots of the root's leaves stay: the thread's block is no leaf of the root's, since an
+            // owned leaf whose node is live holds one reference.
+            assert(!r2.list.nodes@[bt as int].live || !r2.tables.owner@.contains_key(bt)) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_slot_kept_but(r1, r2, process, WITNESS_PROCESS_SLOT, nt);
+            lemma_slot_kept_but(r2, r3, process, WITNESS_PROCESS_SLOT, bt);
+            lemma_slot_kept_but(r2, r3, process, ROOT_UNTYPED_SLOT, bt);
+            // The process's capability can go: its only child was the thread's binding.
+            assert(r3.list.nodes@[np as int].live == r2.list.nodes@[np as int].live);
+            assert(r3.list.nodes@[np as int].kind == r2.list.nodes@[np as int].kind);
+            Self::lemma_caps_frame(r1, r2, nt, nt, np);
+            assert(r3.is_cap(np));
+            assert(r3.payload_of(np) == process_of(base));
+            assert(r3.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_owned_listed(r3, np);
+            lemma_children_back(r0.list, r2.list, np);
+            assert forall|c: usize| #[trigger] r2.list.is_child(np, c) implies c == bt by {
+                assert(r0.list.is_child(np, c));
+            }
+            assert(r3.list.childless(np));
+            assert(r3.table_at(process, None) == Some(process));
+            assert(r3.cap_at(process, at_process) == Some(np));
+            assert(r3.can_delete_at(process, at_process));
+        }
+
+        // Delete the process's capability.
+        let ok4 = self.delete(process, at_process);
+        let ghost r4 = *self;
+        proof {
+            assert(ok4 is Some);
+            assert(Self::cap_deleted_at(r3, r4, process, at_process));
+            assert(Self::object_dropped(r3, r4, np));
+            assert(block_refs(&r4.blocks, BlockRef::Small(base / PAGE_SZ)) == 0);
+            assert(block_typed(&r4.blocks, BlockRef::Small(base / PAGE_SZ)));
+            lemma_deleted_dead(r4, np);
+            assert forall|i: int| 0 <= i < NODE_SPACE && #[trigger] r4.list.nodes@[i].live implies r0.list.nodes@[i].live by {
+                if i != np {
+                    assert(r4.list.nodes@[i].live == r3.list.nodes@[i].live);
+                    assert(r3.list.nodes@[i].live ==> r0.list.nodes@[i].live);
+                }
+            }
+            assert(r4.list.parent@ == r0.list.parent@);
+            assert(r4.tables == r0.tables);
+            assert(r4.processes.records == r3.processes.records);
+            assert(r4.root_live(process));
+            assert(r4.spaces == r0.spaces);
+            lemma_slot_kept_but(r3, r4, process, WITNESS_PROCESS_SLOT, np);
+            lemma_slot_kept_but(r3, r4, process, ROOT_UNTYPED_SLOT, np);
+            Self::lemma_caps_frame(r3, r4, np, np, u);
+            assert(r3.list.nodes@[u as int].live == r2.list.nodes@[u as int].live);
+            assert(r3.list.nodes@[u as int].kind == r2.list.nodes@[u as int].kind);
+            assert(r3.is_cap(u));
+            assert(r4.is_cap(u));
+            // The leaf in the process's table is still live: only slots died.
+            assert(r4.list.nodes@[bl as int].live == r3.list.nodes@[bl as int].live);
+            assert(r3.list.nodes@[bl as int].live == r2.list.nodes@[bl as int].live);
+            assert(r2.list.nodes@[bl as int].live == r1.list.nodes@[bl as int].live);
+            assert(r4.list.nodes@[bl as int].live);
+            assert(r4.list.nodes@[child as int].live == r3.list.nodes@[child as int].live);
+            assert(r3.list.nodes@[child as int].live == r2.list.nodes@[child as int].live);
+            assert(r4.list.nodes@[child as int].live);
+            assert(r4.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_owned_listed(r4, child);
+            assert(r4.can_retype_under(process, ROOT_UNTYPED_SLOT, bl, 1));
+            assert(r4.can_unlink_leaf(process, ROOT_UNTYPED_SLOT, bl));
+        }
+
+        // Retype the process's leaf: its hidden node is live, so the retype unlinks it.
+        let ok5 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, bl, Tracked(&mut steps));
+        let ghost r5 = *self;
+        proof {
+            assert(ok5 is Unlinked);
+            assert(r4.leaf_unlinked(r5, process, ROOT_UNTYPED_SLOT, bl));
+            assert(block_refs(&r5.blocks, BlockRef::Small(base / PAGE_SZ)) == 0);
+            assert(block_typed(&r5.blocks, BlockRef::Small(base / PAGE_SZ)));
+            assert forall|i: int| 0 <= i < NODE_SPACE && #[trigger] r5.list.nodes@[i].live implies r0.list.nodes@[i].live by {
+                if i != bl {
+                    assert(r5.list.nodes@[i].live == r4.list.nodes@[i].live);
+                    assert(r4.list.nodes@[i].live ==> r0.list.nodes@[i].live);
+                }
+            }
+            assert(r5.list.parent@ == r0.list.parent@);
+            assert(r5.tables == r0.tables);
+            assert(r5.root_live(process));
+            assert(r5.spaces == r0.spaces);
+            assert(r5.flush_epoch == 0);
+            lemma_slot_kept_but(r4, r5, process, ROOT_UNTYPED_SLOT, bl);
+            lemma_slot_kept_but(r4, r5, process, WITNESS_PROCESS_SLOT, bl);
+            assert(r5.is_cap(u));
+            assert(r5.list.nodes@[child as int].live == r4.list.nodes@[child as int].live);
+            assert(r5.list.nodes@[child as int].live);
+            assert(r5.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_owned_listed(r5, child);
+            assert(r5.can_retype_under(process, ROOT_UNTYPED_SLOT, bl, 1));
+            // The leaf's one live slot is the derived untyped, which has no child.
+            assert(r5.list.nodes@[bl + 1].live);
+            assert(!r5.leaf_is_empty(bl));
+            assert(r5.can_slice_leaf(process, ROOT_UNTYPED_SLOT, bl));
+            assert forall|x: int| bl + 2 <= x < bl + NODES_PER_PAGE implies !#[trigger] r5.list.nodes@[x].live by {
+                assert(!r0.list.nodes@[x].live);
+            }
+            lemma_children_back(r0.list, r5.list, child);
+            if !r5.list.childless(child) {
+                r5.list.lemma_next_is_child(child);
+                assert(r0.list.is_child(child, r5.list.nodes@[child as int].next));
+            }
+            assert forall|j: int| 1 <= j < NODES_PER_PAGE && (#[trigger] r5.list.nodes@[bl + j]).live
+                implies r5.list.childless((bl + j) as usize) by {
+                if j != 1 {
+                    assert(!r5.list.nodes@[bl + j].live);
+                }
+            }
+            assert(r5.leaf_slots_childless(bl));
+            lemma_live_slots_none(r5, bl, 2);
+            assert(r5.leaf_live_slots(bl) == 1);
+            // No slot of the leaf names the process's block: its one capability is an untyped.
+            assert(r5.payload_of(child).kind is Untyped);
+            assert(!r5.leaf_slot_names(bl, BlockRef::Small(base / PAGE_SZ))) by {
+                if r5.leaf_slot_names(bl, BlockRef::Small(base / PAGE_SZ)) {
+                    let n = choose|n: usize| bl < n < bl + NODES_PER_PAGE && #[trigger] r5.cap_names_block(n, BlockRef::Small(base / PAGE_SZ));
+                    if n != child {
+                        assert(!r5.list.nodes@[n as int].live);
+                    }
+                }
+            }
+        }
+
+        // Retype the leaf again: its hidden node is gone, so the retype slices its slots.
+        let ok6 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, bl, Tracked(&mut steps));
+        let ghost r6 = *self;
+        proof {
+            assert(ok6 is Slice);
+            assert(r5.leaf_slice_kept(r6, bl));
+            assert(r6.leaf_is_empty(bl));
+            assert(block_refs(&r6.blocks, BlockRef::Small(base / PAGE_SZ)) == 0);
+            assert(block_typed(&r6.blocks, BlockRef::Small(base / PAGE_SZ)));
+            assert(r6.tables == r0.tables);
+            assert(r6.root_live(process));
+            assert(r6.spaces.roots == r0.spaces.roots);
+            assert(r6.spaces.loaded == r0.spaces.loaded);
+            assert(r6.processes.records == r1.processes.records);
+            assert(r6.tables.has_slot(&r6.list, process, ROOT_UNTYPED_SLOT));
+            assert(r6.tables.has_slot(&r6.list, process, WITNESS_PROCESS_SLOT));
+            assert(r6.is_cap(u));
+            assert(r6.list.nodes@[u as int].depth == r5.list.nodes@[u as int].depth);
+            assert(r6.can_retype_under(process, ROOT_UNTYPED_SLOT, bl, 1));
+            assert(r6.list.nodes@[np as int].live == r5.list.nodes@[np as int].live);
+            assert(!r6.list.nodes@[np as int].live);
+        }
+
+        // Every core and IOMMU acknowledges, so the leaf's pages hold no stale translation.
+        self.witness_acknowledge_all();
+        let ghost q6 = *self;
+        proof {
+            assert(q6.tlb_wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(q6.blocks.tracks((bl / PAGE_SZ) as int));
+            assert(q6.blocks.tracks((bl / PAGE_SZ + 1) as int));
+            assert(q6.acknowledged(bl / PAGE_SZ)) by {
+                assert(q6.stale_epoch.pages@[(bl / PAGE_SZ) as int] <= q6.flush_epoch);
+            }
+            assert(q6.acknowledged((bl / PAGE_SZ + 1) as usize)) by {
+                assert(q6.stale_epoch.pages@[(bl / PAGE_SZ + 1) as int] <= q6.flush_epoch);
+            }
+            assert(q6.tables == r6.tables && q6.list == r6.list && q6.blocks == r6.blocks);
+            assert(q6.spaces == r6.spaces && q6.processes == r6.processes);
+            assert(q6.can_retype_under(process, ROOT_UNTYPED_SLOT, bl, 1));
+            assert(q6.root_live(process));
+            assert(q6.leaf_is_empty(bl));
+        }
+
+        // Retype the leaf a third time: it is empty, so the retype frees it.
+        let ok7 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, bl, Tracked(&mut steps));
+        let ghost r7 = *self;
+        let ghost a = tree_of(&r7.table_pages, &r7.spaces);
+        proof {
+            assert(ok7 is Freed);
+            assert(q6.leaf_freed(r7, 0, process, ROOT_UNTYPED_SLOT, bl));
+            assert(q6.tables.owner@[bl] == (base, 0int));
+            assert(r7.tables.leaf(base, 0) == NO_LEAF);
+            assert forall|r: int| 0 <= r < ROOT_ENTRIES implies #[trigger] r7.tables.leaf(base, r) == NO_LEAF by {
+                if r != 0 {
+                    assert(r7.tables.leaf(base, r) == q6.tables.leaf(base, r));
+                }
+            }
+            assert(r7.tables.roots@.dom().contains(process));
+            assert(r7.tables.leaf(process, 0) == q6.tables.leaf(process, 0));
+            assert(r7.tables.leaf(process, 2) == q6.tables.leaf(process, 2));
+            assert(r7.tables.has_slot(&r7.list, process, ROOT_UNTYPED_SLOT));
+            assert(r7.tables.has_slot(&r7.list, process, WITNESS_PROCESS_SLOT));
+            assert(r7.tables.is_cap(&r7.list, u));
+            assert(r7.payload_of(u) == first);
+            assert(r7.can_retype_under(process, ROOT_UNTYPED_SLOT, base, PROCESS_ORDER));
+            assert(q6.blocks.tracks((base / PAGE_SZ) as int));
+            assert(r7.blocks.pages@[(base / PAGE_SZ) as int] == q6.blocks.pages@[(base / PAGE_SZ) as int]);
+            assert(r7.process_is_dead(base));
+            assert(r7.spaces == q6.spaces);
+            assert(r7.spaces.roots == r0.spaces.roots);
+            assert(r7.spaces.loaded == r0.spaces.loaded);
+            assert(r7.process_unloaded(base));
+            r7.lemma_unloaded_released(base);
+            assert(r7.flush_epoch == 0);
+            // The space's root still names the table: the root's entries and record are the link's.
+            r7.lemma_process_block(base);
+            r0.lemma_process_block(base);
+            assert(!a.is_page(base) && !tk.is_page(base));
+            assert(a.is_root(base));
+            r7.lemma_table_base(base);
+            assert(a.record(base).level == 4);
+            assert(a.entry(base, KERNEL_MEM_END_L4INDEX) == tk.entry(base, KERNEL_MEM_END_L4INDEX));
+            assert(a.names_child(base, KERNEL_MEM_END_L4INDEX));
+            assert(child_at(a, base, KERNEL_MEM_END_L4INDEX) == b3);
+            assert(r7.can_cut_process_space(process, ROOT_UNTYPED_SLOT, base));
+            // The root's entries past the kernel's other than the table's are empty.
+            assert forall|i: usize| KERNEL_MEM_END_L4INDEX < i < ENTRIES implies #[trigger] a.entry(base, i).is_empty() by {
+                assert(!holds_kernel(SpaceKind::Process, i));
+                assert(tk.entry(base, i) == ta.entry(base, i));
+                assert(h0.spaces.roots@[base].value()[i].is_empty());
+            }
+            assert forall|i: usize| #[trigger] a.names_child(base, i) implies i == KERNEL_MEM_END_L4INDEX by {
+                if i != KERNEL_MEM_END_L4INDEX {
+                    assert(i >= KERNEL_MEM_END_L4INDEX);
+                    assert(a.entry(base, i).is_empty());
+                }
+            }
+        }
+
+        // The process is dead and released and its root names the table: the retype of its block cuts it.
+        let ok8a = self.reclaim(0, process, ROOT_UNTYPED_SLOT, base, Tracked(&mut steps));
+        let ghost r8 = *self;
+        proof {
+            assert(ok8a is Slice);
+            assert(r7.process_space_cut(r8, process, ROOT_UNTYPED_SLOT, base));
+            assert(Self::table_cuts_kept(r7, r8, base));
+            let b = tree_of(&r8.table_pages, &r8.spaces);
+            let ca = child_entries(a, base);
+            let cb = child_entries(b, base);
+            // The cut took the one child, so nothing is left to cut.
+            assert(ca.subset_of(set![KERNEL_MEM_END_L4INDEX])) by {
+                assert forall|i: usize| ca.contains(i) implies set![KERNEL_MEM_END_L4INDEX].contains(i) by {
+                    lemma_child_entries(a, base, i);
+                }
+            }
+            vstd::set_lib::range_set_properties::<usize>(0, ENTRIES);
+            vstd::set_lib::lemma_len_subset(ca, set![KERNEL_MEM_END_L4INDEX]);
+            assert(set![KERNEL_MEM_END_L4INDEX].len() == 1);
+            assert(cb.len() == 0);
+            vstd::set_lib::lemma_set_empty_equivalency_len(cb);
+            assert forall|i: usize| !#[trigger] b.names_child(base, i) by {
+                lemma_child_entries(b, base, i);
+            }
+            lemma_child_entries(a, base, KERNEL_MEM_END_L4INDEX);
+            lemma_child_entries(b, base, KERNEL_MEM_END_L4INDEX);
+            assert(b.entry(base, KERNEL_MEM_END_L4INDEX).is_empty());
+            assert(Self::child_cut(r7, r8, b3));
+            assert(b.record(b3).parent is None);
+            // Every entry of the root past the kernel's is now empty.
+            assert(a.is_table(base));
+            assert forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < ENTRIES implies #[trigger] r8.spaces.roots@[base].value()[i].is_empty() by {
+                r8.lemma_process_block(base);
+                assert(!b.is_page(base));
+                if i != KERNEL_MEM_END_L4INDEX {
+                    assert(b.entry(base, i) == a.entry(base, i));
+                    assert(a.entry(base, i).is_empty());
+                }
+                assert(b.entry(base, i).is_empty());
+            }
+            assert(r8.tables == r7.tables && r8.list == r7.list && r8.blocks == r7.blocks);
+            assert(r8.processes == r7.processes);
+            assert(r8.can_retype_under(process, ROOT_UNTYPED_SLOT, base, PROCESS_ORDER));
+            assert(r8.root_live(process));
+        }
+
+        // Every core and IOMMU acknowledges the cut's flush.
+        self.witness_acknowledge_all();
+        let ghost a8 = *self;
+        proof {
+            assert(a8.tlb_wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(a8.blocks.tracks((base / PAGE_SZ) as int));
+            assert(a8.acknowledged(base / PAGE_SZ)) by {
+                assert(a8.stale_epoch.pages@[(base / PAGE_SZ) as int] <= a8.flush_epoch);
+            }
+            assert(a8.spaces == r8.spaces && a8.blocks == r8.blocks && a8.processes == r8.processes);
+            assert(a8.tables == r7.tables);
+            assert(r8.spaces.loaded == r7.spaces.loaded);
+            assert(a8.process_unloaded(base));
+            a8.lemma_unloaded_released(base);
+            assert(a8.process_is_dead(base));
+            assert forall|r: int| 0 <= r < ROOT_ENTRIES implies #[trigger] a8.tables.leaf(base, r) == NO_LEAF by {
+                assert(r7.tables.leaf(base, r) == NO_LEAF);
+            }
+            assert forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < ENTRIES implies #[trigger] a8.spaces.roots@[base].value()[i].is_empty() by {
+                assert(r8.spaces.roots@[base].value()[i].is_empty());
+            }
+            assert(a8.process_is_spent(base));
+            assert(a8.can_retype_under(process, ROOT_UNTYPED_SLOT, base, PROCESS_ORDER));
+            assert(a8.root_live(process));
+            a8.lemma_process_block(base);
+            assert(a8.blocks.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            a8.blocks.lemma_not_free_uncovered((base / PAGE_SZ) as int);
+        }
+
+        // Retype the process's block again: the process is spent, so the retype frees it.
+        let ok8 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, base, Tracked(&mut steps));
+        let ghost r9 = *self;
+        proof {
+            assert(ok8 is Freed);
+            assert(a8.process_freed(r9, 0, process, ROOT_UNTYPED_SLOT, base));
+            assert(r9.tables.roots@[process] == a8.tables.roots@[process]);
+            assert(r9.tables.roots@.contains_key(process));
+            assert(r9.processes.records@[process] == a8.processes.records@[process]);
+            assert(r9.root_live(process));
+            assert(r9.tables.leaf(process, 0) == a8.tables.leaf(process, 0));
+            assert(r9.tables.leaf(process, 2) == a8.tables.leaf(process, 2));
+            assert(r9.tables.has_slot(&r9.list, process, ROOT_UNTYPED_SLOT));
+            assert(r9.tables.has_slot(&r9.list, process, WITNESS_PROCESS_SLOT));
+            assert(r9.tables.node_of(process, WITNESS_PROCESS_SLOT) == np);
+            assert(!r9.list.nodes@[np as int].live);
+            assert(r9.is_cap(u));
+            assert(r9.payload_of(u) == first);
+            assert(r9.can_retype_under(process, ROOT_UNTYPED_SLOT, base, PROCESS_ORDER));
+            assert(!r9.blocks.covered((base / PAGE_SZ) as int));
+            assert(r9.blocks.small_free((base / PAGE_SZ) as int, PROCESS_ORDER as usize)) by {
+                assert forall|k: int| 0 <= k < order_pages(3) implies #[trigger] r9.blocks.pages@[base / PAGE_SZ + k].kind is Free by {
+                    assert(r9.blocks.pages@[(base / PAGE_SZ) + k].kind is Free);
+                }
+            }
+            assert(r9.can_retype_block(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base, PROCESS_ORDER));
+        }
+
+        // Retype a process at the same block into slot 257 again.
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok9 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base, Tracked(&mut steps));
+        proof {
+            assert(ok9);
+            assert(np == base + 8 * PAGE_SZ + 1);
+        }
+        (ok8a, ok8, ok1 && ok2.is_some() && ok4.is_some() && ok9, Ghost(r7), Ghost(r8))
+    }
+
     /// Gives entry e of table t of space s a child table at the given level: the order-3 block at the
     /// cursor, retyped as a table page under the root's untyped at ROOT_UNTYPED_SLOT and linked through
     /// the capability to s's process at index i of the root's table, at depth d. The entry is empty and
@@ -2138,6 +2813,17 @@ impl CapKernel {
             forall|j: usize| j < ENTRIES ==> #[trigger] tree_of(&final(self).table_pages, &final(self).spaces).entry(cursor, j).is_empty(),
             forall|j: usize| j < ENTRIES && j != e ==> #[trigger] tree_of(&final(self).table_pages, &final(self).spaces).entry(t, j)
                 == tree_of(&old(self).table_pages, &old(self).spaces).entry(t, j),
+            !old(self).list.nodes@[cursor as int].live,
+            final(self).list.parent@ == old(self).list.parent@.insert(cursor, u@),
+            forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && j != cursor
+                ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live,
+            forall|x: usize| #![trigger final(self).list.nodes@[x as int]] old(self).list.valid(x) && x != cursor
+                ==> final(self).list.nodes@[x as int].kind == old(self).list.nodes@[x as int].kind,
+            final(self).cores == old(self).cores,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         // The body relates three states; their invariants stay folded, and the lemmas open them.
         hide(CapKernel::wf);
@@ -2173,6 +2859,7 @@ impl CapKernel {
         let ghost m = tree_of(&mid.table_pages, &mid.spaces);
         proof {
             assert(retyped);
+            assert(pre.tables.node_of(process, ROOT_UNTYPED_SLOT) == u@);
             Self::lemma_retype_nodes_kept(pre, mid, cursor, u@);
             assert(m.is_table(t));
             assert(m.record(t) == a.record(t));

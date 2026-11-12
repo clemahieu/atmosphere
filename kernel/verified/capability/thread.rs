@@ -2179,6 +2179,7 @@ impl CapKernel {
                 &&& forall|i: int| base < i < base + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[i].live
                 &&& block_refs(&final(self).blocks, BlockRef::Small(p / PAGE_SZ))
                     == block_refs(&old(self).blocks, BlockRef::Small(p / PAGE_SZ)) + 1
+                &&& final(self).blocks.pages@[(p / PAGE_SZ) as int].dead == old(self).blocks.pages@[(p / PAGE_SZ) as int].dead
                 &&& final(self).processes.bound@ == old(self).processes.bound@.insert(p, old(self).processes.bound@[p].insert(base))
                 &&& !final(self).can_delete(root, j)
                 &&& final(self).view().holds(root, child)
@@ -2209,6 +2210,7 @@ impl CapKernel {
                 assert(pre.blocks.pages@[(base / PAGE_SZ) as int + 1].kind is Free);
             }
             assert(mid.blocks.pages@[q] == pre.blocks.pages@[q]);
+            assert(mid.blocks.tracks(q));
             assert(mid.is_cap(n));
         }
         self.bind_thread(n, base);
