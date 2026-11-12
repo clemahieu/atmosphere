@@ -18,12 +18,16 @@ lines directly above it say who vouches for it (design/who-vouches-for-an-unprov
 hardware guarantee carries one line '// cite: <key> <section, figure or table>' per passage it
 restates, each key listed in tools/hardware-documents, and lies in an arch module, under a directory
 named arch. A claim the kernel vouches for carries '// kernel: <path from the repository root>
-<item>', naming a file that declares the function the item ends in. An item with neither, or with
-both, fails the check.
+<item>', naming a file that declares the function the item ends in. A claim the language vouches for
+carries one line '// rust: <path under rust-src> "<passage>"' per passage it rests on, naming a file
+under the rust-src of the toolchain rust-toolchain.toml pins and quoting a passage of it word for word,
+read with each line's comment marker dropped and every run of whitespace as one space; a toolchain
+pin that changes or drops the passage fails the check. It may lie anywhere, the claim being the same
+on every target. An item with none of the three, or with more than one, fails the check.
 
 The list holds one line per attribute or assumed specification: path from the repository root, item,
 attribute (or assume_specification), class and reason, separated by tabs. An assumed
-specification's class is hardware or kernel, and its reason is its citation lines' text, joined by
+specification's class is hardware, kernel or language, and its reason is its citation lines' text, joined by
 '; '. The check passes when the source and the list hold the same items, counting an item that
 appears twice in one file twice. The word assume, admit or assume_ in code fails the check, as a call, a path or a use that imports it
 under another name: the marked crates hold none, and a new one would be an axiom the proof rests on. So does any other way to exempt code: an axiom fn or a broadcast axiom fn, a
@@ -75,6 +79,7 @@ usage: tools/check-external-body.py           (the tree)
 """
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -91,10 +96,16 @@ ATTRIBUTES = ("external_body", "exec_allows_no_decreases_clause")
 ATTRIBUTE = re.compile(r"#\[verifier(?:::(\w+)\]|\((\w+)\)\])")
 CLASSES = ("glue", "gap", "unproven")
 ASSUMED = "assume_specification"
-VOUCHERS = ("hardware", "kernel")
+VOUCHERS = ("hardware", "kernel", "language")
 SPECIFICATION = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?assume_specification\b[^\[]*\[([^\]]+)\]")
 CITE = "// cite: "
 KERNEL = "// kernel: "
+RUST = "// rust: "
+# A language voucher's line: a path under the toolchain's rust-src, then the passage it quotes, in double
+# quotes, to the end of the line.
+RUST_CLAIM = re.compile(r'(\S+) "(.+)"$')
+# The comment markers a passage of rust-src's documentation is written behind, which the passage leaves out.
+DOC_MARKER = re.compile(r"^\s*//[/!]?")
 DOCUMENTS_PATH = "tools/hardware-documents"
 # vstd's assume, admit and assume_, as words: a call, a path, or a use that imports one under another name.
 ASSUMPTION = re.compile(r"\b(assume|admit|assume_)\b")
@@ -355,12 +366,49 @@ def kernel_item_exists(repo, path, item):
     return file.is_file() and re.search(rf"\bfn {re.escape(name)}\b", file.read_text(encoding="utf-8"))
 
 
-def vouchers(path, lines, index, documents, repo):
+def rust_source_root():
+    """The rust-src of the toolchain rust-toolchain.toml pins: rustc's sysroot, read from the repository
+    root so that the pin applies, then lib/rustlib/src/rust."""
+    try:
+        sysroot = subprocess.run(["rustc", "--print", "sysroot"], cwd=REPO, capture_output=True, text=True,
+                                 check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise Unreadable(f"cannot find the pinned toolchain's sysroot: {error}")
+    return Path(sysroot) / "lib/rustlib/src/rust"
+
+
+def prose(file):
+    """A rust-src file's text as a passage is quoted from it: each line's comment marker dropped and
+    every run of whitespace, line breaks included, one space."""
+    lines = file.read_text(encoding="utf-8").splitlines()
+    return " ".join(" ".join(DOC_MARKER.sub("", line) for line in lines).split())
+
+
+def language_claim(at, claim, rust_src):
+    """A language voucher's '<path> "<passage>"', checked against the toolchain's rust-src: the path a
+    file under it and the passage in its text word for word."""
+    match = RUST_CLAIM.match(claim)
+    if match is None:
+        raise Unreadable(f'{at}: a language voucher names a rust-src path and a passage in double quotes: '
+                         f'\'{RUST}<path> "<passage>"\'')
+    relative, passage = match.groups()
+    root = (rust_src() if callable(rust_src) else rust_src).resolve()
+    file = (root / relative).resolve()
+    if Path(relative).is_absolute() or not file.is_relative_to(root) or not file.is_file():
+        raise Unreadable(f"{at}: {relative} is not a file under the pinned toolchain's rust-src")
+    if " ".join(passage.split()) not in prose(file):
+        raise Unreadable(f"{at}: the passage is not found word for word in {relative} of the pinned "
+                         "toolchain's rust-src")
+    return claim
+
+
+def vouchers(path, lines, index, documents, repo, rust_src=rust_source_root):
     """The kind and the reason of the citation lines directly above the assumed specification on line
-    index: hardware with each '<key> <locator>', or kernel with each '<path> <item>'."""
+    index: hardware with each '<key> <locator>', kernel with each '<path> <item>', or language with each
+    '<rust-src path> "<passage>"'."""
     stated = {}
     above = index
-    while above > 0 and lines[above - 1].startswith((CITE, KERNEL)):
+    while above > 0 and lines[above - 1].startswith((CITE, KERNEL, RUST)):
         above -= 1
     for number in range(above, index):
         line = lines[number]
@@ -372,6 +420,8 @@ def vouchers(path, lines, index, documents, repo):
             if not locator.strip():
                 raise Unreadable(f"{at}: the citation names no section, figure or table of {key}")
             stated.setdefault("hardware", []).append(f"{key} {locator.strip()}")
+        elif line.startswith(RUST):
+            stated.setdefault("language", []).append(language_claim(at, line[len(RUST):].strip(), rust_src))
         else:
             claim = line[len(KERNEL):].strip()
             kernel_path, _, item = claim.partition(" ")
@@ -380,17 +430,18 @@ def vouchers(path, lines, index, documents, repo):
             stated.setdefault("kernel", []).append(claim)
     at = f"{path}:{index + 1}"
     if not stated:
-        raise Unreadable(f"{at}: an assumed specification with no citation: '{CITE}<key> <locator>' or "
-                         f"'{KERNEL}<path> <item>' directly above it")
+        raise Unreadable(f"{at}: an assumed specification with no citation: '{CITE}<key> <locator>', "
+                         f"'{KERNEL}<path> <item>' or '{RUST}<path> \"<passage>\"' directly above it")
     if len(stated) > 1:
-        raise Unreadable(f"{at}: an assumed specification vouched for both by a document and by the kernel")
+        raise Unreadable(f"{at}: an assumed specification vouched for by more than one of a manual, the kernel "
+                         "and the language")
     (kind, reasons), = stated.items()
     if kind == "hardware" and not in_arch_module(path):
         raise Unreadable(f"{at}: a hardware guarantee outside an arch module")
     return kind, "; ".join(reasons)
 
 
-def specifications(path, source, documents, repo):
+def specifications(path, source, documents, repo, rust_src=rust_source_root):
     """Each assumed specification in one file, with who vouches for it and the citations that say so."""
     lines = [line.strip() for line in source.splitlines()]
     items = []
@@ -399,7 +450,7 @@ def specifications(path, source, documents, repo):
         if match is None:
             continue
         name = re.sub(r"\s", "", match.group(1))
-        items.append(Item(path, name, ASSUMED, *vouchers(path, lines, index, documents, repo)))
+        items.append(Item(path, name, ASSUMED, *vouchers(path, lines, index, documents, repo, rust_src)))
     return items
 
 
@@ -705,7 +756,7 @@ def marked_crates(repo):
     return marked
 
 
-def scan_tree(repo, documents):
+def scan_tree(repo, documents, rust_src=rust_source_root):
     """Each live attribute and each assumed specification in the marked crates, and each line there
     that assumes, admits or exempts code in a form the list cannot count, named from the root."""
     found = []
@@ -715,7 +766,7 @@ def scan_tree(repo, documents):
             path = file.relative_to(repo).as_posix()
             source = file.read_text(encoding="utf-8")
             found.extend(scan(path, source))
-            found.extend(specifications(path, source, documents, repo))
+            found.extend(specifications(path, source, documents, repo, rust_src))
             refused.extend(f"{line} assumes what the proof should show" for line in assumptions(path, source))
             refused.extend(unread_exemptions(path, source))
             refused.extend(f"{line} makes a ghost or tracked value outside counted glue"
@@ -746,13 +797,22 @@ def main(args):
         print(difference, file=sys.stderr)
     if differences:
         return 1
+    print(summary(found))
+    return 0
+
+
+def summary(found):
+    """The count line: each kind of exemption with its classes, every voucher of an assumed specification
+    named even when it holds none."""
     summaries = []
     for exempting in (ASSUMED,) + ATTRIBUTES:
         kinds = Counter(item.kind for item in found if item.attribute == exempting)
-        totals = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+        if exempting == ASSUMED:
+            totals = ", ".join(f"{kinds[kind]} {kind}" for kind in VOUCHERS)
+        else:
+            totals = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
         summaries.append(f"{sum(kinds.values())} {exempting}" + (f" ({totals})" if totals else ""))
-    print(f"{'; '.join(summaries)} listed; no assume, admit or uncounted exemption")
-    return 0
+    return f"{'; '.join(summaries)} listed; no assume, admit or uncounted exemption"
 
 
 ATTR = "#[verifier(external_body)]"
@@ -1021,7 +1081,7 @@ class SpecificationTests(unittest.TestCase):
 
     def test_a_specification_vouched_for_both_ways_is_refused(self):
         source = "// kernel: kernel/verified/capability/operation.rs Kernel::dispatch\n" + FLUSH
-        with self.assertRaisesRegex(Unreadable, r":4: .*both"):
+        with self.assertRaisesRegex(Unreadable, r":4: .*more than one"):
             specifications(ARCH_FILE, source, DOCUMENTS, self.kernel_repo())
 
     def test_the_list_holds_assumed_specifications_by_who_vouches(self):
@@ -1486,6 +1546,82 @@ class ForgeryTests(unittest.TestCase):
                        "#[verus :: internal(verus_macro)]\nfn f() {}\n"):
             with self.subTest(source):
                 self.assertTrue(unread_exemptions("a.rs", source), source)
+
+
+RUST_FILE = "library/core/src/ptr/mod.rs"
+RUST_SOURCE = (
+    "//! ## Exposed Provenance\n"
+    "//!\n"
+    "//! Memory which is outside the control of the Rust abstract machine (MMIO registers, for example) is\n"
+    "//! always considered to be exposed, so long as this memory is disjoint from memory that will be used\n"
+    "//! by the abstract machine such as the stack, heap, and statics.\n"
+)
+RUST_PASSAGE = ("Memory which is outside the control of the Rust abstract machine (MMIO registers, for example) is "
+                "always considered to be exposed, so long as this memory is disjoint from memory that will be used "
+                "by the abstract machine such as the stack, heap, and statics.")
+
+
+class LanguageTests(unittest.TestCase):
+    """A claim the language vouches for: an assumed specification whose voucher lines each name a file
+    under the pinned toolchain's rust-src and quote a passage of it word for word."""
+
+    def rust_src(self, text=RUST_SOURCE):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / RUST_FILE).parent.mkdir(parents=True)
+        (root / RUST_FILE).write_text(text)
+        return root
+
+    def source(self, passage=RUST_PASSAGE, path=RUST_FILE):
+        return f'// rust: {path} "{passage}"\npub assume_specification[map_own](x: usize);\n'
+
+    def test_a_passage_found_in_rust_src_is_accepted_anywhere(self):
+        self.assertEqual(
+            specifications("acall/src/memory.rs", self.source(), DOCUMENTS, None, self.rust_src()),
+            [Item("acall/src/memory.rs", "map_own", ASSUMED, "language", f'{RUST_FILE} "{RUST_PASSAGE}"')],
+        )
+
+    def test_a_passage_absent_or_altered_is_refused(self):
+        rust_src = self.rust_src()
+        for passage in (RUST_PASSAGE.replace("always", "never"), RUST_PASSAGE + " And more.",
+                        "Strict Provenance is the only model."):
+            with self.subTest(passage), self.assertRaisesRegex(Unreadable, r"^acall/src/memory\.rs:1: .*not found"):
+                specifications("acall/src/memory.rs", self.source(passage), DOCUMENTS, None, rust_src)
+
+    def test_a_passage_in_a_file_missing_or_outside_rust_src_is_refused(self):
+        rust_src = self.rust_src()
+        for path in ("library/core/src/ptr/none.rs", "../outside.rs", "/etc/passwd"):
+            with self.subTest(path), self.assertRaisesRegex(Unreadable, r":1: .*rust-src"):
+                specifications("acall/src/memory.rs", self.source(path=path), DOCUMENTS, None, rust_src)
+
+    def test_a_voucher_line_without_a_quoted_passage_is_refused(self):
+        source = f"// rust: {RUST_FILE} Exposed Provenance\npub assume_specification[map_own](x: usize);\n"
+        with self.assertRaisesRegex(Unreadable, r":1: .*quote"):
+            specifications("acall/src/memory.rs", source, DOCUMENTS, None, self.rust_src())
+
+    def test_a_language_item_with_no_voucher_line_is_refused(self):
+        source = "pub assume_specification[map_own](x: usize);\n"
+        with self.assertRaisesRegex(Unreadable, r":1: .*no citation.*// rust: "):
+            specifications("acall/src/memory.rs", source, DOCUMENTS, None, self.rust_src())
+
+    def test_a_specification_vouched_for_by_the_language_and_a_manual_is_refused(self):
+        source = f'// rust: {RUST_FILE} "{RUST_PASSAGE}"\n' + FLUSH
+        with self.assertRaisesRegex(Unreadable, r":4: .*more than one"):
+            specifications(ARCH_FILE, source, DOCUMENTS, None, self.rust_src())
+
+    def test_the_list_holds_a_language_item(self):
+        line = f"acall/src/memory.rs\tmap_own\tassume_specification\tlanguage\t{RUST_FILE} \"x\"\n"
+        self.assertEqual(parse_list(line)[0].kind, "language")
+        with self.assertRaises(Unreadable):
+            parse_list(f"acall/src/memory.rs\tmap_own\texternal_body\tlanguage\tx\n")
+
+    def test_the_pinned_toolchain_holds_the_passage_the_record_cites(self):
+        self.assertIn(" ".join(RUST_PASSAGE.split()), prose(rust_source_root() / RUST_FILE))
+
+    def test_the_count_line_names_every_voucher(self):
+        found = [Item("a.rs", "f", ASSUMED, "kernel", "k")]
+        self.assertEqual(summary(found).split(";")[0], "1 assume_specification (0 hardware, 1 kernel, 0 language)")
 
 
 class LexTests(unittest.TestCase):
