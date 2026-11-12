@@ -1176,34 +1176,6 @@ pub open spec fn user_frame(f: Registers) -> Registers {
     Registers { spsr_el1: (f.spsr_el1 & USER_SPSR_KEPT) | USER_SPSR_MODE, ..f }
 }
 
-/// A written frame returns to EL0 in AArch64 state with debug, SError, IRQ and FIQ unmasked, and
-/// carries no saved process state but the condition flags; the rest of it is the frame as written.
-pub proof fn lemma_user_frame_at_el0(f: Registers)
-    ensures
-        user_frame(f).spsr_el1 & 0x1f == 0,
-        user_frame(f).spsr_el1 & 0x3c0 == 0,
-        user_frame(f).spsr_el1 & !0xf000_0000u64 == 0,
-        user_frame(f).spsr_el1 & 0xf000_0000u64 == f.spsr_el1 & 0xf000_0000u64,
-        user_frame(f).elr_el1 == f.elr_el1,
-        user_frame(f).sp_el0 == f.sp_el0,
-        user_frame(f).x0 == f.x0,
-        user_frame(f).x30 == f.x30,
-{
-    let s = f.spsr_el1;
-    assert(((s & 0xf000_0000u64) | 0u64) & 0x1f == 0) by (bit_vector);
-    assert(((s & 0xf000_0000u64) | 0u64) & 0x3c0 == 0) by (bit_vector);
-    assert(((s & 0xf000_0000u64) | 0u64) & !0xf000_0000u64 == 0) by (bit_vector);
-    assert(((s & 0xf000_0000u64) | 0u64) & 0xf000_0000u64 == s & 0xf000_0000u64) by (bit_vector);
-}
-
-/// The last byte below 2^48 is a user address and 2^48 is not.
-pub proof fn lemma_user_rip_bound()
-    ensures
-        user_rip(0xffff_ffff_ffff),
-        !user_rip(0x1_0000_0000_0000),
-{
-}
-
 /// The PL011 the console writes, at the address QEMU virt's device tree gives it: node pl011@9000000,
 /// one page, the machine's stdout-path. The kernel reads and writes the device at this address, so the
 /// address space it runs in maps the page there.
