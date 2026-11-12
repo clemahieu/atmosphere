@@ -440,7 +440,8 @@ impl CapKernel {
     /// during the call, if the leaf holding it is in its run, and so can the capability the position
     /// goes through, so the steps name the capability's node and the authority is the caller's when
     /// the call began. Every page of a mapping it took is stale past the epoch it began at, so no core or
-    /// IOMMU counts as having flushed it on an acknowledgement from before the call.
+    /// IOMMU counts as having flushed it on an acknowledgement from before the call, and no IOMMU
+    /// acknowledges during it: only a flush does that.
     pub fn revoke(&mut self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: RevokeStep)
         requires
             old(self).wf(),
@@ -469,6 +470,8 @@ impl CapKernel {
                 old(self).mappings@.contains_key(n) && !final(self).mappings@.contains_key(n)
                 && #[trigger] record_pages(old(self).mappings@[n]).contains(g)
                 ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g),
+            final(self).iommus.acked == old(self).iommus.acked,
+            final(self).iommus.present == old(self).iommus.present,
     {
         let ghost pre = *old(self);
         proof {
@@ -518,6 +521,8 @@ impl CapKernel {
                 forall|n: usize, g: usize| pre.mappings@.contains_key(n) && !self.mappings@.contains_key(n)
                     && #[trigger] record_pages(pre.mappings@[n]).contains(g)
                     ==> self.stale_epoch.above(pre.flush_epoch as int, g) && (g as int) < NUM_PAGES,
+                self.iommus.acked == pre.iommus.acked,
+                self.iommus.present == pre.iommus.present,
             decreases REVOKE_BUDGET - taken,
         {
             let ghost mid = *self;
@@ -636,6 +641,8 @@ impl CapKernel {
             forall|n: usize, g: usize| old(self).mappings@.contains_key(n) && !final(self).mappings@.contains_key(n)
                 && #[trigger] record_pages(old(self).mappings@[n]).contains(g)
                 ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g) && (g as int) < NUM_PAGES,
+            final(self).iommus.acked == old(self).iommus.acked,
+            final(self).iommus.present == old(self).iommus.present,
     {
         let ghost pre = *old(self);
         proof {
