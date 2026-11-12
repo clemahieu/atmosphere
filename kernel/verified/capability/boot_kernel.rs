@@ -268,6 +268,7 @@ impl CapKernel {
         &&& forall|c: int| 0 <= c < NUM_CPUS ==> {
             &&& (#[trigger] self.cores@[c]).current_thread is None
             &&& self.cores@[c].generation == 1
+            &&& self.cores@[c].next_pcid == 1
             &&& self.cores@[c].space is None
         }
         &&& self.devices.count == 0

@@ -213,9 +213,11 @@ impl CapKernel {
 
     /// Core c loads process space s: from here on it may hold what the space's tables say, and it is on
     /// the space's list of cores, for an unmap to find. Pointing the core's base register at it is
-    /// switch_space's. The register names no space, or s already: a load that ran out of PCIDs starts a
-    /// new generation, which leaves no space's id valid, and a space the register named would keep a
-    /// tag a later load could hand to another space.
+    /// switch_space's. The register may name another space when the load starts no new generation: s
+    /// holds a valid id on c, or c has PCIDs left. A load that ran out of PCIDs starts a new
+    /// generation, which leaves no space's id valid, and a space the register named would keep a tag
+    /// a later load could hand to another space, so then the register names no space, or s already.
+    /// See design/core-names-a-space-while-running-its-thread/.
     pub fn load_space(&mut self, c: usize, s: usize, Tracked(steps): Tracked<&mut Steps>) -> (pcid: usize)
         requires
             old(self).wf(),
@@ -223,9 +225,15 @@ impl CapKernel {
             old(self).spaces.roots@.contains_key(s),
             old(self).spaces.records@[s].value().kind is Process,
             old(self).cores@[c as int].generation < ID_GENERATION_MAX,
-            old(self).cores@[c as int].space is None || old(self).cores@[c as int].space == Some(s),
+            old(self).cores@[c as int].space is None || old(self).cores@[c as int].space == Some(s)
+                || holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s)
+                || old(self).cores@[c as int].next_pcid != PCID_MAX,
         ensures
             final(steps).count <= old(steps).count + LOAD_SPACE_STEPS,
+            old(self).cores@[c as int].next_pcid != PCID_MAX ==> {
+                &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation
+                &&& final(self).cores@[c as int].next_pcid <= old(self).cores@[c as int].next_pcid + 1
+            },
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).loaded(c as int, s),
             final(self).spaces.loaded@[s].value().retired == 0,
@@ -562,13 +570,14 @@ impl CapKernel {
     }
 
     /// Hands out core c's next PCID. Run out, it flushes every context on this core first and starts a
-    /// new generation, which leaves no space's id valid here, so the core's base register names no space.
+    /// new generation, which leaves no space's id valid here, so then the core's base register names no
+    /// space. With PCIDs left it keeps the generation, and the space the register names keeps its id.
     fn fresh_pcid(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>) -> (p: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).cores@[c as int].generation < ID_GENERATION_MAX,
-            old(self).cores@[c as int].space is None,
+            old(self).cores@[c as int].space is None || old(self).cores@[c as int].next_pcid != PCID_MAX,
         ensures
             final(steps).count <= old(steps).count + FRESH_PCID_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
@@ -582,6 +591,7 @@ impl CapKernel {
                 ==> holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s),
             old(self).cores@[c as int].next_pcid != PCID_MAX ==> {
                 &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation
+                &&& final(self).cores@[c as int].next_pcid == old(self).cores@[c as int].next_pcid + 1
                 &&& final(self).tlb == old(self).tlb
                 &&& !old(self).tlb@.tags(c as int).contains(p)
             },

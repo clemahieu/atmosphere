@@ -898,6 +898,89 @@ impl CapKernel {
         self.enter_boot_thread(0, t);
     }
 
+    /// From the state boot leaves, with a second process built at `base` as
+    /// witness_process_holds_capability builds it: core 0 loads the root's space and points its base
+    /// register at it, then loads the second process's space while the register still names the root's,
+    /// and points the register straight at the second space's root, with no write of the kernel's root
+    /// between. The second load hands out a fresh PCID in the generation, so no id the register's tag
+    /// stands for is handed to another space. See design/core-names-a-space-while-running-its-thread/.
+    pub fn witness_switch_between_processes(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+    )
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            final(self).wf(),
+            final(self).cores@[0].space == Some(base),
+            final(self).spaces.registers@[0].root() == base + SPACE_ROOT_PAGE * PAGE_SZ,
+            final(self).loaded(0, process),
+            final(self).loaded(0, base),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].current_thread is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.cores@[0].next_pcid == 1);
+        }
+        let ok = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let ghost s1 = *self;
+        proof {
+            assert(ok);
+            assert(s1.cores == s0.cores);
+            assert(witness_alive(s1, process));
+            assert(witness_alive(s1, base));
+            assert(process_spaces_wf(&s1.spaces, &s1.processes)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s1.processes.records@.contains_key(process));
+            assert(s1.processes.records@.contains_key(base));
+            // Each space's block is in tracked memory, so its root page is an aligned address.
+            assert(space_wf(&s1.list, &s1.spaces, &s1.blocks, process)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(space_wf(&s1.list, &s1.spaces, &s1.blocks, base)) by {
+                reveal(CapKernel::wf);
+            }
+        }
+        // The steps are the witness's own; no lock bounds them: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.cores@[0].space == Some(process));
+            assert(s2.cores@[0].current_thread is None);
+            assert(s2.cores@[0].next_pcid <= 2);
+            assert(s2.cores@[0].generation == 1);
+            assert(s2.spaces.roots == s1.spaces.roots);
+            assert(s2.spaces.records == s1.spaces.records);
+        }
+        // Core 0 loads the second space while its register names the root's: the load starts no
+        // new generation.
+        let pcid = self.load_space(0, base, Tracked(&mut steps));
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread is None);
+            assert(s3.loaded(0, process));
+        }
+        self.switch_space(0, Some(base), base + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+    }
+
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
     /// of two free ones past those boot's tables took from the first untyped: retype a leaf into root
     /// entry 2 of the root's table at the second block's first two pages, a process at `base` into

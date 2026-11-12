@@ -1789,6 +1789,7 @@ impl CapKernel {
             forall|c: int| 0 <= c < NUM_CPUS ==> {
                 &&& (#[trigger] final(self).cores@[c]).current_thread is None
                 &&& final(self).cores@[c].generation == 1
+                &&& final(self).cores@[c].next_pcid == 1
                 &&& final(self).cores@[c].space is None
             },
             final(self).list.seq@[0] == root,
