@@ -359,6 +359,35 @@ impl CapKernel {
             ==> pre.holders@[br].contains(n)
     }
 
+    /// What revoke steps left of the counts: each tracked page lies in the block it did, and no block
+    /// with holders has a higher count than it had.
+    pub open spec fn counts_lowered(pre: Self, post: Self) -> bool {
+        &&& forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i)
+        &&& forall|br: BlockRef| #[trigger] pre.holders@.contains_key(br)
+            ==> block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+    }
+
+    /// Revoke steps raise no count: a block's count is the number of its holders, and its holders
+    /// after are some of those before.
+    pub proof fn lemma_revoked_counts_lowered(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.wf(),
+            Self::blocks_revoked(pre, post),
+        ensures
+            Self::counts_lowered(pre, post),
+    {
+        reveal(CapKernel::blocks_revoked);
+        assert(holders_wf(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@));
+        assert(holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@));
+        assert forall|br: BlockRef| #[trigger] pre.holders@.contains_key(br)
+            implies block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br) by {
+            assert(post.holders@.contains_key(br));
+            assert(post.holders@[br].subset_of(pre.holders@[br]));
+            vstd::set_lib::lemma_len_subset(post.holders@[br], pre.holders@[br]);
+        }
+    }
+
     /// Revoke steps compose: what one did to the blocks and what the next did is what both did.
     pub proof fn lemma_blocks_revoked_compose(pre: Self, mid: Self, post: Self)
         requires

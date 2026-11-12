@@ -223,14 +223,29 @@ impl CapKernel {
         &&& self.deletable(self.tables.node_of(table->0, at->0.index))
     }
 
+    /// Every page of every frame capability in any table's view in pre lies in the block it did in post,
+    /// and that block's count is no higher than it was: the step gave no such block a holder.
+    pub open spec fn frame_blocks_lowered(pre: Self, post: Self) -> bool {
+        forall|t: usize, j: usize, page: usize|
+            pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) ==> {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], page)) == br
+                &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+            }
+    }
+
     /// Delete's contract over the caller's view, for the position word decoded to at: refused, with
-    /// every table's view as it was, exactly when delete_allowed fails; otherwise ok, with the slot at
-    /// the position gone from its table's view and every other slot of every table as it was.
+    /// every table's view and the block table as they were, exactly when delete_allowed fails; otherwise
+    /// ok, with the slot at the position gone from its table's view, every other slot of every table as
+    /// it was, and every frame capability's block the one it was at a count no higher: the capability
+    /// gone held one reference at most, and no block gained one.
     pub open spec fn delete_contract(pre: Self, post: Self, root: usize, at: Option<Position>, out: Outcome) -> bool {
         ||| {
             &&& !pre.delete_allowed(root, at)
             &&& out == status_only(STATUS_REFUSED)
             &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& post.blocks == pre.blocks
         }
         ||| {
             let table = pre.view_table_at(root, at->0.through)->0;
@@ -238,6 +253,7 @@ impl CapKernel {
             &&& out == status_only(STATUS_OK)
             &&& post.table_view(table) == pre.table_view(table).remove(at->0.index)
             &&& forall|t: usize| t != table ==> #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& Self::frame_blocks_lowered(pre, post)
         }
     }
 
@@ -283,6 +299,17 @@ impl CapKernel {
             let table = pre.table_at(root, a.through)->0;
             let n = pre.cap_at(root, a)->0;
             pre.lemma_slot(table, a.index);
+            // Whatever n named, at most one block's count changed, by one down, and a frame capability's
+            // block has a count to lose.
+            assert forall|t: usize, j: usize, page: usize|
+                pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) implies {
+                    let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page));
+                    &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], page)) == br
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                } by {
+                pre.lemma_view_frame_counted(t, j, page);
+            }
             assert forall|t: usize| #[trigger] post.table_view(t) == if t == table { pre.table_view(t).remove(a.index) } else { pre.table_view(t) } by {
                 assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == (if t == table { pre.table_view(t).remove(a.index) } else { pre.table_view(t) }).contains_key(j)
                     && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
@@ -338,12 +365,15 @@ impl CapKernel {
     /// position lost some of its run: only slots revokes_slot names left any table, every other slot
     /// says what it said, and c's own slot stays unless the leaf holding it was in the run. Then refused
     /// with the flush epoch at its limit, again with some of the run left, or ok with c childless.
+    /// Whichever, every frame capability's block is the one it was at a count no higher: a revoke takes
+    /// holders and adds none. A refused revoke that took nothing leaves the block table as it was.
     /// The epoch and c's run read the kernel outside the view.
     pub open spec fn revoke_contract(pre: Self, post: Self, root: usize, at: Option<Position>, out: Outcome) -> bool {
         ||| {
             &&& !pre.revoke_allowed(root, at)
             &&& out == status_only(STATUS_REFUSED)
             &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& post.blocks == pre.blocks
         }
         ||| {
             let table = pre.view_table_at(root, at->0.through)->0;
@@ -351,6 +381,7 @@ impl CapKernel {
             let c = pre.tables.node_of(table, i);
             &&& pre.revoke_allowed(root, at)
             &&& Self::revoke_kept(pre, post, c)
+            &&& Self::frame_blocks_lowered(pre, post)
             &&& !pre.list.in_run(c, pre.tables.leaf(table, index_entry(i))) ==> post.table_view(table).contains_key(i)
             &&& {
                 ||| out == status_only(STATUS_REFUSED) && post.flush_epoch == usize::MAX
@@ -384,6 +415,19 @@ impl CapKernel {
             let table = pre.table_at(root, a.through)->0;
             let c = pre.cap_at(root, a)->0;
             assert(post.tables == pre.tables);
+            // A frame capability's block has the capability among its holders.
+            assert forall|t: usize, j: usize, page: usize|
+                pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) implies {
+                    let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page));
+                    &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], page)) == br
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                } by {
+                pre.lemma_view_frame_counted(t, j, page);
+                pre.lemma_table_view(t, j);
+                pre.lemma_frame_page(pre.tables.node_of(t, j), page);
+                assert(holders_wf(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@));
+            }
             assert forall|t: usize, j: usize| #[trigger] post.table_view(t).contains_key(j) || #[trigger] pre.table_view(t).contains_key(j) implies {
                 &&& post.table_view(t).contains_key(j) ==> pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j]
                 &&& pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j) ==> pre.revokes_slot(c, t, j)
@@ -1455,15 +1499,17 @@ impl CapKernel {
     }
 
     /// Move's contract over the caller's view, for the source position from and the destination
-    /// position to. Refused, with every table's view as it was, exactly when move_allowed fails;
-    /// otherwise ok, with every table's view as moved_table_view says: the capability gone from the
-    /// source's slot and in the destination's, and every other slot of every table as it was but for
-    /// the parent its children name.
+    /// position to. The block table is as it was whatever the status: a move changes where a
+    /// capability is and not what holds a block. Refused, with every table's view as it was, exactly
+    /// when move_allowed fails; otherwise ok, with every table's view as moved_table_view says: the
+    /// capability gone from the source's slot and in the destination's, and every other slot of every
+    /// table as it was but for the parent its children name.
     pub open spec fn move_contract(pre: Self, post: Self, root: usize, from: Option<Position>, to: Option<Position>, out: Outcome) -> bool {
         ||| {
             &&& !pre.move_allowed(root, from, to)
             &&& out == status_only(STATUS_REFUSED)
             &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& post.blocks == pre.blocks
         }
         ||| {
             let src = pre.view_table_at(root, from->0.through)->0;
@@ -1471,6 +1517,7 @@ impl CapKernel {
             &&& pre.move_allowed(root, from, to)
             &&& out == status_only(STATUS_OK)
             &&& forall|t: usize| #[trigger] post.table_view(t) == pre.moved_table_view(src, from->0.index, dst, to->0.index, t)
+            &&& post.blocks == pre.blocks
         }
     }
 

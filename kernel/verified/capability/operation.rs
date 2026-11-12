@@ -570,7 +570,8 @@ impl CapKernel {
 
     /// A delete in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_delete fails, or ok with the childless capability at the position the
-    /// slot's word names gone, every thread bound as it was and every space's tables as they were.
+    /// slot's word names gone with the reference it held, every thread bound as it was and every space's
+    /// tables as they were.
     pub open spec fn spec_deleted(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
         ||| !pre.allows_delete(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
@@ -578,6 +579,7 @@ impl CapKernel {
             &&& out == status_only(STATUS_OK)
             &&& at is Some
             &&& Self::cap_deleted_at(pre, post, root, at->0)
+            &&& Self::object_dropped(pre, post, pre.cap_at(root, at->0)->0)
             &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
             &&& Self::same_tree(pre, post)
         }
@@ -587,8 +589,8 @@ impl CapKernel {
     /// returned: refused with nothing changed, when allows_revoke fails; refused with the flush epoch at
     /// its limit, after the steps
     /// it took on the run of the capability at the position the slot's word names; again with a step of
-    /// that run taken and some of it left; or ok with the run empty. See
-    /// design/revoke-by-depth-first-list/.
+    /// that run taken and some of it left; or ok with the run empty. Whatever steps it took raised no
+    /// block's count. See design/revoke-by-depth-first-list/.
     pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
         ||| !pre.allows_revoke(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
@@ -597,14 +599,21 @@ impl CapKernel {
             &&& at is Some
             &&& post.flush_epoch == usize::MAX
             &&& Self::cap_revoking_at(pre, post, root, at->0)
+            &&& Self::counts_lowered(pre, post)
         }
         ||| {
             &&& out == status_only(STATUS_AGAIN)
             &&& at is Some
             &&& !post.list.childless(pre.cap_at(root, at->0)->0)
             &&& Self::cap_revoking_at(pre, post, root, at->0)
+            &&& Self::counts_lowered(pre, post)
         }
-        ||| out == status_only(STATUS_OK) && at is Some && Self::cap_revoked_at(pre, post, root, at->0)
+        ||| {
+            &&& out == status_only(STATUS_OK)
+            &&& at is Some
+            &&& Self::cap_revoked_at(pre, post, root, at->0)
+            &&& Self::counts_lowered(pre, post)
+        }
     }
 
     /// Whether the link in frame is allowed: can_link_at over the address in argument 1, the level in
@@ -1061,6 +1070,11 @@ impl CapKernel {
             },
             None => STATUS_REFUSED,
         };
+        proof {
+            if spec_position(frame.slot()) is Some {
+                Self::lemma_revoked_counts_lowered(*old(self), *self);
+            }
+        }
         status_only_outcome(status)
     }
 
