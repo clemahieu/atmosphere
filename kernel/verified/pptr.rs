@@ -470,21 +470,6 @@ pub proof fn typed_into_page<W>(tracked typed: PointsTo<W>) -> (tracked ret: Poi
     PointsTo { points_to, exposed, rest: empty }
 }
 
-/// A page survives the round trip through a typed permission at the same address.
-proof fn page_round_trip<W>(tracked page: PointsTo<[u8; PAGE_SZ]>) -> (tracked ret: PointsTo<[u8; PAGE_SZ]>)
-    requires
-        page.is_uninit(),
-        size_of::<[u8; PAGE_SZ]>() == PAGE_SZ,
-        align_of::<[u8; PAGE_SZ]>() == 1,
-        size_of::<W>() <= PAGE_SZ,
-        page.addr() as int % align_of::<W>() as int == 0,
-    ensures
-        ret.addr() == page.addr(),
-        ret.is_uninit(),
-{
-    typed_into_page(page_into_typed::<W>(page))
-}
-
 pub open spec fn page_is_zero(page: [u8; PAGE_SZ]) -> bool {
     forall|i: int| 0 <= i < PAGE_SZ ==> #[trigger] page@[i] == 0
 }

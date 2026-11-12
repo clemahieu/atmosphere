@@ -240,10 +240,12 @@
  
  impl<V> PPtr<V> {
      /// Use `addr()` instead
-@@ -188,25 +186,6 @@
+@@ -186,25 +184,6 @@
+             u == self.addr(),
+     {
          self.0
-     }
- 
+-    }
+-
 -    /// Cast an integer to a pointer.
 -    ///
 -    /// Note that this does _not_ require or ensure that the pointer is valid.
@@ -261,11 +263,9 @@
 -            u == s.addr(),
 -    {
 -        PPtr(u, PhantomData)
--    }
--
+     }
+ 
      #[doc(hidden)]
-     #[inline(always)]
-     pub fn from_usize(u: usize) -> (s: Self)
 @@ -230,17 +209,12 @@
      #[verifier::type_invariant]
      closed spec fn wf(self) -> bool {
@@ -451,7 +451,7 @@
      /// Given a shared borrow of the `PointsTo<V>`, obtain a shared borrow of `V`.
      #[inline(always)]
      pub fn borrow<'a>(self, Tracked(perm): Tracked<&'a PointsTo<V>>) -> (v: &'a V)
-@@ -597,4 +430,76 @@
+@@ -597,4 +430,61 @@
  
  pub use raw_ptr::MemContents;
  
@@ -493,21 +493,6 @@
 +    let tracked points_to = raw.into_typed::<[u8; PAGE_SZ]>(addr);
 +    let tracked empty = PointsToRaw::empty(exposed.provenance());
 +    PointsTo { points_to, exposed, rest: empty }
-+}
-+
-+/// A page survives the round trip through a typed permission at the same address.
-+proof fn page_round_trip<W>(tracked page: PointsTo<[u8; PAGE_SZ]>) -> (tracked ret: PointsTo<[u8; PAGE_SZ]>)
-+    requires
-+        page.is_uninit(),
-+        size_of::<[u8; PAGE_SZ]>() == PAGE_SZ,
-+        align_of::<[u8; PAGE_SZ]>() == 1,
-+        size_of::<W>() <= PAGE_SZ,
-+        page.addr() as int % align_of::<W>() as int == 0,
-+    ensures
-+        ret.addr() == page.addr(),
-+        ret.is_uninit(),
-+{
-+    typed_into_page(page_into_typed::<W>(page))
 +}
 +
 +pub open spec fn page_is_zero(page: [u8; PAGE_SZ]) -> bool {
