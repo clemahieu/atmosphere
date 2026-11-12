@@ -18,6 +18,7 @@ usage: tools/gate.py [--target x86_64|aarch64] [--step NAME]... [--boot-timeout 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,9 @@ FORCED_LINT_CRATES = (
 # Forced, so no allow in the source hides dead code or an unused import.
 FORCED_LINT_ENV = {"RUSTFLAGS": "--force-warn dead_code --force-warn unused_imports"}
 FORCED_LINT_CHECK = ("cargo", "check", "--message-format=json", "-Zjson-target-spec", "--target")
+# A warning as rustc renders it: its header line, then the line that locates its primary span.
+WARNING_HEADER = re.compile(r"^warning(?:\[\w+\])?: (.*)$")
+WARNING_LOCATION = re.compile(r"^\s*--> (.+):(\d+):(\d+)$")
 # timeout's status when the command it ran did not exit in time.
 TIMED_OUT = 124
 
@@ -166,14 +170,50 @@ def last_line(text):
     return lines[-1] if lines else ""
 
 
+def located_in_tree(path, root):
+    """Whether a path a diagnostic names is in the tree at root: rustc names a workspace member's file
+    relative to the root, and the toolchain's, the registry's and Verus's by a path outside it."""
+    return (Path(root) / path).resolve().is_relative_to(Path(root).resolve())
+
+
+def tree_warnings(output, root):
+    """Each warning in a build's output whose primary span rustc locates in the tree, once, as
+    'path:line:column: message'. A path rustc prints relative is relative to the root, the workspace's;
+    one outside the root, the toolchain's build-std sources among them, is not the tree's, and a
+    warning with no location, cargo's own or its count of a crate's warnings, names no line."""
+    found, lines = [], output.splitlines()
+    for header, following in zip(lines, lines[1:]):
+        warning, location = WARNING_HEADER.match(header), WARNING_LOCATION.match(following)
+        if not warning or not location:
+            continue
+        if not located_in_tree(location[1], root):
+            continue
+        line = f"{location[1]}:{location[2]}:{location[3]}: {warning[1]}"
+        if line not in found:
+            found.append(line)
+    return found
+
+
+def hold_warnings(gate, output):
+    """Fails on any warning a build located in the tree, at the lint levels the source sets: a
+    warning that lands is one every later build repeats and nobody reads."""
+    warnings = tree_warnings(output, gate.root)
+    if warnings:
+        raise Failure("warnings located in the tree:" + "".join(f"\n  {line}" for line in warnings))
+
+
 def build(gate):
     """The stack frame check's and the build's own tests, then the build, which runs that check on
-    each ELF it makes. The build's last line says what it built, or what failed."""
+    each ELF it makes. The build's last line says what it built, or what failed. Any rustc warning
+    located in the tree, in any build it makes, fails the step; one in the toolchain's sources does
+    not."""
     run_check(gate, STACK_SIZES_CHECK, "--test")
     run_check(gate, BUILD, "--test")
-    ran = gate.call([BUILD], capture=True)
+    ran = gate.call([BUILD], capture=True, merge=True)
+    print(ran.stdout, end="")
     if ran.code != 0:
         raise Failure(f"{BUILD}: {status(ran.code)}: {last_line(ran.stdout)}")
+    hold_warnings(gate, ran.stdout)
     return last_line(ran.stdout)
 
 
@@ -203,12 +243,14 @@ def workspace_tests(gate):
     root: a member built for bare metal runs its tests here as a host program. After the build,
     since the dom0 run check in boot-host-tests reads the built dom0. boot-host-tests holds the
     loader map check, whose lines start with 'free page ranges:', and the dom0 run check, whose lines
-    start with 'mapped runs:'."""
+    start with 'mapped runs:'. Any rustc warning located in the tree, in the host builds of the tests,
+    fails the step, as in the build step."""
     command = "cargo " + " ".join(WORKSPACE_TESTS)
-    ran = gate.call(["cargo", *WORKSPACE_TESTS], capture=True)
+    ran = gate.call(["cargo", *WORKSPACE_TESTS], capture=True, merge=True)
     print(ran.stdout, end="")
     if ran.code != 0:
         raise Failure(f"{command}: {status(ran.code)}{marked_lines(ran.stdout, TEST_FAILED)}")
+    hold_warnings(gate, ran.stdout)
     passed, binaries = test_totals(ran.stdout)
     if passed == 0:
         raise Failure(f"{command}: no test ran")
@@ -229,8 +271,7 @@ def in_tree_messages(output, root):
             continue
         message = message["message"]
         for span in message["spans"]:
-            path = Path(span["file_name"])
-            if span["is_primary"] and (root / path).resolve().is_relative_to(root.resolve()):
+            if span["is_primary"] and located_in_tree(span["file_name"], root):
                 where = f"{span['file_name']}:{span['line_start']}: {message['level']}: {message['message']}"
                 found.setdefault(where, message["rendered"])
     return list(found.items())
@@ -593,6 +634,34 @@ class Tests(unittest.TestCase):
         error = message("error", "kernel/src/main.rs", 3, "cannot find value `x`")
         with self.assertRaisesRegex(Failure, "in kernel/verified: exit status: 101\n  kernel/src/main.rs:3: error: cannot find value `x`$"):
             forced_lints(FakeGate(self.root, {"cargo": (101, error + "\n")}))
+
+    # A warning as rustc renders it in the tree, and one in the toolchain's build-std sources.
+    IN_TREE = ("warning: variable does not need to be mutable\n"
+               "    --> aheap/src/small.rs:1704:13\n     |\n1704 |         let mut x = 0;\n\n")
+    OUTSIDE = ("warning: unused import: `Foo`\n"
+               "  --> /home/u/.rustup/toolchains/t/lib/rustlib/src/rust/library/core/src/lib.rs:9:5\n\n"
+               "warning: `core` (lib) generated 1 warning\n")
+
+    def test_a_warning_counts_when_rustc_locates_it_in_the_tree(self):
+        absolute = f"warning[E0170]: pattern binds\n --> {self.root}/kernel/src/main.rs:3:1\n"
+        escaping = "warning: unused\n --> ../verus/source/vstd/lib.rs:1:1\n"
+        unplaced = "warning: unused manifest key: x\nwarning: `kernel` (bin) generated 1 warning\n --> nowhere\n"
+        self.assertEqual(tree_warnings(self.IN_TREE + self.OUTSIDE + absolute + escaping + unplaced + self.IN_TREE, self.root),
+                         ["aheap/src/small.rs:1704:13: variable does not need to be mutable",
+                          f"{self.root}/kernel/src/main.rs:3:1: pattern binds"])
+        self.assertEqual(tree_warnings(self.OUTSIDE, self.root), [])
+
+    def test_build_and_workspace_tests_fail_on_a_warning_in_the_tree_only(self):
+        built = "build x86_64: 9 workspace members\n"
+        self.assertEqual(build(FakeGate(self.root, {BUILD: (0, self.OUTSIDE + built)})), built.strip())
+        with self.assertRaisesRegex(Failure, "^warnings located in the tree:\n  aheap/src/small.rs:1704:13: variable"):
+            build(FakeGate(self.root, {BUILD: (0, self.IN_TREE + built)}))
+        cargo = "cargo " + " ".join(WORKSPACE_TESTS)
+        tested = "test result: ok. 3 passed; 0 failed\n"
+        self.assertEqual(workspace_tests(FakeGate(self.root, {cargo: (0, self.OUTSIDE + tested)})),
+                         "3 tests passed in 1 test binaries")
+        with self.assertRaisesRegex(Failure, "^warnings located in the tree:\n  aheap/src/small.rs:1704:13: variable"):
+            workspace_tests(FakeGate(self.root, {cargo: (0, self.IN_TREE + tested)}))
 
     def test_a_boot_that_hangs_or_fails_its_log_check_fails(self):
         (self.root / SERIAL_LOG).write_text("old\n")
