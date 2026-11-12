@@ -25,7 +25,7 @@ It comes in two stages on the one invariant.
 
 Policy stays out of the proof. An unproven placement process decides which tenant to create, what quota to give and what to take back, and asks; the proven divider enforces I and refuses what would break it.
 
-The proof lives in user space. Each operation the divider uses has a caller's-view contract, requires and ensures over the caller's own slots, proven in `kernel/verified` from the operation's specification and carried into the divider's crate by `tools/verify.py`'s import of marked crates. A syscall wrapper is the one `external_body` the divider's crates hold, counted as glue, and it lands only with its contract's proof. For the root the contracts need no assumption about other processes: its capabilities hang from the synthetic root that nobody holds, so no other step changes its slots unless it gave control of itself away.
+The proof lives in user space. Each operation the divider uses has a caller's-view contract, requires and ensures over the caller's own slots, proven in `kernel/verified` from the operation's specification and carried into the divider's crate by `tools/verify.py`'s import of marked crates. The system call itself is the one `external_body` the divider's crates hold, `step` in `acall/src/step.rs`, classed `gap` in `tools/external-body-list`: debt, which nothing outside the proof vouches for, resting on the premise its reason states, that the caller token was the kernel's state and the caller's root when the process was handed it and no other step ran since the previous return, `design/who-vouches-for-an-unproven-claim/`. Every wrapper over it is verified, and each lands only with its contract's proof. For the root the contracts need no assumption about other processes: its capabilities hang from the synthetic root that nobody holds, so no other step changes its slots unless it gave control of itself away.
 
 ## Context
 
@@ -58,4 +58,4 @@ The kernel already makes reclaim clean, so the divider does not scrub: revoke un
 - What tenants do once they run, including whether a shared server leaks between its clients.
 - Termination of requests: the stage-two statement is that a handler given what it requires completes, not that every request is served.
 - That a layout says what the operator meant: a layout that declares the wrong overlap is enforced faithfully.
-- The trusted base: counted glue, the loader, firmware, hardware and the IOMMU, Verus, Z3 and rustc.
+- The trusted base: the claims `tools/external-body-list` counts (hardware, kernel and language claims, and `gap` and `unproven` debt), the loader, firmware, hardware and the IOMMU, Verus, Z3 and rustc.

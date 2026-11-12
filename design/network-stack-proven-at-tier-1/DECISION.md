@@ -44,6 +44,6 @@ The kernel needed none of rules 1 to 3 because its inputs are fixed-shape regist
 
 - Whether the combinators come from an existing Verus combinator library or are written in the tree. A library's license is checked and recorded before its source is read.
 - The constants of each step bound. The counter counts what the code tells it to count: it is a model of cost, not of cycles, and the stack depth of the code is not reasoned about.
-- The virtio-net driver, whose access to the device is glue under the rule for hardware.
+- The virtio-net driver, whose access to the device is a hardware guarantee, `design/who-vouches-for-an-unproven-claim/`.
 - Protocols above TCP and UDP, which this record does not cover.
 - The filesystem stack's tier, which stays a tier-1 target with tier 2 accepted.
