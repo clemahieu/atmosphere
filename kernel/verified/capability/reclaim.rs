@@ -797,7 +797,7 @@ impl CapKernel {
             // A process whose space a core's base register names is refused: the core may walk the space, and
             // a retire, which ends a core's dependence when it flushes, would not end that.
             old(self).processes.records@.contains_key(base) && old(self).process_space_named(base) ==> ret is Refused,
-            old(self).can_cut_process_space(root, from, base) ==> ret is Slice,
+            old(self).can_cut_process_space(root, from, base) ==> ret is Slice && old(self).process_space_cut(*final(self), root, from, base),
             old(self).processes.records@.contains_key(base) && ret is Slice
                 ==> old(self).process_retired(*final(self), base) || old(self).process_space_cut(*final(self), root, from, base),
             old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)
