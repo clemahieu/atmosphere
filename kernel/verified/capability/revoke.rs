@@ -210,6 +210,7 @@ impl CapKernel {
                 &&& final(self).blocks == old(self).blocks
                 &&& final(self).holders == old(self).holders
             },
+            Self::blocks_revoked(*old(self), *final(self)),
     {
         let ghost pre = *old(self);
         proof {
@@ -263,12 +264,19 @@ impl CapKernel {
                     _ => {},
                 }
             },
-            NodeKind::Mapping => { word = self.clear_mapping(n, Tracked(steps)); },
+            NodeKind::Mapping => {
+                proof {
+                    assert(pre.mappings@.contains_key(n));
+                    pre.lemma_mapping_node(n);
+                }
+                word = self.clear_mapping(n, Tracked(steps));
+            },
             NodeKind::Binding => { self.unbind(n); },
             NodeKind::DeviceBinding => { self.unbind_device(n, Tracked(steps)); },
         }
         proof {
             reveal(devices_wf);
+            reveal(CapKernel::blocks_revoked);
             assert(self.devices.wf());
             if !(node.kind is Mapping) && !(node.kind is DeviceBinding) {
                 Self::lemma_tlb_same(pre, *self);
@@ -331,6 +339,95 @@ impl CapKernel {
         &&& forall|x: usize| !#[trigger] post.list.is_child(c, x)
     }
 
+    /// What revoke steps did to the blocks: each tracked page lies in the block it did, of the kind,
+    /// object and order it had, every block keeps its typing, and each block's holders are some of
+    /// those it had. So once every holder of a frame's block but one capability went, that capability's
+    /// is the block's one reference, which deleting it takes to zero. Kept opaque: its quantifiers over
+    /// blocks and holders would otherwise feed every caller of unlink_arm.
+    #[verifier::opaque]
+    pub open spec fn blocks_revoked(pre: Self, post: Self) -> bool {
+        &&& forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i)
+        &&& forall|x: BlockRef| #[trigger] block_typed(&post.blocks, x) == block_typed(&pre.blocks, x)
+        &&& forall|i: int| pre.blocks.tracks(i) ==> {
+            &&& (#[trigger] post.blocks.pages@[i]).kind == pre.blocks.pages@[i].kind
+            &&& post.blocks.pages@[i].object == pre.blocks.pages@[i].object
+            &&& post.blocks.pages@[i].order == pre.blocks.pages@[i].order
+        }
+        &&& forall|br: BlockRef| #[trigger] post.holders@.contains_key(br) == pre.holders@.contains_key(br)
+        &&& forall|br: BlockRef, n: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(n)
+            ==> pre.holders@[br].contains(n)
+    }
+
+    /// Revoke steps compose: what one did to the blocks and what the next did is what both did.
+    pub proof fn lemma_blocks_revoked_compose(pre: Self, mid: Self, post: Self)
+        requires
+            Self::blocks_revoked(pre, mid),
+            Self::blocks_revoked(mid, post),
+        ensures
+            Self::blocks_revoked(pre, post),
+    {
+        reveal(CapKernel::blocks_revoked);
+        assert forall|br: BlockRef, n: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(n)
+            implies pre.holders@[br].contains(n) by {
+            assert(mid.holders@[br].contains(n));
+        }
+    }
+
+    /// A step that keeps the blocks and the holders did what revoke steps may to them.
+    pub proof fn lemma_blocks_revoked_same(pre: Self, mid: Self, post: Self)
+        requires
+            Self::blocks_revoked(pre, mid),
+            post.blocks == mid.blocks,
+            post.holders == mid.holders,
+        ensures
+            Self::blocks_revoked(pre, post),
+    {
+        reveal(CapKernel::blocks_revoked);
+    }
+
+    /// Nothing done is what revoke steps may do.
+    pub proof fn lemma_blocks_revoked_none(pre: Self, post: Self)
+        requires
+            post.blocks == pre.blocks,
+            post.holders == pre.holders,
+        ensures
+            Self::blocks_revoked(pre, post),
+    {
+        reveal(CapKernel::blocks_revoked);
+    }
+
+    /// A frame capability whose block's other holders were mappings that revoke steps took holds the
+    /// block's one reference after them.
+    pub proof fn lemma_revoked_frame_alone(pre: Self, post: Self, c: usize)
+        requires
+            pre.wf(),
+            post.wf(),
+            Self::blocks_revoked(pre, post),
+            forall|x: int| 0 <= x < NODE_SPACE && #[trigger] post.list.nodes@[x].live
+                ==> post.list.nodes@[x].kind == pre.list.nodes@[x].kind,
+            post.is_cap(c),
+            post.payload_of(c).kind is Frame,
+            forall|n: usize| #[trigger] pre.holders@[block_ref(&post.blocks, post.payload_of(c).base / PAGE_SZ)].contains(n)
+                ==> n == c || (pre.mappings@.contains_key(n) && !post.mappings@.contains_key(n)),
+        ensures
+            block_refs(&post.blocks, block_ref(&post.blocks, post.payload_of(c).base / PAGE_SZ)) == 1,
+    {
+        reveal(CapKernel::blocks_revoked);
+        let br = block_ref(&post.blocks, post.payload_of(c).base / PAGE_SZ);
+        assert(holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@));
+        assert(post.holders@.contains_key(br) && post.holders@[br].contains(c));
+        // Any other holder was a mapping node that went: kept live it would be a mapping still, and a
+        // node that stays live keeps its kind, so it is no capability either.
+        assert forall|n: usize| #[trigger] post.holders@[br].contains(n) implies n == c by {
+            assert(pre.holders@[br].contains(n));
+            if n != c {
+                pre.lemma_mapping_node(n);
+                assert(!post.list.nodes@[n as int].live);
+            }
+        }
+        assert(post.holders@[br] =~= set![c]);
+    }
+
     /// Every mapping record after was one before, the same: a revoke takes records and adds none.
     pub open spec fn records_shrunk(pre: Self, post: Self) -> bool {
         forall|n: usize| #[trigger] post.mappings@.contains_key(n)
@@ -362,6 +459,7 @@ impl CapKernel {
             !(ret is Refused) ==> (ret is Done == final(self).list.childless(old(self).cap_at(root, at)->0)),
             ret is Done ==> Self::cap_revoked_at(*old(self), *final(self), root, at),
             Self::records_shrunk(*old(self), *final(self)),
+            Self::blocks_revoked(*old(self), *final(self)),
             !(ret is Refused) ==> final(self).flush_epoch <= old(self).flush_epoch
                 + (old(self).list.seq@.len() - final(self).list.seq@.len()),
             ret is Again ==> old(self).list.seq@.len() - final(self).list.seq@.len() == REVOKE_BUDGET,
@@ -373,6 +471,9 @@ impl CapKernel {
                 ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g),
     {
         let ghost pre = *old(self);
+        proof {
+            Self::lemma_blocks_revoked_none(pre, pre);
+        }
         let c = match self.find_cap(root, at) {
             Some(found) => found.0,
             None => { return RevokeStep::Refused; },
@@ -391,6 +492,7 @@ impl CapKernel {
                 taken <= REVOKE_BUDGET,
                 self.flush_epoch <= pre.flush_epoch + taken,
                 Self::records_shrunk(pre, *self),
+                Self::blocks_revoked(pre, *self),
                 forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] self.list.nodes@[x].depth == pre.list.nodes@[x].depth,
                 revoked_seq(pre.list, self.list, c, gone),
                 start == old(steps).count,
@@ -454,6 +556,7 @@ impl CapKernel {
                     reveal(devices_wf);
                 }
                 Self::lemma_devices_revoked_step(pre, mid, *self, c, r);
+                Self::lemma_blocks_revoked_compose(pre, mid, *self);
                 lemma_revoked_seq_step(pre.list, mid.list, self.list, c, r, gone);
                 lemma_run_shrunk_step(pre.list, mid.list, self.list, c, r);
                 gone = gone.push(r);
@@ -527,6 +630,7 @@ impl CapKernel {
             final(self).flush_epoch <= old(self).flush_epoch + 1,
             old(self).flush_epoch <= final(self).flush_epoch,
             Self::records_shrunk(*old(self), *final(self)),
+            Self::blocks_revoked(*old(self), *final(self)),
             forall|a: int, g: usize| a <= old(self).flush_epoch && g < NUM_PAGES && old(self).stale_epoch.above(a, g)
                 ==> #[trigger] final(self).stale_epoch.above(a, g),
             forall|n: usize, g: usize| old(self).mappings@.contains_key(n) && !final(self).mappings@.contains_key(n)
@@ -536,6 +640,7 @@ impl CapKernel {
         let ghost pre = *old(self);
         proof {
             pre.lemma_no_change_discharges_revoke(root, c);
+            Self::lemma_blocks_revoked_none(pre, pre);
         }
         let r = match self.list.leaf_of_run(c, Tracked(&mut *steps)) {
             Some(found) => found,
@@ -556,6 +661,12 @@ impl CapKernel {
             assert(mid.flush_epoch <= pre.flush_epoch + 1);
             assert(Self::records_shrunk(pre, mid));
             Self::lemma_revoke_step_wf(cut, mid, *self, root, c, r);
+            if pre.hidden_table(r) {
+                assert(cut.blocks == pre.blocks && cut.holders == pre.holders);
+            }
+            Self::lemma_blocks_revoked_none(pre, cut);
+            Self::lemma_blocks_revoked_compose(pre, cut, mid);
+            Self::lemma_blocks_revoked_same(pre, mid, *self);
             if pre.hidden_table(r) {
                 // The cut took walks from a device space at most, and the rest of the step none.
                 Self::lemma_cut_sheds(pre, cut, r);
