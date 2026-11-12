@@ -119,6 +119,7 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::map_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, page as usize, out),
+        loaded_across(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;

@@ -551,6 +551,7 @@ struct Record {
 impl Record {
     spec fn inv(&self) -> bool {
         &&& self.caller@.wf()
+        &&& names_own_space(self.caller@, self.space)
         &&& self.pages <= MAX_PAGES
         &&& self.memory + self.pages * PAGE_BYTES <= u64::MAX
         &&& self.slots < TABLE_INDICES
@@ -1254,6 +1255,7 @@ impl Eager {
     pub fn new(caller: Tracked<Caller>, space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
         requires
             caller@.wf(),
+            names_own_space(caller@, space),
         ensures
             match r {
                 Some(source) => source@.wf() && source@.spans.is_empty() && source@.provenance == window@.provenance,

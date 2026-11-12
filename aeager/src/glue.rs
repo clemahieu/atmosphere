@@ -34,6 +34,19 @@ use verified::capability::position::POSITION_INDEX_MASK;
 
 verus! {
 
+/// The slot at `space` of the caller's own table holds a capability naming the space keyed at the
+/// caller's root, which is its own process's space.
+pub open spec fn names_own_space(caller: Caller, space: u64) -> bool {
+    let v = caller.kernel().table_view(caller.root());
+    &&& v.contains_key(space as usize)
+    &&& v[space as usize].base == caller.root()
+}
+
+/// Every slot that names the caller's own space in `pre` still does in `post`.
+pub open spec fn keeps_own_space(pre: Caller, post: Caller) -> bool {
+    forall|space: u64| #[trigger] names_own_space(pre, space) ==> names_own_space(post, space)
+}
+
 /// The level whose entry maps one page.
 const PAGE_LEVEL: u64 = 1;
 
@@ -47,9 +60,18 @@ pub fn retype_frame(caller: &mut Tracked<Caller>, untyped: u64, base: u64, desti
         old(caller)@.wf(),
     ensures
         final(caller)@.wf(),
+        keeps_own_space(old(caller)@, final(caller)@),
     no_unwind
 {
-    memory::retype(caller, untyped, RETYPE_FRAME, base, destination, 0).status == STATUS_OK
+    let ghost pre = caller@;
+    let out = memory::retype(caller, untyped, RETYPE_FRAME, base, destination, 0);
+    proof {
+        // A frame goes only into an empty slot, which holds no capability, so not the one naming the space.
+        assert forall|space: u64| #[trigger] names_own_space(pre, space) implies names_own_space(caller@, space) by {
+            pre.kernel().lemma_table_view(pre.root(), destination as usize);
+        }
+    }
+    out.status == STATUS_OK
 }
 
 /// Retypes the free order-3 block at physical `base`, inside the untyped at `untyped`, as an unlinked
@@ -59,6 +81,7 @@ pub fn retype_table_page(caller: &mut Tracked<Caller>, untyped: u64, base: u64, 
         old(caller)@.wf(),
     ensures
         final(caller)@.wf(),
+        keeps_own_space(old(caller)@, final(caller)@),
     no_unwind
 {
     memory::retype(caller, untyped, RETYPE_TABLE_PAGE, base, 0, level).status == STATUS_OK
@@ -71,6 +94,7 @@ pub fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, level: u64
         old(caller)@.wf(),
     ensures
         final(caller)@.wf(),
+        keeps_own_space(old(caller)@, final(caller)@),
     no_unwind
 {
     memory::link(caller, space, address as u64, level, untyped, table).status == STATUS_OK
@@ -80,14 +104,17 @@ pub fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, level: u64
 /// space at `space`: on success the permission to the page's bytes, with `provenance`. The frame is
 /// inspected first and mapped only with the write right, so the page is one the hardware lets the
 /// caller write; a frame whose capability lacks it, or a slot no inspect of the caller's own table
-/// names, is refused here. `live` holds every address of the window whose page's permission the
-/// caller holds or has handed out, and `address` is not among them.
+/// names, is refused here. The slot at `space` names the caller's own space, the one its thread runs
+/// in. `live` holds every address of the window whose page's permission the caller holds or has handed
+/// out, and `address` is not among them.
 pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame: u64, provenance: Ghost<Provenance>, live: Ghost<ISet<usize>>) -> (r: Option<Tracked<PointsToRaw>>)
     requires
         old(caller)@.wf(),
+        names_own_space(old(caller)@, space),
         !live@.contains(address),
     ensures
         final(caller)@.wf(),
+        keeps_own_space(old(caller)@, final(caller)@),
         match r {
             Some(perm) => perm@.is_range(address as int, PAGE_BYTES as int) && perm@.provenance() == provenance@,
             None => true,
@@ -125,10 +152,12 @@ pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame:
 /// at `frame` there in the space at `space`, as the map contract says of the call by the process whose
 /// table is at `root` that took the kernel from `before` to `after`, with the frame's capability
 /// holding the write right, so the entry the map wrote is writable, and the kernel holding the
-/// permission of the frame's page, as it has since boot. `live` holds every address of the window whose
-/// page's permission the caller holds or has handed out, and `address` is not among them.
+/// permission of the frame's page, as it has since boot. The slot at `space` names the caller's own
+/// space, which a core had loaded across the call: the core the call ran on. `live` holds every address
+/// of the window whose page's permission the caller holds or has handed out, and `address` is not among
+/// them.
 #[verifier(external_body)]
-// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, with the kernel holding that page's permission as it has since boot, and nothing proves that the calling thread runs in that space, that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that no other entry, in this space or another, maps the frame's page, which the kernel's map does not refuse, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, that a core loads and stores the page's bytes through that entry, or that those bytes may be held as a PointsToRaw
+// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, with the kernel holding that page's permission as it has since boot, and the core that made the call holding that space, the caller's own, loaded, as the step says, and nothing proves that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that no other entry, in this space or another, maps the frame's page, which the kernel's map does not refuse, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, that a core loads and stores the page's bytes through that entry, or that those bytes may be held as a PointsToRaw
 fn page_permission(
     before: Ghost<CapKernel>,
     after: Ghost<CapKernel>,
@@ -144,6 +173,8 @@ fn page_permission(
         out@.status == STATUS_OK,
         !live@.contains(address),
         CapKernel::map_contract(before@, after@, root@, space as usize, address as u64, PAGE_LEVEL, frame as usize, 0, out@),
+        before@.table_view(root@)[space as usize].base == root@,
+        loaded_across(before@, after@, before@.table_view(root@)[space as usize].base),
         before@.table_view(root@)[frame as usize].rights & right_bit(Right::Write) != 0,
         after@.frames@.contains_key(view_frame(before@.table_view(root@)[frame as usize], 0)),
     ensures
@@ -162,6 +193,7 @@ pub fn unmap_page(caller: &mut Tracked<Caller>, space: u64, address: usize, perm
         perm@.is_range(address as int, PAGE_BYTES as int),
     ensures
         final(caller)@.wf(),
+        keeps_own_space(old(caller)@, final(caller)@),
     no_unwind
 {
     // The caller gave up the permission to every byte of the page, so nothing it uses is there.

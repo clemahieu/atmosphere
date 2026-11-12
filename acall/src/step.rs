@@ -19,6 +19,8 @@ use vstd::prelude::*;
 use asys::operation;
 #[cfg(verus_keep_ghost)]
 use verified::arch::Registers;
+#[cfg(verus_keep_ghost)]
+use verified::define::NUM_CPUS;
 use verified::capability::kernel::CapKernel;
 use verified::capability::operation::Outcome;
 
@@ -62,6 +64,13 @@ pub open spec fn carries(frame: Registers, number: u64, slot: u64, a1: u64, a2: 
     &&& frame.argument(5) == a5
 }
 
+/// A core has the space keyed at `root` loaded in `pre` and still in `post`: what Kernel::dispatch
+/// proves of the core it runs on for a call that returns to the thread, whose process's space is the
+/// one keyed at that process's root.
+pub open spec fn loaded_across(pre: CapKernel, post: CapKernel, root: usize) -> bool {
+    exists|c: int| 0 <= c < NUM_CPUS && #[trigger] pre.cores@[c].space == Some(root) && post.cores@[c].space == Some(root)
+}
+
 /// Invokes the operation `number` on the capability at `slot` with arguments 1 to 5, and returns what
 /// the kernel put in the status and result registers.
 #[verifier::external_body]
@@ -75,6 +84,7 @@ pub fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u
         exists|frame: Registers|
             carries(frame, number, slot, a1, a2, a3, a4, a5)
                 && #[trigger] CapKernel::invoked(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), frame, out),
+        loaded_across(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root()),
     no_unwind
 {
     // The ABI's own: every operation may change the caller's address space, which no Rust value of
