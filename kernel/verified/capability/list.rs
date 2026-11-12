@@ -1399,6 +1399,19 @@ pub open spec fn revoked_seq(pre: Tree, post: Tree, c: usize, gone: Seq<usize>) 
     }
 }
 
+/// A listed node is in the node space and live.
+pub proof fn lemma_listed_live(t: Tree, x: usize)
+    requires
+        t.wf(),
+        t.seq@.contains(x),
+    ensures
+        x < NODE_SPACE,
+        t.nodes@[x as int].live,
+{
+    let k = choose|k: int| 0 <= k < t.seq@.len() && t.seq@[k] == x;
+    t.lemma_link(k);
+}
+
 /// One more revoke step of c, from mid to post, taking r, extends the nodes taken from pre by r.
 pub proof fn lemma_revoked_seq_step(pre: Tree, mid: Tree, post: Tree, c: usize, r: usize, gone: Seq<usize>)
     requires

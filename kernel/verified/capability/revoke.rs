@@ -1804,4 +1804,76 @@ impl CapKernel {
     }
 }
 
+/// Across revoke steps of c that took the nodes in gone, a node live before and not among them is live
+/// after: the list lost one node for each node taken, and every node it lost was listed before and not
+/// after, so one more lost node would be one more than it lost. Its premises are what revoke ensures
+/// when it is not refused: revoked_seq for some gone, and run_shrunk in cap_revoking_at. So a node that
+/// lost liveness across a revoke is in gone, below the capability revoked.
+pub proof fn lemma_revoke_took_only(pre: Tree, post: Tree, c: usize, gone: Seq<usize>, x: usize)
+    requires
+        pre.wf(),
+        post.wf(),
+        revoked_seq(pre, post, c, gone),
+        run_shrunk(pre, post, c),
+        x < NODE_SPACE,
+        pre.nodes@[x as int].live,
+        !gone.contains(x),
+    ensures
+        post.nodes@[x as int].live,
+{
+    if !post.nodes@[x as int].live {
+        let a = pre.seq@.to_set();
+        let b = post.seq@.to_set();
+        let g = gone.to_set();
+        reveal(nodup);
+        pre.seq@.unique_seq_to_set();
+        post.seq@.unique_seq_to_set();
+        gone.unique_seq_to_set();
+        assert(b.subset_of(a)) by {
+            assert forall|y: usize| b.contains(y) implies a.contains(y) by {
+                lemma_listed_live(post, y);
+                assert(post.nodes@[y as int].live);
+                assert(pre.nodes@[y as int].live);
+                assert(has(pre.seq@, y));
+                lemma_has(pre.seq@, y);
+            }
+        }
+        assert(g.subset_of(a)) by {
+            assert forall|y: usize| g.contains(y) implies a.contains(y) by {
+                let i = choose|i: int| 0 <= i < gone.len() && gone[i] == y;
+                assert(gone[i] < NODE_SPACE);
+                assert(pre.nodes@[y as int].live);
+                assert(has(pre.seq@, y));
+                lemma_has(pre.seq@, y);
+            }
+        }
+        assert(b.disjoint(g)) by {
+            assert forall|y: usize| b.contains(y) implies !g.contains(y) by {
+                lemma_listed_live(post, y);
+                if g.contains(y) {
+                    let i = choose|i: int| 0 <= i < gone.len() && gone[i] == y;
+                    assert(gone[i] < NODE_SPACE);
+                    assert(!post.nodes@[gone[i] as int].live);
+                }
+            }
+        }
+        assert(a.contains(x)) by {
+            assert(has(pre.seq@, x));
+            lemma_has(pre.seq@, x);
+        }
+        assert(!b.contains(x)) by {
+            if b.contains(x) {
+                lemma_listed_live(post, x);
+            }
+        }
+        let bg = b + g;
+        vstd::set_lib::lemma_set_disjoint_lens(b, g);
+        assert(!bg.contains(x));
+        assert(bg.insert(x).subset_of(a));
+        vstd::set_lib::lemma_len_subset(bg.insert(x), a);
+        assert(bg.insert(x).len() == bg.len() + 1);
+        assert(false);
+    }
+}
+
 } // verus!

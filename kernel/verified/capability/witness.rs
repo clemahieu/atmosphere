@@ -622,19 +622,6 @@ proof fn lemma_new_root_steps_kept(a: TableTree, b: TableTree, q: usize)
     }
 }
 
-/// A listed node is in the node space and live.
-proof fn lemma_listed_live(t: Tree, x: usize)
-    requires
-        t.wf(),
-        t.seq@.contains(x),
-    ensures
-        x < NODE_SPACE,
-        t.nodes@[x as int].live,
-{
-    let k = choose|k: int| 0 <= k < t.seq@.len() && t.seq@[k] == x;
-    t.lemma_link(k);
-}
-
 /// Across a step that keeps the first node, the liveness of every node but a and b, and the parent of
 /// every other node that had one, a child of c after the step that is neither a nor b was one before:
 /// it is live, so it was live and listed before, and not first, so it had its parent then.
@@ -826,76 +813,6 @@ proof fn lemma_slot_kept_but(pre: CapKernel, post: CapKernel, root: usize, i: us
         assert(n % PAGE_SZ == 0);
     }
     assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
-}
-
-/// Across revoke steps of c that took the nodes in gone, a node live before and not among them is live
-/// after: the list lost one node for each node taken, and every node it lost was listed before and not
-/// after, so one more lost node would be one more than it lost.
-proof fn lemma_revoke_took_only(pre: Tree, post: Tree, c: usize, gone: Seq<usize>, x: usize)
-    requires
-        pre.wf(),
-        post.wf(),
-        revoked_seq(pre, post, c, gone),
-        run_shrunk(pre, post, c),
-        x < NODE_SPACE,
-        pre.nodes@[x as int].live,
-        !gone.contains(x),
-    ensures
-        post.nodes@[x as int].live,
-{
-    if !post.nodes@[x as int].live {
-        let a = pre.seq@.to_set();
-        let b = post.seq@.to_set();
-        let g = gone.to_set();
-        reveal(nodup);
-        pre.seq@.unique_seq_to_set();
-        post.seq@.unique_seq_to_set();
-        gone.unique_seq_to_set();
-        assert(b.subset_of(a)) by {
-            assert forall|y: usize| b.contains(y) implies a.contains(y) by {
-                lemma_listed_live(post, y);
-                assert(post.nodes@[y as int].live);
-                assert(pre.nodes@[y as int].live);
-                assert(has(pre.seq@, y));
-                lemma_has(pre.seq@, y);
-            }
-        }
-        assert(g.subset_of(a)) by {
-            assert forall|y: usize| g.contains(y) implies a.contains(y) by {
-                let i = choose|i: int| 0 <= i < gone.len() && gone[i] == y;
-                assert(gone[i] < NODE_SPACE);
-                assert(pre.nodes@[y as int].live);
-                assert(has(pre.seq@, y));
-                lemma_has(pre.seq@, y);
-            }
-        }
-        assert(b.disjoint(g)) by {
-            assert forall|y: usize| b.contains(y) implies !g.contains(y) by {
-                lemma_listed_live(post, y);
-                if g.contains(y) {
-                    let i = choose|i: int| 0 <= i < gone.len() && gone[i] == y;
-                    assert(gone[i] < NODE_SPACE);
-                    assert(!post.nodes@[gone[i] as int].live);
-                }
-            }
-        }
-        assert(a.contains(x)) by {
-            assert(has(pre.seq@, x));
-            lemma_has(pre.seq@, x);
-        }
-        assert(!b.contains(x)) by {
-            if b.contains(x) {
-                lemma_listed_live(post, x);
-            }
-        }
-        let bg = b + g;
-        vstd::set_lib::lemma_set_disjoint_lens(b, g);
-        assert(!bg.contains(x));
-        assert(bg.insert(x).subset_of(a));
-        vstd::set_lib::lemma_len_subset(bg.insert(x), a);
-        assert(bg.insert(x).len() == bg.len() + 1);
-        assert(false);
-    }
 }
 
 /// A slot stays a slot of the same node across a step that kept the tables' roots and the liveness of
