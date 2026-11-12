@@ -29,16 +29,10 @@ use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::{GhostSetAuth, GhostSubset};
 use vstd::resource::Loc;
 
+use crate::arch::spin_hint;
 use crate::define::NUM_CPUS;
 
 verus! {
-
-/// Tells the core it is in a spin. It has no effect the proof needs.
-#[verifier(external_body)]
-// external_body(glue): the pause instruction, which has no state a proof could see
-fn spin_hint() {
-    core::hint::spin_loop();
-}
 
 /// What one ghost token stands for.
 pub enum Token {

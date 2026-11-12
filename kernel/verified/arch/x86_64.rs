@@ -617,6 +617,11 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
 /// that where a flush of the current PCID would leave entries under the others. `core` is the core this
 /// runs on, whose set in `model` it empties.
+/// Tells the core it is in a spin loop. PAUSE is a hint that architecturally behaves as a NOP, changes
+/// no flag and raises no exception, so it ensures nothing.
+// cite: amd-apm3 3 General-Purpose Instruction Reference, PAUSE
+pub assume_specification[spin_hint]();
+
 // cite: amd-apm2 5.5.1 Process Context Identifier
 // cite: amd-apm2 5.5.3 TLB Management, Implicit Invalidations
 // cite: amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
@@ -1331,5 +1336,11 @@ pub fn serial_write_byte(byte: u8) {
             }
         }
         core::arch::asm!("out dx, al", in("dx") COM1, in("al") byte, options(nomem, nostack));
+    }
+}
+
+pub fn spin_hint() {
+    unsafe {
+        core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
     }
 }

@@ -4,6 +4,7 @@
 # these (design/who-vouches-for-an-unproven-claim/). A document is listed at the revision someone has
 # read. Fields, separated by tabs: key, title, publisher, number, revision.
 amd-apm2	AMD64 Architecture Programmer's Manual, Volume 2: System Programming	AMD	24593	3.46
+amd-apm3	AMD64 Architecture Programmer's Manual, Volume 3: General-Purpose and System Instructions	AMD	24594	3.39
 amd-iommu	AMD I/O Virtualization Technology (IOMMU) Specification	AMD	48882	3.11
 arm-arm	Arm Architecture Reference Manual for A-profile architecture	Arm	DDI 0487	M.d
 arm-gic	Arm Generic Interrupt Controller Architecture Specification, GIC architecture version 3 and version 4	Arm	IHI 0069	H.b

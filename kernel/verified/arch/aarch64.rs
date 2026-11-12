@@ -486,6 +486,11 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
 /// per-core flush of design/flush-without-waiting/ (Arm ARM C5.5.77). The DSB before it orders this
 /// core's table writes ahead of it, and the DSB and ISB after it complete it for this core's own
 /// translations (D8.17.8). `core` is the core this runs on, whose set in `model` it empties.
+/// Tells the core it is in a spin loop. YIELD is a hint that the thread could yield, and is a NOP hint
+/// instruction, so it ensures nothing.
+// cite: arm-arm B1.5.3 The YIELD instruction
+pub assume_specification[spin_hint]();
+
 // cite: arm-arm C5.5.77 TLBI VMALLE1, TLBI VMALLE1NXS
 // cite: arm-arm D8.17.8 Ordering and completion of TLB maintenance instructions
 pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbModel>, core: usize)
@@ -1239,5 +1244,11 @@ pub fn serial_write_byte(byte: u8) {
             byte = in(reg) byte as u32,
             options(nostack, preserves_flags),
         );
+    }
+}
+
+pub fn spin_hint() {
+    unsafe {
+        core::arch::asm!("yield", options(nomem, nostack, preserves_flags));
     }
 }
