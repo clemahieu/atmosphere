@@ -12,6 +12,7 @@
 //! cores only once an IPI reaches them (design/flush-without-waiting/), so the item relies on the
 //! source's thread running on the core that made each of the source's unmaps.
 use vstd::prelude::*;
+use vstd::iset::ISet;
 use vstd::raw_ptr::*;
 
 use acall::memory;
@@ -76,10 +77,12 @@ pub fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, level: u64
 /// space at `space`: on success the permission to the page's bytes, with `provenance`. The frame is
 /// inspected first and mapped only with the write right, so the page is one the hardware lets the
 /// caller write; a frame whose capability lacks it, or a slot no inspect of the caller's own table
-/// names, is refused here.
-pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame: u64, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
+/// names, is refused here. `live` holds every address of the window whose page's permission the
+/// caller holds or has handed out, and `address` is not among them.
+pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame: u64, provenance: Ghost<Provenance>, live: Ghost<ISet<usize>>) -> (r: Option<Tracked<PointsToRaw>>)
     requires
         old(caller)@.wf(),
+        !live@.contains(address),
     ensures
         final(caller)@.wf(),
         match r {
@@ -109,7 +112,7 @@ pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame:
     }
     let out = memory::map(caller, space, address as u64, PAGE_LEVEL, frame, 0);
     if out.status == STATUS_OK {
-        Some(page_permission(Ghost(before), Ghost(caller@.kernel()), Ghost(root), space, address, frame, Ghost(out), provenance))
+        Some(page_permission(Ghost(before), Ghost(caller@.kernel()), Ghost(root), space, address, frame, Ghost(out), provenance, live))
     } else {
         None
     }
@@ -118,9 +121,10 @@ pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame:
 /// The permission to the bytes of the page at `address`, once the kernel accepted a map of the frame
 /// at `frame` there in the space at `space`, as the map contract says of the call by the process whose
 /// table is at `root` that took the kernel from `before` to `after`, with the frame's capability
-/// holding the write right, so the entry the map wrote is writable.
+/// holding the write right, so the entry the map wrote is writable. `live` holds every address of the
+/// window whose page's permission the caller holds or has handed out, and `address` is not among them.
 #[verifier(external_body)]
-// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, and nothing proves that the calling thread runs in that space, that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no other permission covers the page or that the page is memory Rust may read and write
+// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, and nothing proves that the calling thread runs in that space, that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, or that the page is memory Rust may read and write
 fn page_permission(
     before: Ghost<CapKernel>,
     after: Ghost<CapKernel>,
@@ -130,9 +134,11 @@ fn page_permission(
     frame: u64,
     out: Ghost<Outcome>,
     provenance: Ghost<Provenance>,
+    live: Ghost<ISet<usize>>,
 ) -> (perm: Tracked<PointsToRaw>)
     requires
         out@.status == STATUS_OK,
+        !live@.contains(address),
         CapKernel::map_contract(before@, after@, root@, space as usize, address as u64, PAGE_LEVEL, frame as usize, 0, out@),
         before@.table_view(root@)[frame as usize].rights & right_bit(Right::Write) != 0,
     ensures

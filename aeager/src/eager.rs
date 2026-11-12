@@ -19,6 +19,8 @@
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
+use vstd::iset::ISet;
 use vstd::raw_ptr::*;
 
 use acall::step::Caller;
@@ -218,6 +220,12 @@ const TAKEN: u8 = 3;
 /// A page retyped as a frame and mapped at the address the record names, in no run: its run was
 /// released, and the record holds the permission to its bytes until that address is backed again.
 const PARKED: u8 = 4;
+
+/// Whether a page in `state` is mapped at the address the record names, its permission handed out or
+/// parked.
+spec fn occupied(state: u8) -> bool {
+    state == MAPPED || state == PARKED
+}
 
 /// Scaling by a whole number of units keeps order and distributes over a sum.
 proof fn lemma_scale(a: int, b: int, c: int)
@@ -509,6 +517,23 @@ impl Record {
             &&& self.parked@[i].is_range(self.owner@[i] as int, PAGE_BYTES as int)
             &&& self.parked@[i].provenance() == self.provenance@
         }
+        &&& forall|i: int, j: int|
+            0 <= i < self.pages && 0 <= j < self.pages && i != j && occupied(#[trigger] self.state@[i]) && occupied(
+                #[trigger] self.state@[j],
+            ) ==> self.owner@[i] != self.owner@[j]
+    }
+
+    /// The addresses of the window whose page's permission the record has handed out or holds parked.
+    spec fn live(&self) -> ISet<usize> {
+        ISet::new(|a: usize| exists|i: int| 0 <= i < self.pages && occupied(#[trigger] self.state@[i]) && self.owner@[i] == a)
+    }
+
+    /// Every page this record maps at an address was mapped there, with the same state, in `old`.
+    spec fn keeps(&self, old: &Record) -> bool {
+        &&& self.pages == old.pages
+        &&& forall|i: int|
+            0 <= i < self.pages && occupied(#[trigger] self.state@[i]) ==> self.state@[i] == old.state@[i] && self.owner@[i]
+                == old.owner@[i]
     }
 
     /// The physical base of page `i` of the untyped.
@@ -546,8 +571,9 @@ impl Record {
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).keeps(old(self)),
             match r {
-                Some(i) => i < final(self).pages,
+                Some(i) => i < final(self).pages && final(self).state@[i as int] == HELD,
                 None => true,
             },
         no_unwind
@@ -557,6 +583,7 @@ impl Record {
             invariant
                 self.inv(),
                 i <= self.pages,
+                self.keeps(old(self)),
             decreases self.pages - i,
         {
             if self.state[i] == HELD {
@@ -569,6 +596,7 @@ impl Record {
             invariant
                 self.inv(),
                 i <= self.pages,
+                self.keeps(old(self)),
             decreases i,
         {
             i -= 1;
@@ -589,6 +617,7 @@ impl Record {
                 self.inv(),
                 i <= self.pages,
                 self.provenance == old(self).provenance,
+                self.keeps(old(self)),
             decreases self.pages - i,
         {
             if self.state[i] == PARKED {
@@ -615,6 +644,7 @@ impl Record {
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).keeps(old(self)),
         no_unwind
     {
         let mut group: usize = 0;
@@ -623,6 +653,7 @@ impl Record {
                 self.inv(),
                 group <= self.pages,
                 2 <= level <= 4,
+                self.keeps(old(self)),
             decreases self.pages - group,
         {
             let mut k: usize = 0;
@@ -633,6 +664,7 @@ impl Record {
                     group + TABLE_PAGES <= self.pages,
                     k <= TABLE_PAGES,
                     2 <= level <= 4,
+                    self.keeps(old(self)),
                 decreases TABLE_PAGES - k,
             {
                 if self.state[group + k] != FREE {
@@ -648,6 +680,7 @@ impl Record {
                         group + TABLE_PAGES <= self.pages,
                         k <= TABLE_PAGES,
                         2 <= level <= 4,
+                        self.keeps(old(self)),
                     decreases TABLE_PAGES - k,
                 {
                     self.state[group + k] = TAKEN;
@@ -683,8 +716,12 @@ impl Record {
                 i <= self.pages,
                 provenance@ == self.provenance@,
                 self.provenance == old(self).provenance,
+                forall|j: int| 0 <= j < i ==> !(occupied(#[trigger] self.state@[j]) && self.owner@[j] == addr),
             decreases self.pages - i,
         {
+            if self.state[i] == MAPPED && self.owner[i] == addr {
+                return None;
+            }
             if self.state[i] == PARKED && self.owner[i] == addr {
                 assert(self.state@[i as int] == PARKED && self.owner@[i as int] == addr);
                 let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
@@ -729,7 +766,9 @@ impl Record {
             None => return None,
         };
         let slot = self.slot(i);
-        match map_page(&mut self.caller, self.space, addr, slot, provenance) {
+        let ghost live = self.live();
+        assert(!live.contains(addr));
+        match map_page(&mut self.caller, self.space, addr, slot, provenance, Ghost(live)) {
             Some(perm) => {
                 self.state[i] = MAPPED;
                 self.owner[i] = addr;
