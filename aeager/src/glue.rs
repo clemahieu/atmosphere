@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 //! The system calls the eager source makes, each a verified call of acall's kernel step, threading the
-//! process's ghost of the kernel from one call to the next. Retype, link and map go through acall's
-//! wrappers, whose ensures are their proven caller's-view contracts; unmap, which has no such contract,
-//! goes through the step itself, and takes the permission to the page's bytes so that nothing the
-//! source's caller holds is in the page it unmaps. The one trusted item is `page_permission`: a map the
+//! process's ghost of the kernel from one call to the next. Retype, link, map and unmap go through
+//! acall's wrappers, whose ensures are their proven caller's-view contracts, and unmap takes the
+//! permission to the page's bytes so that nothing the source's caller holds is in the page it unmaps. The one trusted item is `page_permission`: a map the
 //! kernel accepted puts the frame's page at the address in the space's tables, as the map contract
 //! says, and only this item turns that into the permission to the page's bytes. The tables are what the
 //! calling core reads once no translation of the address from an earlier mapping is left on it: an
@@ -162,7 +161,7 @@ pub fn unmap_page(caller: &mut Tracked<Caller>, space: u64, address: usize, perm
     no_unwind
 {
     // The caller gave up the permission to every byte of the page, so nothing it uses is there.
-    step(caller, OPERATION_UNMAP, space, address as u64, PAGE_LEVEL, 0, 0, 0).status == STATUS_OK
+    memory::unmap(caller, space, address as u64, PAGE_LEVEL).status == STATUS_OK
 }
 
 } // verus!
