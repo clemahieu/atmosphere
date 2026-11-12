@@ -25,6 +25,14 @@ in logs/base-<commit>-gate.log, and its verdict joins the ledger, where the othe
 find it instead of gating the same base again. A base that fails is printed with its suspects: the
 commits since the last one on main whose tree passed.
 
+An item of class gap or unproven in tools/external-body-list is a claim nobody vouches for, and
+adding one lowers what the proof covers, which is the human's to allow (CLAUDE.md, Testability).
+So before the gate the list on the branch is compared with the list on the base, by path, item and
+attribute: an item of either class the base does not hold with that class, new or reclassed, stops
+the landing and is named, unless --approve names it, once the human's answer is on the question the
+change waits on. The committer is not the adversary (design/committer-is-not-the-adversary/), so
+this is a tripwire, not a lock.
+
 Exit status:
   0  landed and pushed
   1  the gate fails and the base passes: the change is at fault
@@ -33,8 +41,9 @@ Exit status:
   4  the base fails the gate by itself; main is broken and the change is not judged
   5  the change is cleared to land and did not reach origin: the merge or the push kept failing
   6  the gate fails and no gate has judged the base: fix the change, or settle it with --judge-base
+  7  not gated: the change adds a gap or unproven item the human has not approved
 
-usage: tools/land.py [--onto BRANCH] [--gate COMMAND]
+usage: tools/land.py [--onto BRANCH] [--gate COMMAND] [--approve PATH:ITEM:ATTRIBUTE]...
        tools/land.py --judge-base [--onto BRANCH] [--gate COMMAND]    (exits 1 or 4)
        tools/land.py --test    (this script's own tests)
 """
@@ -51,10 +60,13 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-LANDED, CHANGE_FAILS, NOT_RUN, CONFLICT, BASE_FAILS, NOT_LANDED, BASE_UNJUDGED = range(7)
+LANDED, CHANGE_FAILS, NOT_RUN, CONFLICT, BASE_FAILS, NOT_LANDED, BASE_UNJUDGED, UNAPPROVED = range(8)
 LEDGER = "logs/gate-ledger"
 BASE_LOCK = "logs/gate-base.lock"
 GATE = "tools/gate.py"
+# The list of every claim a verified crate takes unproven, and the classes of it that nobody vouches for.
+EXEMPTIONS = "tools/external-body-list"
+UNVOUCHED = ("gap", "unproven")
 # How often the rebase and the fast-forward are tried while other landings move main.
 MERGE_TRIES = 30
 PUSH_TRIES = 3
@@ -192,6 +204,34 @@ def needs_no_gate(worktree, base):
     return bool(changed) and all(map(unread, changed)) and not any(map(held_everywhere, kept))
 
 
+def unvouched(worktree, commit):
+    """The items of the exemption list at a commit that nobody vouches for, as path:item:attribute."""
+    listed = subprocess.run(
+        ["git", "-C", str(worktree), "show", f"{commit}:{EXEMPTIONS}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+    )
+    items = set()
+    for line in listed.stdout.splitlines():
+        if line and not line.startswith("#"):
+            path, item, attribute, kind = line.split("\t")[:4]
+            if kind in UNVOUCHED:
+                items.add(f"{path}:{item}:{attribute}")
+    return items
+
+
+def unapproved(worktree, base, approved):
+    """The gap and unproven items the change adds, new or reclassed, that the human has not approved,
+    each said; the approved ones are said too."""
+    added = unvouched(worktree, "HEAD") - unvouched(worktree, base)
+    for item in sorted(added & approved):
+        say(f"approved by the human: {item}")
+    missing = sorted(added - approved)
+    for item in missing:
+        say(f"not approved: {item} is a gap or unproven item {EXEMPTIONS} on {base} does not hold")
+    if missing:
+        say("adding one is a decision only the human can make: file the question, and land with --approve for each item once its answer is on it")
+    return missing
+
+
 def judge(worktree, onto, gate_command):
     """Settles a failed gate on an unjudged base: gates the base the change stands on and says whose failure it is."""
     root = worktree.parent
@@ -202,7 +242,7 @@ def judge(worktree, onto, gate_command):
     return blame(root, worktree, onto, base, *judge_base(root, worktree, branch, base, gate_command))
 
 
-def land(worktree, onto, gate_command):
+def land(worktree, onto, gate_command, approved=frozenset()):
     root = worktree.parent
     target = root / onto
     branch = change_branch(worktree, onto)
@@ -213,6 +253,8 @@ def land(worktree, onto, gate_command):
         say(f"the rebase onto {onto} stopped on a conflict: resolve it, git rebase --continue, and land again")
         return CONFLICT
     base = git(worktree, "merge-base", "HEAD", onto)
+    if unapproved(worktree, base, set(approved)):
+        return UNAPPROVED
     commits = int(git(worktree, "rev-list", "--count", f"{base}..HEAD"))
     gated = git(worktree, "rev-parse", "HEAD")
     known = verdicts(root).get(tree(worktree, base))
@@ -475,6 +517,67 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.land("false").returncode, LANDED)
         self.assertFalse((self.root / LEDGER).exists())
 
+    LISTED = {
+        "glue": "k/a.rs\tleaf\texternal_body\tglue\tonly the hardware can say",
+        "unproven": "k/q.rs\tacquire\texec_allows_no_decreases_clause\tunproven\tthe spin is not proven to end",
+    }
+
+    def listing(self, where, *lines):
+        """Commits an exemption list holding a header and these lines."""
+        return self.commit(where, EXEMPTIONS, "".join(f"{line}\n" for line in ("# header", *lines)))
+
+    def test_a_branch_that_adds_a_gap_or_an_unproven_item_is_refused_until_the_flag_names_it(self):
+        self.listing(self.main, self.LISTED["glue"])
+        for kind, line, item in (
+            ("gap", "u/g.rs\tstep\texternal_body\tgap\tnothing proves the premise", "u/g.rs:step:external_body"),
+            ("unproven", self.LISTED["unproven"], "k/q.rs:acquire:exec_allows_no_decreases_clause"),
+        ):
+            with self.subTest(kind=kind):
+                self.git(self.task, "reset", "-q", "--hard", "main")
+                change = self.listing(self.task, self.LISTED["glue"], line)
+                before = self.gates() if (self.root / "gates").exists() else 0
+                result = self.land()
+                self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
+                self.assertIn(f"land: not approved: {item}", result.stdout)
+                self.assertEqual(self.gates() if (self.root / "gates").exists() else 0, before)
+                self.assertNotEqual(self.git(self.main, "rev-parse", "main"), change)
+                result = self.land("true", "--approve", item)
+                self.assertEqual(result.returncode, LANDED, result.stdout)
+                self.assertIn(f"land: approved by the human: {item}", result.stdout)
+                self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+
+    def test_a_branch_that_reclasses_a_glue_item_to_gap_is_refused(self):
+        self.listing(self.main, self.LISTED["glue"])
+        self.git(self.task, "reset", "-q", "--hard", "main")
+        self.listing(self.task, "k/a.rs\tleaf\texternal_body\tgap\tnothing proves it")
+        result = self.land()
+        self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
+        self.assertIn("land: not approved: k/a.rs:leaf:external_body", result.stdout)
+        # Approving another item does not approve this one.
+        result = self.land("true", "--approve", "k/a.rs:leaf:exec_allows_no_decreases_clause")
+        self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
+
+    def test_a_branch_that_removes_rewords_or_adds_vouched_items_lands_with_no_flag(self):
+        gap = "u/g.rs\tstep\texternal_body\tgap\tnothing proves the premise"
+        self.listing(self.main, self.LISTED["glue"], self.LISTED["unproven"], gap)
+        changes = (
+            ("removes a gap item", (self.LISTED["glue"], self.LISTED["unproven"])),
+            ("rewords a reason", (self.LISTED["glue"], self.LISTED["unproven"].replace("not proven", "not yet proven"))),
+            ("adds glue, hardware and kernel items", (
+                self.LISTED["glue"], self.LISTED["unproven"],
+                "k/a.rs\tother\texternal_body\tglue\tonly the hardware can say",
+                "k/arch/x.rs\tpause\tassume_specification\thardware\tmanual 3 PAUSE",
+                "u/c.rs\tcall\tassume_specification\tkernel\tkernel/s.rs dispatch",
+            )),
+        )
+        for name, lines in changes:
+            with self.subTest(name=name):
+                self.git(self.task, "reset", "-q", "--hard", "main")
+                change = self.listing(self.task, *lines)
+                result = self.land()
+                self.assertEqual(result.returncode, LANDED, result.stdout)
+                self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+
     def test_a_worktree_with_uncommitted_changes_is_not_run(self):
         self.commit(self.task, "a")
         (self.task / "stray").write_text("x")
@@ -490,10 +593,14 @@ class Tests(unittest.TestCase):
 
 
 def main():
-    parser = argparse.ArgumentParser(usage="tools/land.py [--judge-base] [--onto BRANCH] [--gate COMMAND] | --test")
+    parser = argparse.ArgumentParser(usage="tools/land.py [--judge-base] [--onto BRANCH] [--gate COMMAND] [--approve PATH:ITEM:ATTRIBUTE]... | --test")
     parser.add_argument("--onto", default="main", help="the branch landed on, whose worktree is its sibling (default main)")
     parser.add_argument("--gate", default=GATE, help=f"the gate, a shell command run in the worktree (default {GATE!r})")
     parser.add_argument("--judge-base", action="store_true", help="gate the base the change stands on instead of the change")
+    parser.add_argument(
+        "--approve", action="append", default=[], metavar="PATH:ITEM:ATTRIBUTE",
+        help=f"a gap or unproven item of {EXEMPTIONS} the change adds, which the human approved; once per item",
+    )
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
     if args.test:
@@ -501,7 +608,9 @@ def main():
     worktree = subprocess.run(["git", "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE, text=True)
     if worktree.returncode != 0:
         return NOT_RUN
-    return (judge if args.judge_base else land)(Path(worktree.stdout.strip()), args.onto, args.gate)
+    if args.judge_base:
+        return judge(Path(worktree.stdout.strip()), args.onto, args.gate)
+    return land(Path(worktree.stdout.strip()), args.onto, args.gate, frozenset(args.approve))
 
 
 if __name__ == "__main__":
