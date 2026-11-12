@@ -1518,12 +1518,6 @@ impl CapKernel {
         }
     }
 
-    /// The root of the space at s may go: its block has no reference left, so no capability names it and
-    /// no device is bound to it.
-    pub open spec fn root_may_go(&self, s: usize) -> bool {
-        self.blocks.pages@[(s / PAGE_SZ) as int].refs == 0
-    }
-
     /// The spaces after space capability n, the only capability that changed, joins space s with one
     /// more reference on its block.
     pub proof fn lemma_spaces_holder_added(pre: Self, post: Self, n: usize, s: usize)
