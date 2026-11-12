@@ -9,10 +9,12 @@
 //! calling core reads once no translation of the address from an earlier mapping is left on it: every
 //! call returns with its core caught up on the flush epoch, whichever core's unmap moved it
 //! (design/flush-without-waiting/), as acall's step says, so map_page has that from the map's own step.
-//! No other entry maps the frame's page: the frames the source holds are threaded through every call
-//! here, and the page's block is counted by the frame's capability and the map's entry alone. The item
-//! relies on the entry at the address keeping that frame or none until `unmap_page` takes the
-//! permission back.
+//! No other entry maps the frame's page when the map returns: the frames the source holds are threaded
+//! through every call here, and the page's block is counted by the frame's capability and the map's
+//! entry alone. The item relies on no other entry coming to map the page, and on the entry at the
+//! address keeping that frame or none, until `unmap_page` takes the permission back: verified code
+//! holding the caller can map the frame again through acall's map, and nothing ties the entry to the
+//! kernel's state once the map returns.
 use vstd::prelude::*;
 use vstd::iset::ISet;
 use vstd::raw_ptr::*;
@@ -601,13 +603,14 @@ pub fn map_page(
 /// table is at `root` that took the kernel from `before` to `after`, with the frame's capability
 /// holding the write right, so the entry the map wrote is writable, the kernel holding the
 /// permission of the frame's page, as it has since boot, and the frame's block counted by its
-/// capability and the entry the map wrote alone, so no other entry maps the page. The slot at `space` names the caller's own
-/// space, which a core had loaded across the call and which that core, the one the call ran on,
+/// capability and the entry the map wrote alone, so no other entry maps the page when the map returns;
+/// nothing proves that none comes to map it before `unmap_page` takes the permission back. The slot
+/// at `space` names the caller's own space, which a core had loaded across the call and which that core, the one the call ran on,
 /// returned from caught up on the flush epoch, holding nothing stale of the space. `live` holds every address
 /// of the window whose page's permission the caller holds or has handed out, and `address` is not among
 /// them.
 #[verifier(external_body)]
-// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, its block counted twice, by that capability and that entry, so no other entry in any space maps it, with the kernel holding that page's permission as it has since boot, and the core that made the call holding that space, the caller's own, loaded and caught up on the flush epoch, holding no translation of that space to a page no space maps, as the step says, and nothing proves that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, that a core loads and stores the page's bytes through that entry, or that those bytes may be held as a PointsToRaw
+// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, its block counted twice, by that capability and that entry, so no other entry in any space maps it when the map returns, with the kernel holding that page's permission as it has since boot, and the core that made the call holding that space, the caller's own, loaded and caught up on the flush epoch, holding no translation of that space to a page no space maps, as the step says, and nothing proves that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that no other entry, in this space or another, comes to map the frame's page until unmap_page takes the permission back, which verified code holding the caller can make through acall's map or through a derived copy of the frame's capability mapped elsewhere, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, that a core loads and stores the page's bytes through that entry, or that those bytes may be held as a PointsToRaw
 fn page_permission(
     before: Ghost<CapKernel>,
     after: Ghost<CapKernel>,
