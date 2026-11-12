@@ -808,7 +808,8 @@ impl CapKernel {
     }
 
     /// Node n's unmap is recorded: the epoch rose past every acknowledgement and is written for each page
-    /// the node mapped and for no other, so no such page counts as acknowledged, each such page is in the TLB of every core
+    /// the node mapped, each a tracked one, and for no other, so no such page counts as acknowledged, and
+    /// a page above an older acknowledgement stays above it; each such page is in the TLB of every core
     /// that loaded the space and only a flush takes it out, and a page leaves mapped when no other mapping
     /// names it.
     pub open spec fn mapping_stale_noted(pre: Self, post: Self, n: usize) -> bool {
@@ -818,7 +819,10 @@ impl CapKernel {
         let space = tree.record(m.table).space;
         &&& post.flush_epoch == pre.flush_epoch + 1
         &&& forall|g: usize| #[trigger] pages.contains(g) ==> post.stale_epoch.written(post.flush_epoch, g)
+        &&& forall|g: usize| #[trigger] pages.contains(g) ==> (g as int) < NUM_PAGES
         &&& forall|g: int| 0 <= g < NUM_PAGES && !pages.contains(g as usize) ==> #[trigger] post.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g]
+        &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
+            ==> #[trigger] post.stale_epoch.above(a, g)
         &&& forall|g: usize| #[trigger] pages.contains(g) ==> !post.acknowledged(g)
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
             0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
@@ -1864,6 +1868,9 @@ impl CapKernel {
                 lemma_stale_entries(space->Some_0, pages);
             }
             assert forall|g: usize| #[trigger] pages.contains(g) implies self.stale_epoch.written(self.flush_epoch, g) by {
+                assert(frame <= g < frame + count);
+            }
+            assert forall|g: usize| #[trigger] pages.contains(g) implies (g as int) < NUM_PAGES by {
                 assert(frame <= g < frame + count);
             }
             assert(self.tlb@.len() == NUM_CPUS);

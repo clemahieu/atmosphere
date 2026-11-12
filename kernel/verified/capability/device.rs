@@ -671,8 +671,9 @@ impl CapKernel {
 
     /// What unlinking device binding node n did: the device is bound to nothing, it left its space's
     /// bound set, the reference it held on the space's block went, the root's page is recorded stale at a
-    /// new epoch, since an IOMMU may cache a walk from a root that has no parent entry to cut, and the
-    /// device's record keeps that epoch as its last unbind. See
+    /// new epoch, since an IOMMU may cache a walk from a root that has no parent entry to cut, every page
+    /// above an older acknowledgement stays above it, and the device's record keeps that epoch as its last
+    /// unbind. See
     /// design/device-binding-under-the-space-capability/.
     pub open spec fn device_unbound(pre: Self, post: Self, n: usize) -> bool {
         let d = binding_device(&pre.devices, n);
@@ -685,6 +686,8 @@ impl CapKernel {
         &&& device_binding_parent(&pre.list, &pre.tables, n, s)
         &&& post.flush_epoch == pre.flush_epoch + 1
         &&& post.stale_epoch.written(post.flush_epoch, s / PAGE_SZ)
+        &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
+            ==> #[trigger] post.stale_epoch.above(a, g)
         &&& post.devices.count == pre.devices.count
         &&& post.devices.page == pre.devices.page
         &&& post.devices.holder == pre.devices.holder

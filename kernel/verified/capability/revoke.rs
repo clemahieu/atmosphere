@@ -333,7 +333,8 @@ impl CapKernel {
     /// comes from user space, so it can be refused. The capability's own slot can leave its table
     /// during the call, if the leaf holding it is in its run, and so can the capability the position
     /// goes through, so the steps name the capability's node and the authority is the caller's when
-    /// the call began.
+    /// the call began. Every page of a mapping it took is stale past the epoch it began at, so no core or
+    /// IOMMU counts as having flushed it on an acknowledgement from before the call.
     pub fn revoke(&mut self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: RevokeStep)
         requires
             old(self).wf(),
@@ -357,6 +358,10 @@ impl CapKernel {
             ret is Again ==> old(self).list.seq@.len() - final(self).list.seq@.len() == REVOKE_BUDGET,
             !(ret is Refused) ==> exists|gone: Seq<usize>|
                 #[trigger] revoked_seq(old(self).list, final(self).list, old(self).cap_at(root, at)->0, gone),
+            !(ret is Refused) ==> forall|n: usize, g: usize|
+                old(self).mappings@.contains_key(n) && !final(self).mappings@.contains_key(n)
+                && #[trigger] record_pages(old(self).mappings@[n]).contains(g)
+                ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g),
     {
         let ghost pre = *old(self);
         let c = match self.find_cap(root, at) {
@@ -398,6 +403,10 @@ impl CapKernel {
                 discharges(pre.view(), self.view(), root, Effect::Revoke { cap: c }),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
                 Self::devices_revoked(pre, *self),
+                pre.flush_epoch <= self.flush_epoch,
+                forall|n: usize, g: usize| pre.mappings@.contains_key(n) && !self.mappings@.contains_key(n)
+                    && #[trigger] record_pages(pre.mappings@[n]).contains(g)
+                    ==> self.stale_epoch.above(pre.flush_epoch as int, g) && (g as int) < NUM_PAGES,
             decreases REVOKE_BUDGET - taken,
         {
             let ghost mid = *self;
@@ -439,6 +448,19 @@ impl CapKernel {
                 lemma_revoked_seq_step(pre.list, mid.list, self.list, c, r, gone);
                 lemma_run_shrunk_step(pre.list, mid.list, self.list, c, r);
                 gone = gone.push(r);
+                // A record this step took is above the step's first epoch, so above the revoke's; one an
+                // earlier step took stays above the revoke's first epoch, which is no later than this one's.
+                assert forall|n: usize, g: usize| pre.mappings@.contains_key(n) && !self.mappings@.contains_key(n)
+                    && #[trigger] record_pages(pre.mappings@[n]).contains(g)
+                    implies self.stale_epoch.above(pre.flush_epoch as int, g) && (g as int) < NUM_PAGES by {
+                    if mid.mappings@.contains_key(n) {
+                        assert(mid.mappings@[n] == pre.mappings@[n]);
+                        assert(record_pages(mid.mappings@[n]).contains(g));
+                        assert(self.stale_epoch.above(mid.flush_epoch as int, g));
+                    } else {
+                        assert(mid.stale_epoch.above(pre.flush_epoch as int, g));
+                    }
+                }
             }
             taken = taken + 1;
         }
@@ -494,7 +516,13 @@ impl CapKernel {
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
             final(self).flush_epoch <= old(self).flush_epoch + 1,
+            old(self).flush_epoch <= final(self).flush_epoch,
             Self::records_shrunk(*old(self), *final(self)),
+            forall|a: int, g: usize| a <= old(self).flush_epoch && g < NUM_PAGES && old(self).stale_epoch.above(a, g)
+                ==> #[trigger] final(self).stale_epoch.above(a, g),
+            forall|n: usize, g: usize| old(self).mappings@.contains_key(n) && !final(self).mappings@.contains_key(n)
+                && #[trigger] record_pages(old(self).mappings@[n]).contains(g)
+                ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g) && (g as int) < NUM_PAGES,
     {
         let ghost pre = *old(self);
         proof {
@@ -540,6 +568,36 @@ impl CapKernel {
                 assert(Self::device_unbound(pre, *self, r));
             } else {
                 assert(self.devices == pre.devices);
+            }
+            // Each part of the step bumps the epoch or keeps it, and a word it writes is at the new epoch,
+            // so a page above an acknowledgement no later than the step's first epoch stays above it.
+            assert(pre.flush_epoch <= cut.flush_epoch);
+            assert forall|a: int, g: usize| a <= pre.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
+                implies #[trigger] cut.stale_epoch.above(a, g) by {
+                if pre.hidden_table(r) {
+                    assert(pre.blocks.tracks(g as int));
+                }
+            }
+            assert(cut.flush_epoch <= mid.flush_epoch);
+            assert forall|a: int, g: usize| a <= cut.flush_epoch && g < NUM_PAGES && cut.stale_epoch.above(a, g)
+                implies #[trigger] mid.stale_epoch.above(a, g) by {
+            }
+            assert(self.stale_epoch == mid.stale_epoch);
+            assert(self.flush_epoch == mid.flush_epoch);
+            assert(self.mappings == mid.mappings);
+            // Only a mapping's own arm takes a record, at an epoch past the step's first.
+            assert forall|n: usize, g: usize| pre.mappings@.contains_key(n) && !self.mappings@.contains_key(n)
+                && #[trigger] record_pages(pre.mappings@[n]).contains(g)
+                implies self.stale_epoch.above(pre.flush_epoch as int, g) && (g as int) < NUM_PAGES by {
+                if pre.list.nodes@[r as int].kind is Mapping {
+                    assert(cut == pre);
+                    assert(mid.mappings@ == pre.mappings@.remove(r));
+                    assert(n == r);
+                    assert(mid.stale_epoch.written(mid.flush_epoch, g));
+                } else {
+                    assert(cut.mappings == pre.mappings);
+                    assert(mid.mappings == cut.mappings);
+                }
             }
         }
         false
