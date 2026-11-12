@@ -7,9 +7,8 @@
 //! The tokens the glue and the capability kernel pass are defined here, once for both targets. Their
 //! fields are private to this module and its per-target submodules, so no code above it can build or
 //! change one: proof code cannot write the struct, and verified code cannot call Tracked::assume_new,
-//! which Verus marks external. Nor can code above it copy one: each holds a Unique, which is private here
-//! and neither Copy nor Clone, so rustc refuses an `impl Copy` for a token wherever it is written, and a
-//! `Clone` could only return the token it was given. tools/check-external-body.py refuses `unsafe` outside
+//! which Verus marks external. None is Copy or Clone, so a tracked token is used once.
+//! tools/check-external-body.py refuses `unsafe` outside
 //! counted glue, by which exec code could zero one up or read one out twice (core::mem::zeroed,
 //! core::ptr::read), and every spec of exec code Verus does not read (a vstd `*SpecImpl`, the
 //! StructuralEq derive, the exec_spec macros), by which a safe impl outside verus! could be said to
@@ -30,14 +29,6 @@ use crate::capability::kernel::TlbEntry;
 
 verus! {
 
-/// A field each token holds so that the token is not Copy: rustc refuses `impl Copy` for a struct with a
-/// field that is not Copy, and only this module can name this type to make it Copy. Without it every
-/// field of a token is ghost, hence Copy, and any module of the crate could write `impl Copy` for the
-/// token and use one tracked token twice, keeping a register's record across a later write of it.
-// Only Verus compiles the field that holds it, as it does the tokens' other fields.
-#[cfg(verus_keep_ghost)]
-struct Unique {}
-
 /// Core `core()`'s page-table base register: the core translates through the table whose top level is
 /// at `root()`, filling its TLB under tag `tag()`, the PCID or ASID written with it. The kernel value
 /// holds one for each core, made at boot for the root the loader left there, and load_translation_root
@@ -52,8 +43,6 @@ pub tracked struct BaseRegister {
     ghost root: usize,
     #[cfg(verus_keep_ghost)]
     ghost tag: usize,
-    #[cfg(verus_keep_ghost)]
-    unique: Unique,
 }
 
 impl BaseRegister {
@@ -82,8 +71,6 @@ pub tracked struct TlbModel {
     ghost held: Seq<Set<TlbEntry>>,
     #[cfg(verus_keep_ghost)]
     ghost tags: Seq<Set<usize>>,
-    #[cfg(verus_keep_ghost)]
-    unique: Unique,
 }
 
 impl TlbModel {
@@ -127,8 +114,6 @@ pub tracked struct IotlbModel {
     ghost held: Seq<Set<TlbEntry>>,
     #[cfg(verus_keep_ghost)]
     tracked queued: QueuedCommands,
-    #[cfg(verus_keep_ghost)]
-    unique: Unique,
 }
 
 impl IotlbModel {
