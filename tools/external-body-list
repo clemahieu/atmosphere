@@ -18,7 +18,7 @@ kernel/verified/arch/aarch64.rs	load_translation_root	external_body	glue	only th
 kernel/verified/arch/aarch64.rs	read_producer	assume_specification	hardware	arm-smmu 6.3.27 SMMU_CMDQ_PROD
 kernel/verified/arch/aarch64.rs	serial_write_byte	assume_specification	hardware	arm-pl011 3.3.3 Flag register, UARTFR, bit 5 TXFF; arm-pl011 3.3.1 Data register, UARTDR
 kernel/verified/arch/aarch64.rs	spin_hint	assume_specification	hardware	arm-arm B1.5.3 The YIELD instruction
-kernel/verified/arch/aarch64.rs	store_command	external_body	glue	the SMMU reads the queue, so only this can say what one of its slots holds
+kernel/verified/arch/aarch64.rs	store_command	assume_specification	hardware	arm-smmu 3.5.1 SMMU circular queues; arm-smmu 3.5.2 Queue entry visibility semantics
 kernel/verified/arch/aarch64.rs	submit_invalidate	assume_specification	hardware	arm-smmu 3.5.1 SMMU circular queues; arm-smmu 6.3.27 SMMU_CMDQ_PROD; arm-smmu 6.3.28 SMMU_CMDQ_CONS; arm-smmu 4.3.9 CMD_CFGI_ALL; arm-smmu 4.4.4.1 CMD_TLBI_NSNH_ALL; arm-smmu 4.7.3 CMD_SYNC
 kernel/verified/arch/x86_64.rs	exchange_table_word	assume_specification	hardware	amd-apm2 5.4.1 Field Definitions, Accessed (A) Bit and Dirty (D) Bit; amd-apm2 7.3.2 Access Atomicity, Table 7-1
 kernel/verified/arch/x86_64.rs	flush_every_context	assume_specification	hardware	amd-apm2 5.5.1 Process Context Identifier; amd-apm2 5.5.3 TLB Management, Implicit Invalidations; amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
@@ -26,7 +26,7 @@ kernel/verified/arch/x86_64.rs	load_translation_root	external_body	glue	only the
 kernel/verified/arch/x86_64.rs	read_head	assume_specification	hardware	amd-iommu 3.4.15 Command and Event Log Pointer Registers, MMIO Offset 2000h Command Buffer Head Pointer Register
 kernel/verified/arch/x86_64.rs	serial_write_byte	assume_specification	hardware	ns-16550 6.0 Register addresses, A0 to A2: address 0 the Transmitter Holding Register on write, address 5 the Line Status Register; ns-16550 8.4 Line Status Register, bit 5 THRE
 kernel/verified/arch/x86_64.rs	spin_hint	assume_specification	hardware	amd-apm3 3 General-Purpose Instruction Reference, PAUSE
-kernel/verified/arch/x86_64.rs	store_command	external_body	glue	the IOMMU reads the ring, so only this can say what one of its slots holds
+kernel/verified/arch/x86_64.rs	store_command	assume_specification	hardware	amd-iommu 2.4 Commands
 kernel/verified/arch/x86_64.rs	submit_invalidate	assume_specification	hardware	amd-iommu 3.4.15 Command and Event Log Pointer Registers, MMIO Offset 2008h Command Buffer Tail Pointer Register; amd-iommu 2.4.8 INVALIDATE_IOMMU_ALL; amd-iommu 2.4.1 COMPLETION_WAIT
 kernel/verified/queue_lock.rs	acquire	exec_allows_no_decreases_clause	unproven	the spin waits for the holder to hand over, and bounded overtaking is not yet proven
 kernel/verified/queue_lock.rs	release	exec_allows_no_decreases_clause	unproven	the spin waits for the successor to link itself, and bounded overtaking is not yet proven

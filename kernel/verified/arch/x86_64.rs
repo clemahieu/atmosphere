@@ -763,21 +763,14 @@ fn completion_wait_command(address: u64, data: u64) -> (ret: IommuCommand)
 }
 
 pub use queue::QueuedCommands;
-use queue::store_command;
 
 /// The record of what was read from the IOMMUs' head registers and stored into their command rings,
-/// alone in a module with the one store, so its fields are private to it: code outside cannot write a
-/// record by literal, a head it names is only what read_head's specification says the register read
-/// gave, and a record names a slot only once store_command has written it.
+/// alone in a module, so its fields are private to it: code outside cannot write a record by literal,
+/// a head it names is only what read_head's specification says the register read gave, and a slot it
+/// names is only what store_command's specification says the store wrote.
 mod queue {
     use vstd::prelude::*;
     use super::IommuCommand;
-    use crate::arch::IotlbModel;
-    use crate::capability::kernel::CommandBuffers;
-    #[cfg(verus_keep_ghost)]
-    use crate::define::NUM_IOMMUS;
-    #[cfg(verus_keep_ghost)]
-    use super::IOMMU_COMMAND_SIZE;
 
     /// What was read from the IOMMUs' head registers and stored into their command rings since the
     /// last submit: each head register read, by its address, and the value read; each slot written, by
@@ -804,32 +797,28 @@ mod queue {
             self.slots
         }
     }
-
-    /// Stores `command` into the ring slot at `address`, a command's aligned 16 bytes inside IOMMU i's
-    /// ring, so the store lands in a slot and nowhere else, and records it in `model`'s queued commands.
-    #[verifier(external_body)]
-    // external_body(glue): the IOMMU reads the ring, so only this can say what one of its slots holds
-    pub fn store_command(commands: &CommandBuffers, i: usize, address: usize, command: IommuCommand, Tracked(model): Tracked<&mut IotlbModel>)
-        requires
-            i < NUM_IOMMUS,
-            commands.buffers.wf(),
-            commands.buffer_wf(i as int),
-            commands.buffers@[i as int].ring <= address,
-            address + IOMMU_COMMAND_SIZE <= commands.buffers@[i as int].ring + commands.buffers@[i as int].len * IOMMU_COMMAND_SIZE,
-            address % IOMMU_COMMAND_SIZE == 0,
-        ensures
-            final(model).len() == old(model).len(),
-            forall|j: int| #[trigger] final(model)[j] == old(model)[j],
-            final(model).queued().heads() == old(model).queued().heads(),
-            final(model).queued().slots() == old(model).queued().slots().insert(address as int, command),
-    {
-        unsafe {
-            core::ptr::write_volatile(address as *mut u64, command.0);
-            core::ptr::write_volatile((address as *mut u64).add(1), command.1);
-        }
-    }
 }
 
+/// Stores `command` into the ring slot at `address`, a command's aligned 16 bytes inside IOMMU i's
+/// ring, so the store lands in a slot and nowhere else, and records it in `model`'s queued
+/// commands. The cited passages say host software writes commands into the shared circular buffer
+/// in system memory and the IOMMU reads and executes them from there, so the slot holds what the
+/// IOMMU reads as that command; the specification promises nothing more than that the record names
+/// the command at that slot.
+// cite: amd-iommu 2.4 Commands
+pub assume_specification[store_command](commands: &CommandBuffers, i: usize, address: usize, command: IommuCommand, Tracked(model): Tracked<&mut IotlbModel>)
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+        commands.buffers@[i as int].ring <= address,
+        address + IOMMU_COMMAND_SIZE <= commands.buffers@[i as int].ring + commands.buffers@[i as int].len * IOMMU_COMMAND_SIZE,
+        address % IOMMU_COMMAND_SIZE == 0,
+    ensures
+        final(model).len() == old(model).len(),
+        forall|j: int| #[trigger] final(model)[j] == old(model)[j],
+        final(model).queued().heads() == old(model).queued().heads(),
+        final(model).queued().slots() == old(model).queued().slots().insert(address as int, command);
 
 /// Reads the head register at `register`, which is IOMMU i's Command Buffer Head Pointer Register, so
 /// the load is of that register and no other address: the offset of the command the IOMMU fetches
@@ -1380,5 +1369,12 @@ fn submit_invalidate(
         while core::ptr::read_volatile(completion as *const u64) == 0 {
             core::hint::spin_loop();
         }
+    }
+}
+
+pub fn store_command(_commands: &CommandBuffers, _i: usize, address: usize, command: IommuCommand, _model: Tracked<&mut IotlbModel>) {
+    unsafe {
+        core::ptr::write_volatile(address as *mut u64, command.0);
+        core::ptr::write_volatile((address as *mut u64).add(1), command.1);
     }
 }

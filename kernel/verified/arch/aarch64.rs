@@ -626,21 +626,14 @@ pub const SMMU_CMDQ_PROD: usize = 0x98;
 pub const SMMU_CMDQ_CONS: usize = 0x9c;
 
 pub use queue::QueuedCommands;
-use queue::store_command;
 
 /// The record of what was read from the SMMUs' producer registers and stored into their command
-/// queues, alone in a module with the one store, so its fields are private to it: code outside cannot
-/// write a record by literal, a producer it names is only what read_producer's specification says the
-/// register read gave, and a record names a slot only once store_command has written it.
+/// queues, alone in a module, so its fields are private to it: code outside cannot write a record by
+/// literal, a producer it names is only what read_producer's specification says the register read
+/// gave, and a slot it names is only what store_command's specification says the store wrote.
 mod queue {
     use vstd::prelude::*;
     use super::SmmuCommand;
-    use crate::arch::IotlbModel;
-    use crate::capability::kernel::CommandBuffers;
-    #[cfg(verus_keep_ghost)]
-    use crate::define::NUM_IOMMUS;
-    #[cfg(verus_keep_ghost)]
-    use super::IOMMU_COMMAND_SIZE;
 
     /// What was read from the SMMUs' producer registers and stored into their command queues since the
     /// last submit: each producer register read, by its address, and the value read; each slot
@@ -667,31 +660,29 @@ mod queue {
             self.slots
         }
     }
-
-    /// Stores `command` into the queue slot at `address`, a command's aligned 16 bytes inside SMMU i's
-    /// queue, so the store lands in a slot and nowhere else, and records it in `model`'s queued commands.
-    #[verifier(external_body)]
-    // external_body(glue): the SMMU reads the queue, so only this can say what one of its slots holds
-    pub fn store_command(commands: &CommandBuffers, i: usize, address: usize, command: SmmuCommand, Tracked(model): Tracked<&mut IotlbModel>)
-        requires
-            i < NUM_IOMMUS,
-            commands.buffers.wf(),
-            commands.buffer_wf(i as int),
-            commands.buffers@[i as int].ring <= address,
-            address + IOMMU_COMMAND_SIZE <= commands.buffers@[i as int].ring + commands.buffers@[i as int].len * IOMMU_COMMAND_SIZE,
-            address % IOMMU_COMMAND_SIZE == 0,
-        ensures
-            final(model).len() == old(model).len(),
-            forall|j: int| #[trigger] final(model)[j] == old(model)[j],
-            final(model).queued().producers() == old(model).queued().producers(),
-            final(model).queued().slots() == old(model).queued().slots().insert(address as int, command),
-    {
-        unsafe {
-            core::ptr::write_volatile(address as *mut u64, command.0);
-            core::ptr::write_volatile((address as *mut u64).add(1), command.1);
-        }
-    }
 }
+
+/// Stores `command` into the queue slot at `address`, a command's aligned 16 bytes inside SMMU i's
+/// queue, so the store lands in a slot and nowhere else, and records it in `model`'s queued
+/// commands. The cited passages say software inserts an item into the Command queue in memory and
+/// the SMMU reads from there each item the PROD index covers, so the slot holds what the SMMU reads
+/// as that command; the specification promises nothing more than that the record names the command
+/// at that slot.
+// cite: arm-smmu 3.5.1 SMMU circular queues
+// cite: arm-smmu 3.5.2 Queue entry visibility semantics
+pub assume_specification[store_command](commands: &CommandBuffers, i: usize, address: usize, command: SmmuCommand, Tracked(model): Tracked<&mut IotlbModel>)
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+        commands.buffers@[i as int].ring <= address,
+        address + IOMMU_COMMAND_SIZE <= commands.buffers@[i as int].ring + commands.buffers@[i as int].len * IOMMU_COMMAND_SIZE,
+        address % IOMMU_COMMAND_SIZE == 0,
+    ensures
+        final(model).len() == old(model).len(),
+        forall|j: int| #[trigger] final(model)[j] == old(model)[j],
+        final(model).queued().producers() == old(model).queued().producers(),
+        final(model).queued().slots() == old(model).queued().slots().insert(address as int, command);
 
 /// Reads the producer register at `register`, which is SMMU i's SMMU_CMDQ_PROD, so the load is of that
 /// register and no other address: the queue's index and its wrap bit, which is where the SMMU will look
@@ -1291,5 +1282,12 @@ fn submit_invalidate(
             break;
         }
         core::hint::spin_loop();
+    }
+}
+
+pub fn store_command(_commands: &CommandBuffers, _i: usize, address: usize, command: SmmuCommand, _model: Tracked<&mut IotlbModel>) {
+    unsafe {
+        core::ptr::write_volatile(address as *mut u64, command.0);
+        core::ptr::write_volatile((address as *mut u64).add(1), command.1);
     }
 }
