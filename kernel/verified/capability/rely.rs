@@ -841,6 +841,39 @@ impl CapKernel {
         Self::lemma_mappings_kept_keeps_space(pre, post, root);
     }
 
+    /// A derive, by any caller, keeps space_kept of every process: it leaves every space's tables as
+    /// they were.
+    pub proof fn lemma_derive_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_derived(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// A delete, by any caller, keeps space_kept of every process: it leaves every space's tables as
+    /// they were.
+    pub proof fn lemma_delete_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_deleted(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// A move, by any caller, keeps space_kept of every process: it leaves every space's tables as
+    /// they were.
+    pub proof fn lemma_move_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_moved(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
     // The kernel's entries that are no capability operation, as for the rely above: each leaves the
     // table pages and the spaces' roots and records as they were.
 
