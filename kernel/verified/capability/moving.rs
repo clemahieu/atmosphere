@@ -79,6 +79,51 @@ impl CapKernel {
         &&& post.view().holds(dst, n)
         &&& Self::caps_frame(pre, post, i, n)
         &&& post.tables.roots == pre.tables.roots
+        &&& Self::move_frame(pre, post, i, n)
+    }
+
+    /// Every field a move of node i to node n does not write is as it was: the move writes the list,
+    /// the two slots' payloads, and the holder records that name a capability by its node, which take
+    /// n for i. No thread, process, space, core, TLB, mapping or frame changes.
+    pub open spec fn move_frame(pre: Self, post: Self, i: usize, n: usize) -> bool {
+        &&& post.cores == pre.cores
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.tlb == pre.tlb
+        &&& post.iommus == pre.iommus
+        &&& post.mapped == pre.mapped
+        &&& post.blocks == pre.blocks
+        &&& post.tables.roots == pre.tables.roots
+        &&& post.tables.owner == pre.tables.owner
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.frames == pre.frames
+        &&& post.table_pages == pre.table_pages
+        &&& post.spaces.roots == pre.spaces.roots
+        &&& post.spaces.records == pre.spaces.records
+        &&& post.spaces.loaded == pre.spaces.loaded
+        &&& post.spaces.holders@ == moved_space_holders(pre.spaces.holders@, i, n)
+        &&& post.spaces.bound == pre.spaces.bound
+        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.registers == pre.spaces.registers
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
+        &&& post.mappings == pre.mappings
+        &&& post.zeroing == pre.zeroing
+        &&& post.holders@ == Self::moved_holders(pre.holders@, i, n)
+        &&& post.devices.records == pre.devices.records
+        &&& post.devices.count == pre.devices.count
+        &&& post.devices.page == pre.devices.page
+        &&& post.devices.holder@ == if pre.payload_of(i).kind is Device {
+            pre.devices.holder@.insert(pre.payload_of(i).base, n)
+        } else {
+            pre.devices.holder@
+        }
+        &&& post.threads.records == pre.threads.records
+        &&& post.threads.holders@ == moved_thread_holders(pre.threads.holders@, i, n)
+        &&& post.processes.records == pre.processes.records
+        &&& post.processes.spare == pre.processes.spare
+        &&& post.processes.holders@ == moved_process_holders(pre.processes.holders@, i, n)
+        &&& post.processes.bound == pre.processes.bound
+        &&& post.stop_ipis == pre.stop_ipis
+        &&& post.flush_ipis == pre.flush_ipis
     }
 
     /// What a move from one position to another is to reach. Into a table named through a process
@@ -363,6 +408,7 @@ impl CapKernel {
                 &&& Self::caps_frame(*old(self), *final(self), i, n)
                 &&& final(self).tables.roots == old(self).tables.roots
                 &&& Self::move_step(*old(self), *final(self), i, n)
+                &&& Self::move_frame(*old(self), *final(self), i, n)
                 &&& old(self).tables.owner@[page_of(i)].0 == src
                 &&& old(self).tables.owner@[page_of(n)].0 == dst
             },
