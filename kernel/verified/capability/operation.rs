@@ -11,7 +11,11 @@ verus! {
 
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::link::tree_of;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::NODE_SPACE;
+#[cfg(verus_keep_ghost)]
+use crate::capability::mapping::space_mapping;
 use crate::capability::position::*;
 use crate::capability::probe::*;
 #[cfg(verus_keep_ghost)]
@@ -334,23 +338,26 @@ impl CapKernel {
     /// zero; for the table page kind, ok with an unlinked table page of the level in argument 4 at the
     /// base in argument 2 under the untyped in the slot; or, for the leaf kind, ok with a table leaf at
     /// the base in argument 2 under the untyped in the slot, in the root entry the position word in
-    /// argument 3 names.
+    /// argument 3 names. Every arm but the table page's leaves every space's tables as they were.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| !pre.allows_retype(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& frame.argument(1) == RETYPE_FRAME
             &&& out == status_only(STATUS_OK)
             &&& Self::frame_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize)
+            &&& Self::same_tree(pre, post)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_LARGE_FRAME
             &&& out == status_only(STATUS_AGAIN)
             &&& Self::large_frame_zeroing(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9)
+            &&& Self::same_tree(pre, post)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_LARGE_FRAME
             &&& out == status_only(STATUS_OK)
             &&& Self::large_frame_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9)
+            &&& Self::same_tree(pre, post)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_TABLE_PAGE
@@ -362,6 +369,7 @@ impl CapKernel {
             &&& out == status_only(STATUS_OK)
             &&& spec_position(frame.argument(3)) is Some
             &&& Self::leaf_retyped(pre, post, root, frame.slot() as usize, spec_position(frame.argument(3))->0, frame.argument(2) as usize)
+            &&& Self::same_tree(pre, post)
         }
     }
 
@@ -370,7 +378,7 @@ impl CapKernel {
     /// table of that level that no space links and no capability names, the untyped's child, its node
     /// not live before and hidden after, the one entry the parent map gains and the only node whose
     /// liveness or kind changed, no thread bound but as it was, the block table changed in the block's
-    /// pages alone, and the step discharges the retype's effect.
+    /// pages alone, every space's mapping as it was, and the step discharges the retype's effect.
     pub open spec fn table_page_retyped(pre: Self, post: Self, root: usize, from: usize, base: usize, level: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         &&& pre.can_retype_table_page(root, from, base, level)
@@ -391,6 +399,8 @@ impl CapKernel {
         &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
         &&& post.tables == pre.tables
         &&& post.spaces == pre.spaces
+        &&& forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
+            space_mapping(tree_of(&post.table_pages, &post.spaces), r) == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
         &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 3)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }

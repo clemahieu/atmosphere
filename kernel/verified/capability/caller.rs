@@ -468,13 +468,20 @@ impl CapKernel {
         &&& self.link_fits(v[slot].base, va, level, child)
     }
 
-    /// Link's contract over the caller's view: no slot of any table changes, and no block's count nor
-    /// any page's block, whatever the status. Refused, with every space's tables as they were, exactly
+    /// Every space's mapping in post is as it was in pre.
+    pub open spec fn mappings_kept(pre: Self, post: Self) -> bool {
+        forall|r: usize| #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+            == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
+    }
+
+    /// Link's contract over the caller's view: no slot of any table changes, no block's count nor any
+    /// page's block, and no space's mapping, whatever the status. Refused, with every space's tables as they were, exactly
     /// when link_allowed fails; otherwise ok, with the space the slot names gaining the child in the
     /// entry the walk found, as linked says.
     pub open spec fn link_contract(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize, out: Outcome) -> bool {
         &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
         &&& post.blocks == pre.blocks
+        &&& Self::mappings_kept(pre, post)
         &&& {
             ||| {
                 &&& !pre.link_allowed(root, slot, va, level, from, child)
@@ -513,6 +520,22 @@ impl CapKernel {
                 post.lemma_table_view(t, j);
             }
             assert(post.table_view(t) =~= pre.table_view(t));
+        }
+        if out == status_only(STATUS_OK) {
+            let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
+            let place = pre.link_parent(s, frame.argument(1), frame.argument(2))->0;
+            let child = frame.argument(4) as usize;
+            let a = tree_of(&pre.table_pages, &pre.spaces);
+            let b = tree_of(&post.table_pages, &post.spaces);
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
+            assert(table_record_wf(&pre.table_pages, child));
+            assert forall|i: usize| i < ENTRIES implies #[trigger] a.entry(child, i).is_empty() by {
+                assert(pre.table_pages.maps@[child].value()[i].is_empty());
+            }
+            lemma_table_bound(child);
+            assert forall|r: usize| #[trigger] space_mapping(b, r) == space_mapping(a, r) by {
+                lemma_mapping_linked(a, b, place.table, place.entry, child, s, r);
+            }
         }
     }
 
@@ -825,12 +848,14 @@ impl CapKernel {
     }
 
     /// Inspect's contract over the caller's view, for the position word decoded to at: no slot of any
-    /// table changes, and no block's count nor any page's block, whatever the status. Refused exactly
+    /// table changes, no block's count nor any page's block, and no space's mapping, whatever the
+    /// status. Refused exactly
     /// when inspect_allowed fails; otherwise ok, with the kind's number, the base, the order and the
     /// rights the slot's view says in results 1 to 4.
     pub open spec fn inspect_contract(pre: Self, post: Self, root: usize, at: Option<Position>, out: Outcome) -> bool {
         &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
         &&& post.blocks == pre.blocks
+        &&& Self::mappings_kept(pre, post)
         &&& {
             ||| {
                 &&& !pre.inspect_allowed(root, at)
@@ -995,7 +1020,8 @@ impl CapKernel {
         }
     }
 
-    /// Retype's contract over the caller's view. Refused, with every table's view and the block table
+    /// Retype's contract over the caller's view, with every space's mapping as it was whatever the
+    /// status. Refused, with every table's view and the block table
     /// as they were, exactly when retype_allowed fails. A 4K frame: ok, with the caller's slot the word
     /// names now holding the frame, the untyped's child, its page a block with a count of one, every
     /// other slot of every table as it was, and every frame capability's blocks and their counts as
@@ -1010,50 +1036,53 @@ impl CapKernel {
         let to = word as usize;
         let parent = pre.tables.node_of(root, from);
         let at = spec_position(word)->0;
-        ||| {
-            &&& !allowed
-            &&& out == status_only(STATUS_REFUSED)
-            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
-            &&& post.blocks == pre.blocks
-        }
-        ||| {
-            &&& kind == RETYPE_FRAME
-            &&& allowed
-            &&& out == status_only(STATUS_OK)
-            &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 0, parent))
-            &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
-            &&& block_refs(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ)) == 1
-            &&& Self::frame_blocks_kept(pre, post)
-        }
-        ||| {
-            &&& kind == RETYPE_LARGE_FRAME
-            &&& allowed
-            &&& out == status_only(STATUS_AGAIN)
-            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
-        }
-        ||| {
-            &&& kind == RETYPE_LARGE_FRAME
-            &&& allowed
-            &&& out == status_only(STATUS_OK)
-            &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 9, parent))
-            &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
-        }
-        ||| {
-            &&& kind == RETYPE_TABLE_PAGE
-            &&& allowed
-            &&& out == status_only(STATUS_OK)
-            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
-            &&& Self::frame_blocks_kept(pre, post)
-            &&& post.table_pages.maps@.contains_key(base)
-            &&& post.table_pages.records@[base].value() == fresh_table(level)
-        }
-        ||| {
-            let table = pre.view_table_at(root, at.through)->0;
-            &&& kind == RETYPE_LEAF
-            &&& allowed
-            &&& out == status_only(STATUS_OK)
-            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
-            &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> #[trigger] post.empty_slot(table, i)
+        &&& Self::mappings_kept(pre, post)
+        &&& {
+            ||| {
+                &&& !allowed
+                &&& out == status_only(STATUS_REFUSED)
+                &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& post.blocks == pre.blocks
+            }
+            ||| {
+                &&& kind == RETYPE_FRAME
+                &&& allowed
+                &&& out == status_only(STATUS_OK)
+                &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 0, parent))
+                &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& block_refs(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ)) == 1
+                &&& Self::frame_blocks_kept(pre, post)
+            }
+            ||| {
+                &&& kind == RETYPE_LARGE_FRAME
+                &&& allowed
+                &&& out == status_only(STATUS_AGAIN)
+                &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            }
+            ||| {
+                &&& kind == RETYPE_LARGE_FRAME
+                &&& allowed
+                &&& out == status_only(STATUS_OK)
+                &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 9, parent))
+                &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
+            }
+            ||| {
+                &&& kind == RETYPE_TABLE_PAGE
+                &&& allowed
+                &&& out == status_only(STATUS_OK)
+                &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& Self::frame_blocks_kept(pre, post)
+                &&& post.table_pages.maps@.contains_key(base)
+                &&& post.table_pages.records@[base].value() == fresh_table(level)
+            }
+            ||| {
+                let table = pre.view_table_at(root, at.through)->0;
+                &&& kind == RETYPE_LEAF
+                &&& allowed
+                &&& out == status_only(STATUS_OK)
+                &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> #[trigger] post.empty_slot(table, i)
+            }
         }
     }
 
@@ -1230,6 +1259,14 @@ impl CapKernel {
             let table = pre.view_table_at(root, at.through)->0;
             assert(table == pre.destination_at(root, at.through)->0);
             assert forall|i: usize| index_ok(i) && index_entry(i) == at.index as int implies #[trigger] post.empty_slot(table, i) by {}
+        }
+        if kind == RETYPE_TABLE_PAGE && out == status_only(STATUS_OK) {
+            assert forall|r: usize| #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+                == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r) by {
+                if !pre.spaces.roots@.contains_key(r) {
+                    assert(space_mapping(tree_of(&post.table_pages, &post.spaces), r) =~= space_mapping(tree_of(&pre.table_pages, &pre.spaces), r));
+                }
+            }
         }
     }
 
