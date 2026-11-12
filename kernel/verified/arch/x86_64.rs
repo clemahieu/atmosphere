@@ -885,10 +885,14 @@ proof fn lemma_command_slot(b: CommandBuffer, slot: int)
 /// COMPLETION_WAIT finishes only once every older command has, 48882 Rev 3.11 §2.4.1, and
 /// INVALIDATE_IOMMU_ALL invalidates every IOMMU TLB, §2.4.8. The IOMMU has read every queued command
 /// and moved its head once it returns, so it empties the record of them in `model`, and a second
-/// submit has to read the head and queue the commands again.
-#[verifier(external_body)]
-// external_body(glue): only the IOMMU can attest an invalidate, so only this empties its IOTLB model
-fn submit_invalidate(
+/// submit has to read the head and queue the commands again. The cited passages are the tail register,
+/// whose store hands the IOMMU every command up to it, the invalidate, which leaves every IOMMU cache
+/// empty at its completion, and the wait, which finishes only after every older command and then
+/// stores its data at its address; the body holds only the stores, the fence and that wait.
+// cite: amd-iommu 3.4.15 Command and Event Log Pointer Registers, MMIO Offset 2008h Command Buffer Tail Pointer Register
+// cite: amd-iommu 2.4.8 INVALIDATE_IOMMU_ALL
+// cite: amd-iommu 2.4.1 COMPLETION_WAIT
+assume_specification[submit_invalidate](
     commands: &CommandBuffers,
     i: usize,
     head_register: usize,
@@ -918,17 +922,7 @@ fn submit_invalidate(
         final(model)[i as int] == Set::<TlbEntry>::empty(),
         forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
         final(model).queued().heads() == Map::<int, u64>::empty(),
-        final(model).queued().slots() == Map::<int, IommuCommand>::empty(),
-{
-    unsafe {
-        core::ptr::write_volatile(completion as *mut u64, 0);
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        core::ptr::write_volatile(tail_register as *mut u64, tail);
-        while core::ptr::read_volatile(completion as *const u64) == 0 {
-            core::hint::spin_loop();
-        }
-    }
-}
+        final(model).queued().slots() == Map::<int, IommuCommand>::empty();
 
 /// Invalidates all of IOMMU i's caches and returns once it has finished, with the tail after the
 /// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
@@ -1368,4 +1362,23 @@ pub fn read_head(_commands: &CommandBuffers, _i: usize, register: usize, _model:
 
 pub fn exchange_table_word(table: &mut PageMap, index: usize, word: usize) -> usize {
     unsafe { core::sync::atomic::AtomicUsize::from_ptr(core::ptr::addr_of_mut!(table.ar.ar[index])) }.swap(word, core::sync::atomic::Ordering::Relaxed)
+}
+
+fn submit_invalidate(
+    _commands: &CommandBuffers,
+    _i: usize,
+    _head_register: usize,
+    tail_register: usize,
+    tail: u64,
+    completion: usize,
+    _model: Tracked<&mut IotlbModel>,
+) {
+    unsafe {
+        core::ptr::write_volatile(completion as *mut u64, 0);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        core::ptr::write_volatile(tail_register as *mut u64, tail);
+        while core::ptr::read_volatile(completion as *const u64) == 0 {
+            core::hint::spin_loop();
+        }
+    }
 }

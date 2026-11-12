@@ -751,9 +751,17 @@ proof fn lemma_command_slot(b: CommandBuffer, slot: int)
 /// writeback, which a hypervisor emulating the SMMU can decode (Arm ARM D24.2.45, ISV). The SMMU has
 /// consumed every queued command and the producer has moved once it returns, so it empties the record
 /// of them in `model`, and a second submit has to read the producer and queue the commands again.
-#[verifier(external_body)]
-// external_body(glue): only the SMMU can attest an invalidate, so only this empties its IOTLB model
-fn submit_invalidate(
+/// The cited passages are the queue's indices, the producer store that hands the SMMU every command
+/// up to it and the consumer that says what it has consumed, the two invalidates, and the sync, which
+/// completes only after every command before it and before the consumer passes it; the body holds
+/// only the barrier, the store and that wait.
+// cite: arm-smmu 3.5.1 SMMU circular queues
+// cite: arm-smmu 6.3.27 SMMU_CMDQ_PROD
+// cite: arm-smmu 6.3.28 SMMU_CMDQ_CONS
+// cite: arm-smmu 4.3.9 CMD_CFGI_ALL
+// cite: arm-smmu 4.4.4.1 CMD_TLBI_NSNH_ALL
+// cite: arm-smmu 4.7.3 CMD_SYNC
+assume_specification[submit_invalidate](
     commands: &CommandBuffers,
     i: usize,
     producer: usize,
@@ -786,33 +794,7 @@ fn submit_invalidate(
         final(model)[i as int] == Set::<TlbEntry>::empty(),
         forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
         final(model).queued().producers() == Map::<int, u32>::empty(),
-        final(model).queued().slots() == Map::<int, SmmuCommand>::empty(),
-{
-    unsafe {
-        core::arch::asm!(
-            "dsb st",
-            "str {place:w}, [{register}]",
-            register = in(reg) producer,
-            place = in(reg) place,
-            options(nostack, preserves_flags),
-        );
-    }
-    loop {
-        let value: u32;
-        unsafe {
-            core::arch::asm!(
-                "ldr {value:w}, [{register}]",
-                register = in(reg) consumer,
-                value = out(reg) value,
-                options(nostack, readonly, preserves_flags),
-            );
-        }
-        if value & place_mask == place {
-            break;
-        }
-        core::hint::spin_loop();
-    }
-}
+        final(model).queued().slots() == Map::<int, SmmuCommand>::empty();
 
 /// Invalidates all of SMMU i's caches and returns once it has finished, with the tail after the
 /// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
@@ -1275,4 +1257,39 @@ pub fn read_producer(_commands: &CommandBuffers, _i: usize, register: usize, _mo
 
 pub fn exchange_table_word(table: &mut PageMap, index: usize, word: usize) -> usize {
     unsafe { core::sync::atomic::AtomicUsize::from_ptr(core::ptr::addr_of_mut!(table.ar.ar[index])) }.swap(word, core::sync::atomic::Ordering::Relaxed)
+}
+
+fn submit_invalidate(
+    _commands: &CommandBuffers,
+    _i: usize,
+    producer: usize,
+    consumer: usize,
+    place: u32,
+    place_mask: u32,
+    _model: Tracked<&mut IotlbModel>,
+) {
+    unsafe {
+        core::arch::asm!(
+            "dsb st",
+            "str {place:w}, [{register}]",
+            register = in(reg) producer,
+            place = in(reg) place,
+            options(nostack, preserves_flags),
+        );
+    }
+    loop {
+        let value: u32;
+        unsafe {
+            core::arch::asm!(
+                "ldr {value:w}, [{register}]",
+                register = in(reg) consumer,
+                value = out(reg) value,
+                options(nostack, readonly, preserves_flags),
+            );
+        }
+        if value & place_mask == place {
+            break;
+        }
+        core::hint::spin_loop();
+    }
 }
