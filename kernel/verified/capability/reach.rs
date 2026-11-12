@@ -220,8 +220,8 @@ pub ghost enum Effect {
     /// itself, not one of its threads.
     Retype { untyped: NodeId, object: ObjectId, pages: nat, into: Option<NodeId> },
     /// Unlink a block's hidden node, or a slice of a dead object's teardown, under an untyped held: a
-    /// slice that frees a block of memory frees its `pages` pages from object, and any other slice
-    /// frees none.
+    /// slice that frees a block of memory frees its `pages` pages from object, all of them within the
+    /// untyped, as a retype's are, and any other slice frees none.
     Teardown { untyped: NodeId, object: ObjectId, pages: nat },
     /// Map the frame capability `from`, which the caller holds, into the device space capability
     /// `space` names, which it holds with the write right: a grant to whoever sees the space, whom the
@@ -272,7 +272,13 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
                 &&& !s.process_of.contains_key(s.names[into->0])
             }
         },
-        Effect::Teardown { untyped, .. } => s.holds_right(p, untyped, Right::Retype),
+        Effect::Teardown { untyped, object, pages } => {
+            &&& s.holds_right(p, untyped, Right::Retype)
+            &&& pages > 0 ==> {
+                &&& s.covers(untyped, object)
+                &&& object + pages * PAGE_SZ <= s.names[untyped] + s.pages[untyped] * PAGE_SZ
+            }
+        },
         Effect::Share { space, from } => {
             &&& s.holds_right(p, space, Right::Write)
             &&& s.holds(p, from)
@@ -668,10 +674,10 @@ pub open spec fn tears_down(pre: State, post: State, object: ObjectId) -> bool {
         ==> pre.rights.contains((x, r)) && pre.names.contains_key(x)
 }
 
-/// A step that changes nothing, by a holder of an untyped with the retype right, discharges a teardown.
+/// A step that changes nothing, by a process the teardown authorizes, discharges it.
 pub proof fn lemma_no_change_discharges_teardown(s: State, p: ObjectId, untyped: NodeId, object: ObjectId, pages: nat)
     requires
-        s.holds_right(p, untyped, Right::Retype),
+        authorized(s, p, Effect::Teardown { untyped, object, pages }),
     ensures
         discharges(s, s, p, Effect::Teardown { untyped, object, pages }),
 {
@@ -2874,11 +2880,11 @@ pub proof fn lemma_sheds_shares_discharges_local(pre: State, post: State, p: Obj
     lemma_simulated_discharges_local(pre, post, p, live, f);
 }
 
-/// So is it a slice of a teardown, by a holder of an untyped with the retype right.
+/// So is it a slice of a teardown, by a process the teardown authorizes.
 pub proof fn lemma_sheds_shares_discharges_teardown(pre: State, post: State, p: ObjectId, untyped: NodeId, object: ObjectId, pages: nat)
     requires
         sheds_shares(pre, post),
-        pre.holds_right(p, untyped, Right::Retype),
+        authorized(pre, p, Effect::Teardown { untyped, object, pages }),
     ensures
         discharges(pre, post, p, Effect::Teardown { untyped, object, pages }),
 {
@@ -3410,6 +3416,35 @@ pub proof fn lemma_retype_of_a_covered_page_discharges()
 pub proof fn lemma_retype_of_an_uncovered_page_does_not_discharge()
     ensures
         !discharges(retype_example(), retyped_at(EXAMPLE_PAST), 1, Effect::Retype { untyped: 10, object: EXAMPLE_PAST, pages: 1, into: None }),
+{
+    let pre = retype_example();
+    assert(!pre.covers(10, EXAMPLE_PAST));
+}
+
+/// A teardown that frees a page and writes it, under the untyped that covers that page, discharges.
+pub proof fn lemma_teardown_of_a_covered_page_discharges()
+    ensures
+        discharges(retype_example(), retyped_at(EXAMPLE_BASE), 1, Effect::Teardown { untyped: 10, object: EXAMPLE_BASE, pages: 1 }),
+{
+    let (pre, post) = (retype_example(), retyped_at(EXAMPLE_BASE));
+    let e = Effect::Teardown { untyped: 10, object: EXAMPLE_BASE, pages: 1 };
+    assert(pre.holds_right(1, 10, Right::Retype));
+    assert(pre.covers(10, EXAMPLE_BASE));
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        if o != EXAMPLE_BASE {
+            assert((post.contents)(o) =~= (pre.contents)(o));
+        }
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_same_authority_same_reach(post, pre, r, o);
+    }
+}
+
+/// But a teardown that frees the page process 2's capability covers, outside that untyped, does not,
+/// though the freer holds an untyped with the retype right: process 2 would see its page change.
+pub proof fn lemma_teardown_of_an_uncovered_page_does_not_discharge()
+    ensures
+        !discharges(retype_example(), retyped_at(EXAMPLE_PAST), 1, Effect::Teardown { untyped: 10, object: EXAMPLE_PAST, pages: 1 }),
 {
     let pre = retype_example();
     assert(!pre.covers(10, EXAMPLE_PAST));

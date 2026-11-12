@@ -4882,8 +4882,9 @@ impl CapKernel {
             let post = *self;
             let v = pre.view();
             let e = Effect::Teardown { untyped, object: base, pages: 1 };
-            assert(authorized(v, root, e));
             lemma2_to64();
+            pre.lemma_retype_covers(root, from, base, 0);
+            assert(authorized(v, root, e));
             assert(base % PAGE_SZ == 0);
             assert(base / PAGE_SZ == page);
             assert forall|o: ObjectId| #[trigger] State::changed(v, post.view(), o) implies may_change(v, e, o) by {
@@ -5012,6 +5013,9 @@ impl CapKernel {
             assert(!post.zeroing.active(level, r));
             let v = pre.view();
             let e = Effect::Teardown { untyped, object: base, pages: level_pages(level) as nat };
+            lemma2_to64();
+            pre.lemma_retype_covers(root, from, base, order);
+            assert(level_pages(level) == pow2(order as nat));
             assert(authorized(v, root, e));
             lemma_level_pages(level, r);
             assert(base % PAGE_SZ == 0);
