@@ -3017,7 +3017,7 @@ impl CapKernel {
         }
 
         // Give the process's space a table at the first entry past the kernel's, through its capability.
-        self.witness_table(process, WITNESS_PROCESS_SLOT, base, KERNEL_MEM_END_L4INDEX, 3, b3, Ghost(base), Ghost(np), Ghost(dp), Ghost(u), Ghost(first));
+        self.witness_table(process, WITNESS_PROCESS_SLOT, base, KERNEL_MEM_END_L4INDEX, 3, b3, Ghost(base), Ghost(process_of(base)), Ghost(np), Ghost(dp), Ghost(u), Ghost(first));
         let ghost r0 = *self;
         let ghost tk = tree_of(&r0.table_pages, &r0.spaces);
         proof {
@@ -3564,8 +3564,8 @@ impl CapKernel {
 
     /// Gives entry e of table t of space s a child table at the given level: the order-3 block at the
     /// cursor, retyped as a table page under the root's untyped at ROOT_UNTYPED_SLOT and linked through
-    /// the capability to s's process at index i of the root's table, at depth d. The entry is empty and
-    /// the block free in the untyped, so it never refuses.
+    /// the capability c at index i of the root's table, at depth d, to s's live process or to s itself,
+    /// a device space. The entry is empty and the block free in the untyped, so it never refuses.
     #[verifier::spinoff_prover]
     fn witness_table(
         &mut self,
@@ -3576,6 +3576,7 @@ impl CapKernel {
         level: usize,
         cursor: usize,
         s: Ghost<usize>,
+        c: Ghost<Payload>,
         n: Ghost<usize>,
         d: Ghost<usize>,
         u: Ghost<usize>,
@@ -3584,8 +3585,8 @@ impl CapKernel {
         requires
             old(self).wf(),
             witness_root(*old(self), process, u@, first@),
-            witness_slot(*old(self), process, i, n@, process_of(s@), d@),
-            witness_alive(*old(self), s@),
+            witness_slot(*old(self), process, i, n@, c@, d@),
+            (c@ == process_of(s@) && witness_alive(*old(self), s@)) || c@ == space_of(s@),
             witness_block(*old(self), cursor, first@),
             1 <= level <= 3,
             tree_of(&old(self).table_pages, &old(self).spaces).is_table(t),
@@ -3613,7 +3614,7 @@ impl CapKernel {
                 == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r),
             steps_kept(tree_of(&old(self).table_pages, &old(self).spaces), tree_of(&final(self).table_pages, &final(self).spaces)),
             witness_root(*final(self), process, u@, first@),
-            witness_slot(*final(self), process, i, n@, process_of(s@), d@),
+            witness_slot(*final(self), process, i, n@, c@, d@),
             step(tree_of(&final(self).table_pages, &final(self).spaces), t, e) == Some(cursor),
             tree_of(&final(self).table_pages, &final(self).spaces).is_page(cursor),
             tree_of(&final(self).table_pages, &final(self).spaces).record(cursor).level == level,
@@ -3679,8 +3680,9 @@ impl CapKernel {
             assert(pre.blocks.tracks((t / PAGE_SZ) as int));
             assert(mid.blocks.pages@[(t / PAGE_SZ) as int] == pre.blocks.pages@[(t / PAGE_SZ) as int]);
             lemma_witness_slot_kept(pre, mid, process, ROOT_UNTYPED_SLOT, u@, first@, 1);
-            lemma_witness_slot_kept(pre, mid, process, i, n@, process_of(s@), d@);
+            lemma_witness_slot_kept(pre, mid, process, i, n@, c@, d@);
             assert(PROCESS_RIGHTS & 128 != 0) by (compute_only);
+            assert(SPACE_RIGHTS & right_bit(Right::Write) != 0) by (compute);
             assert(mid.can_retype_under(process, ROOT_UNTYPED_SLOT, cursor, 3));
             assert(mid.can_link(process, i, t, e, ROOT_UNTYPED_SLOT, cursor));
         }
@@ -3727,9 +3729,9 @@ impl CapKernel {
     }
 
     /// Gives space s the level 3, 2 and 1 tables of the path of the first page under entry l4 of its
-    /// level 4 table, at the three order-3 blocks from the cursor, through the capability to s's process
-    /// at index i of the root's table, at depth d. The entry is empty and the blocks free in the root's
-    /// untyped, so it never refuses.
+    /// level 4 table, at the three order-3 blocks from the cursor, through the capability c at index i of
+    /// the root's table, at depth d, to s's live process or to s itself, a device space, which has no
+    /// kernel entries. The entry is empty and the blocks free in the root's untyped, so it never refuses.
     #[verifier::spinoff_prover]
     fn witness_path(
         &mut self,
@@ -3738,6 +3740,7 @@ impl CapKernel {
         s: usize,
         l4: usize,
         cursor: usize,
+        c: Ghost<Payload>,
         n: Ghost<usize>,
         d: Ghost<usize>,
         u: Ghost<usize>,
@@ -3746,10 +3749,10 @@ impl CapKernel {
         requires
             old(self).wf(),
             witness_root(*old(self), process, u@, first@),
-            witness_slot(*old(self), process, i, n@, process_of(s), d@),
-            witness_alive(*old(self), s),
+            witness_slot(*old(self), process, i, n@, c@, d@),
+            (c@ == process_of(s) && witness_alive(*old(self), s) && KERNEL_MEM_END_L4INDEX <= l4) || c@ == space_of(s),
             tree_of(&old(self).table_pages, &old(self).spaces).is_root(s),
-            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
+            l4 < ENTRIES,
             tree_of(&old(self).table_pages, &old(self).spaces).entry(s, l4).is_empty(),
             !old(self).blocks.pages@[(s / PAGE_SZ) as int].dead,
             cursor + 3 * PROCESS_BYTES <= NODE_SPACE,
@@ -3775,7 +3778,7 @@ impl CapKernel {
                 == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r),
             steps_kept(tree_of(&old(self).table_pages, &old(self).spaces), tree_of(&final(self).table_pages, &final(self).spaces)),
             witness_root(*final(self), process, u@, first@),
-            witness_slot(*final(self), process, i, n@, process_of(s), d@),
+            witness_slot(*final(self), process, i, n@, c@, d@),
             walk_table(tree_of(&final(self).table_pages, &final(self).spaces), s, SpacePath { l4: l4, l3: 0, l2: 0, l1: 0 }) is Some,
             step(tree_of(&final(self).table_pages, &final(self).spaces), s, l4) == Some(cursor),
             step(tree_of(&final(self).table_pages, &final(self).spaces), cursor, 0) == Some((cursor + PROCESS_BYTES) as usize),
@@ -3800,9 +3803,12 @@ impl CapKernel {
             lemma_block_page(c1, 0);
             assert(c1 / PAGE_SZ == cursor / PAGE_SZ + 8);
             assert(c2 / PAGE_SZ == cursor / PAGE_SZ + 16);
+            if c@ == space_of(s) {
+                pre.lemma_space_cap(n@);
+            }
             assert(a.child_slot(s, l4));
         }
-        let ok1 = self.witness_table(process, i, s, l4, 3, cursor, Ghost(s), n, d, u, first);
+        let ok1 = self.witness_table(process, i, s, l4, 3, cursor, Ghost(s), c, n, d, u, first);
         let ghost s1 = *self;
         let ghost b1 = tree_of(&s1.table_pages, &s1.spaces);
         proof {
@@ -3811,7 +3817,7 @@ impl CapKernel {
             s1.lemma_table_base(cursor);
             assert(b1.child_slot(cursor, 0));
         }
-        let ok2 = self.witness_table(process, i, cursor, 0, 2, c1, Ghost(s), n, d, u, first);
+        let ok2 = self.witness_table(process, i, cursor, 0, 2, c1, Ghost(s), c, n, d, u, first);
         let ghost s2 = *self;
         let ghost b2 = tree_of(&s2.table_pages, &s2.spaces);
         proof {
@@ -3819,7 +3825,7 @@ impl CapKernel {
             s2.lemma_table_base(c1);
             assert(b2.child_slot(c1, 0));
         }
-        let ok3 = self.witness_table(process, i, c1, 0, 1, c2, Ghost(s), n, d, u, first);
+        let ok3 = self.witness_table(process, i, c1, 0, 1, c2, Ghost(s), c, n, d, u, first);
         proof {
             let post = *self;
             let b3 = tree_of(&post.table_pages, &post.spaces);
@@ -4108,7 +4114,7 @@ impl CapKernel {
             assert(witness_block(s2, (b2 + PROCESS_BYTES) as usize, first));
             assert(witness_block(s2, (b2 + 2 * PROCESS_BYTES) as usize, first));
         }
-        let ok3 = self.witness_path(process, WITNESS_PROCESS_SLOT, base, KERNEL_MEM_END_L4INDEX, b2, Ghost(np), Ghost(2), Ghost(u), Ghost(first));
+        let ok3 = self.witness_path(process, WITNESS_PROCESS_SLOT, base, KERNEL_MEM_END_L4INDEX, b2, Ghost(process_of(base)), Ghost(np), Ghost(2), Ghost(u), Ghost(first));
         let ghost s3 = *self;
         let ghost a3 = tree_of(&s3.table_pages, &s3.spaces);
         proof {
@@ -4214,7 +4220,7 @@ impl CapKernel {
             assert(witness_block(s4, (b6 + PROCESS_BYTES) as usize, first));
             assert(witness_block(s4, (b6 + 2 * PROCESS_BYTES) as usize, first));
         }
-        let ok5 = self.witness_path(process, WITNESS_SECOND_PROCESS_SLOT, bq, KERNEL_MEM_END_L4INDEX, b6, Ghost(nq), Ghost(2), Ghost(u), Ghost(first));
+        let ok5 = self.witness_path(process, WITNESS_SECOND_PROCESS_SLOT, bq, KERNEL_MEM_END_L4INDEX, b6, Ghost(process_of(bq)), Ghost(nq), Ghost(2), Ghost(u), Ghost(first));
         let ghost s5 = *self;
         let ghost a5 = tree_of(&s5.table_pages, &s5.spaces);
         proof {
@@ -4742,7 +4748,7 @@ impl CapKernel {
             assert(witness_block(s1, (base + PROCESS_BYTES) as usize, first));
             assert(witness_block(s1, (base + 2 * PROCESS_BYTES) as usize, first));
         }
-        let ok2 = self.witness_path(process, ROOT_PROCESS_SLOT, process, l4, base, Ghost(pn), Ghost(d), Ghost(u), Ghost(first));
+        let ok2 = self.witness_path(process, ROOT_PROCESS_SLOT, process, l4, base, Ghost(process_of(process)), Ghost(pn), Ghost(d), Ghost(u), Ghost(first));
         let ghost s2 = *self;
         let ghost a2 = tree_of(&s2.table_pages, &s2.spaces);
         proof {
@@ -6910,10 +6916,12 @@ impl CapKernel {
                 assert(i < lb / PAGE_SZ);
                 assert(s1.blocks.pages@[i] == s0.blocks.pages@[i]);
             }
+            assert(witness_alive(s1, process));
+            assert(KERNEL_MEM_END_L4INDEX <= l4);
         }
 
         // The root's tables for the path, through its process capability.
-        let ok2 = self.witness_path(process, ROOT_PROCESS_SLOT, process, l4, c0, Ghost(pn), Ghost(d), Ghost(u), Ghost(first));
+        let ok2 = self.witness_path(process, ROOT_PROCESS_SLOT, process, l4, c0, Ghost(process_of(process)), Ghost(pn), Ghost(d), Ghost(u), Ghost(first));
         let ghost s2 = *self;
         let ghost a2 = tree_of(&s2.table_pages, &s2.spaces);
         proof {
