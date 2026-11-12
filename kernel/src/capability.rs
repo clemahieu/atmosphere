@@ -22,7 +22,7 @@ use verified::capability::kernel::{CapKernel, CommandBuffer, CommandBuffers};
 use verified::capability::operation::{Outcome, OPERATION_POWER_OFF, STATUS_OK};
 use verified::capability::space::SPACE_ROOT_PAGE;
 use verified::capability::table::{CapKind, MAX_ORDER};
-use verified::arch::Registers;
+use verified::arch::{Registers, MEM_MASK};
 use verified::define::{KERNEL_MEM_END_L4INDEX, NUM_IOMMUS};
 use vstd::prelude::Tracked;
 
@@ -167,8 +167,10 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let process = page(PROCESS_PAGE);
     let kernel = unsafe { &mut *(page(BOOT_OBJECT_PAGES) as *mut CapKernel) };
 
-    // kernel_init takes the loader's root as a page, the one a core naming no space is pointed back at.
+    // kernel_init takes the loader's root as a page the base register can name, the one a core naming
+    // no space is pointed back at.
     assert!(boot_info.pml4 as u64 % PAGE_BYTES == 0, "the loader's root table is not a page");
+    assert!(boot_info.pml4 as u64 & !MEM_MASK == 0, "the loader's root table is above what the base register names");
     // kernel_init hands its page to no block: the memory map keeps it out of the free runs and the
     // stretch, and no 2M region of dom0's image may hold it.
     let pml4 = boot_info.pml4 as u64;

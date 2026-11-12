@@ -53,6 +53,8 @@ use crate::define::*;
 #[cfg(verus_keep_ghost)]
 use crate::pagetable::pagemap::*;
 use crate::pptr::PointsTo;
+#[cfg(verus_keep_ghost)]
+use crate::util::page_ptr_util_u::mem_valid;
 
 /// Page i is a page of one of the four blocks boot_root takes: the root's process at `process`, its
 /// table's two leaves at `leaf` and `frames`, and its thread at `t`.
@@ -192,7 +194,8 @@ impl CapKernel {
     /// the IOMMUs present are the `present` boot was given, which a bind needs of its device's IOMMU;
     /// the root reaches exactly the console, power and the pages of its process, its thread, the free
     /// runs and the image, and nothing else reaches anything the root does not, besides itself; the
-    /// root every core booted on is a page, so a core may be pointed back at it.
+    /// root every core booted on is a page the base register can name, so a core may be pointed back
+    /// at it.
     pub open spec fn booted(
         &self,
         root: usize,
@@ -273,6 +276,7 @@ impl CapKernel {
         &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
             ==> #[trigger] self.root_table_block(process, cursor_block(first.base, j))
         &&& self.spaces.kernel_root@ % PAGE_SZ == 0
+        &&& mem_valid(self.spaces.kernel_root@)
     }
 
     /// Boot of the capability kernel, from the memory boot set aside for it: init with the list's
@@ -285,8 +289,9 @@ impl CapKernel {
     /// which is split here between the steps. It returns how many untyped and frame
     /// capabilities the root holds, and refuses exactly when the free runs make no block or more than
     /// the first leaf holds, or the image does not fit the second leaf or the first untyped block's
-    /// tables. On success the state is the one `booted` describes, with `kernel_root`, a page, as the
-    /// root a core naming no space may be pointed back at. See design/root-process-at-boot/.
+    /// tables. On success the state is the one `booted` describes, with `kernel_root`, a page the base
+    /// register can name, which kernel/src checks with its alignment, as the root a core naming no
+    /// space may be pointed back at. See design/root-process-at-boot/.
     #[verifier::spinoff_prover]
     pub fn kernel_init(
         &mut self,
@@ -310,6 +315,7 @@ impl CapKernel {
         requires
             boot_registers(registers, kernel_root),
             kernel_root % PAGE_SZ == 0,
+            mem_valid(kernel_root),
             boot_tlb(tlb),
             boot_iotlb(iotlb),
             old(self).cores.wf(),
