@@ -613,6 +613,11 @@ impl CapKernel {
                 &&& final(self).holders@ == old(self).holders@.insert(BlockRef::Two(r), held.insert((leaf2 + (i - NODES_PER_PAGE)) as usize))
                 &&& forall|j: int| old(self).blocks.tracks(j) && region_2m(j) != r ==> #[trigger] final(self).blocks.pages@[j] == old(self).blocks.pages@[j]
             }),
+            final(self).frames@ == if old(self).blocks.regions_2m@[frame_region(base) as int].typed {
+                old(self).frames@
+            } else {
+                old(self).frames@.union_prefer_right(perms)
+            },
             final(self).blocks.free_perms == old(self).blocks.free_perms,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
