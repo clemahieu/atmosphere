@@ -17,7 +17,8 @@ A call goes to the issue its transcript was working:
 - a round agent's or a session's, from the moment it claims one (`bd ready --claim`, whose reply
   names it, or `bd update <id> ... --claim`) until it claims another or closes that one; a round
   that claims nothing, as one closing an epic does, works the first issue it updates or closes; a
-  round's calls before its first claim go to that claim;
+  round's calls before its first claim go to that claim; a round tools/loop.py pins to the issue an
+  earlier round left unfinished works the issue its first prompt names, as if it had claimed it;
 - a prover's or a skeptic's, the issue or review its first prompt names;
 - any other, none, which the page counts at the root.
 
@@ -46,6 +47,7 @@ CLOSE = re.compile(rf"\bbd\s+close\s+({ISSUE})\b")
 WRITE = re.compile(rf"\bbd\s+(?:update|close)\s+({ISSUE})\b")
 PROMPTED = re.compile(rf"\b(?:Issue|Review|Epic):?\s+({ISSUE})\b")
 FIRST_ID = re.compile(rf'"id":\s*"({ISSUE})"')
+PINNED = re.compile(rf"^Run one round\. Issue ({ISSUE}) is yours\b")
 NAMED_BY_PROMPT = ("prover", "skeptic")
 SESSION = "session"
 
@@ -178,6 +180,11 @@ def follow(db, file, state, kind, raw):
         return
     if kind in NAMED_BY_PROMPT:
         return
+    if kind == "round" and not state["prompted"] and b'"type":"user"' in raw:
+        state["prompted"] = True
+        found = PINNED.match(text(json.loads(raw).get("message", {}).get("content")))
+        if found:
+            claim(db, file, state, kind, found.group(1))
     if b"bd " in raw and b'"tool_use"' in raw:
         for block in blocks(json.loads(raw)):
             command = block.get("input", {}).get("command", "") if block.get("type") == "tool_use" else ""
@@ -348,6 +355,12 @@ class Tests(unittest.TestCase):
             self.call(),
         ])
         self.assertEqual(self.issues(), {"atmo-1.2": [3, 30, 300, 15, 3], "atmo-1.3": [1, 10, 100, 5, 1]})
+
+    def test_a_round_pinned_to_an_issue_works_it_from_its_first_call(self):
+        self.agent("round", [self.call(), self.prompt("Run one round. Issue atmo-1.7 is yours: a round of this loop left it unfinished."),
+                             self.call(), self.bash('bd update atmo-1.8 --append-notes "Recovered at orient"'), self.call(),
+                             self.bash("bd close atmo-1.7 --reason done"), self.call()])
+        self.assertEqual(self.issues(), {"atmo-1.7": [5, 50, 500, 25, 5], "": [1, 10, 100, 5, 1]})
 
     def test_a_round_that_claims_nothing_works_the_first_issue_it_writes(self):
         self.agent("round", [self.call(), self.bash('bd update atmo-1 --append-notes "Skeptic input: tier 3"'), self.call(),
