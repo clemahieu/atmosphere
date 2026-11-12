@@ -470,9 +470,10 @@ impl CapKernel {
     /// slot's word names, in the caller's own table, put at the position the word in argument 1 names,
     /// with the rights in argument 2 and the block of the order in argument 4 at the base in argument 3,
     /// the one entry the parent map gains and the only node whose kind, liveness or capability changed,
-    /// no root entry changed, and every thread bound as it was. Rights wider than 32 bits and an order
-    /// wider than 8 are refused, since no capability holds them, and so is a source word naming another
-    /// process's table: derive takes its parent from the caller's own.
+    /// no root entry changed, every thread bound as it was, and every space's tables as they were.
+    /// Rights wider than 32 bits and an order wider than 8 are refused, since no capability holds them,
+    /// and so is a source word naming another process's table: derive takes its parent from the
+    /// caller's own.
     pub open spec fn spec_derived(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
@@ -490,12 +491,14 @@ impl CapKernel {
             &&& post.tables.roots == pre.tables.roots
             &&& Self::caps_frame(pre, post, child, child)
             &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+            &&& Self::same_tree(pre, post)
         }
     }
 
     /// A move in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_move fails, or ok with the capability at the position the slot's
-    /// word names moved to the position the word in argument 1 names, every thread bound as it was.
+    /// word names moved to the position the word in argument 1 names, every thread bound as it was and
+    /// every space's tables as they were.
     pub open spec fn spec_moved(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
@@ -506,12 +509,13 @@ impl CapKernel {
             &&& to is Some
             &&& Self::cap_moved_at(pre, post, root, from->0, to->0)
             &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+            &&& Self::same_tree(pre, post)
         }
     }
 
     /// A delete in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_delete fails, or ok with the childless capability at the position the
-    /// slot's word names gone, every thread bound as it was.
+    /// slot's word names gone, every thread bound as it was and every space's tables as they were.
     pub open spec fn spec_deleted(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
         ||| !pre.allows_delete(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
@@ -520,6 +524,7 @@ impl CapKernel {
             &&& at is Some
             &&& Self::cap_deleted_at(pre, post, root, at->0)
             &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+            &&& Self::same_tree(pre, post)
         }
     }
 
