@@ -69,6 +69,27 @@ impl CapKernel {
         }
     }
 
+    /// No capability another table holds has a slot of root's table, or the leaf holding that slot, in
+    /// its run: root's capabilities and its table hang only from its own capabilities and from nodes no
+    /// table holds, as the root process's hang from the list's synthetic root
+    /// (design/root-process-at-boot/). No revoke by another caller then reaches them, and no move by
+    /// one renames their parents.
+    pub open spec fn framed(&self, root: usize) -> bool {
+        forall|t: usize, i: usize, j: usize| t != root && #[trigger] self.table_view(t).contains_key(i)
+            && #[trigger] self.table_view(root).contains_key(j) ==> {
+                let c = self.tables.node_of(t, i);
+                &&& !self.list.in_run(c, self.tables.node_of(root, j))
+                &&& !self.list.in_run(c, self.tables.leaf(root, index_entry(j)))
+            }
+    }
+
+    /// The root's frame fact, rely's special case: a step that keeps the rely of a sealed process whose
+    /// table is also framed, and that its own threads did not take, leaves its table's view as it was,
+    /// parents and all. Every keep lemma below ensures it.
+    pub open spec fn root_kept(pre: Self, post: Self, root: usize) -> bool {
+        pre.sealed(root) && pre.framed(root) ==> post.table_view(root) == pre.table_view(root)
+    }
+
     pub proof fn lemma_rely_reflexive(k: Self, root: usize)
         ensures
             Self::rely(k, k, root),
@@ -98,6 +119,7 @@ impl CapKernel {
             Self::spec_revoked(pre, post, caller, frame, out),
         ensures
             Self::rely(pre, post, root),
+            caller != root ==> Self::root_kept(pre, post, root),
     {
         Self::lemma_revoke_contract(pre, post, caller, frame, out);
         let bound = bound_threads(&pre.list, &pre.tables);
@@ -125,6 +147,20 @@ impl CapKernel {
                 }
             }
         }
+        if caller != root && pre.sealed(root) && pre.framed(root) {
+            let at = spec_position(frame.slot());
+            if pre.revoke_allowed(caller, at) {
+                let table = pre.view_table_at(caller, at->0.through)->0;
+                let c = pre.tables.node_of(table, at->0.index);
+                pre.lemma_sealed_table_not_root(caller, at->0.through, root);
+                assert forall|j: usize| #[trigger] pre.table_view(root).contains_key(j)
+                    implies post.table_view(root).contains_key(j) by {
+                    assert(pre.table_view(table).contains_key(at->0.index));
+                    assert(!pre.revokes_slot(c, root, j));
+                }
+            }
+            assert(post.table_view(root) =~= pre.table_view(root));
+        }
     }
 
     /// A delete, by any caller, keeps the rely of every process: it takes one slot and gives none, every
@@ -135,6 +171,7 @@ impl CapKernel {
             Self::spec_deleted(pre, post, caller, frame, out),
         ensures
             Self::rely(pre, post, root),
+            caller != root ==> Self::root_kept(pre, post, root),
     {
         Self::lemma_delete_contract(pre, post, caller, frame, out);
         let at = spec_position(frame.slot());
@@ -180,6 +217,7 @@ impl CapKernel {
             caller != root,
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_derive_contract(pre, post, caller, frame, out);
         let from = spec_position(frame.slot());
@@ -228,6 +266,7 @@ impl CapKernel {
             caller != root,
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         broadcast use vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
         Self::lemma_move_contract(pre, post, caller, frame, out);
@@ -255,6 +294,23 @@ impl CapKernel {
                         assert(!pre.names_process(pre.table_view(t)[j], root));
                     }
                 }
+                if pre.framed(root) {
+                    let i = pre.tables.node_of(src, f.index);
+                    let n = pre.tables.node_of(dst, d.index);
+                    assert forall|j: usize| #[trigger] pre.table_view(root).contains_key(j)
+                        implies moved_view(pre.table_view(root)[j], i, n) == pre.table_view(root)[j] by {
+                        let x = pre.tables.node_of(root, j);
+                        pre.lemma_table_view(root, j);
+                        assert(pre.table_view(src).contains_key(f.index));
+                        if pre.list.parent@[x] == i {
+                            assert(pre.list.anc(pre.list.parent@[x], 0) == i);
+                            assert(pre.list.anc(x, 1) == i);
+                            assert(pre.list.in_run(i, x));
+                        }
+                    }
+                    assert(post.table_view(root) == pre.moved_table_view(src, f.index, dst, d.index, root));
+                    assert(post.table_view(root) =~= pre.table_view(root));
+                }
             } else {
                 assert(post.table_view(root) == pre.table_view(root));
             }
@@ -273,6 +329,7 @@ impl CapKernel {
             }),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         if pre.sealed(root) {
             assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
@@ -292,6 +349,7 @@ impl CapKernel {
             Self::spec_mapped(pre, post, caller, frame, out),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_map_contract(pre, post, caller, frame, out);
         let bound = bound_threads(&pre.list, &pre.tables);
@@ -324,6 +382,7 @@ impl CapKernel {
             Self::spec_unmapped(pre, post, caller, frame, out),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_unmapped_frame(pre, post, caller, frame, out);
         Self::lemma_dead_mappings_keep_views(pre, post);
@@ -384,6 +443,7 @@ impl CapKernel {
             Self::spec_linked(pre, post, caller, frame, out),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_link_contract(pre, post, caller, frame, out);
         assert(post.list == pre.list && post.tables == pre.tables);
@@ -397,6 +457,7 @@ impl CapKernel {
             Self::invoked(pre, post, caller, frame, out),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_rely_reflexive(pre, root);
     }
@@ -408,6 +469,7 @@ impl CapKernel {
             Self::spec_probed(pre, post, caller, frame, out),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         if pre.allows_probe(caller, frame) {
             let read = choose|read: Seq<usize>| Self::probe_done(pre, post, caller, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] probed_of(out, read));
@@ -427,6 +489,7 @@ impl CapKernel {
             caller != root,
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_retype_contract(pre, post, caller, frame, out);
         let kind = frame.argument(1);
@@ -504,6 +567,7 @@ impl CapKernel {
             post.tables == pre.tables,
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         assert(bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables));
         assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
@@ -525,6 +589,7 @@ impl CapKernel {
             post == pre || Self::state_written(pre, post, t, ThreadState::Runnable { core }),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
@@ -535,6 +600,7 @@ impl CapKernel {
             post == pre || Self::record_written(pre, post, t, r),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
@@ -545,6 +611,7 @@ impl CapKernel {
             post == pre || Self::frame_written(pre, post, t, frame),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
@@ -555,6 +622,7 @@ impl CapKernel {
             Self::switch_frame(pre, post, c, t),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
@@ -565,6 +633,7 @@ impl CapKernel {
             Self::only_core_changed(pre, post, c),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
@@ -576,6 +645,7 @@ impl CapKernel {
             post == pre || Self::moved_off(pre, post, c, frame),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
@@ -588,6 +658,7 @@ impl CapKernel {
             Self::process_destroyed(pre, post, p),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
@@ -599,6 +670,7 @@ impl CapKernel {
             Self::thread_destroyed(pre, post, c, t),
         ensures
             Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
     {
         assert(post.list == pre.list && post.tables == pre.tables);
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
