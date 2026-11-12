@@ -1389,24 +1389,36 @@ impl CapKernel {
         }
     }
 
-    /// Derive's contract over the caller's view. Refused, with every table's view as it was, exactly
-    /// when derive_allowed fails; otherwise ok, with the destination's slot now holding the source's
-    /// child, of the source's kind with the rights and the block the arguments give, and every other
-    /// slot of every table as it was, the source's included.
+    /// Derive's contract over the caller's view. Refused, with every table's view and the block table as
+    /// they were, exactly when derive_allowed fails; otherwise ok, with the destination's slot now
+    /// holding the source's child, of the source's kind with the rights and the block the arguments
+    /// give, and every other slot of every table as it was, the source's included. The child of a frame
+    /// is one more holder of the block the source lies in, a frame in the caller's view, and that
+    /// count alone changed; the child of any other capability leaves every frame capability's block
+    /// and count as they were.
     pub open spec fn derive_contract(pre: Self, post: Self, root: usize, from: Option<Position>, to: Option<Position>, rights: u64, base: usize, order: u64, out: Outcome) -> bool {
         ||| {
             &&& !pre.derive_allowed(root, from, to, rights, base, order)
             &&& out == status_only(STATUS_REFUSED)
             &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& post.blocks == pre.blocks
         }
         ||| {
             let i = from->0.index;
             let table = pre.view_table_at(root, to->0.through)->0;
-            let child = derived_view(pre.table_view(root)[i], rights as u32, base, order as u8, pre.tables.node_of(root, i));
+            let source = pre.table_view(root)[i];
+            let child = derived_view(source, rights as u32, base, order as u8, pre.tables.node_of(root, i));
+            let br = block_ref(&pre.blocks, view_frame(source, 0));
             &&& pre.derive_allowed(root, from, to, rights, base, order)
             &&& out == status_only(STATUS_OK)
             &&& post.table_view(table) == pre.table_view(table).insert(to->0.index, child)
             &&& forall|t: usize| t != table ==> #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& if source.kind is Frame {
+                &&& block_refs(&pre.blocks, br) < usize::MAX
+                &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+            } else {
+                Self::frame_blocks_kept(pre, post)
+            }
         }
     }
 
@@ -1440,6 +1452,33 @@ impl CapKernel {
             assert(post.is_cap(child));
             assert(post.slot_view(table, to->0.index) == v);
             Self::lemma_slot_added(pre, post, table, to->0.index, v);
+            let parent = pre.tables.node_of(root, i);
+            let p = pre.payload_of(parent);
+            if !(p.kind is Frame) {
+                // A space's, a thread's or a process's block is typed as that object, and a frame
+                // capability's block as a frame, so the block that gained a holder is no frame's.
+                if p.kind is Space {
+                    pre.lemma_space_cap(parent);
+                }
+                if p.kind is Thread {
+                    pre.lemma_thread_cap(parent);
+                }
+                if p.kind is Process {
+                    pre.lemma_process_cap(parent);
+                }
+                assert forall|t: usize, j: usize, page: usize|
+                    pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                        && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) implies {
+                        let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page));
+                        &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], page)) == br
+                        &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br)
+                    } by {
+                    pre.lemma_view_frame_counted(t, j, page);
+                    pre.lemma_table_view(t, j);
+                    pre.lemma_frame_page(pre.tables.node_of(t, j), page);
+                    assert(objects_wf(&pre.tables, &pre.blocks, pre.holders@));
+                }
+            }
         }
     }
 

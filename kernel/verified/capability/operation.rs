@@ -525,6 +525,8 @@ impl CapKernel {
     /// slot's word names, in the caller's own table, put at the position the word in argument 1 names,
     /// with the rights in argument 2 and the block of the order in argument 4 at the base in argument 3,
     /// the one entry the parent map gains and the only node whose kind, liveness or capability changed,
+    /// the block the parent lies in holding one more reference when the parent is a frame, a space, a
+    /// thread or a process and the block table as it was otherwise,
     /// no root entry changed, every thread bound as it was, and every space's tables as they were.
     /// Rights wider than 32 bits and an order wider than 8 are refused, since no capability holds them,
     /// and so is a source word naming another process's table: derive takes its parent from the
@@ -542,6 +544,7 @@ impl CapKernel {
             &&& from->0.through is None
             &&& to is Some
             &&& Self::cap_derived_at(pre, post, root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8)
+            &&& Self::derive_counted(pre, post, pre.tables.node_of(root, from->0.index))
             &&& post.list.parent@ == pre.list.parent@.insert(child, pre.tables.node_of(root, from->0.index))
             &&& post.tables.roots == pre.tables.roots
             &&& Self::caps_frame(pre, post, child, child)

@@ -242,6 +242,21 @@ impl CapKernel {
         }
     }
 
+    /// What a derive from the capability at node parent does to the block table: the child of a frame,
+    /// a space, a thread or a process is one more holder of the block its parent lies in, which had
+    /// room for it, and that block's count alone changed; any other child holds no block, and the block
+    /// table is as it was.
+    pub open spec fn derive_counted(pre: Self, post: Self, parent: usize) -> bool {
+        let p = pre.payload_of(parent);
+        let br = block_ref(&pre.blocks, p.base / PAGE_SZ);
+        if tracked_kind(p.kind) {
+            &&& block_refs(&pre.blocks, br) < usize::MAX
+            &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+        } else {
+            post.blocks == pre.blocks
+        }
+    }
+
     /// Derives the capability at index `from` of the caller's table, at `root`, into the empty position
     /// `to`: an index of the caller's table, or of the table of a process the caller controls, which
     /// must not be dead. The index, the position, rights, base and order come from user space, so any
@@ -271,6 +286,7 @@ impl CapKernel {
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::cap_derived_at(*old(self), *final(self), root, from, to, rights, base, order),
+            ret ==> Self::derive_counted(*old(self), *final(self), old(self).tables.node_of(root, from)),
             ret ==> final(self).list.parent@ == old(self).list.parent@.insert(
                 old(self).tables.node_of(old(self).table_at(root, to.through)->0, to.index),
                 old(self).tables.node_of(root, from),
@@ -344,6 +360,7 @@ impl CapKernel {
                 let child = old(self).tables.node_of(dst, to);
                 &&& Self::cap_derived_between(*old(self), *final(self), src, from, dst, to, rights, base, order)
                 &&& Self::derive_step(*old(self), *final(self), child)
+                &&& Self::derive_counted(*old(self), *final(self), parent)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
                 &&& final(self).list.seq@[0] == old(self).list.seq@[0]
             },
