@@ -15,7 +15,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 
-use aeager::Eager;
+use aeager::{no_token, Eager};
 use aheap::heap::{layout_fits, Heap};
 use spin::Mutex;
 use vstd::prelude::Tracked;
@@ -61,7 +61,7 @@ unsafe impl GlobalAlloc for Global {
         if !layout_fits(layout.size(), layout.align()) {
             return null_mut();
         }
-        match heap.alloc(source, layout.size(), layout.align()) {
+        match heap.alloc(source, &mut no_token(), layout.size(), layout.align()) {
             Some((object, _bytes)) => object,
             None => null_mut(),
         }
@@ -70,6 +70,6 @@ unsafe impl GlobalAlloc for Global {
     unsafe fn dealloc(&self, object: *mut u8, layout: Layout) {
         let mut held = self.held.lock();
         let Held { heap, source } = held.as_mut().expect("an object to free came from an installed heap");
-        heap.free(source, object, layout.size(), layout.align(), Tracked::assume_new());
+        heap.free(source, &mut no_token(), object, layout.size(), layout.align(), Tracked::assume_new());
     }
 }

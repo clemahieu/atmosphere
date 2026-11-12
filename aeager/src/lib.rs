@@ -19,5 +19,5 @@ mod eager;
 mod exercise;
 mod glue;
 
-pub use eager::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
+pub use eager::{no_token, Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 pub use exercise::{exercise, Exercised};

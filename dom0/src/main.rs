@@ -981,7 +981,7 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     ) else {
         return false;
     };
-    let seen = aeager::exercise(&mut eager);
+    let seen = aeager::exercise(&mut eager, &mut aeager::no_token());
     print_count(EAGER_HEAD, seen.backed as u64, b"\n") == operation::STATUS_OK
         && seen.apart
         && seen.backed > 0

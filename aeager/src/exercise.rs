@@ -93,8 +93,9 @@ fn take(p: *mut u8, byte: Tracked<PointsTo<u8>>, rest: Tracked<PointsToRaw>) -> 
 /// then reads the second page's byte and releases both pages. Whether every back was granted and the
 /// second page read 2, which the proof says it does whenever it is read, and leaves the spans as they
 /// were.
-fn apart<S: SpanSource>(src: &mut S, base: *mut u8) -> (r: bool)
+fn apart<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>, base: *mut u8) -> (r: bool)
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
         old(src)@.spans.contains_key(base@.addr as int),
         old(src)@.spans[base@.addr as int].blocks == 1,
@@ -103,6 +104,7 @@ fn apart<S: SpanSource>(src: &mut S, base: *mut u8) -> (r: bool)
         base@.addr as int % BLOCK_BYTES as int == 0,
         base@.addr + BLOCK_BYTES <= usize::MAX + 1,
     ensures
+        final(src).serves(final(token)@),
         final(src)@.wf(),
         final(src)@.spans == old(src)@.spans,
         final(src)@.provenance == old(src)@.provenance,
@@ -125,24 +127,24 @@ fn apart<S: SpanSource>(src: &mut S, base: *mut u8) -> (r: bool)
     assert(run_pages(y as int, 1) =~= set![y as int]) by {
         assert(y as int % PAGE_BYTES as int == 0);
     }
-    let first = match src.back(Ghost(span), x, 1) {
+    let first = match src.back(token, Ghost(span), x, 1) {
         None => return false,
         Some(perm) => perm,
     };
     let (byte, rest) = put(base, first, 1);
     let (_, first) = take(base, byte, rest);
-    src.release(Ghost(span), x, 1, first);
+    src.release(token, Ghost(span), x, 1, first);
     assert(src@.spans[span].backed =~= start.spans[span].backed);
     assert(src@.spans =~= start.spans);
-    let second = match src.back(Ghost(span), y, 1) {
+    let second = match src.back(token, Ghost(span), y, 1) {
         None => return false,
         Some(perm) => perm,
     };
     let (yb, yrest) = put(py, second, 2);
-    let first = match src.back(Ghost(span), x, 1) {
+    let first = match src.back(token, Ghost(span), x, 1) {
         None => {
             let (_, second) = take(py, yb, yrest);
-            src.release(Ghost(span), y, 1, second);
+            src.release(token, Ghost(span), y, 1, second);
             assert(src@.spans[span].backed =~= start.spans[span].backed);
             assert(src@.spans =~= start.spans);
             return false;
@@ -152,8 +154,8 @@ fn apart<S: SpanSource>(src: &mut S, base: *mut u8) -> (r: bool)
     let (xb, xrest) = put(base, first, 3);
     let (seen, second) = take(py, yb, yrest);
     let (_, first) = take(base, xb, xrest);
-    src.release(Ghost(span), y, 1, second);
-    src.release(Ghost(span), x, 1, first);
+    src.release(token, Ghost(span), y, 1, second);
+    src.release(token, Ghost(span), x, 1, first);
     assert(src@.spans[span].backed =~= start.spans[span].backed);
     assert(src@.spans =~= start.spans);
     seen == 2
@@ -187,16 +189,18 @@ proof fn lemma_run_grows(start: int, k: nat)
 }
 
 /// Exercises `src` from any well-formed view and leaves its spans as it found them.
-pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
+pub fn exercise<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (seen: Exercised)
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         final(src)@.spans == old(src)@.spans,
         final(src)@.provenance == old(src)@.provenance,
 {
     let ghost start = src@;
     let nothing = Exercised { backed: 0, refused: false, read: false, again: false, apart: false, fresh: false };
-    let base = match src.reserve(1) {
+    let base = match src.reserve(token, 1) {
         None => return nothing,
         Some(base) => base,
     };
@@ -212,13 +216,14 @@ pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
         ;
     }
     assert(run_pages(addr as int, 0) =~= Set::empty());
-    let apart = apart(src, base);
+    let apart = apart(src, token, base);
     assert(src@.spans =~= reserved.spans.insert(addr as int, Span { blocks: 1, backed: run_pages(addr as int, 0) }));
     let tracked mut run = PointsToRaw::empty(provenance);
     let mut k: usize = 0;
     let mut limit = BLOCK_PAGES;
     while k < limit
         invariant
+            src.serves(token@),
             k <= limit <= BLOCK_PAGES,
             BLOCK_PAGES * PAGE_BYTES == BLOCK_BYTES,
             addr == base@.addr,
@@ -243,7 +248,7 @@ pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
             lemma_run_grows(addr as int, k as nat);
         }
         let page = addr + k * PAGE_BYTES;
-        match src.back(Ghost(addr as int), page, 1) {
+        match src.back(token, Ghost(addr as int), page, 1) {
             None => {
                 limit = k;
             },
@@ -280,7 +285,7 @@ pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
         let tracked raw = byte.into_raw();
         let tracked whole = raw.join(rest);
         assert(whole.dom() =~= Set::range(addr as int, addr + k * PAGE_BYTES));
-        src.release(Ghost(addr as int), addr, k, Tracked(whole));
+        src.release(token, Ghost(addr as int), addr, k, Tracked(whole));
     }
     assert(src@.spans[addr as int].backed =~= Set::empty());
     assert(src@.spans =~= reserved.spans);
@@ -288,10 +293,10 @@ pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
         lemma_page_aligned(addr as int, 0);
         lemma_run_grows(addr as int, 0);
     }
-    let again = match src.back(Ghost(addr as int), addr, 1) {
+    let again = match src.back(token, Ghost(addr as int), addr, 1) {
         None => false,
         Some(perm) => {
-            src.release(Ghost(addr as int), addr, 1, perm);
+            src.release(token, Ghost(addr as int), addr, 1, perm);
             true
         },
     };
@@ -309,19 +314,19 @@ pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
         }
         let page = addr + k * PAGE_BYTES;
         let p = base.with_addr(page);
-        match src.back(Ghost(addr as int), page, 1) {
+        match src.back(token, Ghost(addr as int), page, 1) {
             None => {},
             Some(perm) => {
                 let (byte, rest) = put(p, perm, 9);
                 let (value, perm) = take(p, byte, rest);
                 fresh = value == 9;
-                src.release(Ghost(addr as int), page, 1, perm);
+                src.release(token, Ghost(addr as int), page, 1, perm);
             },
         }
         assert(src@.spans[addr as int].backed =~= Set::empty());
         assert(src@.spans =~= reserved.spans);
     }
-    src.release_span(addr);
+    src.release_span(token, addr);
     assert(src@.spans =~= start.spans);
     Exercised { backed: k, refused, read, again, apart, fresh }
 }

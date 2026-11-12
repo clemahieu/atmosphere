@@ -1451,13 +1451,15 @@ impl SizeClass {
     /// back what the call took.
     /// Either way it keeps what every class over the same three stands on.
     #[verifier::spinoff_prover]
-    pub fn alloc_small<S: SpanSource>(&mut self, store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S) -> (r:
+    pub fn alloc_small<S: SpanSource>(&mut self, store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>) -> (r:
         Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(*old(store), *old(pb), old(src)@),
             old(store).wf(*old(pb), old(src)@),
             old(pb).wf(old(src)@),
         ensures
+            final(src).serves(final(token)@),
             final(pb).wf(final(src)@),
             final(store).wf(*final(pb), final(src)@),
             final(self).wf(*final(store), *final(pb), final(src)@),
@@ -1576,7 +1578,7 @@ impl SizeClass {
             lemma_pages(k as nat, BLOCK_ORDER as nat);
         }
         let bytes = order_pages(k) * PAGE_BYTES;
-        let q = match pb.alloc_run(src, k) {
+        let q = match pb.alloc_run(src, token, k) {
             Err(_) => {
                 proof {
                     let pb1 = *pb;
@@ -1618,11 +1620,11 @@ impl SizeClass {
             assert(pb1.used()[c][page_of(qi)] == kk);
             pb1.lemma_view(s1);
         }
-        let (base, run) = match pb.back_run(src, q, k, order_pages(k)) {
+        let (base, run) = match pb.back_run(src, token, q, k, order_pages(k)) {
             None => {
                 let ghost pb2 = *pb;
                 let ghost s2 = src@;
-                pb.free_run(src, q);
+                pb.free_run(src, token, q);
                 proof {
                     let pb3 = *pb;
                     let s3 = src@;
@@ -1698,7 +1700,7 @@ impl SizeClass {
         proof {
             assert forall|x: int| #[trigger] f0.contains_key(x) implies n0.within(x) by {}
         }
-        let taken = store.take(pb, src);
+        let taken = store.take(pb, src, token);
         let ghost pb3 = *pb;
         let ghost s3 = src@;
         let (rp, rperm) = match taken {
@@ -1708,10 +1710,10 @@ impl SizeClass {
                     assert(n0.free_slots() == Set::range(0, n0.count() as int));
                 }
                 let whole = slab.retire(Tracked(fresh.borrow_mut()));
-                pb.release_run(src, q, k, order_pages(k), whole);
+                pb.release_run(src, token, q, k, order_pages(k), whole);
                 let ghost pb4 = *pb;
                 let ghost s4 = src@;
-                pb.free_run(src, q);
+                pb.free_run(src, token, q);
                 proof {
                     let pb5 = *pb;
                     let s5 = src@;
@@ -1907,10 +1909,12 @@ impl SizeClass {
         store: &mut RecordStore,
         pb: &mut PageBuddy,
         src: &mut S,
+        token: &mut Tracked<S::Token>,
         p: *mut u8,
         perm: Tracked<PointsToRaw>,
     )
         requires
+            old(src).serves(old(token)@),
             old(self).wf(*old(store), *old(pb), old(src)@),
             old(store).wf(*old(pb), old(src)@),
             old(pb).wf(old(src)@),
@@ -1918,6 +1922,7 @@ impl SizeClass {
             perm@.is_range(p@.addr as int, class_size(old(self).class()) as int),
             perm@.provenance() == old(src)@.provenance,
         ensures
+            final(src).serves(final(token)@),
             final(pb).wf(final(src)@),
             final(store).wf(*final(pb), final(src)@),
             final(self).wf(*final(store), *final(pb), final(src)@),
@@ -2029,10 +2034,10 @@ impl SizeClass {
             proof {
                 assert(run_held(pb0, s0, qi, kk));
             }
-            pb.release_run(src, q, k, order_pages(k), whole);
+            pb.release_run(src, token, q, k, order_pages(k), whole);
             let ghost pb1 = *pb;
             let ghost s1 = src@;
-            pb.free_run(src, q);
+            pb.free_run(src, token, q);
             let ghost pb2 = *pb;
             let ghost s2 = src@;
             proof {
@@ -2061,7 +2066,7 @@ impl SizeClass {
                 lemma_freed_others(pb1, pb2, s1, s1, s2, qi);
                 lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
             }
-            store.put(pb, src, rp, Tracked(rperm));
+            store.put(pb, src, token, rp, Tracked(rperm));
             proof {
                 let pb3 = *pb;
                 let s3 = src@;

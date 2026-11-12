@@ -12,7 +12,7 @@
 //!   does not hold as it was, so each arm keeps the others' invariant.
 //! - `live()` is every class's live slots, every buddy-run object's base and every large object's
 //!   base.
-//! - `alloc(src, size, align)`, for a layout of at most the page whose alignment divides the page,
+//! - `alloc(src, token, size, align)`, for a layout of at most the page whose alignment divides the page,
 //!   takes a slot of `class_for(size, align)`, the first class whose slot holds `size` bytes and is a
 //!   multiple of `align`. It refuses exactly as that class's `alloc_small` does: only when none of
 //!   its slabs has a free slot and the source refused one request in this call (`slab_refused`).
@@ -29,7 +29,7 @@
 //!   runs it held and the source's spans are those freeing the run leaves (`part_refused`). Otherwise the object is page-aligned, so aligned to `align`,
 //!   and joins the buddy-run objects. Whatever it returns is apart from every live slot, buddy-run
 //!   object and large object, and alloc says nothing of its bytes.
-//! - `free(src, p, size, align, perm)` takes back what alloc returned at `p` for that layout and
+//! - `free(src, token, p, size, align, perm)` takes back what alloc returned at `p` for that layout and
 //!   never refuses. A slab left with no live slot is retired, its run released and freed to the
 //!   page buddy, which gives back a span left with no run unless it keeps it as a spare
 //!   (`emptied_slab`). A buddy-run object's pages are released and its run freed, which gives
@@ -976,16 +976,18 @@ impl Heap {
     /// layout (`slot_alloc`), a buddy-run object of `pages_for(size)` pages for a run layout
     /// (`part_alloc`), a large object of `pages_for(size)` pages for a large one (`large_alloc`);
     /// or a refusal, only when the source refused a request in this call.
-    pub fn alloc<S: SpanSource>(&mut self, src: &mut S, size: usize, align: usize) -> (r: Option<
+    pub fn alloc<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, size: usize, align: usize) -> (r: Option<
         (*mut u8, Tracked<PointsToRaw>),
     >)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             small_layout(size as nat, align as nat) || run_layout(size as nat, align as nat) || large_layout(
                 size as nat,
                 align as nat,
             ),
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             small_layout(size as nat, align as nat) ==> slot_alloc(
@@ -1017,22 +1019,24 @@ impl Heap {
             ),
     {
         if size <= PAGE_BYTES {
-            self.alloc_slot(src, size, align)
+            self.alloc_slot(src, token, size, align)
         } else if size <= BLOCK_BYTES {
-            self.alloc_part(src, size, align)
+            self.alloc_part(src, token, size, align)
         } else {
-            self.alloc_object(src, size, align)
+            self.alloc_object(src, token, size, align)
         }
     }
 
     /// The slab arm of `alloc`.
-    fn alloc_slot<S: SpanSource>(&mut self, src: &mut S, size: usize, align: usize) -> (r: Option<
+    fn alloc_slot<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, size: usize, align: usize) -> (r: Option<
         (*mut u8, Tracked<PointsToRaw>),
     >)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             small_layout(size as nat, align as nat),
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             slot_alloc(*old(self), *final(self), old(src)@, final(src)@, size as nat, align as nat, r),
@@ -1042,7 +1046,7 @@ impl Heap {
         let ghost o = *self;
         let ghost oc = self.classes@[ci];
         let ghost s0 = src@;
-        let r = self.classes[c].alloc_small(&mut self.store, &mut self.pb, src);
+        let r = self.classes[c].alloc_small(&mut self.store, &mut self.pb, src, token);
         proof {
             let nc = self.classes@[ci];
             let s1 = src@;
@@ -1242,13 +1246,15 @@ impl Heap {
     }
 
     /// The buddy-run arm of `alloc`.
-    fn alloc_part<S: SpanSource>(&mut self, src: &mut S, size: usize, align: usize) -> (r: Option<
+    fn alloc_part<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, size: usize, align: usize) -> (r: Option<
         (*mut u8, Tracked<PointsToRaw>),
     >)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             run_layout(size as nat, align as nat),
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             part_alloc(*old(self), *final(self), old(src)@, final(src)@, size as nat, align as nat, r),
@@ -1265,7 +1271,7 @@ impl Heap {
         let k = order_for(n);
         let ghost kk = k as nat;
         let ghost nn = n as nat;
-        let q = match self.pb.alloc_run(src, k) {
+        let q = match self.pb.alloc_run(src, token, k) {
             Err(_) => {
                 proof {
                     let pb1 = self.pb;
@@ -1345,11 +1351,11 @@ impl Heap {
                 }
             }
         }
-        let (ptr, perm) = match self.pb.back_run(src, q, k, n) {
+        let (ptr, perm) = match self.pb.back_run(src, token, q, k, n) {
             None => {
                 let ghost pb2 = self.pb;
                 let ghost s2 = src@;
-                self.pb.free_run(src, q);
+                self.pb.free_run(src, token, q);
                 proof {
                     let pb3 = self.pb;
                     let s3 = src@;
@@ -1471,8 +1477,9 @@ impl Heap {
     }
 
     /// The buddy-run arm of `free`.
-    fn free_part<S: SpanSource>(&mut self, src: &mut S, p: *mut u8, size: usize, perm: Tracked<PointsToRaw>)
+    fn free_part<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: *mut u8, size: usize, perm: Tracked<PointsToRaw>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             PAGE_BYTES < size <= BLOCK_BYTES,
             old(self).parts().contains_key(p@.addr as int),
@@ -1480,6 +1487,7 @@ impl Heap {
             perm@.is_range(p@.addr as int, pages_for(size as nat) * PAGE_BYTES),
             perm@.provenance() == old(src)@.provenance,
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
@@ -1502,7 +1510,7 @@ impl Heap {
         proof {
             assert(run_part(pb0, s0, y0, kk, nn));
         }
-        self.pb.release_run(src, q, k, n, perm);
+        self.pb.release_run(src, token, q, k, n, perm);
         let ghost pb1 = self.pb;
         let ghost s1 = src@;
         let ghost base = pb0.span_base(span_of(y0));
@@ -1510,7 +1518,7 @@ impl Heap {
             lemma_released_part(pb0, s0, y0, kk, nn);
             assert(s1.unbacked(pb1.span_base(span_of(y0)), y0, pages(pb1.used()[span_of(y0)][page_of(y0)]) as nat));
         }
-        self.pb.free_run(src, q);
+        self.pb.free_run(src, token, q);
         self.parts = Ghost(self.parts@.remove(y0));
         proof {
             let pb2 = self.pb;
@@ -1569,13 +1577,15 @@ impl Heap {
     }
 
     /// The large arm of `alloc`.
-    fn alloc_object<S: SpanSource>(&mut self, src: &mut S, size: usize, align: usize) -> (r: Option<
+    fn alloc_object<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, size: usize, align: usize) -> (r: Option<
         (*mut u8, Tracked<PointsToRaw>),
     >)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             large_layout(size as nat, align as nat),
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             large_alloc(*old(self), *final(self), old(src)@, final(src)@, size as nat, align as nat, r),
@@ -1585,7 +1595,7 @@ impl Heap {
         proof {
             o.pb.lemma_view(s0);
         }
-        let r = self.large.alloc_large(src, size);
+        let r = self.large.alloc_large(src, token, size);
         proof {
             let s1 = src@;
             let n = pages_for(size as nat);
@@ -1674,12 +1684,14 @@ impl Heap {
     pub fn free<S: SpanSource>(
         &mut self,
         src: &mut S,
+        token: &mut Tracked<S::Token>,
         p: *mut u8,
         size: usize,
         align: usize,
         perm: Tracked<PointsToRaw>,
     )
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             small_layout(size as nat, align as nat) || run_layout(size as nat, align as nat) || large_layout(
                 size as nat,
@@ -1700,6 +1712,7 @@ impl Heap {
             },
             perm@.provenance() == old(src)@.provenance,
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
@@ -1728,11 +1741,11 @@ impl Heap {
             ),
     {
         if size <= PAGE_BYTES {
-            self.free_slot(src, p, size, align, perm);
+            self.free_slot(src, token, p, size, align, perm);
         } else if size <= BLOCK_BYTES {
-            self.free_part(src, p, size, perm);
+            self.free_part(src, token, p, size, perm);
         } else {
-            self.free_object(src, p, perm);
+            self.free_object(src, token, p, perm);
         }
     }
 
@@ -1740,18 +1753,21 @@ impl Heap {
     fn free_slot<S: SpanSource>(
         &mut self,
         src: &mut S,
+        token: &mut Tracked<S::Token>,
         p: *mut u8,
         size: usize,
         align: usize,
         perm: Tracked<PointsToRaw>,
     )
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             small_layout(size as nat, align as nat),
             old(self).classes()[class_for(size as nat, align as nat) as int].live().contains(p@.addr as int),
             perm@.is_range(p@.addr as int, class_size(class_for(size as nat, align as nat)) as int),
             perm@.provenance() == old(src)@.provenance,
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
@@ -1782,7 +1798,7 @@ impl Heap {
                 }
             }
         }
-        self.classes[c].free_small(&mut self.store, &mut self.pb, src, p, perm);
+        self.classes[c].free_small(&mut self.store, &mut self.pb, src, token, p, perm);
         proof {
             let nc = self.classes@[ci];
             let s1 = src@;
@@ -1851,13 +1867,15 @@ impl Heap {
     }
 
     /// The large arm of `free`.
-    fn free_object<S: SpanSource>(&mut self, src: &mut S, p: *mut u8, perm: Tracked<PointsToRaw>)
+    fn free_object<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: *mut u8, perm: Tracked<PointsToRaw>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             old(self).large().contains_key(p@.addr as int),
             perm@.is_range(p@.addr as int, old(self).large()[p@.addr as int] * PAGE_BYTES),
             perm@.provenance() == old(src)@.provenance,
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
@@ -1870,7 +1888,7 @@ impl Heap {
             o.pb.lemma_view(s0);
             o.lemma_large_beside(s0, y0);
         }
-        self.large.free_large(src, p.addr(), perm);
+        self.large.free_large(src, token, p.addr(), perm);
         proof {
             let s1 = src@;
             assert forall|x: int| #[trigger]

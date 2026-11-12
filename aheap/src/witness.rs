@@ -154,10 +154,12 @@ pub open spec fn page_refusal(s: SourceView, r: Refusal) -> bool {
 /// byte was written, with the span's address: false when the source refused to reserve the span or
 /// to back its page, which it did once, having granted the reserve when it refused the back; the
 /// source granted the reserve and the back otherwise.
-pub fn witness_one_page<S: SpanSource>(src: &mut S) -> (r: (bool, Ghost<int>))
+pub fn witness_one_page<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (bool, Ghost<int>))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         if r.0 {
             final(src)@ == old(src)@.granted(
                 seq![Request::Reserve { blocks: 1 }, Request::Back { span: r.1@, start: r.1@, pages: 1 }],
@@ -169,7 +171,7 @@ pub fn witness_one_page<S: SpanSource>(src: &mut S) -> (r: (bool, Ghost<int>))
         },
 {
     let ghost start = src@;
-    let base = match src.reserve(1) {
+    let base = match src.reserve(token, 1) {
         None => {
             proof {
                 lemma_granted_none(start);
@@ -181,9 +183,9 @@ pub fn witness_one_page<S: SpanSource>(src: &mut S) -> (r: (bool, Ghost<int>))
     let addr = base.addr();
     let ghost reserved = src@;
     assert(!start.spans.contains_key(addr as int));
-    let perm = match src.back(Ghost(addr as int), addr, 1) {
+    let perm = match src.back(token, Ghost(addr as int), addr, 1) {
         None => {
-            src.release_span(addr);
+            src.release_span(token, addr);
             assert(src@.spans =~= start.spans);
             let ghost f = Refusal {
                 request: Request::Back { span: addr as int, start: addr as int, pages: 1 },
@@ -210,10 +212,10 @@ pub fn witness_one_page<S: SpanSource>(src: &mut S) -> (r: (bool, Ghost<int>))
     let tracked raw = byte.into_raw();
     let tracked whole = raw.join(rest);
     assert(whole.dom() =~= page);
-    src.release(Ghost(addr as int), addr, 1, Tracked(whole));
+    src.release(token, Ghost(addr as int), addr, 1, Tracked(whole));
     assert(src@.spans[addr as int].backed =~= Set::empty());
     assert(src@.spans =~= reserved.spans);
-    src.release_span(addr);
+    src.release_span(token, addr);
     assert(src@.spans =~= start.spans);
     assert(src@.grants =~= start.grants + seq![
         Request::Reserve { blocks: 1 },
@@ -366,10 +368,12 @@ proof fn lemma_whole_at_0(h: int)
 /// source granting the requests for their two spans and no other, unless the source refused a request
 /// for a new run span, which it then did once, holding what it held at the start, and the small run's
 /// span when that was cut, having granted the requests for that span.
-pub fn witness_page_buddy<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, Ghost<int>, Ghost<int>))
+pub fn witness_page_buddy<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (PageBuddy, bool, Ghost<int>, Ghost<int>))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.0.wf(final(src)@),
         r.0.spans().dom() == Set::<int>::empty(),
         if r.1 {
@@ -387,7 +391,7 @@ pub fn witness_page_buddy<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
     let mut pb = PageBuddy::new(0);
     let ghost s0 = src@;
     assert(pb.spans().dom() =~= Set::<int>::empty());
-    let small = match pb.alloc_run(src, 0) {
+    let small = match pb.alloc_run(src, token, 0) {
         Err(_) => {
             return (pb, false, Ghost(0), Ghost(0));
         },
@@ -409,11 +413,11 @@ pub fn witness_page_buddy<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
         pb.lemma_view(src@);
         lemma_pages_pos(0);
     }
-    let whole = match pb.alloc_run(src, BLOCK_ORDER) {
+    let whole = match pb.alloc_run(src, token, BLOCK_ORDER) {
         Err(_) => {
             assert(pb.used() == u1);
             let ghost q = src@.refusals.last();
-            pb.free_run(src, small);
+            pb.free_run(src, token, small);
             proof {
                 assert(fr1[b1].dom() =~= Set::<int>::empty());
                 assert(pb.used().dom() =~= Set::<int>::empty());
@@ -453,14 +457,14 @@ pub fn witness_page_buddy<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
         assert(u2[m2] == Map::<int, nat>::empty());
         pb.lemma_view(src@);
     }
-    pb.free_run(src, whole);
+    pb.free_run(src, token, whole);
     proof {
         assert(pb.used() =~= u1);
         assert(src@ == s1.granted(span_grants(b2)));
         assert(pb.span_base(span_of(small as int)) == b1);
         lemma_granted_released(s0, b1, span_grants(b2));
     }
-    pb.free_run(src, small);
+    pb.free_run(src, token, small);
     proof {
         assert(fr1[b1].dom() =~= Set::<int>::empty());
         assert(pb.used().dom() =~= Set::<int>::empty());
@@ -508,10 +512,12 @@ spec fn added(
 /// span, and otherwise fewer, the source having refused once, holding then what it held at the start
 /// and run spans, which the view returned holds. The source granted the requests for those spans, in
 /// the order they were cut, and, when it refused, what it granted before the refusal.
-pub fn witness_page_buddy_many<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, usize, Ghost<SourceView>, Ghost<Seq<int>>))
+pub fn witness_page_buddy_many<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (PageBuddy, usize, Ghost<SourceView>, Ghost<Seq<int>>))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.0.wf(final(src)@),
         r.0.spans().dom() == Set::<int>::empty(),
         r.1 <= MANY,
@@ -540,6 +546,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, us
     }
     while go && n < MANY
         invariant
+            src.serves(token@),
             pb.wf(src@),
             pb.spares() == 0,
             n <= MANY,
@@ -576,7 +583,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, us
         proof {
             pb.lemma_view(src@);
         }
-        match pb.alloc_run(src, BLOCK_ORDER) {
+        match pb.alloc_run(src, token, BLOCK_ORDER) {
             Err(e) => {
                 assert(e is Source);
                 proof {
@@ -688,6 +695,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, us
     let ghost cut_refusals = src@.refusals;
     while n > 0
         invariant
+            src.serves(token@),
             pb.wf(src@),
             pb.spares() == 0,
             src@.grants == cut_grants,
@@ -729,7 +737,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, us
             assert(u0.insert(p as int, u0[p as int].remove(0))[p as int].dom() =~= Set::<int>::empty());
             assert(u0.insert(p as int, u0[p as int].remove(0))[mp].dom() =~= Set::<int>::empty());
         }
-        pb.free_run(src, p);
+        pb.free_run(src, token, p);
         proof {
             let s = src@;
             assert(pb.used() == u0.remove(p as int).remove(mp));
@@ -823,10 +831,12 @@ proof fn lemma_block_head(p: int)
 /// frees that run and returns the page buddy, every held span of it idle, with whether both runs were
 /// cut: they were unless the source refused a request for the first run's span, which it then did
 /// once, holding what it held at the start, and otherwise the source refused nothing.
-pub fn witness_page_buddy_spare<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool))
+pub fn witness_page_buddy_spare<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (PageBuddy, bool))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.0.wf(final(src)@),
         r.0.spares() == 1,
         forall|b: int| #[trigger] r.0.used().contains_key(b) ==> r.0.used()[b].dom() == Set::<int>::empty(),
@@ -837,7 +847,7 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, b
         },
 {
     let mut pb = PageBuddy::new(1);
-    let first = match pb.alloc_run(src, 0) {
+    let first = match pb.alloc_run(src, token, 0) {
         Err(_) => {
             assert(pb.used().dom() =~= Set::<int>::empty());
             return (pb, false);
@@ -856,13 +866,13 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, b
         assert(fr[b1].dom() =~= Set::<int>::empty());
         assert(fr[m1].dom() =~= Set::<int>::empty());
     }
-    pb.free_run(src, first);
+    pb.free_run(src, token, first);
     proof {
         assert(pb.used() == fr);
         pb.lemma_view(src@);
         pb.lemma_idle_fits(src@, b1, 0);
     }
-    let again = pb.alloc_run(src, 0);
+    let again = pb.alloc_run(src, token, 0);
     assert(again is Ok);
     let second = match again {
         Ok(p) => p,
@@ -877,7 +887,7 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, b
             assert(pb.used()[c2].contains_key(page_of(second as int)));
         }
     }
-    pb.free_run(src, second);
+    pb.free_run(src, token, second);
     proof {
         assert(pb.used() == fr);
     }
@@ -891,10 +901,12 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, b
 /// a request for the run's span, holding what it held at the start, or the back of the run's page,
 /// holding that and the run's span, which it then did once. The source granted the requests for the
 /// run's span, and the back of the run's page when it wrote the byte.
-pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, Ghost<int>))
+pub fn witness_backed_run<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (PageBuddy, bool, Ghost<int>))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.0.wf(final(src)@),
         r.0.spans().dom() == Set::<int>::empty(),
         if r.1 {
@@ -913,7 +925,7 @@ pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
     let mut pb = PageBuddy::new(0);
     let ghost s0 = src@;
     assert(pb.spans().dom() =~= Set::<int>::empty());
-    let p = match pb.alloc_run(src, 0) {
+    let p = match pb.alloc_run(src, token, 0) {
         Err(_) => {
             return (pb, false, Ghost(0));
         },
@@ -930,10 +942,10 @@ pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
         assert(fr[m].dom() =~= Set::<int>::empty());
         assert(pages(0) == 1);
     }
-    let (ptr, perm) = match pb.back_run(src, p, 0, 1) {
+    let (ptr, perm) = match pb.back_run(src, token, p, 0, 1) {
         None => {
             let ghost q = src@.refusals.last();
-            pb.free_run(src, p);
+            pb.free_run(src, token, p);
             proof {
                 assert(pb.used().dom() =~= Set::<int>::empty());
                 pb.lemma_view(src@);
@@ -959,7 +971,7 @@ pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
     let tracked raw = byte.into_raw();
     let tracked whole = raw.join(rest);
     assert(whole.dom() =~= Set::range(p as int, p as int + PAGE_BYTES as int));
-    pb.release_run(src, p, 0, 1, Tracked(whole));
+    pb.release_run(src, token, p, 0, 1, Tracked(whole));
     proof {
         assert(s1.spans[b].backed.disjoint(run_pages(p as int, 1)));
         assert(src@.spans[b].backed =~= s1.spans[b].backed);
@@ -968,7 +980,7 @@ pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
         assert(src@ == s1.granted(seq![Request::Back { span: b, start: p as int, pages: 1 }]));
         lemma_granted_released(s0, b, seq![Request::Back { span: b, start: p as int, pages: 1 }]);
     }
-    pb.free_run(src, p);
+    pb.free_run(src, token, p);
     proof {
         assert(pb.used().dom() =~= Set::<int>::empty());
         pb.lemma_view(src@);
@@ -981,10 +993,12 @@ pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
 /// span and the source's view the one it started with, with the requests for the record page's span
 /// and the back of the page granted; returns the page's address. A refusal stops the sequence, and the
 /// store refuses only when the source refused the run's span or the back of the record page.
-pub fn witness_record<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, RecordStore, bool, Ghost<int>))
+pub fn witness_record<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (PageBuddy, RecordStore, bool, Ghost<int>))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.0.wf(final(src)@),
         r.1.wf(r.0, final(src)@),
         if r.2 {
@@ -1002,7 +1016,7 @@ pub fn witness_record<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, RecordStore
     let ghost s0 = src@;
     let ghost pb0 = pb;
     assert(pb.spans().dom() =~= Set::<int>::empty());
-    let (p, perm) = match store.take(&mut pb, src) {
+    let (p, perm) = match store.take(&mut pb, src, token) {
         None => {
             proof {
                 if !span_refused(s0, src@) {
@@ -1025,7 +1039,7 @@ pub fn witness_record<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, RecordStore
         assert(fr[meta_page(c)].dom() =~= Set::<int>::empty());
         assert(store.taken() =~= Set::<int>::empty().insert(p@.addr as int));
     }
-    store.put(&mut pb, src, p, perm);
+    store.put(&mut pb, src, token, p, perm);
     proof {
         assert(!(exists|x: int|
             #[trigger] Set::<int>::empty().insert(p@.addr as int).contains(x) && x != p@.addr as int
@@ -1295,10 +1309,12 @@ verus! {
 /// and reads its first byte, and frees it. Returns the map, empty again, with whether the byte was
 /// written and the object's address: false when the source refused the reserve of the object's span
 /// or the back of its run, which it did once; the source granted the reserve and the back otherwise.
-pub fn witness_large<S: SpanSource>(src: &mut S) -> (r: (LargeMap, bool, Ghost<int>))
+pub fn witness_large<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (LargeMap, bool, Ghost<int>))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         final(src)@.wf(),
         r.0.wf(final(src)@),
         r.0.objects() == Map::<int, nat>::empty(),
@@ -1310,7 +1326,7 @@ pub fn witness_large<S: SpanSource>(src: &mut S) -> (r: (LargeMap, bool, Ghost<i
 {
     let ghost start = src@;
     let mut map = LargeMap::new();
-    let (p, perm) = match map.alloc_large(src, BLOCK_BYTES + 1) {
+    let (p, perm) = match map.alloc_large(src, token, BLOCK_BYTES + 1) {
         None => return (map, false, Ghost(0)),
         Some(r) => r,
     };
@@ -1331,7 +1347,7 @@ pub fn witness_large<S: SpanSource>(src: &mut S) -> (r: (LargeMap, bool, Ghost<i
     let tracked whole = raw.join(rest);
     assert(whole.dom() =~= Set::range(addr as int, addr as int + n * PAGE_BYTES));
     assert(map.objects().contains_key(addr as int));
-    map.free_large(src, addr, Tracked(whole));
+    map.free_large(src, token, addr, Tracked(whole));
     assert(src@.spans =~= start.spans);
     assert(src@.grants =~= start.grants + large_grants(addr as int, n));
     assert(map.objects() =~= Map::<int, nat>::empty());
@@ -1370,10 +1386,12 @@ pub fn witness_classes() -> (r: (usize, usize, usize, usize))
 /// view otherwise the one it started with; the source granted the requests for the run's span and
 /// the object's, and when it refused the object, those for the run's span and what it granted the
 /// object before the refusal.
-pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, bool, Ghost<int>, Ghost<int>))
+pub fn witness_heap<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (PageBuddy, LargeMap, bool, Ghost<int>, Ghost<int>))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         final(src)@.wf(),
         r.0.wf(final(src)@),
         r.1.wf(final(src)@),
@@ -1394,7 +1412,7 @@ pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, boo
     let mut pb = PageBuddy::new(0);
     let mut map = LargeMap::new();
     assert(pb.spans().dom() =~= Set::<int>::empty());
-    let small = match pb.alloc_run(src, 0) {
+    let small = match pb.alloc_run(src, token, 0) {
         Err(_) => {
             proof {
                 pb.lemma_view(src@);
@@ -1417,13 +1435,13 @@ pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, boo
         pb.lemma_view(s1);
         assert(s1.spans.contains_key(b1));
     }
-    let (p, perm) = match map.alloc_large(src, BLOCK_BYTES + 1) {
+    let (p, perm) = match map.alloc_large(src, token, BLOCK_BYTES + 1) {
         None => {
             let ghost q = src@.refusals.last();
             proof {
                 pb.lemma_frame(s1, src@);
             }
-            pb.free_run(src, small);
+            pb.free_run(src, token, small);
             proof {
                 assert(fr1[b1].dom() =~= Set::<int>::empty());
                 assert(pb.used().dom() =~= Set::<int>::empty());
@@ -1443,7 +1461,7 @@ pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, boo
         assert(nb != b1);
         pb.lemma_frame(s1, s2);
     }
-    pb.free_run(src, small);
+    pb.free_run(src, token, small);
     let ghost s3 = src@;
     proof {
         assert(fr1[b1].dom() =~= Set::<int>::empty());
@@ -1453,7 +1471,7 @@ pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, boo
     }
     let addr = p.addr();
     assert(map.objects().contains_key(addr as int));
-    map.free_large(src, addr, perm);
+    map.free_large(src, token, addr, perm);
     proof {
         assert(src@.spans =~= s0.spans);
         assert(src@.grants =~= s0.grants + (span_grants(b1) + large_grants(nb, pages_for(BLOCK_BYTES as nat + 1))));
@@ -1468,10 +1486,12 @@ pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, boo
 /// page buddy and how many slots were given. Each class is well formed at the end, the first having
 /// kept its invariant across the last's alloc_small; the classes' heads are disjoint, so a live
 /// slot of one is apart from every live slot of the other; a refusal stops the sequence.
-pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, usize))
+pub fn witness_two_classes<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, usize))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.3.wf(final(src)@),
         r.2.wf(r.3, final(src)@),
         r.0.wf(r.2, r.3, final(src)@),
@@ -1497,7 +1517,7 @@ pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeCl
     proof {
         assert(f0.heads().disjoint(l0.heads()));
     }
-    let r1 = first.alloc_small(&mut store, &mut pb, src);
+    let r1 = first.alloc_small(&mut store, &mut pb, src, token);
     proof {
         last.lemma_frame(st0, pb0, s0, store, pb, src@);
         lemma_heads_grew(f0, first, st0, store, pb0, pb, s0, src@, r1);
@@ -1513,7 +1533,7 @@ pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeCl
     let ghost pb1 = pb;
     let ghost s1 = src@;
     let ghost l1 = last;
-    let r2 = last.alloc_small(&mut store, &mut pb, src);
+    let r2 = last.alloc_small(&mut store, &mut pb, src, token);
     proof {
         first.lemma_frame(st1, pb1, s1, store, pb, src@);
         lemma_heads_grew(l1, last, st1, store, pb1, pb, s1, src@, r2);
@@ -1529,7 +1549,7 @@ pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeCl
     let ghost pb2 = pb;
     let ghost s2 = src@;
     let ghost f2 = first;
-    let r3 = first.alloc_small(&mut store, &mut pb, src);
+    let r3 = first.alloc_small(&mut store, &mut pb, src, token);
     proof {
         last.lemma_frame(st2, pb2, s2, store, pb, src@);
         lemma_heads_grew(f2, first, st2, store, pb2, pb, s2, src@, r3);
@@ -1550,10 +1570,12 @@ pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeCl
 /// allocates of the first class again. Each step keeps both classes well formed and their heads
 /// disjoint, so at the end a live slot of one is apart from every live slot of the other; a
 /// refusal stops the sequence, and the last element says whether it ran to the end.
-pub fn witness_free_partial<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
+pub fn witness_free_partial<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.3.wf(final(src)@),
         r.2.wf(r.3, final(src)@),
         r.0.wf(r.2, r.3, final(src)@),
@@ -1582,7 +1604,7 @@ pub fn witness_free_partial<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeC
     proof {
         assert(f0.heads().disjoint(l0.heads()));
     }
-    let r1 = first.alloc_small(&mut store, &mut pb, src);
+    let r1 = first.alloc_small(&mut store, &mut pb, src, token);
     proof {
         second.lemma_frame(st0, pb0, s0, store, pb, src@);
         lemma_heads_grew(f0, first, st0, store, pb0, pb, s0, src@, r1);
@@ -1618,7 +1640,7 @@ pub fn witness_free_partial<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeC
         }
         f1.lemma_one_live_free(st1, pb1, s1, a, p1@.addr as int);
     }
-    let r2 = second.alloc_small(&mut store, &mut pb, src);
+    let r2 = second.alloc_small(&mut store, &mut pb, src, token);
     proof {
         first.lemma_frame(st1, pb1, s1, store, pb, src@);
         lemma_heads_grew(l1, second, st1, store, pb1, pb, s1, src@, r2);
@@ -1633,7 +1655,7 @@ pub fn witness_free_partial<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeC
     let ghost st2 = store;
     let ghost pb2 = pb;
     let ghost s2 = src@;
-    let r3 = first.alloc_small(&mut store, &mut pb, src);
+    let r3 = first.alloc_small(&mut store, &mut pb, src, token);
     proof {
         assert(f1.slabs().contains_key(a) && f1.slabs()[a].free_slots() != Set::<int>::empty());
         assert(store == st2 && pb == pb2 && src@ == s2);
@@ -1666,12 +1688,12 @@ pub fn witness_free_partial<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeC
         assert(f1.live().contains(p1@.addr as int));
         assert(!only_live(f3.slabs()[a], y));
     }
-    first.free_small(&mut store, &mut pb, src, p3, perm3);
+    first.free_small(&mut store, &mut pb, src, token, p3, perm3);
     proof {
         assert(first.heads().disjoint(second.heads()));
     }
     let ghost f4 = first;
-    let r4 = first.alloc_small(&mut store, &mut pb, src);
+    let r4 = first.alloc_small(&mut store, &mut pb, src, token);
     proof {
         second.lemma_frame(st2, pb2, s2, store, pb, src@);
         lemma_heads_grew(f4, first, st2, store, pb2, pb, s2, src@, r4);
@@ -1684,10 +1706,12 @@ pub fn witness_free_partial<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeC
 /// One size class over a record store and page buddy keeping no spare: allocates a slot, then frees
 /// it, which empties the slab it came from. The class is well formed with no live slot and no
 /// head, as it started; the last element says whether the allocation was given.
-pub fn witness_free_emptied<S: SpanSource>(src: &mut S) -> (r: (SizeClass, RecordStore, PageBuddy, bool))
+pub fn witness_free_emptied<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (SizeClass, RecordStore, PageBuddy, bool))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.2.wf(final(src)@),
         r.1.wf(r.2, final(src)@),
         r.0.wf(r.1, r.2, final(src)@),
@@ -1699,7 +1723,7 @@ pub fn witness_free_emptied<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Recor
     let mut store = RecordStore::new();
     let mut first = SizeClass::new(0);
     let ghost f0 = first;
-    let r1 = first.alloc_small(&mut store, &mut pb, src);
+    let r1 = first.alloc_small(&mut store, &mut pb, src, token);
     let (p, perm) = match r1 {
         Some(x) => x,
         None => {
@@ -1728,7 +1752,7 @@ pub fn witness_free_emptied<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Recor
         assert(only_live(f1.slabs()[a], y));
         assert(f1.heads() =~= ISet::<int>::empty().insert(f1.slabs()[a].base()@.addr as int));
     }
-    first.free_small(&mut store, &mut pb, src, p, perm);
+    first.free_small(&mut store, &mut pb, src, token, p, perm);
     proof {
         assert(first.live() =~= ISet::<int>::empty());
         assert(first.heads() =~= ISet::<int>::empty());
@@ -1744,14 +1768,17 @@ pub fn witness_small_fits<S: SpanSource>(
     store: &mut RecordStore,
     pb: &mut PageBuddy,
     src: &mut S,
+    token: &mut Tracked<S::Token>,
 ) -> (got: bool)
     requires
+        old(src).serves(old(token)@),
         old(pb).wf(old(src)@),
         old(store).wf(*old(pb), old(src)@),
         old(c).wf(*old(store), *old(pb), old(src)@),
         old(pb).fits(slab_order(old(c).class())),
         !old(store).full(),
     ensures
+        final(src).serves(final(token)@),
         final(c).wf(*final(store), *final(pb), final(src)@),
         !got ==> match final(src)@.refusals.last().request {
             Request::Back { pages: n, .. } => n == pages(slab_order(old(c).class())) as nat,
@@ -1762,7 +1789,7 @@ pub fn witness_small_fits<S: SpanSource>(
     let ghost pb0 = *pb;
     let ghost s0 = src@;
     let ghost k = slab_order(c.class());
-    let got = c.alloc_small(store, pb, src).is_some();
+    let got = c.alloc_small(store, pb, src, token).is_some();
     proof {
         if !got {
             let r = src@.refusals.last();
@@ -1786,8 +1813,10 @@ pub fn witness_small_full<S: SpanSource>(
     store: &mut RecordStore,
     pb: &mut PageBuddy,
     src: &mut S,
+    token: &mut Tracked<S::Token>,
 ) -> (got: bool)
     requires
+        old(src).serves(old(token)@),
         old(pb).wf(old(src)@),
         old(store).wf(*old(pb), old(src)@),
         old(c).wf(*old(store), *old(pb), old(src)@),
@@ -1796,6 +1825,7 @@ pub fn witness_small_full<S: SpanSource>(
             cut_run(*old(pb), mid, old(src)@, s, q, slab_order(old(c).class())) ==> mid.fits(0),
         old(store).full(),
     ensures
+        final(src).serves(final(token)@),
         final(c).wf(*final(store), *final(pb), final(src)@),
         !got ==> {
             let r = final(src)@.refusals.last();
@@ -1807,7 +1837,7 @@ pub fn witness_small_full<S: SpanSource>(
     let ghost pb0 = *pb;
     let ghost s0 = src@;
     let ghost k = slab_order(c.class());
-    let got = c.alloc_small(store, pb, src).is_some();
+    let got = c.alloc_small(store, pb, src, token).is_some();
     proof {
         if !got {
             let r = src@.refusals.last();
@@ -1843,13 +1873,15 @@ pub fn witness_small_full<S: SpanSource>(
 /// one. A refusal is of the back of the page cut for the record page, asked while the source held
 /// the spans it held at the start: no run span was asked for, neither its reserve nor the back of its
 /// metadata page.
-pub fn witness_record_full<S: SpanSource>(store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S) -> (got: bool)
+pub fn witness_record_full<S: SpanSource>(store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>) -> (got: bool)
     requires
+        old(src).serves(old(token)@),
         old(pb).wf(old(src)@),
         old(store).wf(*old(pb), old(src)@),
         old(pb).fits(0),
         old(store).full(),
     ensures
+        final(src).serves(final(token)@),
         final(store).wf(*final(pb), final(src)@),
         !got ==> {
             let r = final(src)@.refusals.last();
@@ -1859,7 +1891,7 @@ pub fn witness_record_full<S: SpanSource>(store: &mut RecordStore, pb: &mut Page
 {
     let ghost pb0 = *pb;
     let ghost s0 = src@;
-    match store.take(pb, src) {
+    match store.take(pb, src, token) {
         None => {
             proof {
                 let r = src@.refusals.last();
@@ -1884,10 +1916,12 @@ pub fn witness_record_full<S: SpanSource>(store: &mut RecordStore, pb: &mut Page
 /// of the first class again. Each step keeps both classes well formed and their heads disjoint, so
 /// at the end a live slot of one is apart from every live slot of the other; a refusal stops the
 /// sequence, and the last element says whether it ran to the end.
-pub fn witness_free_emptied_two<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
+pub fn witness_free_emptied_two<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.3.wf(final(src)@),
         r.2.wf(r.3, final(src)@),
         r.0.wf(r.2, r.3, final(src)@),
@@ -1916,7 +1950,7 @@ pub fn witness_free_emptied_two<S: SpanSource>(src: &mut S) -> (r: (SizeClass, S
     proof {
         assert(f0.heads().disjoint(l0.heads()));
     }
-    let r1 = first.alloc_small(&mut store, &mut pb, src);
+    let r1 = first.alloc_small(&mut store, &mut pb, src, token);
     proof {
         second.lemma_frame(st0, pb0, s0, store, pb, src@);
         lemma_heads_grew(f0, first, st0, store, pb0, pb, s0, src@, r1);
@@ -1948,7 +1982,7 @@ pub fn witness_free_emptied_two<S: SpanSource>(src: &mut S) -> (r: (SizeClass, S
             f0.slabs().contains_key(b) && f0.slabs()[b].free_slots() != Set::<int>::empty());
         assert(f1.slabs().dom() =~= set![a]);
     }
-    let r2 = second.alloc_small(&mut store, &mut pb, src);
+    let r2 = second.alloc_small(&mut store, &mut pb, src, token);
     proof {
         first.lemma_frame(st1, pb1, s1, store, pb, src@);
         lemma_heads_grew(l1, second, st1, store, pb1, pb, s1, src@, r2);
@@ -1979,7 +2013,7 @@ pub fn witness_free_emptied_two<S: SpanSource>(src: &mut S) -> (r: (SizeClass, S
         assert(first == f1);
         assert(f1.heads().contains(f1.slabs()[a].base()@.addr as int));
     }
-    first.free_small(&mut store, &mut pb, src, p1, perm1);
+    first.free_small(&mut store, &mut pb, src, token, p1, perm1);
     proof {
         second.lemma_frame_emptied(st2, pb2, s2, store, pb, src@, a, f1.slabs()[a].base()@.addr as int);
         assert(first.heads().disjoint(second.heads()));
@@ -1988,7 +2022,7 @@ pub fn witness_free_emptied_two<S: SpanSource>(src: &mut S) -> (r: (SizeClass, S
     let ghost pb3 = pb;
     let ghost s3 = src@;
     let ghost f3 = first;
-    let r3 = first.alloc_small(&mut store, &mut pb, src);
+    let r3 = first.alloc_small(&mut store, &mut pb, src, token);
     proof {
         second.lemma_frame(st3, pb3, s3, store, pb, src@);
         lemma_heads_grew(f3, first, st3, store, pb3, pb, s3, src@, r3);
@@ -2572,10 +2606,12 @@ fn touch(p: *mut u8, perm: Tracked<PointsToRaw>, Ghost(n): Ghost<int>) -> (r: Tr
 /// start, and the sequence stopped after freeing what it took: either the first allocation, from the
 /// source's starting view with no record taken, or the second, once the first had taken a record
 /// for the slab it made.
-pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
+pub fn witness_small_classes<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.3.wf(final(src)@),
         r.2.wf(r.3, final(src)@),
         r.0.wf(r.2, r.3, final(src)@),
@@ -2622,7 +2658,7 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Size
         lemma_tracks_new(start, pb0);
         assert(f0.heads().disjoint(l0.heads()));
     }
-    let r1 = first.alloc_small(&mut store, &mut pb, src);
+    let r1 = first.alloc_small(&mut store, &mut pb, src, token);
     proof {
         last.lemma_frame(st0, pb0, s0, store, pb, src@);
         lemma_heads_grew(f0, first, st0, store, pb0, pb, s0, src@, r1);
@@ -2669,7 +2705,7 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Size
     }
     let perm1 = touch(p1, perm1, Ghost(class_size(0) as int));
     let ghost l1 = last;
-    let r2 = last.alloc_small(&mut store, &mut pb, src);
+    let r2 = last.alloc_small(&mut store, &mut pb, src, token);
     proof {
         first.lemma_frame(st1, pb1, s1, store, pb, src@);
         lemma_heads_grew(l1, last, st1, store, pb1, pb, s1, src@, r2);
@@ -2689,7 +2725,7 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Size
                     assert(f1.slabs().contains_key(a0) && f1.slabs()[a0].base()@.addr == x0);
                 }
             }
-            first.free_small(&mut store, &mut pb, src, p1, perm1);
+            first.free_small(&mut store, &mut pb, src, token, p1, perm1);
             proof {
                 last.lemma_frame_emptied(st2, pb2, s2, store, pb, src@, a0, x0);
                 lemma_emptied_refusals(st2, store, pb2, pb, s2, src@, a0, x0, k0);
@@ -2745,7 +2781,7 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Size
         lemma_free_ready(f1, st2, pb2, s2, a0);
     }
     let perm2 = touch(p2, perm2, Ghost(class_size((CLASSES - 1) as nat) as int));
-    first.free_small(&mut store, &mut pb, src, p1, perm1);
+    first.free_small(&mut store, &mut pb, src, token, p1, perm1);
     let ghost st3 = store;
     let ghost pb3 = pb;
     let ghost s3 = src@;
@@ -2773,7 +2809,7 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Size
         assert(last == l2);
         lemma_free_ready(l2, st3, pb3, s3, a1);
     }
-    last.free_small(&mut store, &mut pb, src, p2, perm2);
+    last.free_small(&mut store, &mut pb, src, token, p2, perm2);
     proof {
         first.lemma_frame_emptied(st3, pb3, s3, store, pb, src@, a1, x1);
         lemma_tracks_emptied(start, st3, store, pb3, pb, s3, src@, a1, x1, k1);
@@ -2826,10 +2862,12 @@ pub open spec fn heap_refused(h0: Heap, h1: Heap, s: SourceView, t: SourceView) 
 /// and the source's view is the one it started with, the requests the sequence made granted.
 /// Otherwise the source refused once, a request one of the three allocations made (`heap_refused`),
 /// with the refusals it had at the start, and the sequence stopped after freeing what it took.
-pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
+pub fn witness_heap_objects<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (Heap, bool))
     requires
+        old(src).serves(old(token)@),
         old(src)@.wf(),
     ensures
+        final(src).serves(final(token)@),
         r.0.wf(final(src)@),
         r.0.spares() == 0,
         r.0.live() == ISet::<int>::empty(),
@@ -2861,7 +2899,7 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
         assert(class_for(1, 1) == 0);
         h0.lemma_parts(start);
     }
-    let r1 = h.alloc(src, 1, 1);
+    let r1 = h.alloc(src, token, 1, 1);
     let ghost h1 = h;
     let ghost s1 = src@;
     let (p1, perm1) = match r1 {
@@ -2912,7 +2950,7 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
         }
         assert(only_live(c1.slabs()[a0], y1));
     }
-    let r2 = h.alloc(src, PAGE_BYTES + 1, 1);
+    let r2 = h.alloc(src, token, PAGE_BYTES + 1, 1);
     let ghost h2 = h;
     let ghost s2 = src@;
     let ghost n2 = pages_for(PAGE_BYTES as nat + 1);
@@ -2924,7 +2962,7 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
                 assert(heap_refused(h1, h2, s1, s2));
                 assert(h2.classes()[0] == c1);
             }
-            h.free(src, p1, 1, 1, perm1);
+            h.free(src, token, p1, 1, 1, perm1);
             proof {
                 lemma_emptied_refusals(h2.store(), h.store(), h2.pb(), h.pb(), s2, src@, a0, x0, k0);
                 assert(h.live() =~= ISet::<int>::empty());
@@ -2939,7 +2977,7 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
         lemma_tracks_took(start, h1.pb(), h2.pb(), s1, sm, s2, b2, k2, n2);
         assert(h2.classes()[0] == c1);
     }
-    let r3 = h.alloc(src, BLOCK_BYTES + 1, 1);
+    let r3 = h.alloc(src, token, BLOCK_BYTES + 1, 1);
     let ghost h3 = h;
     let ghost s3 = src@;
     let ghost n3 = pages_for(BLOCK_BYTES as nat + 1);
@@ -2949,13 +2987,13 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
             proof {
                 assert(heap_refused(h2, h3, s2, s3));
             }
-            h.free(src, p2, PAGE_BYTES + 1, 1, perm2);
+            h.free(src, token, p2, PAGE_BYTES + 1, 1, perm2);
             let ghost h4 = h;
             let ghost s4 = src@;
             proof {
                 assert(h4.classes()[0] == c1);
             }
-            h.free(src, p1, 1, 1, perm1);
+            h.free(src, token, p1, 1, 1, perm1);
             proof {
                 lemma_emptied_refusals(h4.store(), h.store(), h4.pb(), h.pb(), s4, src@, a0, x0, k0);
                 assert(h.live() =~= ISet::<int>::empty());
@@ -2964,7 +3002,7 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
         },
     };
     let ghost b3 = p3@.addr as int;
-    h.free(src, p3, BLOCK_BYTES + 1, 1, perm3);
+    h.free(src, token, p3, BLOCK_BYTES + 1, 1, perm3);
     let ghost h4 = h;
     let ghost s4 = src@;
     proof {
@@ -2976,7 +3014,7 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
         let sr = s4.released_run(h4.pb().span_base(span_of(b2)), b2, n2);
         lemma_tracks_run(start, h4.pb(), s4, sr, span_of(b2), b2, n2);
     }
-    h.free(src, p2, PAGE_BYTES + 1, 1, perm2);
+    h.free(src, token, p2, PAGE_BYTES + 1, 1, perm2);
     let ghost h5 = h;
     let ghost s5 = src@;
     proof {
@@ -2989,7 +3027,7 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
         c1.lemma_records_taken(h5.store(), h5.pb(), s5);
         lemma_free_ready(c1, h5.store(), h5.pb(), s5, a0);
     }
-    h.free(src, p1, 1, 1, perm1);
+    h.free(src, token, p1, 1, 1, perm1);
     proof {
         let h6 = h;
         let s6 = src@;

@@ -1158,13 +1158,15 @@ impl RecordStore {
     /// page and returns its first record. Refuses only when every record is in use and the page
     /// buddy, with no free page in a held span, refused the run, or the source refused to back it,
     /// and then frees the run again.
-    pub fn take<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S) -> (r: Option<
+    pub fn take<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>) -> (r: Option<
         (*mut Record, Tracked<PointsTo<Record>>),
     >)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(*old(pb), old(src)@),
             old(pb).wf(old(src)@),
         ensures
+            final(src).serves(final(token)@),
             final(pb).wf(final(src)@),
             final(self).wf(*final(pb), final(src)@),
             final(pb).spares() == old(pb).spares(),
@@ -1214,7 +1216,7 @@ impl RecordStore {
             }
             return Some((p, perm));
         }
-        let q = match pb.alloc_run(src, 0) {
+        let q = match pb.alloc_run(src, token, 0) {
             Err(_) => {
                 proof {
                     assert forall|x: int, k: nat| #[trigger] run_held(pb0, s0, x, k) implies run_held(*pb, src@, x, k) by {
@@ -1254,11 +1256,11 @@ impl RecordStore {
                 assert(run_held(pb0, s0, b, 0));
             }
         }
-        match pb.back_run(src, q, 0, 1) {
+        match pb.back_run(src, token, q, 0, 1) {
             None => {
                 let ghost pb2 = *pb;
                 let ghost s2 = src@;
-                pb.free_run(src, q);
+                pb.free_run(src, token, q);
                 proof {
                     let pb3 = *pb;
                     let s3 = src@;
@@ -1336,14 +1338,16 @@ impl RecordStore {
     /// Takes back the record at `p` with the permission to its bytes; a record page left with no
     /// record in use is given back, its page released and its run freed. Every run held at a head
     /// that is no record page stays held.
-    pub fn put<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S, p: *mut Record, perm: Tracked<PointsTo<Record>>)
+    pub fn put<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>, p: *mut Record, perm: Tracked<PointsTo<Record>>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(*old(pb), old(src)@),
             old(pb).wf(old(src)@),
             old(self).taken().contains(p@.addr as int),
             perm@.ptr() == p,
             p@.provenance == old(src)@.provenance,
         ensures
+            final(src).serves(final(token)@),
             final(pb).wf(final(src)@),
             final(self).wf(*final(pb), final(src)@),
             final(self).taken() == old(self).taken().remove(p@.addr as int),
@@ -1408,13 +1412,13 @@ impl RecordStore {
             lemma_one_page(bi);
         }
         let whole = self.remove_page(b, Ghost(prov));
-        pb.release_run(src, b, 0, 1, whole);
+        pb.release_run(src, token, b, 0, 1, whole);
         let ghost pb1 = *pb;
         let ghost s1 = src@;
         proof {
             assert(s1.spans[pb0.span_base(span_of(bi))].backed.disjoint(run_pages(bi, 1)));
         }
-        pb.free_run(src, b);
+        pb.free_run(src, token, b);
         proof {
             let pb2 = *pb;
             let s2 = src@;

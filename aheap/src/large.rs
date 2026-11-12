@@ -9,19 +9,19 @@
 //! large object into one list from `head`, so the map holds as many objects as the source gives;
 //! design/page-buddy-metadata-in-the-span/ is the same reasoning for the page buddy's spans.
 //!
-//! The map does not own the source. Each operation takes it, and the map's invariant, `wf(src)`, is
-//! stated over the source's view: each object is a reserved span of `blocks_for(pages)` blocks whose
-//! backed pages are exactly the object's pages and its record page (`lemma_view`). A change to the
-//! source that keeps every large object's span as it was keeps the invariant (`lemma_frame`), so the
-//! page buddy can share the source.
+//! The map does not own the source. Each operation takes it, with the token it lends the source, and
+//! the map's invariant, `wf(src)`, is stated over the source's view: each object is a reserved span
+//! of `blocks_for(pages)` blocks whose backed pages are exactly the object's pages and its record
+//! page (`lemma_view`). A change to the source that keeps every large object's span as it was keeps
+//! the invariant (`lemma_frame`), so the page buddy can share the source.
 //!
-//! - `alloc_large(src, size)` refuses, and changes nothing but the refusal the source records,
+//! - `alloc_large(src, token, size)` refuses, and changes nothing but the refusal the source records,
 //!   exactly when the source refused, in this call, the reserve of the span while holding what it
 //!   held, or the back of the object's run while holding that and the new span, which it then gives
 //!   back (`large_refused`). Otherwise it returns the base and the permission to the object's pages,
 //!   at least `size` bytes, of a span that fits beside every reserved span, and the source's view
 //!   is the old one with the span reserved and the run backed.
-//! - `free_large(src, p, perm)` takes a large object's base and the permission to its pages, never
+//! - `free_large(src, token, p, perm)` takes a large object's base and the permission to its pages, never
 //!   refuses, and leaves the source's view the old one without the span.
 //! - `contains(p)` says whether `p` is a large object's base.
 #[cfg(verus_keep_ghost)]
@@ -480,12 +480,14 @@ impl LargeMap {
     /// Reserves a span for an object of `size` bytes, more than one block's, and backs the object's
     /// pages and its record page; or refuses, when the source refused the reserve or the back in
     /// this call, and changes nothing but the refusal the source records.
-    pub fn alloc_large<S: SpanSource>(&mut self, src: &mut S, size: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
+    pub fn alloc_large<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, size: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             old(src)@.wf(),
             BLOCK_BYTES < size <= isize::MAX as usize,
         ensures
+            final(src).serves(final(token)@),
             final(src)@.wf(),
             final(self).wf(final(src)@),
             match r {
@@ -517,7 +519,7 @@ impl LargeMap {
             assert(n == pages_for(size as nat));
         }
         let blocks = pages / BLOCK_PAGES + 1;
-        let base = match src.reserve(blocks) {
+        let base = match src.reserve(token, blocks) {
             None => {
                 proof {
                     self.lemma_frame(start, src@);
@@ -543,9 +545,9 @@ impl LargeMap {
             }
             lemma_record(bi, n);
         }
-        let perm = match src.back(Ghost(bi), b, pages + 1) {
+        let perm = match src.back(token, Ghost(bi), b, pages + 1) {
             None => {
-                src.release_span(b);
+                src.release_span(token, b);
                 proof {
                     assert(src@.spans =~= start.spans);
                     let r = Refusal {
@@ -652,14 +654,16 @@ impl LargeMap {
 
     /// Takes back the large object at `p` with the permission to its pages, and gives its span back
     /// to the source, record page and all.
-    pub fn free_large<S: SpanSource>(&mut self, src: &mut S, p: usize, perm: Tracked<PointsToRaw>)
+    pub fn free_large<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, perm: Tracked<PointsToRaw>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             old(src)@.wf(),
             old(self).objects().contains_key(p as int),
             perm@.is_range(p as int, old(self).objects()[p as int] * PAGE_BYTES),
             perm@.provenance() == old(src)@.provenance,
         ensures
+            final(src).serves(final(token)@),
             final(src)@.wf(),
             final(self).wf(final(src)@),
             final(self).objects() == old(self).objects().remove(p as int),
@@ -737,11 +741,11 @@ impl LargeMap {
         proof {
             assert(whole.dom() =~= Set::range(pi, pi + (n + 1) * PAGE_BYTES));
         }
-        src.release(Ghost(pi), p, node.pages + 1, Tracked(whole));
+        src.release(token, Ghost(pi), p, node.pages + 1, Tracked(whole));
         proof {
             assert(src@.spans[pi].backed =~= Set::<int>::empty());
         }
-        src.release_span(p);
+        src.release_span(token, p);
         proof {
             let fin = src@;
             assert(fin.spans =~= start.spans.remove(pi));

@@ -1324,12 +1324,24 @@ impl Eager {
     }
 }
 
+/// The token each of the source's operations borrows: none.
+pub fn no_token() -> Tracked<()> {
+    Tracked(())
+}
+
 impl SpanSource for Eager {
+    /// The source owns the caller token its system calls thread, and borrows nothing.
+    type Token = ();
+
     closed spec fn view(&self) -> SourceView {
         SourceView { provenance: self.exposed@@, spans: self.spans.map@, grants: self.grants@, refusals: self.refusals@ }
     }
 
-    fn reserve(&mut self, blocks: usize) -> (r: Option<*mut u8>) {
+    open spec fn serves(&self, token: ()) -> bool {
+        true
+    }
+
+    fn reserve(&mut self, token: &mut Tracked<()>, blocks: usize) -> (r: Option<*mut u8>) {
         proof {
             use_type_invariant(&*self);
         }
@@ -1354,7 +1366,7 @@ impl SpanSource for Eager {
     }
 
     /// A run whose every page is parked is granted.
-    fn back(&mut self, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
+    fn back(&mut self, token: &mut Tracked<()>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         ensures
             (forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a)) ==> r is Some,
     {
@@ -1400,7 +1412,7 @@ impl SpanSource for Eager {
     }
 
     /// Each page of the run is parked.
-    fn release(&mut self, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
+    fn release(&mut self, token: &mut Tracked<()>, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
         ensures
             forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).parks(a),
     {
@@ -1437,7 +1449,7 @@ impl SpanSource for Eager {
         self.record.release_run(start, pages, perm);
     }
 
-    fn release_span(&mut self, span: usize) {
+    fn release_span(&mut self, token: &mut Tracked<()>, span: usize) {
         proof {
             use_type_invariant(&*self);
             lemma_released_span_wf(self@, span as int);
@@ -1456,7 +1468,7 @@ impl SpanSource for Eager {
 /// release it and back it again. When the first back is granted the second is, and the source ends
 /// with the spans it started with. Whether the first back was granted is the kernel's to say.
 #[cfg(verus_keep_ghost)]
-pub fn witness_back_again(src: &mut Eager, span: Ghost<int>, x: usize) -> (granted: bool)
+pub fn witness_back_again(src: &mut Eager, token: &mut Tracked<()>, span: Ghost<int>, x: usize) -> (granted: bool)
     requires
         old(src)@.wf(),
         old(src)@.runs_in(span@, x as int, 1),
@@ -1466,17 +1478,17 @@ pub fn witness_back_again(src: &mut Eager, span: Ghost<int>, x: usize) -> (grant
         final(src)@.spans == old(src)@.spans,
 {
     let ghost start = src@;
-    let first = match src.back(span, x, 1) {
+    let first = match src.back(token, span, x, 1) {
         None => return false,
         Some(perm) => perm,
     };
-    src.release(span, x, 1, first);
+    src.release(token, span, x, 1, first);
     assert(src@.spans[span@].backed =~= start.spans[span@].backed);
     assert(src@.spans =~= start.spans);
-    let second = src.back(span, x, 1);
+    let second = src.back(token, span, x, 1);
     assert(second is Some);
     if let Some(perm) = second {
-        src.release(span, x, 1, perm);
+        src.release(token, span, x, 1, perm);
     }
     assert(src@.spans[span@].backed =~= start.spans[span@].backed);
     assert(src@.spans =~= start.spans);

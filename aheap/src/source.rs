@@ -298,17 +298,30 @@ pub proof fn lemma_granted_wf(v: SourceView, gs: Seq<Request>)
 }
 
 /// Gives the heap spans of address space and backs page runs in them.
+///
+/// A source may reach what it serves from through a token it does not own, the process's caller
+/// token of the kernel for one that makes system calls: each operation borrows it, and `serves` says
+/// which tokens the source can work with. The heap passes the token it is lent through to every
+/// operation and keeps nothing of it.
 pub trait SpanSource {
+    /// What each operation borrows to reach what the source serves from.
+    type Token;
+
     spec fn view(&self) -> SourceView;
+
+    /// The source can work with `token`.
+    spec fn serves(&self, token: Self::Token) -> bool;
 
     /// Reserves a span of `blocks` blocks, none of it backed, at the base the returned pointer
     /// addresses; or refuses, records the reserve it refused with the spans it holds and changes
     /// nothing else.
-    fn reserve(&mut self, blocks: usize) -> (r: Option<*mut u8>)
+    fn reserve(&mut self, token: &mut Tracked<Self::Token>, blocks: usize) -> (r: Option<*mut u8>)
         requires
+            old(self).serves(old(token)@),
             old(self)@.wf(),
             blocks > 0,
         ensures
+            final(self).serves(final(token)@),
             final(self)@.wf(),
             match r {
                 None => final(self)@ == old(self)@.refused(Request::Reserve { blocks: blocks as nat }),
@@ -323,12 +336,14 @@ pub trait SpanSource {
     /// Backs the run of `pages` pages from `start` inside the span at `span`, and returns the
     /// permission to exactly its bytes; or refuses, records the back it refused with the spans it
     /// holds, backs nothing and changes nothing else.
-    fn back(&mut self, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
+    fn back(&mut self, token: &mut Tracked<Self::Token>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         requires
+            old(self).serves(old(token)@),
             old(self)@.wf(),
             old(self)@.runs_in(span@, start as int, pages as nat),
             old(self)@.unbacked(span@, start as int, pages as nat),
         ensures
+            final(self).serves(final(token)@),
             final(self)@.wf(),
             match r {
                 None => final(self)@ == old(self)@.refused(
@@ -344,25 +359,29 @@ pub trait SpanSource {
 
     /// Gives up the frames of the backed run of `pages` pages from `start` in the span at `span`,
     /// taking the permission to its bytes.
-    fn release(&mut self, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
+    fn release(&mut self, token: &mut Tracked<Self::Token>, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
         requires
+            old(self).serves(old(token)@),
             old(self)@.wf(),
             old(self)@.runs_in(span@, start as int, pages as nat),
             old(self)@.backed(span@, start as int, pages as nat),
             perm@.is_range(start as int, pages * PAGE_BYTES),
             perm@.provenance() == old(self)@.provenance,
         ensures
+            final(self).serves(final(token)@),
             final(self)@.wf(),
             final(self)@ == old(self)@.released_run(span@, start as int, pages as nat),
     ;
 
     /// Gives up the span at `span`, which has no page backed.
-    fn release_span(&mut self, span: usize)
+    fn release_span(&mut self, token: &mut Tracked<Self::Token>, span: usize)
         requires
+            old(self).serves(old(token)@),
             old(self)@.wf(),
             old(self)@.spans.contains_key(span as int),
             old(self)@.spans[span as int].backed.is_empty(),
         ensures
+            final(self).serves(final(token)@),
             final(self)@.wf(),
             final(self)@ == old(self)@.released_span(span as int),
     ;

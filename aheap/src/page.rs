@@ -1574,13 +1574,15 @@ impl PageBuddy {
     /// Cuts a run of order `k` from a new span, when no held span has a free block of order `k` or
     /// more: reserves the span, backs its metadata page, cuts the page from its second block and the
     /// run from its first, and puts its node at the head of the list.
-    fn alloc_new<S: SpanSource>(&mut self, src: &mut S, k: usize) -> (r: Result<usize, Refused>)
+    fn alloc_new<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, k: usize) -> (r: Result<usize, Refused>)
         requires
+            old(src).serves(old(token)@),
             old(self).inv(),
             old(self).view@ == old(src)@,
             k <= BLOCK_ORDER,
             !old(self).fits(k as nat),
         ensures
+            final(src).serves(final(token)@),
             final(self).inv(),
             final(self).view@ == final(src)@,
             final(self).spares() == old(self).spares(),
@@ -1608,7 +1610,7 @@ impl PageBuddy {
         let ghost old_spans = self.spans();
         let ghost old_idle = self.idle_spans();
         let ghost start = self.view@;
-        let reserved = src.reserve(SPAN_BLOCKS);
+        let reserved = src.reserve(token, SPAN_BLOCKS);
         self.view = Ghost(src@);
         let base = match reserved {
             None => {
@@ -1648,11 +1650,11 @@ impl PageBuddy {
             lemma_meta(bi);
         }
         let m = b + BLOCK_BYTES;
-        let backed = src.back(Ghost(bi), m, 1);
+        let backed = src.back(token, Ghost(bi), m, 1);
         self.view = Ghost(src@);
         let perm = match backed {
             None => {
-                src.release_span(b);
+                src.release_span(token, b);
                 self.view = Ghost(src@);
                 proof {
                     assert(self.view@.spans =~= start.spans);
@@ -1812,11 +1814,13 @@ impl PageBuddy {
     /// `k`, or from a new span when no held span has one. Refuses, and changes no held span, only
     /// when no held span has one and the source refused, in this call, the reserve of the span or the
     /// back of its metadata page, which its view records.
-    pub fn alloc_run<S: SpanSource>(&mut self, src: &mut S, k: usize) -> (r: Result<usize, Refused>)
+    pub fn alloc_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, k: usize) -> (r: Result<usize, Refused>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             k <= BLOCK_ORDER,
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             match r {
@@ -1855,7 +1859,7 @@ impl PageBuddy {
                 }
                 Ok(p)
             },
-            None => self.alloc_new(src, k),
+            None => self.alloc_new(src, token, k),
         }
     }
 
@@ -1863,8 +1867,9 @@ impl PageBuddy {
     /// back to the source with its metadata page, unless fewer than the spares are idle, when it
     /// stays as a spare.
     #[verifier::spinoff_prover]
-    pub fn free_run<S: SpanSource>(&mut self, src: &mut S, p: usize)
+    pub fn free_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             old(self).holds(p as int),
             old(src)@.unbacked(
@@ -1873,6 +1878,7 @@ impl PageBuddy {
                 pages(old(self).used()[span_of(p as int)][page_of(p as int)]) as nat,
             ),
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             freed(*old(self), *final(self), old(src)@, final(src)@, p as int),
     {
@@ -2026,7 +2032,7 @@ impl PageBuddy {
                 assert(raw.dom() =~= Set::range(mi, mi + PAGE_BYTES));
                 assert(start.spans[bi].backed.contains(mi));
             }
-            src.release(Ghost(bi), m, 1, Tracked(raw));
+            src.release(token, Ghost(bi), m, 1, Tracked(raw));
             self.view = Ghost(src@);
             proof {
                 assert(node.lo.used().dom() =~= Set::<int>::empty());
@@ -2044,7 +2050,7 @@ impl PageBuddy {
                 }
                 assert(self.view@.spans[bi].backed =~= Set::<int>::empty());
             }
-            src.release_span(b);
+            src.release_span(token, b);
             self.view = Ghost(src@);
             proof {
                 let src = self.view@;
@@ -2227,14 +2233,16 @@ impl PageBuddy {
     /// through the source, and returns a pointer to the run with the permission to exactly those
     /// pages' bytes; or refuses, backs nothing and changes nothing but the source's record of the
     /// back it refused. A caller that writes the whole run passes `pages(k)`.
-    pub fn back_run<S: SpanSource>(&mut self, src: &mut S, p: usize, k: usize, n: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
+    pub fn back_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, k: usize, n: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             old(self).holds(p as int),
             old(self).used()[span_of(p as int)][page_of(p as int)] == k,
             0 < n <= pages(k as nat),
             old(src)@.unbacked(old(self).span_base(span_of(p as int)), p as int, n as nat),
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             final(self).spans() == old(self).spans(),
@@ -2269,7 +2277,7 @@ impl PageBuddy {
         }
         let hp = self.head.unwrap();
         let ghost start = self.view@;
-        let backed = src.back(Ghost(bi), p, n);
+        let backed = src.back(token, Ghost(bi), p, n);
         self.view = Ghost(src@);
         let perm = match backed {
             None => {
@@ -2308,8 +2316,9 @@ impl PageBuddy {
 
     /// Gives back through the source the first `n` pages of the allocated run of order `k` at `p`,
     /// every one of them backed, taking the permission to their bytes.
-    pub fn release_run<S: SpanSource>(&mut self, src: &mut S, p: usize, k: usize, n: usize, perm: Tracked<PointsToRaw>)
+    pub fn release_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, k: usize, n: usize, perm: Tracked<PointsToRaw>)
         requires
+            old(src).serves(old(token)@),
             old(self).wf(old(src)@),
             old(self).holds(p as int),
             old(self).used()[span_of(p as int)][page_of(p as int)] == k,
@@ -2318,6 +2327,7 @@ impl PageBuddy {
             perm@.is_range(p as int, n * PAGE_BYTES),
             perm@.provenance() == old(src)@.provenance,
         ensures
+            final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             final(self).spans() == old(self).spans(),
@@ -2338,7 +2348,7 @@ impl PageBuddy {
             lemma_first_pages_in(self.view@, bi, p as int, n as nat, pages(k as nat) as nat);
         }
         let ghost start = self.view@;
-        src.release(Ghost(bi), p, n, perm);
+        src.release(token, Ghost(bi), p, n, perm);
         self.view = Ghost(src@);
         proof {
             assert(self.spans() =~= entry.spans());
