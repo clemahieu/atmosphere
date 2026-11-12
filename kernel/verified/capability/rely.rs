@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 
-//! The rely: what steps the caller's process does not take leave of its view of its own table, so a
-//! contract a syscall wrapper proves at one return still says something at the next entry. A process
-//! no other process can name is sealed; while it stays sealed, its slots only leave its table, and a
-//! slot that stays says what it said. Each kind of step gets a lemma that it keeps the rely. See
-//! design/theorem-over-reach/ and design/process-holds-capabilities/.
+//! The rely: what steps the caller's process does not take leave of what it holds, so a contract a
+//! syscall wrapper proves at one return still says something at the next entry. A process no other
+//! process can name is sealed; while it stays sealed, its slots only leave its table and a slot that
+//! stays says what it said, its record stays, the entries of its space only leave and one that stays
+//! maps what it mapped, and the count of a block only its capabilities hold does not rise. Each clause
+//! has a lemma per kind of step, and each kind of step a lemma that it keeps the rely. See
+//! design/theorem-over-reach/, design/process-holds-capabilities/ and
+//! design/region-map-owns-the-address-space/.
 use vstd::prelude::*;
 
 verus! {
@@ -59,15 +62,31 @@ impl CapKernel {
             ==> !self.names_process(self.table_view(t)[j], root)
     }
 
-    /// From pre to post, as the process at root relies on steps it does not take: when pre is sealed
-    /// for root, post is too, and every slot root's table holds in post it held in pre, with the same
-    /// capability. Removal only: a slot removed and refilled would make any rule allowing additions
-    /// fail to compose.
-    pub open spec fn rely(pre: Self, post: Self, root: usize) -> bool {
+    /// From pre to post, as the process at root relies on steps it does not take for its own table:
+    /// when pre is sealed for root, post is too, and every slot root's table holds in post it held in
+    /// pre, with the same capability. Removal only: a slot removed and refilled would make any rule
+    /// allowing additions fail to compose.
+    pub open spec fn slots_kept(pre: Self, post: Self, root: usize) -> bool {
         pre.sealed(root) ==> {
             &&& post.sealed(root)
             &&& forall|j: usize| #[trigger] post.table_view(root).contains_key(j)
                 ==> pre.table_view(root).contains_key(j) && same_cap(post.table_view(root)[j], pre.table_view(root)[j])
+        }
+    }
+
+    /// From pre to post, as the process at root relies on steps it does not take: while root is sealed,
+    /// it stays sealed and its slots only leave its table (slots_kept), its record stays (record_kept),
+    /// the entries of its space only leave (space_kept), and the count of a block that only its
+    /// capabilities hold does not rise (count_kept). Every clause allows removal and no addition, an
+    /// ancestor's revoke being a step root does not take, so the rely composes:
+    /// lemma_rely_transitive. It says nothing of a process that is not sealed, whose holder may change
+    /// all of these (design/region-map-owns-the-address-space/).
+    pub open spec fn rely(pre: Self, post: Self, root: usize) -> bool {
+        pre.sealed(root) ==> {
+            &&& Self::slots_kept(pre, post, root)
+            &&& Self::record_kept(pre, post, root)
+            &&& Self::space_kept(pre, post, root)
+            &&& Self::count_kept(pre, post, root)
         }
     }
 
@@ -85,25 +104,26 @@ impl CapKernel {
             }
     }
 
-    /// The root's frame fact, rely's special case: a step that keeps the rely of a sealed process whose
-    /// table is also framed, and that its own threads did not take, leaves its table's view as it was,
-    /// parents and all. Every keep lemma below ensures it.
+    /// The root's frame fact, the special case of slots_kept: a step that keeps it for a sealed process
+    /// whose table is also framed, and that its own threads did not take, leaves its table's view as
+    /// it was, parents and all. Every lemma below that a kind of step keeps slots_kept, or the rely,
+    /// ensures it.
     pub open spec fn root_kept(pre: Self, post: Self, root: usize) -> bool {
         pre.sealed(root) && pre.framed(root) ==> post.table_view(root) == pre.table_view(root)
     }
 
-    pub proof fn lemma_rely_reflexive(k: Self, root: usize)
+    pub proof fn lemma_slots_kept_reflexive(k: Self, root: usize)
         ensures
-            Self::rely(k, k, root),
+            Self::slots_kept(k, k, root),
     {
     }
 
-    pub proof fn lemma_rely_transitive(a: Self, b: Self, c: Self, root: usize)
+    pub proof fn lemma_slots_kept_transitive(a: Self, b: Self, c: Self, root: usize)
         requires
-            Self::rely(a, b, root),
-            Self::rely(b, c, root),
+            Self::slots_kept(a, b, root),
+            Self::slots_kept(b, c, root),
         ensures
-            Self::rely(a, c, root),
+            Self::slots_kept(a, c, root),
     {
         if a.sealed(root) {
             assert forall|j: usize| #[trigger] c.table_view(root).contains_key(j)
@@ -113,14 +133,14 @@ impl CapKernel {
         }
     }
 
-    /// A revoke, by any caller, keeps the rely of every process: it takes slots and gives none, every
+    /// A revoke, by any caller, keeps slots_kept of every process: it takes slots and gives none, every
     /// slot it keeps says what it said, and the threads it leaves bound are bound as they were.
-    pub proof fn lemma_revoke_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    pub proof fn lemma_revoke_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_revoked(pre, post, caller, frame, out),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             caller != root ==> Self::root_kept(pre, post, root),
     {
         Self::lemma_revoke_contract(pre, post, caller, frame, out);
@@ -165,14 +185,14 @@ impl CapKernel {
         }
     }
 
-    /// A delete, by any caller, keeps the rely of every process: it takes one slot and gives none, every
+    /// A delete, by any caller, keeps slots_kept of every process: it takes one slot and gives none, every
     /// other slot says what it said, and the bound threads are as they were.
-    pub proof fn lemma_delete_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    pub proof fn lemma_delete_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_deleted(pre, post, caller, frame, out),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             caller != root ==> Self::root_kept(pre, post, root),
     {
         Self::lemma_delete_contract(pre, post, caller, frame, out);
@@ -208,17 +228,17 @@ impl CapKernel {
         }
     }
 
-    /// A derive, by a caller other than root, keeps the rely of root's process: while root is sealed the
+    /// A derive, by a caller other than root, keeps slots_kept of root's process: while root is sealed the
     /// caller reaches no slot of root's table, and the child it places narrows a capability naming
     /// another process, or a thread without control over root, so it names root no more than its
     /// parent did.
-    pub proof fn lemma_derive_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    pub proof fn lemma_derive_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_derived(pre, post, caller, frame, out),
             caller != root,
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         Self::lemma_derive_contract(pre, post, caller, frame, out);
@@ -257,17 +277,17 @@ impl CapKernel {
         }
     }
 
-    /// A move, by a caller other than root, keeps the rely of root's process: while root is sealed
+    /// A move, by a caller other than root, keeps slots_kept of root's process: while root is sealed
     /// neither the source nor the destination is in root's table, root's slots say what they said but
     /// for the parent a child of the capability moved names, and the capability moved names root in its
     /// new slot no more than it did in its old one.
-    pub proof fn lemma_move_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    pub proof fn lemma_move_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_moved(pre, post, caller, frame, out),
             caller != root,
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         broadcast use vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
@@ -320,8 +340,8 @@ impl CapKernel {
     }
 
     /// A step that leaves every table's view as it was, and binds no thread it did not bind to the
-    /// process it bound it to, keeps the rely of every process.
-    pub proof fn lemma_views_kept_keeps_rely(pre: Self, post: Self, root: usize)
+    /// process it bound it to, keeps slots_kept of every process.
+    pub proof fn lemma_views_kept_keeps_slots(pre: Self, post: Self, root: usize)
         requires
             forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
             ({
@@ -330,7 +350,7 @@ impl CapKernel {
                 forall|x: usize| #[trigger] after.contains_key(x) ==> bound.contains_key(x) && after[x] == bound[x]
             }),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         if pre.sealed(root) {
@@ -343,14 +363,14 @@ impl CapKernel {
         assert(post.table_view(root) == pre.table_view(root));
     }
 
-    /// A map, by any caller, keeps the rely of every process: it adds a mapping node, which is no
+    /// A map, by any caller, keeps slots_kept of every process: it adds a mapping node, which is no
     /// capability and binds no thread, and leaves every slot and every other node as it was.
-    pub proof fn lemma_map_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    pub proof fn lemma_map_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_mapped(pre, post, caller, frame, out),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         Self::lemma_map_contract(pre, post, caller, frame, out);
@@ -373,22 +393,22 @@ impl CapKernel {
                 assert(post.list.parent@[x] == pre.list.parent@[x]);
             }
         }
-        Self::lemma_views_kept_keeps_rely(pre, post, root);
+        Self::lemma_views_kept_keeps_slots(pre, post, root);
     }
 
-    /// An unmap, by any caller, keeps the rely of every process: it kills one mapping node, which is no
+    /// An unmap, by any caller, keeps slots_kept of every process: it kills one mapping node, which is no
     /// capability and no leaf, and leaves the tables, the parents and the bound threads as they were.
-    pub proof fn lemma_unmap_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    pub proof fn lemma_unmap_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_unmapped(pre, post, caller, frame, out),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         Self::lemma_unmapped_frame(pre, post, caller, frame, out);
         Self::lemma_dead_mappings_keep_views(pre, post);
-        Self::lemma_views_kept_keeps_rely(pre, post, root);
+        Self::lemma_views_kept_keeps_slots(pre, post, root);
     }
 
     /// A step that changes the tables and the parents of no node, and changes the kind or the liveness
@@ -438,39 +458,39 @@ impl CapKernel {
         }
     }
 
-    /// A link, by any caller, keeps the rely of every process: it changes no node and no slot.
-    pub proof fn lemma_link_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    /// A link, by any caller, keeps slots_kept of every process: it changes no node and no slot.
+    pub proof fn lemma_link_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_linked(pre, post, caller, frame, out),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         Self::lemma_link_contract(pre, post, caller, frame, out);
         assert(post.list == pre.list && post.tables == pre.tables);
-        Self::lemma_views_kept_keeps_rely(pre, post, root);
+        Self::lemma_views_kept_keeps_slots(pre, post, root);
     }
 
-    /// An inspect, by any caller, keeps the rely of every process: it changes nothing.
-    pub proof fn lemma_inspect_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    /// An inspect, by any caller, keeps slots_kept of every process: it changes nothing.
+    pub proof fn lemma_inspect_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             spec_operation(frame.operation_number()) == Some(Operation::Inspect),
             Self::invoked(pre, post, caller, frame, out),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_rely_reflexive(pre, root);
+        Self::lemma_slots_kept_reflexive(pre, root);
     }
 
-    /// A probe, by any caller, keeps the rely of every process: it changes no node and no slot.
-    pub proof fn lemma_probe_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    /// A probe, by any caller, keeps slots_kept of every process: it changes no node and no slot.
+    pub proof fn lemma_probe_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_probed(pre, post, caller, frame, out),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         if pre.allows_probe(caller, frame) {
@@ -478,19 +498,19 @@ impl CapKernel {
             assert(post.list == pre.list && post.tables == pre.tables);
         }
         Self::lemma_views_same(pre, post);
-        Self::lemma_views_kept_keeps_rely(pre, post, root);
+        Self::lemma_views_kept_keeps_slots(pre, post, root);
     }
 
-    /// A retype, by a caller other than root, keeps the rely of root: the frame kinds add a frame
+    /// A retype, by a caller other than root, keeps slots_kept of root: the frame kinds add a frame
     /// capability to the caller's table alone, which names no process and no thread, every other kind
     /// leaves every table's view as it was, and no kind binds a thread it did not bind or rebinds one.
-    pub proof fn lemma_retype_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+    pub proof fn lemma_retype_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_retyped(pre, post, caller, frame, out),
             caller != root,
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         Self::lemma_retype_contract(pre, post, caller, frame, out);
@@ -567,14 +587,14 @@ impl CapKernel {
         assert(post.table_view(root) == pre.table_view(root));
     }
 
-    /// A step that leaves the list and the tables as they were keeps the rely of every process: the
-    /// rely reads nothing else.
-    pub proof fn lemma_tables_kept_keeps_rely(pre: Self, post: Self, root: usize)
+    /// A step that leaves the list and the tables as they were keeps slots_kept of every process: the
+    /// clause reads nothing else.
+    pub proof fn lemma_tables_kept_keeps_slots(pre: Self, post: Self, root: usize)
         requires
             post.list == pre.list,
             post.tables == pre.tables,
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         assert(bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables));
@@ -585,103 +605,103 @@ impl CapKernel {
 
     // The steps below are the kernel's entries that are no capability operation: each writes thread
     // records, cores or the TLB model and leaves the list and the tables as they were, so each keeps
-    // the rely of every process, whichever core or thread took it. Thread control: start, suspend and
+    // slots_kept of every process, whichever core or thread took it. Thread control: start, suspend and
     // write_registers through a control capability. Scheduling: switch_in, switch_out and
     // enter_boot_thread. A flush's acknowledge. check_current, and dispatch when its caller must leave
     // or its core runs nothing. Timer and device interrupts write no state of the kernel's: their
     // handlers take no lock on it and call none of its functions.
 
     /// start, refused or setting the thread Runnable.
-    pub proof fn lemma_start_keeps_rely(pre: Self, post: Self, t: usize, core: usize, root: usize)
+    pub proof fn lemma_start_keeps_slots(pre: Self, post: Self, t: usize, core: usize, root: usize)
         requires
             post == pre || Self::state_written(pre, post, t, ThreadState::Runnable { core }),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+        Self::lemma_tables_kept_keeps_slots(pre, post, root);
     }
 
     /// suspend, refused, or with the thread's record written Inactive, or its stop pending.
-    pub proof fn lemma_suspend_keeps_rely(pre: Self, post: Self, t: usize, r: ThreadRecord, root: usize)
+    pub proof fn lemma_suspend_keeps_slots(pre: Self, post: Self, t: usize, r: ThreadRecord, root: usize)
         requires
             post == pre || Self::record_written(pre, post, t, r),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+        Self::lemma_tables_kept_keeps_slots(pre, post, root);
     }
 
     /// write_registers, refused or with the thread's saved frame written.
-    pub proof fn lemma_write_registers_keeps_rely(pre: Self, post: Self, t: usize, frame: Registers, root: usize)
+    pub proof fn lemma_write_registers_keeps_slots(pre: Self, post: Self, t: usize, frame: Registers, root: usize)
         requires
             post == pre || Self::frame_written(pre, post, t, frame),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+        Self::lemma_tables_kept_keeps_slots(pre, post, root);
     }
 
     /// switch_in, switch_out and enter_boot_thread, on any core.
-    pub proof fn lemma_switch_keeps_rely(pre: Self, post: Self, c: int, t: usize, root: usize)
+    pub proof fn lemma_switch_keeps_slots(pre: Self, post: Self, c: int, t: usize, root: usize)
         requires
             Self::switch_frame(pre, post, c, t),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+        Self::lemma_tables_kept_keeps_slots(pre, post, root);
     }
 
     /// acknowledge, on any core.
-    pub proof fn lemma_acknowledge_keeps_rely(pre: Self, post: Self, c: int, root: usize)
+    pub proof fn lemma_acknowledge_keeps_slots(pre: Self, post: Self, c: int, root: usize)
         requires
             Self::only_core_changed(pre, post, c),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+        Self::lemma_tables_kept_keeps_slots(pre, post, root);
     }
 
     /// check_current, on any core, and dispatch when it reaches no operation: the core's thread moved
     /// off, or nothing changed.
-    pub proof fn lemma_check_current_keeps_rely(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+    pub proof fn lemma_check_current_keeps_slots(pre: Self, post: Self, c: int, frame: Registers, root: usize)
         requires
             post == pre || Self::moved_off(pre, post, c, frame),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+        Self::lemma_tables_kept_keeps_slots(pre, post, root);
     }
 
     /// destroy of a process, by any caller: it sets the process's record dead and sends IPIs, and
     /// leaves the list and the tables as they were, so a destroyed process's table and every
     /// capability naming it stay until a retype tears it down.
-    pub proof fn lemma_destroy_keeps_rely(pre: Self, post: Self, p: usize, root: usize)
+    pub proof fn lemma_destroy_keeps_slots(pre: Self, post: Self, p: usize, root: usize)
         requires
             Self::process_destroyed(pre, post, p),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+        Self::lemma_tables_kept_keeps_slots(pre, post, root);
     }
 
     /// destroy of a thread, by any caller and from any core: it writes the thread's record Dead or
     /// dying, and leaves the list and the tables as they were.
-    pub proof fn lemma_destroy_thread_keeps_rely(pre: Self, post: Self, c: usize, t: usize, root: usize)
+    pub proof fn lemma_destroy_thread_keeps_slots(pre: Self, post: Self, c: usize, t: usize, root: usize)
         requires
             Self::thread_destroyed(pre, post, c, t),
         ensures
-            Self::rely(pre, post, root),
+            Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
         assert(post.list == pre.list && post.tables == pre.tables);
-        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+        Self::lemma_tables_kept_keeps_slots(pre, post, root);
     }
 
     /// From pre to post, as the process at root relies on steps it does not take for its own space:
@@ -703,12 +723,13 @@ impl CapKernel {
     {
     }
 
-    /// Composes where the middle state still has root sealed and a process, which rely gives for sealed.
+    /// Composes where the middle state still has root sealed and a process, which slots_kept and
+    /// record_kept give.
     pub proof fn lemma_space_kept_transitive(a: Self, b: Self, c: Self, root: usize)
         requires
             Self::space_kept(a, b, root),
             Self::space_kept(b, c, root),
-            Self::rely(a, b, root),
+            Self::slots_kept(a, b, root),
             a.processes.records@.contains_key(root) ==> b.processes.records@.contains_key(root),
         ensures
             Self::space_kept(a, c, root),
@@ -874,7 +895,7 @@ impl CapKernel {
     {
     }
 
-    // The kernel's entries that are no capability operation, as for the rely above: each leaves the
+    // The kernel's entries that are no capability operation, as for slots_kept above: each leaves the
     // table pages and the spaces' roots and records as they were.
 
     /// start, refused or setting the thread Runnable.
@@ -1188,14 +1209,14 @@ impl CapKernel {
     {
     }
 
-    /// Composes under the rely, which keeps root sealed and each slot root still holds saying what it
-    /// said.
+    /// Composes under slots_kept, which keeps root sealed and each slot root still holds saying what
+    /// it said.
     pub proof fn lemma_count_kept_transitive(a: Self, b: Self, c: Self, root: usize)
         requires
             Self::count_kept(a, b, root),
             Self::count_kept(b, c, root),
-            Self::rely(a, b, root),
-            Self::rely(b, c, root),
+            Self::slots_kept(a, b, root),
+            Self::slots_kept(b, c, root),
         ensures
             Self::count_kept(a, c, root),
     {
@@ -1642,7 +1663,7 @@ impl CapKernel {
         Self::lemma_frames_kept_keeps_count(pre, post, root, xt, xj);
     }
 
-    // The kernel's entries that are no capability operation, as for the rely above: each leaves the
+    // The kernel's entries that are no capability operation, as for slots_kept above: each leaves the
     // list, the tables and the block table as they were.
 
     /// start, refused or setting the thread Runnable.
@@ -1724,6 +1745,300 @@ impl CapKernel {
     {
         assert(post.list == pre.list && post.tables == pre.tables && post.blocks == pre.blocks);
         Self::lemma_tables_blocks_kept_keeps_count(pre, post, root);
+    }
+
+    pub proof fn lemma_rely_reflexive(k: Self, root: usize)
+        ensures
+            Self::rely(k, k, root),
+    {
+    }
+
+    /// The rely composes: the first step keeps root sealed and its record in place, which is what the
+    /// second step's clauses ask of the state they start from.
+    pub proof fn lemma_rely_transitive(a: Self, b: Self, c: Self, root: usize)
+        requires
+            Self::rely(a, b, root),
+            Self::rely(b, c, root),
+        ensures
+            Self::rely(a, c, root),
+    {
+        if a.sealed(root) {
+            Self::lemma_slots_kept_transitive(a, b, c, root);
+            Self::lemma_space_kept_transitive(a, b, c, root);
+            Self::lemma_count_kept_transitive(a, b, c, root);
+        }
+    }
+
+    // Each kind of step keeps the rely, from the lemmas above that it keeps each clause. A step that
+    // adds a slot to its caller's table, an entry to the space it names or a count to a block its
+    // caller holds keeps it for every process but the caller's.
+
+    /// A revoke, by any caller: an ancestor's revoke is the step that takes root's slots, the entries of
+    /// its space and the counts of its blocks, and it gives none.
+    pub proof fn lemma_revoke_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_revoked(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            caller != root ==> Self::root_kept(pre, post, root),
+    {
+        Self::lemma_revoke_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_revoke_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_revoke_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_revoke_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// A delete, by any caller.
+    pub proof fn lemma_delete_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_deleted(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            caller != root ==> Self::root_kept(pre, post, root),
+    {
+        Self::lemma_delete_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_delete_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_delete_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_delete_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// A derive, by a caller other than root: root's own derive adds a slot to its table.
+    pub proof fn lemma_derive_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_derived(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_derive_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_derive_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_derive_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_derive_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// A move, by a caller other than root: root's own move adds a slot to its table.
+    pub proof fn lemma_move_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_moved(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_move_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_move_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_move_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_move_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// A map, by a caller other than root: root's own map adds an entry to its space and raises the
+    /// count of the block it maps.
+    pub proof fn lemma_map_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_mapped(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_map_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_map_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_map_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_map_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// An unmap, by any caller.
+    pub proof fn lemma_unmap_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_unmapped(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_unmap_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_unmap_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_unmap_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_unmap_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// A link, by any caller.
+    pub proof fn lemma_link_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_linked(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_link_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_link_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_link_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_link_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// An inspect, by any caller.
+    pub proof fn lemma_inspect_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            spec_operation(frame.operation_number()) == Some(Operation::Inspect),
+            Self::invoked(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_inspect_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_inspect_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_inspect_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_inspect_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// A probe, by any caller.
+    pub proof fn lemma_probe_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_probed(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_probe_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_probe_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_probe_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_probe_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// A retype, by a caller other than root: root's own retype of a frame adds a slot to its table.
+    pub proof fn lemma_retype_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_retyped(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_retype_keeps_slots(pre, post, caller, frame, out, root);
+        Self::lemma_retype_keeps_record(pre, post, caller, frame, out, root);
+        Self::lemma_retype_keeps_space(pre, post, caller, frame, out, root);
+        Self::lemma_retype_keeps_count(pre, post, caller, frame, out, root);
+    }
+
+    /// start, refused or setting the thread Runnable.
+    pub proof fn lemma_start_keeps_rely(pre: Self, post: Self, t: usize, core: usize, root: usize)
+        requires
+            post == pre || Self::state_written(pre, post, t, ThreadState::Runnable { core }),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_start_keeps_slots(pre, post, t, core, root);
+        Self::lemma_start_keeps_record(pre, post, t, core, root);
+        Self::lemma_start_keeps_space(pre, post, t, core, root);
+        Self::lemma_start_keeps_count(pre, post, t, core, root);
+    }
+
+    /// suspend, refused, or with the thread's record written Inactive, or its stop pending.
+    pub proof fn lemma_suspend_keeps_rely(pre: Self, post: Self, t: usize, r: ThreadRecord, root: usize)
+        requires
+            post == pre || Self::record_written(pre, post, t, r),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_suspend_keeps_slots(pre, post, t, r, root);
+        Self::lemma_suspend_keeps_record(pre, post, t, r, root);
+        Self::lemma_suspend_keeps_space(pre, post, t, r, root);
+        Self::lemma_suspend_keeps_count(pre, post, t, r, root);
+    }
+
+    /// write_registers, refused or with the thread's saved frame written.
+    pub proof fn lemma_write_registers_keeps_rely(pre: Self, post: Self, t: usize, frame: Registers, root: usize)
+        requires
+            post == pre || Self::frame_written(pre, post, t, frame),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_write_registers_keeps_slots(pre, post, t, frame, root);
+        Self::lemma_write_registers_keeps_record(pre, post, t, frame, root);
+        Self::lemma_write_registers_keeps_space(pre, post, t, frame, root);
+        Self::lemma_write_registers_keeps_count(pre, post, t, frame, root);
+    }
+
+    /// switch_in, switch_out and enter_boot_thread, on any core.
+    pub proof fn lemma_switch_keeps_rely(pre: Self, post: Self, c: int, t: usize, root: usize)
+        requires
+            Self::switch_frame(pre, post, c, t),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_switch_keeps_slots(pre, post, c, t, root);
+        Self::lemma_switch_keeps_record(pre, post, c, t, root);
+        Self::lemma_switch_keeps_space(pre, post, c, t, root);
+        Self::lemma_switch_keeps_count(pre, post, c, t, root);
+    }
+
+    /// acknowledge, on any core.
+    pub proof fn lemma_acknowledge_keeps_rely(pre: Self, post: Self, c: int, root: usize)
+        requires
+            Self::only_core_changed(pre, post, c),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_acknowledge_keeps_slots(pre, post, c, root);
+        Self::lemma_acknowledge_keeps_record(pre, post, c, root);
+        Self::lemma_acknowledge_keeps_space(pre, post, c, root);
+        Self::lemma_acknowledge_keeps_count(pre, post, c, root);
+    }
+
+    /// check_current, on any core, and dispatch when it reaches no operation.
+    pub proof fn lemma_check_current_keeps_rely(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+        requires
+            post == pre || Self::moved_off(pre, post, c, frame),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_check_current_keeps_slots(pre, post, c, frame, root);
+        Self::lemma_check_current_keeps_record(pre, post, c, frame, root);
+        Self::lemma_check_current_keeps_space(pre, post, c, frame, root);
+        Self::lemma_check_current_keeps_count(pre, post, c, frame, root);
+    }
+
+    /// destroy of a process, by any caller.
+    pub proof fn lemma_destroy_keeps_rely(pre: Self, post: Self, p: usize, root: usize)
+        requires
+            Self::process_destroyed(pre, post, p),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_destroy_keeps_slots(pre, post, p, root);
+        Self::lemma_destroy_keeps_record(pre, post, p, root);
+        Self::lemma_destroy_keeps_space(pre, post, p, root);
+        Self::lemma_destroy_keeps_count(pre, post, p, root);
+    }
+
+    /// destroy of a thread, by any caller and from any core.
+    pub proof fn lemma_destroy_thread_keeps_rely(pre: Self, post: Self, c: usize, t: usize, root: usize)
+        requires
+            Self::thread_destroyed(pre, post, c, t),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        Self::lemma_destroy_thread_keeps_slots(pre, post, c, t, root);
+        Self::lemma_destroy_thread_keeps_record(pre, post, c, t, root);
+        Self::lemma_destroy_thread_keeps_space(pre, post, c, t, root);
+        Self::lemma_destroy_thread_keeps_count(pre, post, c, t, root);
     }
 
     /// A thread bound to the process at p, as bound_threads reads the binding, is one of the threads
