@@ -37,7 +37,7 @@ use crate::glue::*;
 
 verus! {
 
-broadcast use group_raw_ptr_axioms;
+broadcast use {group_raw_ptr_axioms, vstd::set::lemma_set_filter, vstd::set_lib::range_set_properties};
 
 /// The blocks of the window spans are handed out from.
 pub const WINDOW_BLOCKS: usize = 4;
@@ -552,6 +552,16 @@ impl Record {
     spec fn serves(&self, caller: Caller) -> bool {
         &&& caller.wf()
         &&& names_own_space(caller, self.space)
+        &&& frames_held(caller.kernel(), caller.root(), self.frames())
+    }
+
+    /// The frames the source holds, by page: the slot of each page held, mapped or parked, and the
+    /// address a mapped or parked one is at.
+    spec fn frames(&self) -> Map<int, (usize, Option<usize>)> {
+        Map::new(
+            Set::<int>::range(0, self.pages as int).filter(|i: int| self.state@[i] == HELD || occupied(self.state@[i])),
+            |i: int| (frame_slot(self.slots as int, i) as usize, if occupied(self.state@[i]) { Some(self.owner@[i]) } else { None }),
+        )
     }
 
     spec fn inv(&self) -> bool {
@@ -560,6 +570,7 @@ impl Record {
         &&& self.slots < TABLE_INDICES
         &&& self.slots as int % LEAF_INDICES as int != 0
         &&& forall|i: int| 0 <= i < self.pages ==> index_ok(#[trigger] frame_slot(self.slots as int, i) as usize)
+        &&& forall|i: int| 0 <= i < self.pages ==> 0 <= #[trigger] frame_slot(self.slots as int, i) < TABLE_INDICES
         &&& forall|i: int, j: int|
             0 <= i < j < self.pages ==> #[trigger] frame_slot(self.slots as int, i) < #[trigger] frame_slot(self.slots as int, j)
         &&& self.window + WINDOW_BYTES <= usize::MAX
@@ -658,6 +669,7 @@ impl Record {
                 i <= self.pages,
                 self.keeps(old(self)),
                 self.keeps_mapped(old(self)),
+                forall|u: int| 0 <= u < i ==> #[trigger] self.state@[u] != HELD,
             decreases self.pages - i,
         {
             if self.state[i] == HELD {
@@ -673,17 +685,35 @@ impl Record {
                 i <= self.pages,
                 self.keeps(old(self)),
                 self.keeps_mapped(old(self)),
+                forall|u: int| 0 <= u < self.pages ==> #[trigger] self.state@[u] != HELD,
             decreases i,
         {
             i -= 1;
             if self.state[i] == FREE {
                 let base = self.page(i);
                 let slot = self.slot(i);
-                if retype_frame(caller, self.untyped, base, slot) {
+                let ghost before = *self;
+                proof {
+                    // Every frame held is mapped, and its slot is another page's, which frame slots keep apart.
+                    assert forall|u: int| #[trigger] before.frames().contains_key(u) implies before.frames()[u].1 is Some
+                        && before.frames()[u].0 != slot as usize by {
+                        assert(before.state@[u] != HELD);
+                        assert(u != i);
+                        assert(0 <= frame_slot(self.slots as int, u) < TABLE_INDICES);
+                        if u < i {
+                            assert(frame_slot(self.slots as int, u) < frame_slot(self.slots as int, i as int));
+                        } else {
+                            assert(frame_slot(self.slots as int, i as int) < frame_slot(self.slots as int, u));
+                        }
+                    }
+                }
+                if retype_frame(caller, self.untyped, base, slot, Ghost(before.frames()), Ghost(i as int)) {
                     self.state[i] = HELD;
+                    assert(self.frames() =~= before.frames().insert(i as int, (slot as usize, None)));
                     return Some(i);
                 }
                 self.state[i] = TAKEN;
+                assert(self.frames() =~= before.frames());
                 return None;
             }
         }
@@ -700,12 +730,16 @@ impl Record {
         {
             if self.state[i] == PARKED {
                 assert(self.state@[i as int] == PARKED);
+                let ghost before = *self;
                 let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
-                if unmap_page(caller, self.space, self.owner[i], Tracked(perm)) {
+                assert(self.frames() =~= before.frames());
+                if unmap_page(caller, self.space, self.owner[i], Tracked(perm), Ghost(before.frames()), Ghost(i as int)) {
                     self.state[i] = HELD;
+                    assert(self.frames() =~= before.frames().insert(i as int, (before.frames()[i as int].0, None)));
                     return Some(i);
                 }
                 self.state[i] = TAKEN;
+                assert(self.frames() =~= before.frames().remove(i as int));
                 return None;
             }
             i += 1;
@@ -773,11 +807,21 @@ impl Record {
                     decreases TABLE_PAGES - k,
                 {
                     assert(self.state@[group + k] == FREE);
+                    let ghost before = *self;
                     self.state[group + k] = TAKEN;
+                    assert(self.frames() =~= before.frames());
                     k += 1;
                 }
                 let base = self.page(group);
-                return retype_table_page(caller, self.untyped, base, level - 1) && link(caller, self.space, address, level, self.untyped, base);
+                return retype_table_page(caller, self.untyped, base, level - 1, Ghost(self.frames())) && link(
+                    caller,
+                    self.space,
+                    address,
+                    level,
+                    self.untyped,
+                    base,
+                    Ghost(self.frames()),
+                );
             }
             group += TABLE_PAGES;
         }
@@ -867,6 +911,7 @@ impl Record {
         let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
         self.state[i] = MAPPED;
         proof {
+            assert(self.frames() =~= before.frames());
             assert(self.state@[i as int] == MAPPED);
             if before.maps(addr as int) {
                 let j = choose|j: int| 0 <= j < before.pages && #[trigger] before.state@[j] == MAPPED && before.owner@[j] == addr;
@@ -973,11 +1018,14 @@ impl Record {
         let slot = self.slot(i);
         let ghost live = self.live();
         assert(!live.contains(addr));
-        match map_page(caller, self.space, addr, slot, provenance, Ghost(live)) {
+        let ghost held = *self;
+        assert(held.frames().contains_key(i as int));
+        match map_page(caller, self.space, addr, slot, provenance, Ghost(live), Ghost(held.frames()), Ghost(i as int)) {
             Some(perm) => {
                 self.state[i] = MAPPED;
                 self.owner[i] = addr;
                 assert(self.state@[i as int] == MAPPED);
+                assert(self.frames() =~= held.frames().insert(i as int, (slot as usize, Some(addr))));
                 Some(perm)
             },
             None => None,
@@ -996,6 +1044,7 @@ impl Record {
             final(self).provenance == old(self).provenance,
             final(self).inv(),
             final(self).space == old(self).space,
+            final(self).frames() == old(self).frames(),
             final(self).parks(addr as int),
             forall|a: int| a != addr && #[trigger] old(self).maps(a) ==> final(self).maps(a),
             forall|a: int| #[trigger] old(self).parks(a) ==> final(self).parks(a),
@@ -1023,6 +1072,7 @@ impl Record {
         proof {
             self.parked.borrow_mut().tracked_insert(i as int, perm.get());
             assert(self.state@[i as int] == PARKED);
+            assert(self.frames() =~= before.frames());
             assert forall|a: int| a != addr && #[trigger] before.maps(a) implies self.maps(a) by {
                 let j = choose|j: int| 0 <= j < before.pages && #[trigger] before.state@[j] == MAPPED && before.owner@[j] == a;
                 assert(self.state@[j] == MAPPED);
@@ -1047,6 +1097,7 @@ impl Record {
             final(self).provenance == old(self).provenance,
             final(self).inv(),
             final(self).space == old(self).space,
+            final(self).frames() == old(self).frames(),
             forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).parks(a),
             forall|a: int| !run_pages(start as int, pages as nat).contains(a) && #[trigger] old(self).maps(a) ==> final(self).maps(a),
             forall|a: int| #[trigger] old(self).parks(a) ==> final(self).parks(a),
@@ -1058,6 +1109,7 @@ impl Record {
             invariant
                 self.inv(),
                 self.space == old(self).space,
+                self.frames() == old(self).frames(),
                 k <= pages,
                 start as int % PAGE_BYTES as int == 0,
                 start + pages * PAGE_BYTES <= usize::MAX + 1,
@@ -1266,6 +1318,13 @@ impl Eager {
         self.record.space
     }
 
+    /// Every frame the source retyped and still uses is in the slot it put it in, its block counted by
+    /// that capability and, for a page the source maps, the one entry that maps it, at the address the
+    /// source maps it at, in the space of the token's process.
+    pub closed spec fn holds(&self, token: Caller) -> bool {
+        frames_held(token.kernel(), token.root(), self.record.frames())
+    }
+
     /// A page is parked at `addr`: its run was released, and a back of it is granted with no system
     /// call.
     pub closed spec fn parks(&self, addr: int) -> bool {
@@ -1288,6 +1347,7 @@ impl Eager {
                     &&& source@.spans.is_empty()
                     &&& source@.provenance == window@.provenance
                     &&& source.space() == space
+                    &&& forall|token: Caller| #[trigger] source.holds(token)
                 },
                 None => true,
             },
@@ -1302,7 +1362,8 @@ impl Eager {
         proof {
             assert(MAX_PAGES >= BLOCK_PAGES + 64);
             lemma_frame_slots_cross_leaves(slots as int);
-            assert forall|i: int| 0 <= i < pages implies index_ok(#[trigger] frame_slot(slots as int, i) as usize) by {
+            assert forall|i: int| 0 <= i < pages implies index_ok(#[trigger] frame_slot(slots as int, i) as usize)
+                && 0 <= frame_slot(slots as int, i) < TABLE_INDICES by {
                 lemma_frame_slot(slots as int, i, pages - 1);
                 lemma_frame_slot(slots as int, i, i);
             }
@@ -1349,6 +1410,7 @@ impl Eager {
             refusals: Ghost(Seq::empty()),
         };
         assert(source@.spans =~= Map::empty());
+        assert(source.record.frames() =~= Map::empty());
         Some(source)
     }
 }
@@ -1364,6 +1426,7 @@ impl SpanSource for Eager {
     open spec fn serves(&self, token: Caller) -> bool {
         &&& token.wf()
         &&& names_own_space(token, self.space())
+        &&& self.holds(token)
     }
 
     fn reserve(&mut self, token: &mut Tracked<Caller>, blocks: usize) -> (r: Option<*mut u8>) {
