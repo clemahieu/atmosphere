@@ -468,11 +468,13 @@ impl CapKernel {
         &&& self.link_fits(v[slot].base, va, level, child)
     }
 
-    /// Link's contract over the caller's view: no slot of any table changes, whatever the status. Refused,
-    /// with every space's tables as they were, exactly when link_allowed fails; otherwise ok, with the
-    /// space the slot names gaining the child in the entry the walk found, as linked says.
+    /// Link's contract over the caller's view: no slot of any table changes, and no block's count nor
+    /// any page's block, whatever the status. Refused, with every space's tables as they were, exactly
+    /// when link_allowed fails; otherwise ok, with the space the slot names gaining the child in the
+    /// entry the walk found, as linked says.
     pub open spec fn link_contract(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize, out: Outcome) -> bool {
         &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& post.blocks == pre.blocks
         &&& {
             ||| {
                 &&& !pre.link_allowed(root, slot, va, level, from, child)
@@ -823,10 +825,12 @@ impl CapKernel {
     }
 
     /// Inspect's contract over the caller's view, for the position word decoded to at: no slot of any
-    /// table changes, whatever the status. Refused exactly when inspect_allowed fails; otherwise ok, with
-    /// the kind's number, the base, the order and the rights the slot's view says in results 1 to 4.
+    /// table changes, and no block's count nor any page's block, whatever the status. Refused exactly
+    /// when inspect_allowed fails; otherwise ok, with the kind's number, the base, the order and the
+    /// rights the slot's view says in results 1 to 4.
     pub open spec fn inspect_contract(pre: Self, post: Self, root: usize, at: Option<Position>, out: Outcome) -> bool {
         &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& post.blocks == pre.blocks
         &&& {
             ||| {
                 &&& !pre.inspect_allowed(root, at)
