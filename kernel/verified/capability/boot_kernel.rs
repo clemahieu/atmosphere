@@ -249,6 +249,7 @@ impl CapKernel {
         &&& self.threads.records@.contains_key(t)
         &&& self.threads.records@[t].value().process == Some(process)
         &&& self.threads.records@[t].value().state is Inactive
+        &&& !self.threads.records@[t].value().dying
         &&& forall|a: int, x: int| 0 <= a < image.len() && #[trigger] in_virt_at(image, a, x) ==> {
             &&& space_mapping(b, process).contains_key(page_path(x))
             &&& space_mapping(b, process)[page_path(x)] == image_entry(image[a], x)

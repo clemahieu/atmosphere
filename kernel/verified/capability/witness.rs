@@ -978,6 +978,71 @@ impl CapKernel {
         self.enter_boot_thread(0, t);
     }
 
+    /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
+    /// enters it, then suspends itself through its control capability in ROOT_THREAD_SLOT. The suspend
+    /// succeeds, core 0 runs nothing after it, and the thread is Inactive with no stop pending, still the
+    /// root process's: a thread suspending itself needs no other core.
+    pub fn witness_root_suspends_itself(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+    ) -> (ret: SuspendStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@),
+        ensures
+            ret is Suspended,
+            final(self).wf(),
+            final(self).cores@[0].current_thread is None,
+            final(self).threads.records@[t].value().state is Inactive,
+            !final(self).threads.records@[t].value().pending_stop,
+            final(self).threads.records@[t].value().process == Some(process),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&s0.spaces, &s0.processes));
+            assert(s0.spaces.roots@.contains_key(process));
+            assert(s0.spaces.records@[process].value().kind is Process);
+        }
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s0.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.threads.records@[t].value().state == (ThreadState::Running { core: 0 }));
+            assert(s3.list == s0.list);
+            assert(s3.tables == s0.tables);
+            assert(s3.processes == s0.processes);
+            assert(s3.slot_holds(process, ROOT_THREAD_SLOT, (leaf@ + 2) as usize, thread_of(t)));
+            s3.lemma_slot(process, ROOT_THREAD_SLOT);
+            assert(THREAD_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(!s3.threads.records@[t].value().dying);
+            assert(s3.root_live(process));
+            assert(s3.can_suspend(process, ROOT_THREAD_SLOT));
+        }
+        self.suspend(0, process, ROOT_THREAD_SLOT)
+    }
+
     /// From the state boot leaves, with a second process built at `base` as
     /// witness_process_holds_capability builds it: core 0 loads the root's space and points its base
     /// register at it, then loads the second process's space while the register still names the root's,
