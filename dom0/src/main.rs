@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page and of a table leaf, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page and of a table leaf and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -49,6 +49,10 @@
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
 //! set, both maintained, which it prints. It retypes another 4K frame, maps it beside that page, writes a
 //! word through it, maps it at the unmapped page and reads that word there, not the old frame's. It
+//! retypes a third 4K frame, which it never maps; retype's free kind is refused while the capability
+//! names the frame, and once the capability is deleted a retype of the page is refused, the free kind
+//! frees the dead frame, a second free is refused, and the page is retyped again, which inspect finds
+//! and dom0 prints. It
 //! retypes a table leaf into root entry 2 of its own table, the first boot leaves empty, after a retype into the occupied entry 1, into entry 512, past the root's, by
 //! a word naming no position and of a block that is not free is refused, and a second leaf into entry 3
 //! through its own process capability, after entry 2 named through it is refused; inspect refuses each
@@ -704,6 +708,43 @@ fn remapped_other_frame_held(caller: &mut Tracked<Caller>, untyped: u64, other: 
     unsafe { page.read_volatile() == OTHER_WORD }
 }
 
+/// How far below the top of the table check's untyped the page dom0 frees and retypes again is: between
+/// the leaf check's pages and OTHER_FRAME_BELOW_TOP's, where nothing else retypes.
+const FREED_FRAME_BELOW_TOP: u64 = 6 * 8 * 4096;
+
+/// What dom0 prints through the console once it retyped a freed frame's page, which the gate looks for.
+const FREED_HELD: [u64; 5] = operation::print_words(b"dom0 freed frame retyped\n");
+
+/// Whether a dead frame's page comes back: dom0 retypes the page of `untyped`, the table check's,
+/// FREED_FRAME_BELOW_TOP below its top, into the empty slot `slot`, and retype's free kind is refused
+/// while the capability names the frame. dom0 deletes the capability, the frame's last, after which a
+/// retype of the page is refused, since a dead page is not free; the free kind then frees it, and a
+/// second free is refused, the page being free and no longer dead. The retype of the page into `slot`
+/// is then accepted, and inspect finds the frame there. The frame was never mapped, so no core holds a
+/// translation to it and the free does not return again. dom0 prints that it held.
+fn freed_frame_retyped(caller: &mut Tracked<Caller>, untyped: u64, slot: u64) -> bool {
+    let base = match inspect(caller, untyped) {
+        Ok(block) => block.base + (4096 << block.order) - FREED_FRAME_BELOW_TOP,
+        Err(_) => return false,
+    };
+    let retype_frame = |caller: &mut Tracked<Caller>| {
+        retype(caller, untyped, operation::RETYPE_FRAME, base, slot, 0).status
+    };
+    let free = |caller: &mut Tracked<Caller>| retype(caller, untyped, operation::RETYPE_FREE, base, 0, 0).status;
+    retype_frame(caller) == operation::STATUS_OK
+        && free(caller) == operation::STATUS_REFUSED
+        && delete(caller, slot).status == operation::STATUS_OK
+        && retype_frame(caller) == operation::STATUS_REFUSED
+        && free(caller) == operation::STATUS_OK
+        && free(caller) == operation::STATUS_REFUSED
+        && retype_frame(caller) == operation::STATUS_OK
+        && matches!(
+            inspect(caller, slot),
+            Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 0
+        )
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, FREED_HELD) } == operation::STATUS_OK
+}
+
 /// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
 /// into the empty slot `destination`, repeating while retype returns again, and prints how many again
 /// returns that took: a retype at a base not aligned to 2M is refused, the retype returns again at least
@@ -1205,6 +1246,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && probed_bits_held(caller, empty + 1)
                                 && unmapped_bits_held(caller, empty + 1)
                                 && remapped_other_frame_held(caller, untyped, empty + 2)
+                                && freed_frame_retyped(caller, untyped, empty + 3)
                                 && retyped_leaves_held(caller, untyped, tables[3])
                                 && eager_source_held(caller, empty)
                         })

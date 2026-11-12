@@ -222,6 +222,7 @@ def boot_log():
             " INFO root slot 5: untyped base 0x40000000 order 18 rights 0x8\n"
             "\x1b[34m INFO root slot 6: untyped\x1b[0m\n"
             " INFO root slot 129: frame order 0\n"
+            "dom0 freed frame retyped\n"
             "dom0 eager backed 40\n"
             "dom0 heap allocator held\n"
             "dom0 slot checks held\n"
