@@ -1142,31 +1142,6 @@ impl CapKernel {
         assert(binding_parent(&self.list, &self.tables, &self.threads, t));
     }
 
-    /// A capability with the control right names a typed thread or process: its base is that object's
-    /// block, so a base no thread or process holds is named by no control capability.
-    pub proof fn lemma_control_names_object(&self, n: usize)
-        requires
-            self.wf(),
-            self.is_cap(n),
-            self.payload_of(n).rights & CONTROL_RIGHT != 0,
-        ensures
-            ({
-                let base = self.payload_of(n).base;
-                ||| self.payload_of(n).kind is Thread && self.threads.records@.contains_key(base)
-                    && thread_block(&self.blocks, base / PAGE_SZ)
-                ||| self.payload_of(n).kind is Process && self.processes.records@.contains_key(base)
-                    && process_block(&self.blocks, base / PAGE_SZ)
-            }),
-    {
-        let base = self.payload_of(n).base;
-        assert(control_named(self.tables.payload_of(n)));
-        if self.payload_of(n).kind is Thread {
-            assert(thread_wf(&self.list, &self.threads, &self.blocks, base));
-        } else {
-            assert(process_wf(&self.processes, &self.blocks, base));
-        }
-    }
-
     /// A bound thread's process is a process whose block counts the binding among its references.
     pub proof fn lemma_bound_process(&self, t: usize)
         requires

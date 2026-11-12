@@ -1770,20 +1770,6 @@ impl CapKernel {
         &&& Self::writes_only_own_current(pre, post, c)
     }
 
-    /// No two spaces hold one id at one generation on one core.
-    pub proof fn lemma_ids_unique(&self, c: int, s: usize, r: usize)
-        requires
-            self.wf(),
-            0 <= c < NUM_CPUS,
-            s != r,
-            holds_id(self.cores@, self.spaces.loaded@, c, s),
-            holds_id(self.cores@, self.spaces.loaded@, c, r),
-        ensures
-            id_pcid(self.spaces.loaded@[s].value().ids@[c]) != id_pcid(self.spaces.loaded@[r].value().ids@[c]),
-    {
-        reveal(ids_wf);
-    }
-
     /// A valid id is one this core has handed out, and nothing is under a PCID it has not.
     pub proof fn lemma_id_handed_out(&self, c: int, s: usize, p: usize)
         requires
@@ -1913,29 +1899,6 @@ impl CapKernel {
         assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] post.iommu_present(i) implies epoch <= post.iommu_acked(i) by {
             assert(pre.iommu_present(i) && pre.iommu_acked(i) == post.iommu_acked(i));
         }
-    }
-
-    /// The stale check reads only present IOMMUs: with every core and every present IOMMU past an epoch,
-    /// every core and IOMMU has acknowledged it, whatever an absent IOMMU's word says.
-    pub proof fn lemma_present_acknowledged(&self, epoch: int)
-        requires
-            forall|c: int| 0 <= c < NUM_CPUS ==> epoch <= #[trigger] self.acked(c),
-            forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] self.iommu_present(i) ==> epoch <= self.iommu_acked(i),
-        ensures
-            self.all_acknowledged(epoch),
-    {
-    }
-
-    /// An IOMMU the machine lacks holds nothing.
-    pub proof fn lemma_absent_iommu_empty(&self, i: int)
-        requires
-            self.wf(),
-            0 <= i < NUM_IOMMUS,
-            !self.iommu_present(i),
-        ensures
-            self.iommus.tlb@[i] == Set::<TlbEntry>::empty(),
-    {
-        assert(self.iommus.tlb@[i] =~= Set::<TlbEntry>::empty());
     }
 
     /// A region with no page mapped, every core and IOMMU having acknowledged its word, is free of stale

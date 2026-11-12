@@ -121,26 +121,6 @@ impl CapKernel {
         };
         ret
     }
-
-    /// A device root holds no kernel entry: each low entry is empty or names one of the space's table pages.
-    pub proof fn lemma_device_root_no_kernel_entry(&self, s: usize, i: usize)
-        requires
-            self.wf(),
-            self.spaces.roots@.contains_key(s),
-            self.spaces.records@[s].value().kind is Device,
-            i < KERNEL_MEM_END_L4INDEX,
-        ensures
-            ({
-                let tree = tree_of(&self.table_pages, &self.spaces);
-                let e = tree.entry(s, i);
-                e.is_empty() || (tree.names_child(s, i) && tree.is_page((e.addr - TABLE_NODE_PAGES * PAGE_SZ) as usize))
-            }),
-    {
-        let tree = tree_of(&self.table_pages, &self.spaces);
-        assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
-        assert(self.spaces.roots@[s].value()[i] == self.spaces.roots@[s].value()[i]);
-        self.lemma_root_table(s);
-    }
 }
 
 } // verus!

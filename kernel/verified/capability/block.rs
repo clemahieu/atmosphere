@@ -395,29 +395,6 @@ impl BlockTable {
         }
     }
 
-    /// Two blocks have no page in common.
-    pub proof fn lemma_blocks_disjoint(&self, a: int, b: int, i: int)
-        requires
-            self.wf(),
-            self.tracks(a),
-            self.tracks(b),
-            a != b,
-            self.pages@[a].kind is Base,
-            self.pages@[b].kind is Base,
-            self.in_block(a, i),
-        ensures
-            !self.in_block(b, i),
-    {
-        if self.in_block(b, i) {
-            if i != a {
-                self.lemma_member_of(a, i);
-            }
-            if i != b {
-                self.lemma_member_of(b, i);
-            }
-        }
-    }
-
     /// A 2M region whose count is zero has only free pages.
     pub proof fn lemma_zero_2m_is_free(&self, r: int, i: int)
         requires
