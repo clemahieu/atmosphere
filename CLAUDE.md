@@ -104,6 +104,7 @@ tools/loop.py           # run rounds until the loop stops; loop.toml at the proj
 tools/reviews.py        # the finished epics, in the order an epic round takes them, each with what it needs
 tools/bead-status.py    # serve the state of the Beads tree as a page at http://127.0.0.1:8377/
 tools/token-ledger.py   # harvest the transcripts' token counts into logs/token-ledger.sqlite at the project root
+tools/leaf-cost.py      # what a landed leaf cost, every session counted, by the model of its rounds, with the rework beside it
 tools/check-stray-timer.py         # a kernel whose timer fires for nothing reports it once and stops, on both targets
 tools/check-boot-panic.py          # a kernel that panics at boot ends QEMU with status 1, on both targets
 tools/orangepi-stack-overflow.py   # an aarch64 kernel that overflows a stack on the board reports it once
