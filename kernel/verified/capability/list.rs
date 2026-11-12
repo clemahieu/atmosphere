@@ -635,51 +635,6 @@ impl Tree {
         }
     }
 
-    /// The converse: a node's ancestor n levels up, n being the depth difference, sits earlier,
-    /// and everything from just after the ancestor to the node is deeper than the ancestor.
-    pub proof fn lemma_lineage_is_run(&self, j: int, k: int, n: nat)
-        requires
-            self.wf(),
-            0 <= j < self.seq@.len(),
-            0 <= k < self.seq@.len(),
-            n >= 1,
-            n == self.d(self.seq@[k]) - self.d(self.seq@[j]),
-            self.anc(self.seq@[k], n) == self.seq@[j],
-        ensures
-            j < k,
-            forall|m: int| j < m <= k ==> self.d(#[trigger] self.seq@[m]) > self.d(self.seq@[j]),
-        decreases n
-    {
-        let s = self.seq@;
-        let i = s[k];
-        assert(self.d(s[0]) == 0);
-        assert(k != 0);
-        lemma_has(s, self.parent@[i]);
-        let p = choose|p: int| 0 <= p < s.len() && s[p] == self.parent@[i];
-        self.lemma_runs(p, k);
-        assert(self.anc(i, n) == self.anc(self.parent@[i], (n - 1) as nat));
-        if n == 1 {
-            if p != j { lemma_nodup(s, p, j); }
-            assert(p == j);
-            assert forall|m: int| j < m <= k implies self.d(#[trigger] s[m]) > self.d(s[j]) by {
-                if m == k {
-                    assert(self.d(s[k]) == self.d(s[p]) + 1);
-                }
-            }
-        } else {
-            assert((n - 1) as nat == self.d(s[p]) - self.d(s[j]));
-            self.lemma_lineage_is_run(j, p, (n - 1) as nat);
-            assert forall|m: int| j < m <= k implies self.d(#[trigger] s[m]) > self.d(s[j]) by {
-                if m <= p {
-                } else if m < k {
-                    assert(self.d(s[m]) > self.d(s[p]));
-                } else {
-                    assert(self.d(s[k]) == self.d(s[p]) + 1);
-                }
-            }
-        }
-    }
-
     /// Put a new child straight after its parent, in constant time.
     pub fn derive(&mut self, c: usize, slot: usize, kind: NodeKind)
         requires
@@ -1488,36 +1443,6 @@ pub proof fn lemma_below_child(t: Tree, c: usize, x: usize)
         assert(t.is_child(p, x));
         assert(false);
     }
-}
-
-/// A peer's work is untouched: a node outside c's run stays live across a revoke step. Outside
-/// the run means before c, or at or after the first node following c that is not deeper than c.
-pub proof fn lemma_peer_untouched(pre: Tree, post: Tree, c: usize, r: usize, j: int, q: int)
-    requires
-        pre.wf(),
-        revoked_one(pre, post, c, r),
-        0 <= j < pre.seq@.len(),
-        pre.seq@[j] == c,
-        0 <= q < pre.seq@.len(),
-        q < j || exists|e: int| j < e <= q && pre.d(#[trigger] pre.seq@[e]) <= pre.d(c),
-    ensures
-        post.nodes@[pre.seq@[q] as int].live,
-{
-    let s = pre.seq@;
-    lemma_has(s, r);
-    let p = choose|p: int| 0 <= p < s.len() && s[p] == r;
-    let n = (pre.d(r) - pre.d(c)) as nat;
-    pre.lemma_lineage_is_run(j, p, n);
-    if q < j {
-        assert(p != q);
-    } else {
-        let e = choose|e: int| j < e <= q && pre.d(#[trigger] s[e]) <= pre.d(c);
-        if p == q {
-            assert(pre.d(s[e]) > pre.d(c));
-        }
-    }
-    lemma_nodup(s, p, q);
-    pre.lemma_link(q);
 }
 
 /// Splicing a node after position j keeps the links: the new node's neighbours are j and j + 1,

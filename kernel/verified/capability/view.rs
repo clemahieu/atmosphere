@@ -633,19 +633,6 @@ impl CapKernel {
         assert(pre.list.nodes@[leaf as int].live);
     }
 
-    /// A live capability in a slot is held by that table's process.
-    pub proof fn lemma_slot_is_held(&self, root: usize, i: usize)
-        requires
-            self.wf(),
-            self.tables.has_slot(&self.list, root, i),
-            self.list.nodes@[self.tables.node_of(root, i) as int].live,
-            self.list.nodes@[self.tables.node_of(root, i) as int].kind is Capability,
-        ensures
-            self.view().holds(root, self.tables.node_of(root, i)),
-    {
-        self.lemma_slot(root, i);
-    }
-
     /// Between pre and post, no node but n and m changed its liveness or kind, and no capability but
     /// those what it says.
     pub open spec fn caps_frame(pre: Self, post: Self, n: usize, m: usize) -> bool {
@@ -724,17 +711,6 @@ impl CapKernel {
             assert(self.list.d(r) == self.list.d(self.list.parent@[r]) + 1);
             self.lemma_anc_descends(self.list.parent@[r], (n - 1) as nat);
         }
-    }
-
-    /// What the view holds, a table has: a slot that is not live is held by nobody.
-    pub proof fn lemma_held_is_live(&self, p: ObjectId, n: NodeId)
-        requires
-            self.view().holds(p, n),
-        ensures
-            self.list.nodes@[n as int].live,
-            self.tables.owner@.contains_key(page_of(n)),
-            self.tables.owner@[page_of(n)].0 == p,
-    {
     }
 
     /// A capability that names a block names one within the address space, so it covers no device, not

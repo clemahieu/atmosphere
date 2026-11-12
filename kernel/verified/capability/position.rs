@@ -65,22 +65,6 @@ pub fn position(word: u64) -> (ret: Option<Position>)
     })
 }
 
-/// One word names one position: two words that decode to the same position are the same word.
-pub proof fn lemma_position_one_word(a: u64, b: u64)
-    requires
-        spec_position(a) is Some,
-        spec_position(a) == spec_position(b),
-    ensures
-        a == b,
-{
-    let ta = (a >> 16u64) & 0xffffu64;
-    let tb = (b >> 16u64) & 0xffffu64;
-    assert(ta == tb);
-    assert(a & 0xffffu64 == b & 0xffffu64);
-    assert((a >> 32u64 == 0 && b >> 32u64 == 0 && a & 0xffffu64 == b & 0xffffu64
-        && (a >> 16u64) & 0xffffu64 == (b >> 16u64) & 0xffffu64) ==> a == b) by (bit_vector);
-}
-
 /// A word whose index field is an index of the caller's own table and with nothing else set names that
 /// index there: a slot number passed as a word is the slot in the caller's own table.
 pub proof fn lemma_position_own(index: u64)
@@ -309,14 +293,6 @@ impl CapKernel {
             }),
         ensures
             self.destination_at(root, Some(cap)) is None,
-    {
-    }
-
-    /// The caller's own table is always a destination.
-    pub proof fn lemma_own_destination(&self, root: usize)
-        ensures
-            self.destination_at(root, None) == Some(root),
-            self.through_node(root, None) is None,
     {
     }
 

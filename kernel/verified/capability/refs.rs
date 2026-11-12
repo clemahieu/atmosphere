@@ -2104,54 +2104,6 @@ pub proof fn lemma_block_ref_small_typed(a: &BlockTable, b: &BlockTable, base: u
     }
     assert(b.pages@[i as int] == a.pages@[i as int]);
 }
-
-/// A page of a typed block is read in the same block after a free region is typed.
-pub proof fn lemma_block_ref_region_typed(a: &BlockTable, b: &BlockTable, level: Large, r: usize, i: usize)
-    requires
-        r < level_regions(level),
-        forall|j: int| level_base(level, r) <= j < level_base(level, r) + level_pages(level) ==> {
-            &&& #[trigger] a.pages@[j].kind is Free
-            &&& !a.covered(j)
-        },
-        b.pages@ == a.pages@,
-        match level {
-            Large::Two => {
-                &&& b.regions_2m@ == a.regions_2m@.update(r as int, b.regions_2m@[r as int])
-                &&& b.regions_1g@ == a.regions_1g@
-            },
-            Large::One => {
-                &&& b.regions_1g@ == a.regions_1g@.update(r as int, b.regions_1g@[r as int])
-                &&& b.regions_2m@ == a.regions_2m@
-            },
-        },
-        a.tracks(i as int),
-        block_typed(a, block_ref(a, i)),
-    ensures
-        block_ref(b, i) == block_ref(a, i),
-{
-    let base = level_base(level, r);
-    let pages = level_pages(level);
-    if base <= i < base + pages {
-        assert(a.pages@[i as int].kind is Free);
-        assert(!a.covered(i as int));
-        assert(block_ref(a, i) == BlockRef::Small(i));
-        assert(!block_typed(a, BlockRef::Small(i)));
-    }
-    assert(!(base <= i < base + pages));
-    match level {
-        Large::Two => {
-            assert(base == r * PAGES_PER_2M);
-            lemma_fundamental_div_mod(i as int, PAGES_PER_2M as int);
-            assert(i / PAGES_PER_2M != r);
-        },
-        Large::One => {
-            assert(base == r * PAGES_PER_1G);
-            lemma_fundamental_div_mod(i as int, PAGES_PER_1G as int);
-            assert(i / PAGES_PER_1G != r);
-        },
-    }
-}
-
 /// A page outside the 2M block being freed is read in the same block after.
 pub proof fn lemma_block_ref_2m_freed(a: &BlockTable, b: &BlockTable, r: usize, i: usize)
     requires

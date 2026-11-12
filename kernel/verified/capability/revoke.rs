@@ -48,6 +48,7 @@ pub const REVOKE_STEP_STEPS: usize = MAX_DEPTH + CUT_NOTE_STEPS + UNLINK_ARM_STE
 /// REVOKE_STEP_STEPS.
 pub const REVOKE_STEPS: usize = REVOKE_BUDGET * (REVOKE_STEP_STEPS + 1);
 
+/// REVOKE_BUDGET is above the core count, as its doc says the design reasons from.
 pub proof fn lemma_budget_above_cores()
     ensures
         REVOKE_BUDGET > NUM_CPUS,

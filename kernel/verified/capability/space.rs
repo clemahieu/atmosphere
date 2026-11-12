@@ -1521,22 +1521,6 @@ impl CapKernel {
         self.blocks.pages@[(s / PAGE_SZ) as int].refs == 0
     }
 
-    /// A device bound to a space holds a reference to its block, so the root may not go.
-    pub proof fn lemma_bound_keeps_root(&self, s: usize, d: usize)
-        requires
-            self.wf(),
-            self.spaces.roots@.contains_key(s),
-            self.spaces.bound@[s].contains(d),
-        ensures
-            self.blocks.pages@[(s / PAGE_SZ) as int].refs > 0,
-            !self.root_may_go(s),
-    {
-        assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
-        if self.spaces.bound@[s].len() == 0 {
-            self.spaces.bound@[s].lemma_len0_is_empty();
-        }
-    }
-
     /// The spaces after space capability n, the only capability that changed, joins space s with one
     /// more reference on its block.
     pub proof fn lemma_spaces_holder_added(pre: Self, post: Self, n: usize, s: usize)

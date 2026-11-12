@@ -1618,20 +1618,6 @@ impl CapKernel {
         }
     }
 
-    /// A free page outside every typed large block has no stale translation: a block that has returned to
-    /// free leaves no core or IOMMU an entry naming any of its pages.
-    pub proof fn lemma_free_page_clean(&self, f: usize)
-        requires
-            self.wf(),
-            self.blocks.tracks(f as int),
-            self.blocks.pages@[f as int].kind is Free,
-            !self.blocks.covered(f as int),
-        ensures
-            self.no_stale_translation(f),
-    {
-        self.lemma_untranslatable_clean(f);
-    }
-
     /// A step that frees the large block that is region r of this level, keeping the TLB models, keeps
     /// their entries nameable when no core or IOMMU holds an entry for any page of the block.
     pub proof fn lemma_large_freed_translatable(pre: Self, post: &BlockTable, level: Large, r: usize)
