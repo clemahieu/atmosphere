@@ -968,10 +968,7 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     {
         return false;
     }
-    // The source's calls go on from dom0's own, which end here: dom0 hands it the token, and keeps in
-    // its place one it never calls with again.
     let Some(mut eager) = aeager::Eager::new(
-        core::mem::replace(caller, Tracked::assume_new()),
         operation::ROOT_PROCESS_SLOT,
         source,
         memory,
@@ -981,7 +978,7 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     ) else {
         return false;
     };
-    let seen = aeager::exercise(&mut eager, &mut aeager::no_token());
+    let seen = aeager::exercise(&mut eager, caller);
     print_count(EAGER_HEAD, seen.backed as u64, b"\n") == operation::STATUS_OK
         && seen.apart
         && seen.backed > 0
@@ -1063,37 +1060,39 @@ fn run_objects_until_refused() -> Option<usize> {
     refused.then_some(count)
 }
 
-/// Whether astd's global allocator, given a heap over an eager source of dom0's own, serves dom0: from
-/// the gigabyte untyped, table leaves into the HEAP_LEAVES root entries from HEAP_ENTRY and a child
-/// untyped of HEAP_ORDER at HEAP_BELOW_TOP into the first's first slot, whose pages the source alone
-/// retypes, and the window at HEAP_WINDOW. A box of the smallest class, a vector of a few pages and one
-/// over a block are written and read back and freed; run-sized objects are then allocated until the
-/// allocator refuses one, at least one given first, and all freed, after which one is given again.
-fn heap_allocator_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
-    let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
-        return false;
-    };
+/// The eager source over which astd's global allocator serves dom0, set up as heap_allocator_held
+/// says, or None when a call was refused.
+fn heap_source(caller: &mut Tracked<Caller>, empty: u64) -> Option<aeager::Eager> {
+    let (untyped, block) = untyped_of_pages(caller, empty, 1 << 18)?;
     let memory = block.base + (4096 << block.order) - HEAP_BELOW_TOP;
     let source = first_slot(HEAP_ENTRY);
     for leaf in 0..HEAP_LEAVES {
         let base = memory - (leaf + 1) * LEAF_BYTES;
         if retype(caller, untyped, operation::RETYPE_LEAF, base, HEAP_ENTRY + leaf, 0).status != operation::STATUS_OK {
-            return false;
+            return None;
         }
     }
     if derive(caller, untyped, source, block.rights, memory, HEAP_ORDER).status != operation::STATUS_OK {
-        return false;
+        return None;
     }
-    // As for the eager source's check, the heap's source's calls go on from dom0's own.
-    let Some(eager) = aeager::Eager::new(
-        core::mem::replace(caller, Tracked::assume_new()),
+    aeager::Eager::new(
         operation::ROOT_PROCESS_SLOT,
         source,
         memory,
         HEAP_PAGES,
         source + 1,
         HEAP_WINDOW as *mut u8,
-    ) else {
+    )
+}
+
+/// Whether astd's global allocator, given a heap over an eager source of dom0's own, serves dom0: from
+/// the gigabyte untyped, table leaves into the HEAP_LEAVES root entries from HEAP_ENTRY and a child
+/// untyped of HEAP_ORDER at HEAP_BELOW_TOP into the first's first slot, whose pages the source alone
+/// retypes, and the window at HEAP_WINDOW. A box of the smallest class, a vector of a few pages and one
+/// over a block are written and read back and freed; run-sized objects are then allocated until the
+/// allocator refuses one, at least one given first, and all freed, after which one is given again.
+fn heap_allocator_held(empty: u64) -> bool {
+    let Some(eager) = astd::heap::with_caller(|caller| heap_source(caller, empty)) else {
         return false;
     };
     astd::heap::install(eager);
@@ -1176,8 +1175,9 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     let process_off = operation::power_off(operation::ROOT_PROCESS_SLOT, false);
     let console_off = operation::power_off(operation::ROOT_CONSOLE_SLOT, false);
     // dom0 is not verified, so it mints the caller token its calls start from, which erases here: the
-    // kernel's proof that each of its steps keeps its state well formed is what stands behind it.
-    let caller = &mut Tracked::<Caller>::assume_new();
+    // kernel's proof that each of its steps keeps its state well formed is what stands behind it. It
+    // is the process's one token: astd keeps it for the heap's source and lends it to dom0's calls.
+    astd::heap::keep_caller(Tracked::<Caller>::assume_new());
     let slots_held = process == operation::STATUS_REFUSED
         && process_off == operation::STATUS_REFUSED
         && console_off == operation::STATUS_REFUSED
@@ -1187,28 +1187,30 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && frame == operation::STATUS_REFUSED
         && unknown == operation::STATUS_UNKNOWN
         && other_instruction_unknown()
-        && first_empty_slot(caller).is_some_and(|empty| {
-            retyped_frame_held(caller, empty)
-                && retyped_table_pages(caller, empty)
-                    .is_some_and(|(untyped, tables)| {
-                        linked_path_held(caller, untyped, tables)
-                            && mapped_frame_held(caller, empty)
-                            && remapped_frame_held(caller, empty)
-                            && moved_frame_held(caller, empty)
-                            && retyped_large_frame_held(caller, empty, empty + 2)
-                            && derived_frame_held(caller, empty + 2, empty, empty + 1, empty + 3)
-                            && revoked_frame_held(caller, empty + 2, empty, empty + 3)
-                            && deleted_frames_held(caller, empty + 2, empty + 3)
-                            && derived_power_held(caller, empty + 2)
-                            && timed_beside_before(caller, empty + 1)
-                            && probed_bits_held(caller, empty + 1)
-                            && unmapped_bits_held(caller, empty + 1)
-                            && remapped_other_frame_held(caller, untyped, empty + 2)
-                            && retyped_leaves_held(caller, untyped, tables[3])
-                            && eager_source_held(caller, empty)
-                            && heap_allocator_held(caller, empty)
-                    })
-        });
+        && astd::heap::with_caller(|caller| {
+            first_empty_slot(caller).filter(|&empty| {
+                retyped_frame_held(caller, empty)
+                    && retyped_table_pages(caller, empty)
+                        .is_some_and(|(untyped, tables)| {
+                            linked_path_held(caller, untyped, tables)
+                                && mapped_frame_held(caller, empty)
+                                && remapped_frame_held(caller, empty)
+                                && moved_frame_held(caller, empty)
+                                && retyped_large_frame_held(caller, empty, empty + 2)
+                                && derived_frame_held(caller, empty + 2, empty, empty + 1, empty + 3)
+                                && revoked_frame_held(caller, empty + 2, empty, empty + 3)
+                                && deleted_frames_held(caller, empty + 2, empty + 3)
+                                && derived_power_held(caller, empty + 2)
+                                && timed_beside_before(caller, empty + 1)
+                                && probed_bits_held(caller, empty + 1)
+                                && unmapped_bits_held(caller, empty + 1)
+                                && remapped_other_frame_held(caller, untyped, empty + 2)
+                                && retyped_leaves_held(caller, untyped, tables[3])
+                                && eager_source_held(caller, empty)
+                        })
+            })
+        })
+        .is_some_and(heap_allocator_held);
     let console = unsafe {
         print_slot(
             operation::ROOT_CONSOLE_SLOT,

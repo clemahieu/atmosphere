@@ -527,10 +527,8 @@ impl Spans {
     }
 }
 
-/// What the source knows of its untyped and of the window's tables, and the process's ghost of the
-/// kernel, which its system calls thread.
+/// What the source knows of its untyped and of the window's tables.
 struct Record {
-    caller: Tracked<Caller>,
     space: u64,
     untyped: u64,
     memory: u64,
@@ -549,9 +547,14 @@ struct Record {
 }
 
 impl Record {
+    /// `caller` is a token of the process whose space the record's system calls change: the slot at
+    /// `space` names its own.
+    spec fn serves(&self, caller: Caller) -> bool {
+        &&& caller.wf()
+        &&& names_own_space(caller, self.space)
+    }
+
     spec fn inv(&self) -> bool {
-        &&& self.caller@.wf()
-        &&& names_own_space(self.caller@, self.space)
         &&& self.pages <= MAX_PAGES
         &&& self.memory + self.pages * PAGE_BYTES <= u64::MAX
         &&& self.slots < TABLE_INDICES
@@ -631,12 +634,14 @@ impl Record {
     /// A frame the source holds, mapped nowhere: one held before, else a free page retyped as a frame
     /// into its slot, else a parked page unmapped. None when no page is free or parked, or the kernel
     /// refused the retype or the unmap.
-    fn frame(&mut self) -> (r: Option<usize>)
+    fn frame(&mut self, caller: &mut Tracked<Caller>) -> (r: Option<usize>)
         requires
             old(self).inv(),
+            old(self).serves(old(caller)@),
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).serves(final(caller)@),
             final(self).keeps(old(self)),
             final(self).keeps_mapped(old(self)),
             match r {
@@ -649,6 +654,7 @@ impl Record {
         while i < self.pages
             invariant
                 self.inv(),
+                self.serves(caller@),
                 i <= self.pages,
                 self.keeps(old(self)),
                 self.keeps_mapped(old(self)),
@@ -663,6 +669,7 @@ impl Record {
         while i > 0
             invariant
                 self.inv(),
+                self.serves(caller@),
                 i <= self.pages,
                 self.keeps(old(self)),
                 self.keeps_mapped(old(self)),
@@ -672,7 +679,7 @@ impl Record {
             if self.state[i] == FREE {
                 let base = self.page(i);
                 let slot = self.slot(i);
-                if retype_frame(&mut self.caller, self.untyped, base, slot) {
+                if retype_frame(caller, self.untyped, base, slot) {
                     self.state[i] = HELD;
                     return Some(i);
                 }
@@ -684,6 +691,7 @@ impl Record {
         while i < self.pages
             invariant
                 self.inv(),
+                self.serves(caller@),
                 i <= self.pages,
                 self.provenance == old(self).provenance,
                 self.keeps(old(self)),
@@ -693,7 +701,7 @@ impl Record {
             if self.state[i] == PARKED {
                 assert(self.state@[i as int] == PARKED);
                 let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
-                if unmap_page(&mut self.caller, self.space, self.owner[i], Tracked(perm)) {
+                if unmap_page(caller, self.space, self.owner[i], Tracked(perm)) {
                     self.state[i] = HELD;
                     return Some(i);
                 }
@@ -707,13 +715,15 @@ impl Record {
 
     /// Retypes the lowest free order-3 block of the untyped as a table page of the level below
     /// `level`, and links it at the entry of `level` that `address` names. Whether both were done.
-    fn table(&mut self, address: usize, level: u64) -> bool
+    fn table(&mut self, caller: &mut Tracked<Caller>, address: usize, level: u64) -> bool
         requires
             old(self).inv(),
+            old(self).serves(old(caller)@),
             2 <= level <= 4,
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).serves(final(caller)@),
             final(self).keeps(old(self)),
             final(self).keeps_mapped(old(self)),
         no_unwind
@@ -722,6 +732,7 @@ impl Record {
         while group + TABLE_PAGES <= self.pages
             invariant
                 self.inv(),
+                self.serves(caller@),
                 group <= self.pages,
                 2 <= level <= 4,
                 self.keeps(old(self)),
@@ -733,6 +744,7 @@ impl Record {
             while k < TABLE_PAGES
                 invariant
                     self.inv(),
+                    self.serves(caller@),
                     group + TABLE_PAGES <= self.pages,
                     k <= TABLE_PAGES,
                     2 <= level <= 4,
@@ -751,6 +763,7 @@ impl Record {
                 while k < TABLE_PAGES
                     invariant
                         self.inv(),
+                        self.serves(caller@),
                         group + TABLE_PAGES <= self.pages,
                         k <= TABLE_PAGES,
                         2 <= level <= 4,
@@ -764,7 +777,7 @@ impl Record {
                     k += 1;
                 }
                 let base = self.page(group);
-                return retype_table_page(&mut self.caller, self.untyped, base, level - 1) && link(&mut self.caller, self.space, address, level, self.untyped, base);
+                return retype_table_page(caller, self.untyped, base, level - 1) && link(caller, self.space, address, level, self.untyped, base);
             }
             group += TABLE_PAGES;
         }
@@ -811,13 +824,15 @@ impl Record {
     /// its path lacks, takes a frame and maps it there. The permission to the page's bytes, or none
     /// when a page is mapped there already or anything was refused. A page parked at `addr` backs it
     /// again with no system call, so that back is granted and leaves every other parked page parked.
-    fn back_page(&mut self, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
+    fn back_page(&mut self, caller: &mut Tracked<Caller>, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
         requires
             old(self).inv(),
+            old(self).serves(old(caller)@),
             provenance@ == old(self).provenance@,
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).serves(final(caller)@),
             final(self).keeps_mapped(old(self)),
             match r {
                 Some(perm) => {
@@ -836,7 +851,7 @@ impl Record {
     {
         let i = self.find(addr);
         if i == self.pages {
-            return self.map_new(addr, provenance);
+            return self.map_new(caller, addr, provenance);
         }
         if self.state[i] == MAPPED {
             proof {
@@ -867,15 +882,17 @@ impl Record {
 
     /// Links the tables the path to `addr` lacks, takes a frame and maps it at `addr`, where no page
     /// is mapped or parked. The permission to the page's bytes, or none when anything was refused.
-    fn map_new(&mut self, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
+    fn map_new(&mut self, caller: &mut Tracked<Caller>, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
         requires
             old(self).inv(),
+            old(self).serves(old(caller)@),
             provenance@ == old(self).provenance@,
             !old(self).maps(addr as int),
             !old(self).parks(addr as int),
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).serves(final(caller)@),
             final(self).keeps_mapped(old(self)),
             match r {
                 Some(perm) => {
@@ -901,7 +918,7 @@ impl Record {
         let window = self.window;
         if !self.top {
             let ghost before = *self;
-            let linked = self.table(window, 4);
+            let linked = self.table(caller, window, 4);
             proof {
                 lemma_mapped_trans(*self, before, start);
             }
@@ -912,7 +929,7 @@ impl Record {
         }
         if !self.middle {
             let ghost before = *self;
-            let linked = self.table(window, 3);
+            let linked = self.table(caller, window, 3);
             proof {
                 lemma_mapped_trans(*self, before, start);
             }
@@ -935,7 +952,7 @@ impl Record {
                 lemma_scale(block as int, WINDOW_BLOCKS as int, BLOCK_BYTES as int);
             }
             let ghost before = *self;
-            let linked = self.table(window + block * BLOCK_BYTES, 2);
+            let linked = self.table(caller, window + block * BLOCK_BYTES, 2);
             proof {
                 lemma_mapped_trans(*self, before, start);
             }
@@ -945,7 +962,7 @@ impl Record {
             self.tabled[block] = true;
         }
         let ghost before = *self;
-        let found = self.frame();
+        let found = self.frame(caller);
         proof {
             lemma_mapped_trans(*self, before, start);
         }
@@ -956,7 +973,7 @@ impl Record {
         let slot = self.slot(i);
         let ghost live = self.live();
         assert(!live.contains(addr));
-        match map_page(&mut self.caller, self.space, addr, slot, provenance, Ghost(live)) {
+        match map_page(caller, self.space, addr, slot, provenance, Ghost(live)) {
             Some(perm) => {
                 self.state[i] = MAPPED;
                 self.owner[i] = addr;
@@ -978,6 +995,7 @@ impl Record {
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).space == old(self).space,
             final(self).parks(addr as int),
             forall|a: int| a != addr && #[trigger] old(self).maps(a) ==> final(self).maps(a),
             forall|a: int| #[trigger] old(self).parks(a) ==> final(self).parks(a),
@@ -1028,6 +1046,7 @@ impl Record {
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).space == old(self).space,
             forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).parks(a),
             forall|a: int| !run_pages(start as int, pages as nat).contains(a) && #[trigger] old(self).maps(a) ==> final(self).maps(a),
             forall|a: int| #[trigger] old(self).parks(a) ==> final(self).parks(a),
@@ -1038,6 +1057,7 @@ impl Record {
         while k < pages
             invariant
                 self.inv(),
+                self.space == old(self).space,
                 k <= pages,
                 start as int % PAGE_BYTES as int == 0,
                 start + pages * PAGE_BYTES <= usize::MAX + 1,
@@ -1090,15 +1110,17 @@ impl Record {
     /// Backs the run of `pages` pages from `start` a page at a time: the permission to its bytes, or
     /// none, with each page backed so far given back, when a page was refused. A run whose every page
     /// is parked is granted.
-    fn back_run(&mut self, start: usize, pages: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
+    fn back_run(&mut self, caller: &mut Tracked<Caller>, start: usize, pages: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
         requires
             old(self).inv(),
+            old(self).serves(old(caller)@),
             provenance@ == old(self).provenance@,
             start as int % PAGE_BYTES as int == 0,
             start + pages * PAGE_BYTES <= usize::MAX + 1,
         ensures
             final(self).provenance == old(self).provenance,
             final(self).inv(),
+            final(self).serves(final(caller)@),
             forall|a: int| #[trigger] old(self).maps(a) ==> final(self).maps(a),
             match r {
                 Some(perm) => {
@@ -1117,6 +1139,7 @@ impl Record {
         while k < pages
             invariant
                 self.inv(),
+                self.serves(caller@),
                 k <= pages,
                 start as int % PAGE_BYTES as int == 0,
                 start + pages * PAGE_BYTES <= usize::MAX + 1,
@@ -1144,7 +1167,7 @@ impl Record {
                     assert(before.parks(addr as int));
                 }
             }
-            match self.back_page(addr, provenance) {
+            match self.back_page(caller, addr, provenance) {
                 Some(page) => {
                     proof {
                         run = run.join(page.get());
@@ -1238,6 +1261,11 @@ impl Eager {
             self.spans.map@.contains_key(base) && #[trigger] self.spans.map@[base].backed.contains(a) ==> self.record.maps(a)
     }
 
+    /// The slot of the process's own table that names the space the source backs runs in.
+    pub closed spec fn space(&self) -> u64 {
+        self.record.space
+    }
+
     /// A page is parked at `addr`: its run was released, and a back of it is granted with no system
     /// call.
     pub closed spec fn parks(&self, addr: int) -> bool {
@@ -1250,15 +1278,17 @@ impl Eager {
     /// leaf's end into the next leaf, so the caller provides as many consecutive leaves as `pages` frames
     /// need; and hands out spans of the window at
     /// `window`, which nothing maps, aligned to a region and with room for the window after it. None
-    /// when the window or the counts do not fit, or `slots` is no slot. `caller` is the process's token of the kernel, which
-    /// the source's system calls thread while it lives.
-    pub fn new(caller: Tracked<Caller>, space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
-        requires
-            caller@.wf(),
-            names_own_space(caller@, space),
+    /// when the window or the counts do not fit, or `slots` is no slot. Each operation borrows the
+    /// process's token of the kernel, which its system calls thread.
+    pub fn new(space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
         ensures
             match r {
-                Some(source) => source@.wf() && source@.spans.is_empty() && source@.provenance == window@.provenance,
+                Some(source) => {
+                    &&& source@.wf()
+                    &&& source@.spans.is_empty()
+                    &&& source@.provenance == window@.provenance
+                    &&& source.space() == space
+                },
                 None => true,
             },
     {
@@ -1300,7 +1330,6 @@ impl Eager {
                 index: Ghost(Map::empty()),
             },
             record: Record {
-                caller,
                 space,
                 untyped,
                 memory,
@@ -1324,24 +1353,20 @@ impl Eager {
     }
 }
 
-/// The token each of the source's operations borrows: none.
-pub fn no_token() -> Tracked<()> {
-    Tracked(())
-}
-
 impl SpanSource for Eager {
-    /// The source owns the caller token its system calls thread, and borrows nothing.
-    type Token = ();
+    /// The process's token of the kernel, which the source's system calls thread.
+    type Token = Caller;
 
     closed spec fn view(&self) -> SourceView {
         SourceView { provenance: self.exposed@@, spans: self.spans.map@, grants: self.grants@, refusals: self.refusals@ }
     }
 
-    open spec fn serves(&self, token: ()) -> bool {
-        true
+    open spec fn serves(&self, token: Caller) -> bool {
+        &&& token.wf()
+        &&& names_own_space(token, self.space())
     }
 
-    fn reserve(&mut self, token: &mut Tracked<()>, blocks: usize) -> (r: Option<*mut u8>) {
+    fn reserve(&mut self, token: &mut Tracked<Caller>, blocks: usize) -> (r: Option<*mut u8>) {
         proof {
             use_type_invariant(&*self);
         }
@@ -1366,7 +1391,7 @@ impl SpanSource for Eager {
     }
 
     /// A run whose every page is parked is granted.
-    fn back(&mut self, token: &mut Tracked<()>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
+    fn back(&mut self, token: &mut Tracked<Caller>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         ensures
             (forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a)) ==> r is Some,
     {
@@ -1378,7 +1403,7 @@ impl SpanSource for Eager {
         proof {
             assert(before.released_span(span@).fits(span@, before.spans[span@].blocks));
         }
-        match self.record.back_run(start, pages, Ghost(self.exposed@@)) {
+        match self.record.back_run(token, start, pages, Ghost(self.exposed@@)) {
             None => {
                 assert forall|base: int, a: int|
                     self.spans.map@.contains_key(base) && #[trigger] self.spans.map@[base].backed.contains(a) implies self.record.maps(a) by {
@@ -1412,7 +1437,7 @@ impl SpanSource for Eager {
     }
 
     /// Each page of the run is parked.
-    fn release(&mut self, token: &mut Tracked<()>, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
+    fn release(&mut self, token: &mut Tracked<Caller>, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
         ensures
             forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).parks(a),
     {
@@ -1449,7 +1474,7 @@ impl SpanSource for Eager {
         self.record.release_run(start, pages, perm);
     }
 
-    fn release_span(&mut self, token: &mut Tracked<()>, span: usize) {
+    fn release_span(&mut self, token: &mut Tracked<Caller>, span: usize) {
         proof {
             use_type_invariant(&*self);
             lemma_released_span_wf(self@, span as int);
@@ -1468,13 +1493,15 @@ impl SpanSource for Eager {
 /// release it and back it again. When the first back is granted the second is, and the source ends
 /// with the spans it started with. Whether the first back was granted is the kernel's to say.
 #[cfg(verus_keep_ghost)]
-pub fn witness_back_again(src: &mut Eager, token: &mut Tracked<()>, span: Ghost<int>, x: usize) -> (granted: bool)
+pub fn witness_back_again(src: &mut Eager, token: &mut Tracked<Caller>, span: Ghost<int>, x: usize) -> (granted: bool)
     requires
         old(src)@.wf(),
         old(src)@.runs_in(span@, x as int, 1),
         old(src)@.unbacked(span@, x as int, 1),
+        old(src).serves(old(token)@),
     ensures
         final(src)@.wf(),
+        final(src).serves(final(token)@),
         final(src)@.spans == old(src)@.spans,
 {
     let ghost start = src@;
