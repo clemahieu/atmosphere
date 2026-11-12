@@ -6021,7 +6021,6 @@ impl CapKernel {
 
     /// Every core acknowledges the flush epoch and every present IOMMU flushes, so every acknowledgement
     /// reaches the epoch; nothing else that a retype reads changes.
-    #[verifier::spinoff_prover]
     fn witness_acknowledge_all(&mut self)
         requires
             old(self).wf(),
@@ -6039,6 +6038,39 @@ impl CapKernel {
             final(self).table_pages == old(self).table_pages,
             final(self).mappings == old(self).mappings,
             final(self).iommus.present == old(self).iommus.present,
+    {
+        let ghost pre = *old(self);
+        self.witness_acknowledge_cores();
+        let ghost mid = *self;
+        self.witness_acknowledge_iommus();
+        proof {
+            assert forall|c: int| 0 <= c < NUM_CPUS implies pre.flush_epoch <= #[trigger] self.acked(c) by {
+                assert(mid.acked(c) == pre.flush_epoch);
+            }
+        }
+    }
+
+    /// Every core acknowledges the flush epoch; the IOMMUs are as they were, and nothing else that a
+    /// retype reads changes.
+    #[verifier::spinoff_prover]
+    fn witness_acknowledge_cores(&mut self)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] final(self).acked(c) == old(self).flush_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).blocks == old(self).blocks,
+            final(self).spaces == old(self).spaces,
+            final(self).devices == old(self).devices,
+            final(self).processes == old(self).processes,
+            final(self).table_pages == old(self).table_pages,
+            final(self).mappings == old(self).mappings,
+            final(self).iommus.present == old(self).iommus.present,
+            final(self).iommus == old(self).iommus,
     {
         hide(CapKernel::wf);
         let ghost pre = *old(self);
@@ -6075,7 +6107,32 @@ impl CapKernel {
             }
             c = c + 1;
         }
-        let ghost cores = self.cores;
+    }
+
+    /// Every present IOMMU flushes, so its acknowledgement reaches the flush epoch; the cores are as they
+    /// were, and nothing else that a retype reads changes.
+    #[verifier::spinoff_prover]
+    fn witness_acknowledge_iommus(&mut self)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            forall|j: int| 0 <= j < NUM_IOMMUS && #[trigger] final(self).iommu_present(j) ==> final(self).iommu_acked(j) == old(self).flush_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).blocks == old(self).blocks,
+            final(self).spaces == old(self).spaces,
+            final(self).devices == old(self).devices,
+            final(self).processes == old(self).processes,
+            final(self).table_pages == old(self).table_pages,
+            final(self).mappings == old(self).mappings,
+            final(self).iommus.present == old(self).iommus.present,
+            final(self).cores == old(self).cores,
+    {
+        hide(CapKernel::wf);
+        let ghost pre = *old(self);
         let mut i: usize = 0;
         while i < NUM_IOMMUS
             invariant
@@ -6092,8 +6149,7 @@ impl CapKernel {
                 self.table_pages == pre.table_pages,
                 self.mappings == pre.mappings,
                 self.iommus.present == pre.iommus.present,
-                self.cores == cores,
-                forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] self.acked(d) == pre.flush_epoch,
+                self.cores == pre.cores,
                 forall|j: int| 0 <= j < i && #[trigger] self.iommu_present(j) ==> self.iommu_acked(j) == pre.flush_epoch,
             decreases NUM_IOMMUS - i,
         {
@@ -6108,9 +6164,6 @@ impl CapKernel {
                 let tracked mut steps = Steps::fresh();
                 self.flush_iommu(i, Tracked(&mut steps));
                 proof {
-                    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) == pre.flush_epoch by {
-                        assert(before.acked(d) == pre.flush_epoch);
-                    }
                     assert forall|j: int| 0 <= j < i + 1 && #[trigger] self.iommu_present(j) implies self.iommu_acked(j) == pre.flush_epoch by {
                         if j != i {
                             assert(before.iommu_present(j));
