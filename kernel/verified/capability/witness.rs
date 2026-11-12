@@ -366,6 +366,41 @@ pub open spec fn witness_run(k: CapKernel, b: usize, lo: int, hi: int, first: Pa
     forall|j: int| lo <= j < hi ==> #[trigger] witness_block(k, cursor_block(b, j), first)
 }
 
+/// What the teardown of witness_dead_table_page_freed needs of the state map_large leaves, with the
+/// root's leaf at the 64th order-3 block past `big`, the level 3 table at the 65th and the level 2
+/// table at the 66th: the root and its untyped u, first, which still holds the leaf; the level 2 table
+/// live and unlinkable under u, its parent entry 0 of the level 3 table, its entry 0 naming the level 1
+/// table, its entry 1 the 2M frame at `big`, which a mapping record names, and every other entry
+/// empty; and no flush yet.
+pub open spec fn dead_table_ready(k: CapKernel, process: usize, u: usize, first: Payload, big: usize) -> bool {
+    let lb = (big + 64 * PROCESS_BYTES) as usize;
+    let c0 = (big + 65 * PROCESS_BYTES) as usize;
+    let c1 = (big + 66 * PROCESS_BYTES) as usize;
+    let a = tree_of(&k.table_pages, &k.spaces);
+    &&& k.wf()
+    &&& big % PROCESS_BYTES == 0
+    &&& big + 68 * PROCESS_BYTES <= NODE_SPACE
+    &&& (c1 / PAGE_SZ) as int == big / PAGE_SZ + PAGES_PER_2M + 16
+    &&& k.flush_epoch == 0
+    &&& k.tables.roots@.contains_key(process)
+    &&& k.root_live(process)
+    &&& k.tables.node_of(process, ROOT_UNTYPED_SLOT) == u
+    &&& k.is_cap(u) && k.payload_of(u) == first
+    &&& k.list.nodes@[lb as int].live && k.list.parent@[lb] == u
+    &&& k.can_unlink_table(process, ROOT_UNTYPED_SLOT, c1)
+    &&& !k.tables.owner@.contains_key(c1)
+    &&& u != c1 && u < NODE_SPACE
+    &&& k.tables.owner@.contains_key(page_of(lb))
+    &&& k.blocks.tracks((c1 / PAGE_SZ) as int)
+    &&& a.is_page(c1) && a.record(c1).level == 2
+    &&& a.record(c1).parent == Some(TableParent { table: c0, entry: 0 })
+    &&& a.names_child(c0, 0) && a.names_child(c1, 0)
+    &&& a.entry(c1, 1).perm.present && a.entry(c1, 1).perm.ps
+    &&& a.entry(c1, 1).addr == big
+    &&& forall|i: usize| 1 < i < ENTRIES ==> #[trigger] a.entry(c1, i).is_empty()
+    &&& k.mappings@.contains_key(mapping_node(c1, 1))
+}
+
 /// A free block stays free across a step that kept the regions and every page's kind outside lo up to
 /// hi, which the block lies outside.
 proof fn lemma_witness_block_kept(pre: CapKernel, post: CapKernel, b: usize, first: Payload, lo: int, hi: int)
@@ -5186,20 +5221,11 @@ impl CapKernel {
         self.retype_table_page(root, from, base, level, Tracked(&mut steps))
     }
 
-    /// From the state boot leaves, as the root at `process`, with the 68 order-3 blocks from the jb-th
-    /// past those boot's tables took from the first untyped free, the first 64 a 2M region at `big`, and
-    /// entry l4 of the root's level 4 table past the kernel's and under no page of the image: retype a
-    /// leaf into root entry 2 of the root's table at the 65th block, give the root's own space the level
-    /// 3, 2 and 1 tables of the first page under entry l4 at the last three blocks, through its process
-    /// capability, retype the region as a 2M frame into slot 1 of the leaf and map it at entry 1 of the
-    /// level 2 table, whose entry 0 names the level 1 table. Then retype the level 2 table's block under
-    /// the root's untyped until it is free: the first retype unlinks the page from its parent, the second
-    /// cuts its child, the third unlinks the mapping, the fourth waits, since nothing has acknowledged the
-    /// unlink's epoch, and after every core acknowledges and every present IOMMU flushes, the fifth frees
-    /// the block. A table page at the same block closes it. Every step succeeds. The use is a process
-    /// taking back the tables of a range it unmapped. See design/teardown-driven-by-retype/.
+    /// The setup of witness_dead_table_page_freed: from the state boot leaves, as its requires say, the
+    /// leaf at the 65th block, the path tables at the last three and the 2M frame at `big` mapped at entry 1
+    /// of the level 2 table. It leaves what dead_table_ready says the teardown needs.
     #[verifier::spinoff_prover]
-    pub fn witness_dead_table_page_freed(
+    fn witness_dead_table_page_setup(
         &mut self,
         root: Ghost<usize>,
         process: usize,
@@ -5214,7 +5240,7 @@ impl CapKernel {
         big: usize,
         jb: Ghost<int>,
         l4: usize,
-    ) -> (ret: (ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool, Ghost<(CapKernel, CapKernel, CapKernel, CapKernel, CapKernel, CapKernel)>))
+    ) -> (ret: bool)
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) <= jb@,
@@ -5224,25 +5250,16 @@ impl CapKernel {
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
             !image_l4(image@, l4),
         ensures
-            ret.0 is Unlinked,
-            ret.1 is Slice,
-            ret.2 is Slice,
-            ret.3 is Again,
-            ret.4 is Freed,
-            ret.5,
-            ({
-                let (s4, su, sc, sp, sa, s5) = ret.6@;
-                let c1 = (big + 66 * PROCESS_BYTES) as usize;
-                &&& s4.table_page_unlinked(su, process, ROOT_UNTYPED_SLOT, c1)
-                &&& su.table_children_cut(sc, process, ROOT_UNTYPED_SLOT, c1)
-                &&& sc.table_unmapped(sp, process, ROOT_UNTYPED_SLOT, c1)
-                &&& !sp.acknowledged(c1 / PAGE_SZ)
-                &&& sa.acknowledged(c1 / PAGE_SZ)
-                &&& sa.table_freed(s5, 0, process, ROOT_UNTYPED_SLOT, c1)
-            }),
-            final(self).wf(),
-            final(self).table_pages.maps@.contains_key((big + 66 * PROCESS_BYTES) as usize),
+            ret,
+            dead_table_ready(
+                *final(self),
+                process,
+                (leaf@ + ROOT_UNTYPED_SLOT) as usize,
+                page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]),
+                big,
+            ),
     {
+        hide(CapKernel::wf);
         hide(CapKernel::wf);
         let ghost s0 = *self;
         let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
@@ -5529,6 +5546,64 @@ impl CapKernel {
             assert(s4.flush_epoch == s0.flush_epoch);
             assert(s0.flush_epoch == 0);
             assert(s4.can_unlink_table(process, ROOT_UNTYPED_SLOT, c1));
+            // The level 2 table names only its child at entry 0 and the frame at entry 1.
+            assert forall|i: usize| 1 < i < ENTRIES implies #[trigger] a4.entry(c1, i).is_empty() by {
+                assert(a4.entry(c1, i) == a3.entry(c1, i));
+                assert(a2.entry(c1, i).is_empty());
+            }
+            assert(s4.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(dead_table_ready(s4, process, u, first, big));
+        }
+        ok1 && ok2 && ok4
+    }
+
+    /// The teardown of witness_dead_table_page_freed, from what dead_table_ready says of the state map_large
+    /// left: retype the level 2 table's block at c1 under the root's untyped until it is free, five
+    /// times, as that witness says, and close on a table page at the same block.
+    #[verifier::spinoff_prover]
+    fn witness_dead_table_page_teardown(
+        &mut self,
+        process: usize,
+        c1: usize,
+        u: Ghost<usize>,
+        first: Ghost<Payload>,
+        big: Ghost<usize>,
+    ) -> (ret: (ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool, Ghost<(CapKernel, CapKernel, CapKernel, CapKernel, CapKernel)>))
+        requires
+            dead_table_ready(*old(self), process, u@, first@, big@),
+            c1 == big@ + 66 * PROCESS_BYTES,
+        ensures
+            ret.0 is Unlinked,
+            ret.1 is Slice,
+            ret.2 is Slice,
+            ret.3 is Again,
+            ret.4 is Freed,
+            ret.5,
+            ({
+                let (su, sc, sp, sa, s5) = ret.6@;
+                &&& old(self).table_page_unlinked(su, process, ROOT_UNTYPED_SLOT, c1)
+                &&& su.table_children_cut(sc, process, ROOT_UNTYPED_SLOT, c1)
+                &&& sc.table_unmapped(sp, process, ROOT_UNTYPED_SLOT, c1)
+                &&& !sp.acknowledged(c1 / PAGE_SZ)
+                &&& sa.acknowledged(c1 / PAGE_SZ)
+                &&& sa.table_freed(s5, 0, process, ROOT_UNTYPED_SLOT, c1)
+            }),
+            final(self).wf(),
+            final(self).table_pages.maps@.contains_key(c1),
+    {
+        hide(CapKernel::wf);
+        let ghost s4 = *self;
+        let ghost a4 = tree_of(&s4.table_pages, &s4.spaces);
+        let ghost u = u@;
+        let ghost first = first@;
+        let ghost big = big@;
+        let ghost lb = (big + 64 * PROCESS_BYTES) as usize;
+        let ghost c0 = (big + 65 * PROCESS_BYTES) as usize;
+        let ghost p = (c1 / PAGE_SZ) as int;
+        let ghost mn = mapping_node(c1, 1);
+        proof {
+            lemma2_to64();
+            assert(mn == c1 + 2);
         }
 
         // The first retype of the table's block unlinks it from its parent.
@@ -5573,7 +5648,7 @@ impl CapKernel {
                 assert(au.entry(c1, m.entry).perm.present && au.entry(c1, m.entry).perm.ps);
                 if m.entry != 1 {
                     if m.entry != 0 {
-                        assert(a3.entry(c1, m.entry).is_empty());
+                        assert(a4.entry(c1, m.entry).is_empty());
                     }
                     assert(false);
                 }
@@ -5594,7 +5669,7 @@ impl CapKernel {
                 assert forall|i: usize| ca.contains(i) implies set![0usize].contains(i) by {
                     lemma_child_entries(au, c1, i);
                     if i != 0 && i != 1 {
-                        assert(a3.entry(c1, i).is_empty());
+                        assert(a4.entry(c1, i).is_empty());
                     }
                 }
             }
@@ -5696,6 +5771,11 @@ impl CapKernel {
             assert(sp.root_live(process));
             assert(sp.tables.roots@.contains_key(process));
             // The page's word is the unlink's, which nothing has acknowledged.
+            assert(ac.entry(c1, 1) == a4.entry(c1, 1));
+            assert(sc.mappings@[mn].frame * PAGE_SZ == big);
+            assert(sc.mappings@[mn].frame == big / PAGE_SZ);
+            assert(sc.mappings@[mn].large);
+            assert(entry_pages(map_level(true)) == PAGES_PER_2M);
             assert(!record_pages(sc.mappings@[mn]).contains(p as usize));
             assert(sp.stale_epoch.pages@[p] == e);
             assert(sp.cores == su.cores);
@@ -5767,7 +5847,74 @@ impl CapKernel {
 
         // A table page at the same block.
         let ok5 = self.witness_table_page(process, ROOT_UNTYPED_SLOT, c1, 2);
-        (r1, r2, r3, r4, r5, ok1 && ok2 && ok4 && ok5, Ghost((s4, su, sc, sp, sa, s5)))
+        (r1, r2, r3, r4, r5, ok5, Ghost((su, sc, sp, sa, s5)))
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the 68 order-3 blocks from the jb-th
+    /// past those boot's tables took from the first untyped free, the first 64 a 2M region at `big`, and
+    /// entry l4 of the root's level 4 table past the kernel's and under no page of the image: retype a
+    /// leaf into root entry 2 of the root's table at the 65th block, give the root's own space the level
+    /// 3, 2 and 1 tables of the first page under entry l4 at the last three blocks, through its process
+    /// capability, retype the region as a 2M frame into slot 1 of the leaf and map it at entry 1 of the
+    /// level 2 table, whose entry 0 names the level 1 table. Then retype the level 2 table's block under
+    /// the root's untyped until it is free: the first retype unlinks the page from its parent, the second
+    /// cuts its child, the third unlinks the mapping, the fourth waits, since nothing has acknowledged the
+    /// unlink's epoch, and after every core acknowledges and every present IOMMU flushes, the fifth frees
+    /// the block. A table page at the same block closes it. Every step succeeds. The use is a process
+    /// taking back the tables of a range it unmapped. See design/teardown-driven-by-retype/.
+    #[verifier::spinoff_prover]
+    pub fn witness_dead_table_page_freed(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        big: usize,
+        jb: Ghost<int>,
+        l4: usize,
+    ) -> (ret: (ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool, Ghost<(CapKernel, CapKernel, CapKernel, CapKernel, CapKernel, CapKernel)>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) <= jb@,
+            jb@ + 68 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            big == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, jb@),
+            big as int % block_bytes(9) == 0,
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
+            !image_l4(image@, l4),
+        ensures
+            ret.0 is Unlinked,
+            ret.1 is Slice,
+            ret.2 is Slice,
+            ret.3 is Again,
+            ret.4 is Freed,
+            ret.5,
+            ({
+                let (s4, su, sc, sp, sa, s5) = ret.6@;
+                let c1 = (big + 66 * PROCESS_BYTES) as usize;
+                &&& s4.table_page_unlinked(su, process, ROOT_UNTYPED_SLOT, c1)
+                &&& su.table_children_cut(sc, process, ROOT_UNTYPED_SLOT, c1)
+                &&& sc.table_unmapped(sp, process, ROOT_UNTYPED_SLOT, c1)
+                &&& !sp.acknowledged(c1 / PAGE_SZ)
+                &&& sa.acknowledged(c1 / PAGE_SZ)
+                &&& sa.table_freed(s5, 0, process, ROOT_UNTYPED_SLOT, c1)
+            }),
+            final(self).wf(),
+            final(self).table_pages.maps@.contains_key((big + 66 * PROCESS_BYTES) as usize),
+    {
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
+        let ok = self.witness_dead_table_page_setup(root, process, leaf, frames, t, free, image, untyped, frame, present, big, jb, l4);
+        let ghost s4 = *self;
+        let c1 = big + 66 * PROCESS_BYTES;
+        let (r1, r2, r3, r4, r5, ok5, states) = self.witness_dead_table_page_teardown(process, c1, Ghost(u), Ghost(first), Ghost(big));
+        let ghost (su, sc, sp, sa, s5) = states@;
+        (r1, r2, r3, r4, r5, ok && ok5, Ghost((s4, su, sc, sp, sa, s5)))
     }
 }
 
