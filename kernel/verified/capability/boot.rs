@@ -1502,7 +1502,7 @@ impl CapKernel {
         assert(b.names[child] == base && b.pages[child] == pow2(order as nat));
     }
 
-    /// The root process's space is the first there is, and a process's: no space is a device space.
+    /// The root process's space is the first there is, and a process's: every space is a process's.
     proof fn lemma_boot_no_device(pre: Self, post: Self, base: usize)
         requires
             pre.spaces.roots@ == Map::<usize, PointsTo<PageMap>>::empty(),
@@ -1512,7 +1512,7 @@ impl CapKernel {
             no_device_space(&post.spaces),
     {
         assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s)
-            implies !(post.spaces.records@[s].value().kind is Device) by {
+            implies post.spaces.records@[s].value().kind is Process by {
             assert(s == base);
         }
     }

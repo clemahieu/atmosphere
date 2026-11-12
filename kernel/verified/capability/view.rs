@@ -99,10 +99,11 @@ pub proof fn lemma_bound_threads_live(list: &Tree, tables: &Tables)
     assert(bound_threads(list, tables) =~= bound_threads(list, tables).restrict(live_nodes(list)));
 }
 
-/// Space s is a device space.
+/// Space s is a space of its own, a device space or a nested table, rather than a process's: whoever
+/// holds a capability to it sees what it maps.
 pub open spec fn is_device(tree: TableTree, s: usize) -> bool {
     &&& tree.is_root(s)
-    &&& tree.space_records[s].value().kind is Device
+    &&& !(tree.space_records[s].value().kind is Process)
 }
 
 /// Device space s maps page o: a walk of s's tables finds it.
@@ -389,9 +390,9 @@ pub proof fn lemma_mapped_same_shares(a: TableTree, b: TableTree, s: usize)
     lemma_same_mapping_same_shares(a, b);
 }
 
-/// No space is a device space, as while boot builds the root, which makes none.
+/// Every space is a process space, as while boot builds the root, which makes no other.
 pub open spec fn no_device_space(spaces: &Spaces) -> bool {
-    forall|s: usize| #[trigger] spaces.roots@.contains_key(s) ==> !(spaces.records@[s].value().kind is Device)
+    forall|s: usize| #[trigger] spaces.roots@.contains_key(s) ==> spaces.records@[s].value().kind is Process
 }
 
 /// Each bound device with the device space its record names: the holder of the device sees the space.

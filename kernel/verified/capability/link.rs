@@ -1026,7 +1026,7 @@ impl CapKernel {
             writes_space(self.payload_of(n)),
         ensures
             self.spaces.roots@.contains_key(self.payload_of(n).base),
-            self.payload_of(n).kind is Space ==> self.spaces.records@[self.payload_of(n).base].value().kind is Device,
+            self.payload_of(n).kind is Space ==> !(self.spaces.records@[self.payload_of(n).base].value().kind is Process),
             self.payload_of(n).kind is Process ==> self.spaces.records@[self.payload_of(n).base].value().kind is Process,
     {
         if self.payload_of(n).kind is Space {
@@ -1355,7 +1355,7 @@ impl CapKernel {
         }
         match self.space_kind(t) {
             SpaceKind::Process => true,
-            SpaceKind::Device => false,
+            SpaceKind::Device | SpaceKind::Nested => false,
         }
     }
 

@@ -783,7 +783,7 @@ impl CapKernel {
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
                 ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_spent(base) ==> ret is Again || ret is Freed,
-            old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Device && ret is Slice
+            old(self).spaces.roots@.contains_key(base) && !(old(self).spaces.records@[base].value().kind is Process) && ret is Slice
                 ==> old(self).space_children_cut(*final(self), root, from, base),
             // A process with a reference, such as one a core's current thread is bound to, is refused. So is
             // one a core still depends on, as one that may hold a translation of it does, unless a retire
@@ -810,7 +810,7 @@ impl CapKernel {
                 ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
             old(self).processes.records@.contains_key(base) && ret is Freed
                 ==> old(self).process_freed(*final(self), c, root, from, base),
-            old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Device && ret is Freed
+            old(self).spaces.roots@.contains_key(base) && !(old(self).spaces.records@[base].value().kind is Process) && ret is Freed
                 ==> old(self).space_freed(*final(self), c, root, from, base),
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
@@ -2621,7 +2621,7 @@ impl CapKernel {
         Self::lemma_node_block_list_pages(pre, post, base);
         assert(order_pages(3) == 8);
         Self::lemma_table_freed_table_pages(pre, post, base);
-        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Device
+        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && !(pre.spaces.records@[s].value().kind is Process)
             && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
             assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
@@ -3038,7 +3038,7 @@ impl CapKernel {
         ensures
             forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
                 ==> post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)),
-            forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
+            forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process)
                 && k < TABLE_NODE_PAGES ==> post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)),
     {
         assert forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
@@ -3047,7 +3047,7 @@ impl CapKernel {
             assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
             lemma_node_pages_disjoint(t, base, k);
         }
-        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
+        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process)
             && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(post.spaces.records@[s] == pre.spaces.records@[s]);
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
@@ -4240,7 +4240,7 @@ impl CapKernel {
     /// goes with its process.
     pub open spec fn dead_io_space(&self, base: usize) -> bool {
         &&& self.spaces.roots@.contains_key(base)
-        &&& self.spaces.records@[base].value().kind is Device
+        &&& !(self.spaces.records@[base].value().kind is Process)
         &&& self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0
     }
 
@@ -4319,7 +4319,7 @@ impl CapKernel {
             self.blocks.tracks_addr(base),
         ensures
             space_block(&self.blocks, base / PAGE_SZ)
-                == (self.spaces.roots@.contains_key(base) && self.spaces.records@[base].value().kind is Device),
+                == (self.spaces.roots@.contains_key(base) && !(self.spaces.records@[base].value().kind is Process)),
             self.spaces.roots@.contains_key(base) ==> !self.table_pages.maps@.contains_key(base),
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).parent is None,
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).level == 4,

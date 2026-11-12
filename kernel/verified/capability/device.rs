@@ -25,7 +25,7 @@ use crate::capability::refs::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::revoke::UNLINK_ARM_STEPS;
 use crate::capability::steps::Steps;
-#[cfg(verus_keep_ghost)]
+use crate::capability::map::same_kind;
 use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
@@ -1234,7 +1234,7 @@ impl CapKernel {
             forall|u: usize, k: usize| #![trigger table_node_page(u, k)]
                 self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES ==> table_node_page(u, k) != self.devices.page,
             forall|s: usize, k: usize| #![trigger table_node_page(s, k)]
-                self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+                self.spaces.roots@.contains_key(s) && !(self.spaces.records@[s].value().kind is Process) && k < TABLE_NODE_PAGES
                 ==> table_node_page(s, k) != self.devices.page,
     {
         reveal(devices_wf);
@@ -1257,7 +1257,7 @@ impl CapKernel {
             }
         }
         assert forall|s: usize, k: usize| #![trigger table_node_page(s, k)]
-            self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+            self.spaces.roots@.contains_key(s) && !(self.spaces.records@[s].value().kind is Process) && k < TABLE_NODE_PAGES
             implies table_node_page(s, k) != p by {
             if table_node_page(s, k) == p {
                 self.lemma_space_node_in_block(s, k, 0);
@@ -1294,7 +1294,7 @@ impl CapKernel {
                 self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
                 ==> table_node(u, k, i) != binding_node(&self.devices, d),
             forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-                self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device
+                self.spaces.roots@.contains_key(s) && !(self.spaces.records@[s].value().kind is Process)
                     && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
                 ==> table_node(s, k, i) != binding_node(&self.devices, d),
     {
@@ -1325,7 +1325,7 @@ impl CapKernel {
             }
         }
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device
+            self.spaces.roots@.contains_key(s) && !(self.spaces.records@[s].value().kind is Process)
                 && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
             implies table_node(s, k, i) != x by {
             self.lemma_space_node_in_block(s, k, i);
@@ -1378,6 +1378,7 @@ impl CapKernel {
         &&& self.is_cap(m)
         &&& self.payload_of(m).kind is Space
         &&& self.list.nodes@[m as int].depth < MAX_DEPTH
+        &&& self.spaces.records@[self.payload_of(m).base].value().kind is Device
         &&& block_refs(&self.blocks, BlockRef::Small(self.payload_of(m).base / PAGE_SZ)) != usize::MAX
         &&& r.space is None
         &&& self.iommu_present(r.iommu as int)
@@ -1502,7 +1503,7 @@ impl CapKernel {
             assert(table_node(u, k, i) != x);
         }
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+            post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process) && k < TABLE_NODE_PAGES
                 && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             pre.lemma_space_node_in_block(s, k, i);
@@ -1529,6 +1530,7 @@ impl CapKernel {
             pre.wf(),
             pre.is_cap(m),
             pre.payload_of(m).kind is Space,
+            pre.spaces.records@[pre.payload_of(m).base].value().kind is Device,
             block_refs(&pre.blocks, BlockRef::Small(pre.payload_of(m).base / PAGE_SZ)) != usize::MAX,
             Self::device_bound(pre, post, m, d),
         ensures
@@ -1724,6 +1726,7 @@ impl CapKernel {
             pre.wf(),
             pre.is_cap(m),
             pre.payload_of(m).kind is Space,
+            pre.spaces.records@[pre.payload_of(m).base].value().kind is Device,
             block_refs(&pre.blocks, BlockRef::Small(pre.payload_of(m).base / PAGE_SZ)) != usize::MAX,
             pre.iommu_present(pre.devices.records@[d].iommu as int),
             pre.devices.records@[d].unbound <= pre.iommu_acked(pre.devices.records@[d].iommu as int),
@@ -1854,6 +1857,9 @@ impl CapKernel {
             pre.lemma_space_cap(m);
         }
         let s = space.base;
+        if !same_kind(self.space_kind(s), SpaceKind::Device) {
+            return false;
+        }
         if self.blocks.pages.get(s / PAGE_SZ).refs == usize::MAX {
             return false;
         }

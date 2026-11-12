@@ -1152,7 +1152,7 @@ pub open spec fn table_nodes_are_mappings(list: &Tree, pages: &TablePages) -> bo
 /// and a root maps no frame. A process space has no node pages.
 pub open spec fn space_nodes_dead(list: &Tree, spaces: &Spaces) -> bool {
     forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-        spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+        spaces.roots@.contains_key(s) && !(spaces.records@[s].value().kind is Process) && k < TABLE_NODE_PAGES
             && i < NODES_PER_PAGE
             ==> !list.nodes@[table_node(s, k, i) as int].live
 }
@@ -2576,7 +2576,7 @@ impl CapKernel {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
         }
         lemma_table_pages_small_freed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, base);
-        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Device
+        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && !(pre.spaces.records@[s].value().kind is Process)
             && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
         }

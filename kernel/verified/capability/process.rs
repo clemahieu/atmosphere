@@ -957,7 +957,7 @@ impl CapKernel {
                 assert(sb.loaded@[s] == sa.loaded@[s]);
                 assert(sb.holders@[s] == sa.holders@[s]);
                 assert(sb.bound@[s] == sa.bound@[s]);
-                if sa.records@[s].value().kind is Device {
+                if !(sa.records@[s].value().kind is Process) {
                     assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
                         assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
                     }

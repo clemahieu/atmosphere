@@ -801,7 +801,7 @@ impl CapKernel {
         }
         assert(same_table_nodes(&pre.list, &post.list, &pre.table_pages));
         lemma_table_pages_small_freed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, page);
-        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
+        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process)
             && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(pre.spaces.roots@.contains_key(s));
             assert(post.spaces.records@[s] == pre.spaces.records@[s]);

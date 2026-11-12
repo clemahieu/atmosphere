@@ -67,12 +67,15 @@ pub struct TablePages {
     pub spare: Tracked<Map<usize, PagePerm4k>>,
 }
 
-/// A space's kind, named for what walks its table: a process's threads on a core, or a device through its
-/// IOMMU.
+/// A space's kind, named for what walks its table: a process's threads on a core, a device through its
+/// IOMMU, or a guest's vCPU through nested paging. A device space and a nested table are each a block of
+/// their own that capabilities to the space hold, with no kernel slots; only a device space has devices
+/// bound. See design/vmm-over-svm/.
 #[derive(Clone, Copy)]
 pub enum SpaceKind {
     Process,
     Device,
+    Nested,
 }
 
 /// The table and entry that point at a table.
@@ -229,10 +232,10 @@ pub open spec fn space_block(blocks: &BlockTable, b: usize) -> bool {
 }
 
 /// The space at s has its record, the root table its record points at and its list of cores. A device
-/// space is a block of its own with node pages, whose references are exactly its holders and the
-/// devices bound to it, and it is dead exactly when they are all gone. A process space lies in its
-/// process's block, which its process capabilities hold, so no space capability names it and no device
-/// is bound to it.
+/// space or a nested table is a block of its own with node pages, whose references are exactly its
+/// holders and the devices bound to it, and it is dead exactly when they are all gone; no core loads it.
+/// Only a device space has devices bound. A process space lies in its process's block, which its process
+/// capabilities hold, so no space capability names it.
 pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: usize) -> bool {
     &&& s % TABLE_PAGE_BYTES == 0
     &&& blocks.tracks_addr(s)
@@ -247,21 +250,21 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& spaces.loaded@.contains_key(s)
     &&& spaces.loaded@[s].addr() == s + SPACE_CORES_PAGE * PAGE_SZ
     &&& spaces.loaded@[s].is_init()
-    &&& spaces.records@[s].value().kind is Device ==> spaces.loaded@[s].value().list == 0u32
+    &&& !(spaces.records@[s].value().kind is Process) ==> spaces.loaded@[s].value().list == 0u32
     &&& blocks.pages@[(s / PAGE_SZ) as int].kind is Base
-    &&& spaces.records@[s].value().kind is Device ==> blocks.pages@[(s / PAGE_SZ) as int].object is Space
+    &&& !(spaces.records@[s].value().kind is Process) ==> blocks.pages@[(s / PAGE_SZ) as int].object is Space
     &&& spaces.records@[s].value().kind is Process ==> blocks.pages@[(s / PAGE_SZ) as int].object is Process
     &&& blocks.pages@[(s / PAGE_SZ) as int].order == 3
-    &&& spaces.records@[s].value().kind is Device
+    &&& !(spaces.records@[s].value().kind is Process)
         ==> forall|k: usize| k < TABLE_NODE_PAGES ==> list.pages@.dom().contains(#[trigger] table_node_page(s, k))
     &&& spaces.holders@.contains_key(s)
     &&& kernel_slots_wf(spaces, s)
     &&& spaces.bound@.contains_key(s)
-    &&& spaces.records@[s].value().kind is Process ==> spaces.bound@[s] == Set::<usize>::empty()
+    &&& !(spaces.records@[s].value().kind is Device) ==> spaces.bound@[s] == Set::<usize>::empty()
     &&& spaces.records@[s].value().kind is Process ==> spaces.holders@[s] == Set::<usize>::empty()
-    &&& spaces.records@[s].value().kind is Device
+    &&& !(spaces.records@[s].value().kind is Process)
         ==> spaces.holders@[s].len() + spaces.bound@[s].len() == blocks.pages@[(s / PAGE_SZ) as int].refs
-    &&& spaces.records@[s].value().kind is Device
+    &&& !(spaces.records@[s].value().kind is Process)
         ==> (blocks.pages@[(s / PAGE_SZ) as int].refs == 0) == blocks.pages@[(s / PAGE_SZ) as int].dead
 }
 
@@ -286,11 +289,11 @@ pub open spec fn root_record_wf(spaces: &Spaces, s: usize) -> bool {
 }
 
 /// A process root holds the kernel's entries in the kernel slots, so the kernel stays mapped on entry
-/// from user mode. The same entries of a device root are empty or name a child table.
+/// from user mode. The same entries of a device root or a nested root are empty or name a child table.
 pub open spec fn kernel_slots_wf(spaces: &Spaces, s: usize) -> bool {
     forall|i: usize| #![trigger spaces.roots@[s].value()[i]] i < KERNEL_MEM_END_L4INDEX ==> match spaces.records@[s].value().kind {
         SpaceKind::Process => spaces.roots@[s].value()[i] == usize2page_entry(spaces.kernel_entries@[i as int], 4),
-        SpaceKind::Device => spaces.roots@[s].value()[i].is_empty()
+        SpaceKind::Device | SpaceKind::Nested => spaces.roots@[s].value()[i].is_empty()
             || (spaces.roots@[s].value()[i].perm.present && !spaces.roots@[s].value()[i].perm.ps),
     }
 }
@@ -353,7 +356,7 @@ pub proof fn lemma_spaces_same_caps(
 {
     assert forall|s: usize| #[trigger] spaces.roots@.contains_key(s) implies space_wf(list_b, spaces, blocks, s) by {
         assert(space_wf(list_a, spaces, blocks, s));
-        if spaces.records@[s].value().kind is Device {
+        if !(spaces.records@[s].value().kind is Process) {
             assert forall|k: usize| k < TABLE_NODE_PAGES implies list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
                 assert(list_a.pages@.dom().contains(table_node_page(s, k)));
             }
@@ -419,7 +422,7 @@ pub proof fn lemma_spaces_refs_changed(
     lemma_spaces_same_caps(list_a, tables_a, list_b, tables_b, spaces, a);
     assert forall|s: usize| #[trigger] spaces.roots@.contains_key(s) implies space_wf(list_b, spaces, b, s) by {
         assert(space_wf(list_b, spaces, a, s));
-        if spaces.records@[s].value().kind is Device {
+        if !(spaces.records@[s].value().kind is Process) {
             let x = BlockRef::Small(s / PAGE_SZ);
             assert(block_typed(a, x));
             assert(x != br);
@@ -496,7 +499,7 @@ pub proof fn lemma_spaces_small_freed(
         forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
             if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
         same_spaces(list_a, tables_a, list_b, tables_b),
-        forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Device
+        forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && !(spaces.records@[s].value().kind is Process)
             && k < TABLE_NODE_PAGES ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
     ensures
         spaces_wf(list_b, tables_b, spaces, b),
@@ -504,7 +507,7 @@ pub proof fn lemma_spaces_small_freed(
     lemma_process_spaces_outside_block(list_a, tables_a, spaces, a, base);
     assert forall|s: usize| #[trigger] spaces.roots@.contains_key(s) implies space_wf(list_b, spaces, b, s) by {
         assert(space_wf(list_a, spaces, a, s));
-        if spaces.records@[s].value().kind is Device {
+        if !(spaces.records@[s].value().kind is Process) {
             assert(list_b.pages@.dom().contains(table_node_page(s, 0)));
             assert(table_node_page(s, 0) == s);
         }
@@ -575,10 +578,10 @@ pub proof fn lemma_space_node_pages_kept(
         !(blocks.pages@[(base / PAGE_SZ) as int].object is Space),
         list_b.pages@.dom() == list_a.pages@.dom().remove(base),
     ensures
-        forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Device
+        forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && !(spaces.records@[s].value().kind is Process)
             && k < TABLE_NODE_PAGES ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
 {
-    assert forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Device
+    assert forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && !(spaces.records@[s].value().kind is Process)
         && k < TABLE_NODE_PAGES implies list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
         assert(space_wf(list_a, spaces, blocks, s));
         let p = table_node_page(s, k);
@@ -1113,7 +1116,7 @@ pub proof fn lemma_spaces_space_freed(
         a.tracks_addr(base),
         a.pages@[(base / PAGE_SZ) as int].kind is Base,
         a.pages@[(base / PAGE_SZ) as int].object is Space || a.pages@[(base / PAGE_SZ) as int].object is Process,
-        forall|s: usize, k: usize| #[trigger] sb.roots@.contains_key(s) && sb.records@[s].value().kind is Device
+        forall|s: usize, k: usize| #[trigger] sb.roots@.contains_key(s) && !(sb.records@[s].value().kind is Process)
             && k < TABLE_NODE_PAGES ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
     ensures
         spaces_wf(list_b, tables_b, sb, b),
@@ -1468,7 +1471,7 @@ impl CapKernel {
         ensures
             self.spaces.roots@.contains_key(self.payload_of(n).base),
             self.spaces.holders@[self.payload_of(n).base].contains(n),
-            self.spaces.records@[self.payload_of(n).base].value().kind is Device,
+            !(self.spaces.records@[self.payload_of(n).base].value().kind is Process),
             self.payload_of(n).base % TABLE_PAGE_BYTES == 0,
             self.blocks.tracks_addr(self.payload_of(n).base),
             self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object is Space,
@@ -1480,7 +1483,7 @@ impl CapKernel {
         let s = self.payload_of(n).base;
         assert(self.tables.is_cap(&self.list, n));
         assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
-        assert(self.spaces.records@[s].value().kind is Device) by {
+        assert(!(self.spaces.records@[s].value().kind is Process)) by {
             if self.spaces.records@[s].value().kind is Process {
                 assert(self.spaces.holders@[s].contains(n));
             }
@@ -1534,7 +1537,7 @@ impl CapKernel {
             post.payload_of(n).base == s,
             post.payload_of(n).order == 3,
             pre.spaces.roots@.contains_key(s),
-            pre.spaces.records@[s].value().kind is Device,
+            !(pre.spaces.records@[s].value().kind is Process),
             block_refs(&pre.blocks, BlockRef::Small(s / PAGE_SZ)) < usize::MAX,
             !block_dead(&pre.blocks, BlockRef::Small(s / PAGE_SZ)),
             blocks_refs_changed(
@@ -1567,14 +1570,14 @@ impl CapKernel {
         assert forall|t: usize| #[trigger] post.spaces.roots@.contains_key(t)
             implies space_wf(&post.list, &post.spaces, b, t) by {
             assert(space_wf(&pre.list, &pre.spaces, a, t));
-            if pre.spaces.records@[t].value().kind is Device {
+            if !(pre.spaces.records@[t].value().kind is Process) {
                 assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
                     assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
                 }
             }
             if t != s {
                 assert(hb[t] == ha[t]);
-                if pre.spaces.records@[t].value().kind is Device {
+                if !(pre.spaces.records@[t].value().kind is Process) {
                     lemma_table_pages_distinct(t, s);
                     let x = BlockRef::Small(t / PAGE_SZ);
                     assert(block_typed(a, x));
@@ -1652,14 +1655,14 @@ impl CapKernel {
         assert forall|t: usize| #[trigger] post.spaces.roots@.contains_key(t)
             implies space_wf(&post.list, &post.spaces, b, t) by {
             assert(space_wf(&pre.list, &pre.spaces, a, t));
-            if pre.spaces.records@[t].value().kind is Device {
+            if !(pre.spaces.records@[t].value().kind is Process) {
                 assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
                     assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
                 }
             }
             if t != s {
                 assert(hb[t] == ha[t]);
-                if pre.spaces.records@[t].value().kind is Device {
+                if !(pre.spaces.records@[t].value().kind is Process) {
                     lemma_table_pages_distinct(t, s);
                     let x = BlockRef::Small(t / PAGE_SZ);
                     assert(block_typed(a, x));
@@ -1733,14 +1736,14 @@ impl CapKernel {
         assert forall|t: usize| #[trigger] post.spaces.roots@.contains_key(t)
             implies space_wf(&post.list, &post.spaces, b, t) by {
             assert(space_wf(&pre.list, &pre.spaces, a, t));
-            if pre.spaces.records@[t].value().kind is Device {
+            if !(pre.spaces.records@[t].value().kind is Process) {
                 assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
                     assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
                 }
             }
             if t != s {
                 assert(bb[t] == ba[t]);
-                if pre.spaces.records@[t].value().kind is Device {
+                if !(pre.spaces.records@[t].value().kind is Process) {
                     lemma_table_pages_distinct(t, s);
                     let x = BlockRef::Small(t / PAGE_SZ);
                     assert(block_typed(a, x));
@@ -1813,14 +1816,14 @@ impl CapKernel {
         assert forall|t: usize| #[trigger] post.spaces.roots@.contains_key(t)
             implies space_wf(&post.list, &post.spaces, b, t) by {
             assert(space_wf(&pre.list, &pre.spaces, a, t));
-            if pre.spaces.records@[t].value().kind is Device {
+            if !(pre.spaces.records@[t].value().kind is Process) {
                 assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
                     assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
                 }
             }
             if t != s {
                 assert(bb[t] == ba[t]);
-                if pre.spaces.records@[t].value().kind is Device {
+                if !(pre.spaces.records@[t].value().kind is Process) {
                     lemma_table_pages_distinct(t, s);
                     let x = BlockRef::Small(t / PAGE_SZ);
                     assert(block_typed(a, x));
@@ -3156,7 +3159,7 @@ impl CapKernel {
             space_nodes_dead(&post.list, &post.spaces),
     {
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+            post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process) && k < TABLE_NODE_PAGES
                 && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             let x = table_node(s, k, i);
@@ -3199,7 +3202,7 @@ impl CapKernel {
             post.spaces.records@[base].addr() == base + SPACE_RECORD_PAGE * PAGE_SZ,
             post.spaces.records@[base].is_init(),
             post.spaces.records@[base].value().root == base + SPACE_ROOT_PAGE * PAGE_SZ,
-            post.spaces.records@[base].value().kind is Device,
+            !(post.spaces.records@[base].value().kind is Process),
             post.spaces.loaded@ == pre.spaces.loaded@.insert(base, post.spaces.loaded@[base]),
             post.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * PAGE_SZ,
             post.spaces.loaded@[base].is_init(),
@@ -3251,7 +3254,7 @@ impl CapKernel {
                 assert(sb.records@[s] == sa.records@[s]);
                 assert(sb.loaded@[s] == sa.loaded@[s]);
                 assert(sb.holders@[s] == sa.holders@[s]);
-                if sa.records@[s].value().kind is Device {
+                if !(sa.records@[s].value().kind is Process) {
                     assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
                         assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
                     }
@@ -3394,11 +3397,13 @@ impl CapKernel {
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, b);
     }
 
-    /// Retypes the free block at `base` as a device space, under the untyped at index `from` of the table at
-    /// `root`, with its capability at the empty index `to`. All of these come from user space, and a
-    /// refusal changes nothing. A process's space is part of its process: see retype_process.
-    pub fn retype_space(&mut self, root: usize, from: usize, to: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    /// Retypes the free block at `base` as a space of `kind`, a device space or a nested table, under the
+    /// untyped at index `from` of the table at `root`, with its capability at the empty index `to`. All of
+    /// these come from user space, and a refusal changes nothing. A process's space is part of its process:
+    /// see retype_process.
+    pub fn retype_space(&mut self, root: usize, from: usize, to: usize, base: usize, kind: SpaceKind, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
+            !(kind is Process),
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
@@ -3430,7 +3435,7 @@ impl CapKernel {
                 &&& forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
                     ==> final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
                 &&& final(self).spaces.roots@.contains_key(base)
-                &&& final(self).spaces.records@[base].value().kind is Device
+                &&& final(self).spaces.records@[base].value().kind == kind
                 &&& final(self).spaces.records@[base].value().table == fresh_root(base)
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base)
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c, base)
@@ -3531,7 +3536,7 @@ impl CapKernel {
         let pptr = PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * PAGE_SZ);
         pptr.put(
             Tracked(&mut typed),
-            SpaceRecord { kind: SpaceKind::Device, root: root_table, table: TableRecord { level: 4, space: Some(base), parent: None, written: false } },
+            SpaceRecord { kind, root: root_table, table: TableRecord { level: 4, space: Some(base), parent: None, written: false } },
         );
         proof {
             self.spaces.roots.borrow_mut().tracked_insert(base, map);

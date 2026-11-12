@@ -3,14 +3,21 @@
 //! A guest-physical page: the address a guest's nested table translates. A guest-physical address reaches
 //! a nested table only as a GuestPhysRange, which only GuestPhysRange::new makes, so no other kind of
 //! address, a device's included, passes for one. A nested table has four levels and no kernel slots, so
-//! every address its four levels translate is a guest-physical address. See design/vmm-over-svm/ and
+//! every address its four levels translate is a guest-physical address. A nested table maps a frame by the
+//! map operation's rules, keyed by its kind, as a device space does. See design/vmm-over-svm/ and
 //! design/address-spaces-as-objects/.
 use vstd::prelude::*;
 
 verus! {
 
+use super::kernel::*;
 #[cfg(verus_keep_ghost)]
 use super::mapping::*;
+#[cfg(verus_keep_ghost)]
+use super::reach::*;
+use super::space::*;
+#[cfg(verus_keep_ghost)]
+use super::view::*;
 use crate::define::*;
 
 /// The first address past those a nested table's four levels translate.
@@ -83,6 +90,54 @@ impl GuestPhysRange {
     {
         let l1 = if self.large { 0 } else { (self.base >> L1_SHIFT) & INDEX_MASK };
         ((self.base >> L4_SHIFT) & INDEX_MASK, (self.base >> L3_SHIFT) & INDEX_MASK, (self.base >> L2_SHIFT) & INDEX_MASK, l1)
+    }
+}
+
+impl CapKernel {
+    /// The refusals of a nested map: those of a map, or of a large map for a large range, at the range's
+    /// path, in a space that must be a nested table.
+    pub open spec fn can_map_nested(&self, root: usize, slot: usize, r: GuestPhysRange, from: usize, page: usize) -> bool {
+        if r.large() {
+            self.can_map_large(root, slot, SpaceKind::Nested, r.path(), from, page)
+        } else {
+            self.can_map(root, slot, SpaceKind::Nested, r.path(), from, page)
+        }
+    }
+
+    /// Maps the page at offset `page` of the frame capability at index `from` at the guest-physical range
+    /// `r` of the nested table named at index `slot`. The indices and the offset come from user space, so
+    /// any of them can be refused, and a refusal changes nothing. No vCPU exists yet, so no walker holds a
+    /// nested translation to flush.
+    pub fn map_nested(&mut self, root: usize, slot: usize, r: GuestPhysRange, from: usize, page: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus.present == old(self).iommus.present,
+            ret == old(self).can_map_nested(root, slot, r, from, page),
+            final(self).spaces.loaded == old(self).spaces.loaded,
+            !ret ==> *final(self) == *old(self),
+            ret && r.large() ==> Self::map_large_done(*old(self), *final(self), root, slot, r.path(), from, page),
+            ret && !r.large() ==> Self::map_done(*old(self), *final(self), root, slot, r.path(), from, page),
+            ret ==> discharges(
+                old(self).view(),
+                final(self).view(),
+                root,
+                Effect::Share { space: old(self).tables.node_of(root, slot), from: old(self).tables.node_of(root, from) },
+            ),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+    {
+        let (l4, l3, l2, l1) = r.indices();
+        if r.is_large() {
+            self.map_large_kind(root, slot, SpaceKind::Nested, l4, l3, l2, from, page)
+        } else {
+            self.map_kind(root, slot, SpaceKind::Nested, l4, l3, l2, l1, from, page)
+        }
     }
 }
 

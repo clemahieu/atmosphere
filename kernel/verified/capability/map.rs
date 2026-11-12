@@ -850,7 +850,7 @@ pub fn same_kind(a: SpaceKind, b: SpaceKind) -> (ret: bool)
         ret == (a == b),
 {
     match (a, b) {
-        (SpaceKind::Process, SpaceKind::Process) | (SpaceKind::Device, SpaceKind::Device) => true,
+        (SpaceKind::Process, SpaceKind::Process) | (SpaceKind::Device, SpaceKind::Device) | (SpaceKind::Nested, SpaceKind::Nested) => true,
         _ => false,
     }
 }
@@ -1243,7 +1243,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
             kind is Process ==> discharges(old(self).view(), final(self).view(), root, Effect::Local),
-            ret && kind is Device ==> discharges(
+            ret && !(kind is Process) ==> discharges(
                 old(self).view(),
                 final(self).view(),
                 root,
@@ -1405,7 +1405,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_large_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             kind is Process ==> discharges(old(self).view(), final(self).view(), root, Effect::Local),
-            ret && kind is Device ==> discharges(
+            ret && !(kind is Process) ==> discharges(
                 old(self).view(),
                 final(self).view(),
                 root,
@@ -1744,7 +1744,7 @@ impl CapKernel {
         &&& forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q)
         &&& pre.spaces.records@[s].value().kind is Process
             ==> forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
-        &&& pre.spaces.records@[s].value().kind is Device
+        &&& !(pre.spaces.records@[s].value().kind is Process)
             ==> post.view().shares == pre.view().shares.union(map_shares(s, frame, false))
     }
 
@@ -1789,7 +1789,7 @@ impl CapKernel {
             &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
             &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
         }
-        &&& pre.spaces.records@[s].value().kind is Device
+        &&& !(pre.spaces.records@[s].value().kind is Process)
             ==> post.view().shares == pre.view().shares.union(map_shares(s, frame, true))
     }
 
@@ -1830,7 +1830,7 @@ impl CapKernel {
         ensures
             Self::map_done(pre, post, root, slot, p, from, page),
             kind is Process ==> post.view().shares == pre.view().shares,
-            kind is Device ==> discharges(
+            !(kind is Process) ==> discharges(
                 pre.view(),
                 post.view(),
                 root,
@@ -1871,7 +1871,7 @@ impl CapKernel {
         ensures
             Self::map_large_done(pre, post, root, slot, p, from, page),
             kind is Process ==> post.view().shares == pre.view().shares,
-            kind is Device ==> discharges(
+            !(kind is Process) ==> discharges(
                 pre.view(),
                 post.view(),
                 root,
@@ -1925,7 +1925,7 @@ impl CapKernel {
             Self::map_from(pre, t, e, f, frame, large),
             Self::map_written(pre, post, t, e, f, frame, large),
             pre.spaces.roots@.contains_key(s),
-            pre.spaces.records@[s].value().kind is Device,
+            !(pre.spaces.records@[s].value().kind is Process),
             ({
                 let a = tree_of(&pre.table_pages, &pre.spaces);
                 let b = tree_of(&post.table_pages, &post.spaces);
@@ -1956,7 +1956,7 @@ impl CapKernel {
             pre.tables.has_slot(&pre.list, root, slot),
             pre.is_cap(pre.tables.node_of(root, slot)),
             writes_space(pre.payload_of(pre.tables.node_of(root, slot))),
-            pre.spaces.records@[pre.payload_of(pre.tables.node_of(root, slot)).base].value().kind is Device,
+            !(pre.spaces.records@[pre.payload_of(pre.tables.node_of(root, slot)).base].value().kind is Process),
             pre.tables.has_slot(&pre.list, root, from),
             Self::map_from(pre, t, e, pre.tables.node_of(root, from), frame, large),
             Self::map_written(pre, post, t, e, pre.tables.node_of(root, from), frame, large),
@@ -2619,7 +2619,7 @@ impl CapKernel {
         pre.lemma_table_page_room(t);
         lemma_mapping_node_place(t, e);
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+            post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process) && k < TABLE_NODE_PAGES
                 && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             let x = table_node(s, k, i);

@@ -201,7 +201,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.spaces.roots@.contains_key(s),
-            self.spaces.records@[s].value().kind is Device,
+            !(self.spaces.records@[s].value().kind is Process),
         ensures
             forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] self.loaded(c, s),
             forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && e.space == s ==> !#[trigger] self.tlb@[c].contains(e),
@@ -2407,7 +2407,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.spaces.roots@.contains_key(s),
-            self.spaces.records@[s].value().kind is Device,
+            !(self.spaces.records@[s].value().kind is Process),
             k < TABLE_NODE_PAGES,
             i < NODES_PER_PAGE,
         ensures
@@ -2442,7 +2442,7 @@ impl CapKernel {
     pub proof fn lemma_space_nodes_frame(pre: Self, post: Self, n: usize, m: usize)
         requires
             pre.wf(),
-            forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
+            forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process)
                 ==> pre.spaces.roots@.contains_key(s) && post.spaces.records@[s] == pre.spaces.records@[s],
             forall|x: usize| #[trigger] pre.list.valid(x) && x != n && x != m ==> {
                 &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
@@ -2454,7 +2454,7 @@ impl CapKernel {
             space_nodes_dead(&post.list, &post.spaces),
     {
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+            post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process) && k < TABLE_NODE_PAGES
                 && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             let x = table_node(s, k, i);
@@ -2482,7 +2482,7 @@ impl CapKernel {
         } by {
             pre.list.lemma_valid_bound(x);
         }
-        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
+        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process)
             implies pre.spaces.roots@.contains_key(s) && post.spaces.records@[s] == pre.spaces.records@[s] by {
             assert(post.spaces.roots@.dom().contains(s));
         }
