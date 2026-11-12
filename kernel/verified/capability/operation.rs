@@ -376,10 +376,10 @@ impl CapKernel {
     /// zero; for the table page kind, ok with an unlinked table page of the level in argument 4 at the
     /// base in argument 2 under the untyped in the slot; or, for the leaf kind, ok with a table leaf at
     /// the base in argument 2 under the untyped in the slot, in the root entry the position word in
-    /// argument 3 names; or, for the free kind, again with nothing changed while a core has not
-    /// acknowledged the frame's staleness, and ok with the frame of the order in argument 4 at the base
-    /// in argument 2 freed by reclaim once every core has. Every arm but the table page's leaves every
-    /// space's tables as they were.
+    /// argument 3 names, the block table changed in the leaf's two pages alone; or, for the free kind,
+    /// again with nothing changed while a core has not acknowledged the frame's staleness, and ok with
+    /// the frame of the order in argument 4 at the base in argument 2 freed by reclaim once every core
+    /// has. Every arm but the table page's leaves every space's tables as they were.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| !pre.allows_retype(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
@@ -410,6 +410,7 @@ impl CapKernel {
             &&& out == status_only(STATUS_OK)
             &&& spec_position(frame.argument(3)) is Some
             &&& Self::leaf_retyped(pre, post, root, frame.slot() as usize, spec_position(frame.argument(3))->0, frame.argument(2) as usize)
+            &&& pre.blocks.kept_but_run(post.blocks, (frame.argument(2) as usize / PAGE_SZ) as int, 1)
             &&& Self::same_tree(pre, post)
         }
         ||| {

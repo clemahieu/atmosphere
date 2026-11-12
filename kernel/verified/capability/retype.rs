@@ -713,7 +713,7 @@ impl CapKernel {
     /// frame capability of that order is the untyped's child in the slot at index to, the one entry the
     /// parent map gains and the only node whose kind, liveness or capability changed, no root entry
     /// changed, every page of the block is zero, the block table changed in the block's region entry
-    /// alone, and the step discharges the retype's effect.
+    /// alone, which is typed with a count of one, and the step discharges the retype's effect.
     pub open spec fn large_frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
@@ -729,6 +729,12 @@ impl CapKernel {
         &&& post.tables.roots == pre.tables.roots
         &&& Self::caps_frame(pre, post, child, child)
         &&& forall|k: usize| k < pow2(order as nat) ==> #[trigger] holds_zero(post.frames@, (base / PAGE_SZ + k) as usize)
+        &&& {
+            let br = level_ref(level, base / PAGE_SZ / level_pages(level));
+            &&& block_typed(&post.blocks, br)
+            &&& block_refs(&post.blocks, br) == 1
+            &&& !block_dead(&post.blocks, br)
+        }
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None })
     }
 
@@ -2035,13 +2041,6 @@ impl CapKernel {
                 final(self).zeroing.cursor@[(base / PAGE_SZ) as int] <= ZERO_CHUNK_PAGES,
             ret is Again ==> Self::large_frame_zeroing(*old(self), *final(self), root, from, to, base, order),
             ret is Done ==> Self::large_frame_retyped(*old(self), *final(self), root, from, to, base, order),
-            ret is Done ==> {
-                let level = large_level(order);
-                let br = level_ref(level, base / PAGE_SZ / level_pages(level));
-                &&& block_typed(&final(self).blocks, br)
-                &&& block_refs(&final(self).blocks, br) == 1
-                &&& !block_dead(&final(self).blocks, br)
-            },
     {
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, order) {

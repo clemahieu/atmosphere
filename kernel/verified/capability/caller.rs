@@ -14,7 +14,7 @@ verus! {
 #[cfg(verus_keep_ghost)]
 use crate::arch::Registers;
 #[cfg(verus_keep_ghost)]
-use crate::capability::block::{order_pages, Large, NUM_2M};
+use crate::capability::block::{order_pages, Large, NUM_1G, NUM_2M};
 #[cfg(verus_keep_ghost)]
 use crate::define::*;
 #[cfg(verus_keep_ghost)]
@@ -45,6 +45,8 @@ use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::zero::{large_level, level_pages, level_regions};
 
 /// What a slot holding a capability says to the process whose table it is in: the capability's kind,
 /// the block or object it names and the block's order, its rights, and the node it was derived from.
@@ -1066,18 +1068,149 @@ impl CapKernel {
         }
     }
 
+    /// The block a retype's new frame capability takes is one no frame capability held: no page of the
+    /// frame the slot view v names lies, in post, in the block that a page of a frame capability in any
+    /// table's view lay in in pre.
+    pub open spec fn frame_block_new(pre: Self, post: Self, v: SlotView) -> bool {
+        forall|t: usize, j: usize, page: usize, k: usize|
+            #![trigger block_ref(&post.blocks, view_frame(v, k)), block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page))]
+            pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order)
+                && (k as int) * PAGE_SZ < block_bytes(v.order)
+                ==> block_ref(&post.blocks, view_frame(v, k)) != block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page))
+    }
+
+    /// A step that changed the block table in the entry of one large region alone, a region that was
+    /// being zeroed, free, or dead at zero references, keeps the block and the count of every page of
+    /// every frame capability in pre's view, and none of those pages lay in that region's block: a block
+    /// being zeroed has no capability yet, a free region's pages are in no typed block, and a block
+    /// at zero references has no holder.
+    pub proof fn lemma_region_keeps_frame_blocks(pre: Self, post: Self, level: Large, r: usize)
+        requires
+            pre.wf(),
+            r < level_regions(level),
+            pre.zeroing.active(level, r) || pre.blocks.large_free(level, r as int) || pre.region_is_dead(level, r),
+            post.blocks.pages@ == pre.blocks.pages@,
+            forall|x: int| 0 <= x < NUM_2M && !(level is Two && x == r)
+                ==> #[trigger] post.blocks.regions_2m@[x] == pre.blocks.regions_2m@[x],
+            forall|x: int| 0 <= x < NUM_1G && !(level is One && x == r)
+                ==> #[trigger] post.blocks.regions_1g@[x] == pre.blocks.regions_1g@[x],
+        ensures
+            Self::frame_blocks_kept(pre, post),
+            forall|t: usize, j: usize, page: usize|
+                pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order)
+                    ==> #[trigger] block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page)) != level_ref(level, r),
+    {
+        let lr = level_ref(level, r);
+        assert(holders_wf(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@));
+        if !block_typed(&pre.blocks, lr) {
+            assert(pre.blocks.large_free(level, r as int));
+        }
+        assert forall|t: usize, j: usize, p: usize|
+            pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                && (p as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) implies {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], p));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], p)) == br
+                &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br)
+                &&& br != lr
+            } by {
+            pre.lemma_view_frame_counted(t, j, p);
+            pre.lemma_table_view(t, j);
+            pre.lemma_frame_page(pre.tables.node_of(t, j), p);
+            let i = view_frame(pre.table_view(t)[j], p);
+            let br = block_ref(&pre.blocks, i);
+            assert(pre.holders@.contains_key(br));
+            assert(!block_active(&pre.zeroing, br));
+            assert(br != lr);
+            assert(i / PAGES_PER_2M < NUM_2M);
+            assert(i / PAGES_PER_1G < NUM_1G);
+            match level {
+                Large::Two => {
+                    if i / PAGES_PER_2M == r {
+                        if pre.blocks.regions_2m@[r as int].typed {
+                            assert(br == BlockRef::Two(r));
+                        } else {
+                            assert(r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M);
+                            assert(pre.blocks.pages@[i as int].kind is Free);
+                            assert(!pre.blocks.covered(i as int));
+                            assert(br == BlockRef::Small(i));
+                        }
+                        assert(false);
+                    }
+                },
+                Large::One => {
+                    if i / PAGES_PER_1G == r {
+                        if pre.blocks.regions_1g@[r as int].typed {
+                            lemma_in_1g_block(&pre.blocks, i, r);
+                        } else {
+                            assert(r * PAGES_PER_1G <= i < (r + 1) * PAGES_PER_1G);
+                            assert(pre.blocks.pages@[i as int].kind is Free);
+                            assert(!pre.blocks.covered(i as int));
+                            assert(br == BlockRef::Small(i));
+                        }
+                        assert(false);
+                    }
+                },
+            }
+            assert(block_ref(&post.blocks, i) == br);
+            assert(block_refs(&post.blocks, br) == block_refs(&pre.blocks, br));
+        }
+        assert forall|t: usize, j: usize, p: usize|
+            pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                && (p as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order)
+                implies #[trigger] block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], p)) != lr by {
+            assert(block_ref(&post.blocks, view_frame(pre.table_view(t)[j], p)) == block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], p)));
+        }
+    }
+
+    /// A step that freed one dead 4K frame at zero references and changed nothing else of the block
+    /// table keeps the block and the count of every page of every frame capability in pre's view: a
+    /// block a frame capability has a page in holds a reference.
+    pub proof fn lemma_freed_page_keeps_frame_blocks(pre: Self, post: Self, page: usize)
+        requires
+            pre.wf(),
+            pre.frame_is_dead(page),
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| pre.blocks.tracks(i) && i != page ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            Self::frame_blocks_kept(pre, post),
+    {
+        assert forall|t: usize, j: usize, p: usize|
+            pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                && (p as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) implies {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], p));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], p)) == br
+                &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br)
+            } by {
+            pre.lemma_view_frame_counted(t, j, p);
+            let i = view_frame(pre.table_view(t)[j], p);
+            let br = block_ref(&pre.blocks, i);
+            if let BlockRef::Small(b) = br {
+                assert(pre.blocks.tracks(b as int));
+                assert(b != page);
+                assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
+                if i == page {
+                    assert(br == BlockRef::Small(page));
+                    assert(false);
+                }
+                assert(post.blocks.pages@[i as int] == pre.blocks.pages@[i as int]);
+            }
+        }
+    }
+
     /// Retype's contract over the caller's view, with every space's mapping as it was whatever the
-    /// status. Refused, with every table's view and the block table
-    /// as they were, exactly when retype_allowed fails. A 4K frame: ok, with the caller's slot the word
-    /// names now holding the frame, the untyped's child, its page a block with a count of one, every
-    /// other slot of every table as it was, and every frame capability's blocks and their counts as
-    /// they were. A 2M frame:
-    /// again, with every table's view as it was, or ok as a 4K frame is with the 2M block, saying nothing
-    /// of the counts. A table page: ok, with every table's view and every frame capability's blocks and
-    /// their counts as they were and an empty table page of the level at base. A
-    /// leaf: ok, with every table's view as it was and every index of the root entry it fills an empty
-    /// slot of the position's table. The free kind: again, with every table's view and the block table
-    /// as they were, or ok, with every table's view as it was.
+    /// status. Refused, with every table's view and the block table as they were, exactly when
+    /// retype_allowed fails. Every other outcome leaves every frame capability's blocks and their counts
+    /// as they were. A 4K frame: ok, with the caller's slot the word names now holding the frame, the
+    /// untyped's child, its page a block with a count of one that no frame capability had a page in,
+    /// and every other slot of every table as it was. A 2M frame: again, with every table's view as it
+    /// was, or ok as a 4K frame is with the 2M block. A table page: ok, with every table's view as it
+    /// was and an empty table page of the level at base. A leaf: ok, with every table's view as it was
+    /// and every index of the root entry it fills an empty slot of the position's table. The free kind:
+    /// again, with every table's view and the block table as they were, or ok, with every table's view
+    /// as it was.
     pub open spec fn retype_contract(pre: Self, post: Self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize, out: Outcome) -> bool {
         let allowed = pre.retype_allowed(root, kind, from, base, word, level);
         let to = word as usize;
@@ -1099,12 +1232,14 @@ impl CapKernel {
                 &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
                 &&& block_refs(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ)) == 1
                 &&& Self::frame_blocks_kept(pre, post)
+                &&& Self::frame_block_new(pre, post, frame_view(base, 0, parent))
             }
             ||| {
                 &&& kind == RETYPE_LARGE_FRAME
                 &&& allowed
                 &&& out == status_only(STATUS_AGAIN)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& Self::frame_blocks_kept(pre, post)
             }
             ||| {
                 &&& kind == RETYPE_LARGE_FRAME
@@ -1112,6 +1247,9 @@ impl CapKernel {
                 &&& out == status_only(STATUS_OK)
                 &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 9, parent))
                 &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& block_refs(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ)) == 1
+                &&& Self::frame_blocks_kept(pre, post)
+                &&& Self::frame_block_new(pre, post, frame_view(base, 9, parent))
             }
             ||| {
                 &&& kind == RETYPE_TABLE_PAGE
@@ -1128,6 +1266,7 @@ impl CapKernel {
                 &&& allowed
                 &&& out == status_only(STATUS_OK)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& Self::frame_blocks_kept(pre, post)
                 &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> #[trigger] post.empty_slot(table, i)
             }
             ||| {
@@ -1142,6 +1281,7 @@ impl CapKernel {
                 &&& allowed
                 &&& out == status_only(STATUS_OK)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& Self::frame_blocks_kept(pre, post)
             }
         }
     }
@@ -1301,12 +1441,64 @@ impl CapKernel {
             assert(post.slot_view(root, to) == frame_view(base, 0, parent));
             Self::lemma_slot_added(pre, post, root, to, frame_view(base, 0, parent));
             Self::lemma_run_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, 0);
-        } else if kind == RETYPE_LARGE_FRAME && out == status_only(STATUS_AGAIN) {
-            Self::lemma_views_same(pre, post);
+            let v = frame_view(base, 0, parent);
+            lemma2_to64();
+            assert(block_bytes(0) == PAGE_SZ);
+            assert(pre.blocks.pages@[(base / PAGE_SZ) as int + 0].kind is Free);
+            assert forall|t: usize, j: usize, page: usize, k: usize|
+                #![trigger block_ref(&post.blocks, view_frame(v, k)), block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page))]
+                pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order)
+                    && (k as int) * PAGE_SZ < block_bytes(v.order)
+                    implies block_ref(&post.blocks, view_frame(v, k)) != block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page)) by {
+                pre.lemma_view_frame_counted(t, j, page);
+                assert(k == 0);
+                assert(view_frame(v, k) == base / PAGE_SZ);
+            }
         } else if kind == RETYPE_LARGE_FRAME {
-            assert(post.is_cap(child));
-            assert(post.slot_view(root, to) == frame_view(base, 9, parent));
-            Self::lemma_slot_added(pre, post, root, to, frame_view(base, 9, parent));
+            let r = base / PAGE_SZ / level_pages(Large::Two);
+            assert(large_level(9) == Large::Two);
+            assert(pre.blocks.kept_but_region(post.blocks, Large::Two, r as int));
+            assert(pre.blocks.regions_2m@.len() == NUM_2M);
+            assert forall|x: int| 0 <= x < NUM_2M && x != r
+                implies #[trigger] post.blocks.regions_2m@[x] == pre.blocks.regions_2m@[x] by {
+                assert(post.blocks.regions_2m@[x] == pre.blocks.regions_2m@.update(r as int, post.blocks.regions_2m@[r as int])[x]);
+            }
+            Self::lemma_region_keeps_frame_blocks(pre, post, Large::Two, r);
+            if out == status_only(STATUS_AGAIN) {
+                Self::lemma_views_same(pre, post);
+            } else {
+                assert(post.is_cap(child));
+                assert(post.slot_view(root, to) == frame_view(base, 9, parent));
+                Self::lemma_slot_added(pre, post, root, to, frame_view(base, 9, parent));
+                let v = frame_view(base, 9, parent);
+                lemma2_to64();
+                assert(block_bytes(9) == PAGES_PER_2M * PAGE_SZ);
+                assert(base as int % block_bytes(9) == 0);
+                let first = base / PAGE_SZ;
+                let q = base as int / SIZE_2M as int;
+                assert(SIZE_2M == PAGES_PER_2M * PAGE_SZ);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(base as int, SIZE_2M as int);
+                assert(base as int == SIZE_2M as int * q);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(base as int, PAGE_SZ as int, PAGES_PER_2M * q, 0);
+                assert(first as int == PAGES_PER_2M * q);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(first as int, PAGES_PER_2M as int, q, 0);
+                assert(r as int == q);
+                assert(post.blocks.regions_2m@[r as int].typed);
+                assert(block_ref(&post.blocks, base / PAGE_SZ) == BlockRef::Two(r));
+                assert forall|t: usize, j: usize, page: usize, k: usize|
+                    #![trigger block_ref(&post.blocks, view_frame(v, k)), block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page))]
+                    pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                        && (page as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order)
+                        && (k as int) * PAGE_SZ < block_bytes(v.order)
+                        implies block_ref(&post.blocks, view_frame(v, k)) != block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], page)) by {
+                    assert(k < PAGES_PER_2M);
+                    assert(view_frame(v, k) as int == first + k);
+                    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(first + k, PAGES_PER_2M as int, q, k as int);
+                    assert(view_frame(v, k) / PAGES_PER_2M == r);
+                    assert(block_ref(&post.blocks, view_frame(v, k)) == BlockRef::Two(r));
+                }
+            }
         } else if kind == RETYPE_TABLE_PAGE {
             if pre.tables.owner@.contains_key(base) {
                 assert(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base);
@@ -1317,11 +1509,18 @@ impl CapKernel {
             if out == status_only(STATUS_OK) {
                 let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, root, from, base, level);
                 assert(post.list == pre.list && post.tables == pre.tables);
+                if level == 0 {
+                    Self::lemma_freed_page_keeps_frame_blocks(pre, post, base / PAGE_SZ);
+                } else {
+                    let l = large_level(level as u8);
+                    Self::lemma_region_keeps_frame_blocks(pre, post, l, base / PAGE_SZ / level_pages(l));
+                }
             }
             Self::lemma_views_same(pre, post);
         } else {
             let at = spec_position(word)->0;
             Self::lemma_leaf_views(pre, post, root, from, at, base);
+            Self::lemma_run_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, 1);
             let table = pre.view_table_at(root, at.through)->0;
             assert(table == pre.destination_at(root, at.through)->0);
             assert forall|i: usize| index_ok(i) && index_entry(i) == at.index as int implies #[trigger] post.empty_slot(table, i) by {}
