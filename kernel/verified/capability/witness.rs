@@ -1289,6 +1289,9 @@ impl CapKernel {
                 &&& final(self).acknowledged(base / PAGE_SZ)
                 &&& final(self).acknowledged(((base + 12 * PAGE_SZ) / PAGE_SZ as int) as usize)
                 &&& final(self).acknowledged(((base + 12 * PAGE_SZ) / PAGE_SZ as int + 1) as usize)
+                &&& final(self).acknowledged(thread / PAGE_SZ)
+                &&& final(self).acknowledged((thread / PAGE_SZ + 1) as usize)
+                &&& forall|x: int| thread < x < thread + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[x].live
                 &&& block_refs(&final(self).blocks, BlockRef::Small(thread / PAGE_SZ)) == 1
                 &&& block_refs(&final(self).blocks, BlockRef::Small(base / PAGE_SZ)) == 2
                 &&& final(self).process_unloaded(base)
@@ -1393,9 +1396,13 @@ impl CapKernel {
             assert(in_page_block(bs[0], (base / PAGE_SZ) as nat));
             assert(in_page_block(bs[0], (base / PAGE_SZ + 12) as nat));
             assert(in_page_block(bs[0], (base / PAGE_SZ + 13) as nat));
+            assert(in_page_block(bs[0], (base / PAGE_SZ + 10) as nat));
+            assert(in_page_block(bs[0], (base / PAGE_SZ + 11) as nat));
             assert(s0.acknowledged(base / PAGE_SZ));
             assert(s0.acknowledged((base / PAGE_SZ + 12) as usize));
             assert(s0.acknowledged((base / PAGE_SZ + 13) as usize));
+            assert(s0.acknowledged((base / PAGE_SZ + 10) as usize));
+            assert(s0.acknowledged((base / PAGE_SZ + 11) as usize));
         }
         let b2 = base + PROCESS_BYTES;
         let bt = b2 + 2 * PAGE_SZ;
@@ -1756,6 +1763,8 @@ impl CapKernel {
             Self::lemma_acknowledged_kept(s0, s5, base / PAGE_SZ);
             Self::lemma_acknowledged_kept(s0, s5, (base / PAGE_SZ + 12) as usize);
             Self::lemma_acknowledged_kept(s0, s5, (base / PAGE_SZ + 13) as usize);
+            Self::lemma_acknowledged_kept(s0, s5, (base / PAGE_SZ + 10) as usize);
+            Self::lemma_acknowledged_kept(s0, s5, (base / PAGE_SZ + 11) as usize);
             // The derived untyped goes under the root's untyped: the two capabilities keep their children,
             // and it, not live before, has none.
             assert(s5.list.wf()) by {
@@ -1801,6 +1810,12 @@ impl CapKernel {
             assert(s5.tables.owner == s4.tables.owner);
             assert(s5.list.nodes@[bl as int].live && s5.list.nodes@[bl as int].kind is Hidden);
             assert forall|x: int| bl + 1 < x < bl + NODES_PER_PAGE implies !#[trigger] s5.list.nodes@[x].live by {
+                assert(!s4.list.nodes@[x].live);
+            }
+            // The thread's node page holds no live node past its binding: the retype left it so, and the
+            // leaf's retype and the derive made live only nodes of the leaf's page.
+            assert forall|x: int| bt < x < bt + NODES_PER_PAGE implies !#[trigger] s5.list.nodes@[x].live by {
+                assert(!s3.list.nodes@[x].live);
                 assert(!s4.list.nodes@[x].live);
             }
             // What a teardown of the process starts from: the root's untyped, table and record, the blocks
@@ -1852,6 +1867,174 @@ impl CapKernel {
             }
         }
         ok1 && ok2 && ok3 && ok4 && ok5
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// of two free ones past those boot's tables took from the first untyped: build a process at `base`
+    /// with a thread bound to it, as witness_process_holds_capability does; destroy the thread through
+    /// its control capability in slot 258 of the root's table; delete that capability; then retype the
+    /// thread's block through the root's untyped, once to unbind the dead thread from its process and
+    /// once more to free it. Every step succeeds, and at the end both of the thread's pages are free and
+    /// its record is gone. The use is a creator ending a thread it made and taking its memory back.
+    pub fn witness_destroyed_thread_freed(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+    ) -> (ret: (bool, bool, ReclaimStep, ReclaimStep))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret.0,
+            ret.1,
+            ret.2 is Slice,
+            ret.3 is Freed,
+            final(self).wf(),
+            final(self).blocks.pages@[(base / PAGE_SZ + 10) as int].kind is Free,
+            final(self).blocks.pages@[(base / PAGE_SZ + 11) as int].kind is Free,
+            !final(self).threads.records@.contains_key((base + 10 * PAGE_SZ) as usize),
+    {
+        hide(CapKernel::wf);
+        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let ghost r0 = *self;
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let b2 = base + PROCESS_BYTES;
+        let bt = b2 + 2 * PAGE_SZ;
+        let bl = b2 + 4 * PAGE_SZ;
+        let ghost nt = (b2 + 2) as usize;
+        let ghost child = (bl + 1) as usize;
+        proof {
+            assert(ok0);
+            lemma2_to64();
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(base % PROCESS_BYTES == 0);
+            assert(b2 % PROCESS_BYTES == 0);
+            lemma_block_page(base, 0);
+            lemma_block_page(b2, 0);
+            lemma_block_page(b2, 2);
+            lemma_block_page(b2, 4);
+            assert(b2 / PAGE_SZ == base / PAGE_SZ + 8);
+            assert(bt / PAGE_SZ == base / PAGE_SZ + 10);
+            assert(bt == base + 10 * PAGE_SZ);
+            assert(bl == base + 12 * PAGE_SZ);
+            assert(nt == base + 8 * PAGE_SZ + 2);
+            r0.lemma_slot(process, ROOT_UNTYPED_SLOT);
+            r0.lemma_slot(process, WITNESS_THREAD_SLOT);
+            r0.lemma_slot(base, WITNESS_CHILD_SLOT);
+            assert(index_slot(ROOT_UNTYPED_SLOT) == 5);
+            assert(index_slot(WITNESS_THREAD_SLOT) == 2 && index_slot(WITNESS_CHILD_SLOT) == 1);
+            assert(index_entry(WITNESS_CHILD_SLOT) == 0);
+            assert(u % PAGE_SZ == 5 && nt % PAGE_SZ == 2 && child % PAGE_SZ == 1);
+            r0.lemma_slot_bound(u);
+            r0.lemma_slot_bound(nt);
+            r0.lemma_slot_bound(child);
+            assert(THREAD_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(r0.payload_of(nt) == thread_of(bt));
+            assert(r0.can_destroy(process, WITNESS_THREAD_SLOT));
+        }
+
+        // Destroy the thread, through its capability in slot 258 of the root's table. It runs on no
+        // core, so it is dead at once.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.destroy(0, process, WITNESS_THREAD_SLOT, Tracked(&mut steps));
+        let ghost r1 = *self;
+        let at_thread = Position { through: None, index: WITNESS_THREAD_SLOT };
+        proof {
+            assert(ok1);
+            assert(Self::thread_destroyed(r0, r1, 0, bt));
+            assert(r1.list == r0.list && r1.tables == r0.tables && r1.blocks == r0.blocks);
+            assert(r1.processes == r0.processes);
+            assert(r1.threads.records@[bt].value().state is Dead);
+            assert(r1.threads.records@[bt].value().process == Some(base));
+            assert(r1.root_live(process));
+            assert(r1.table_at(process, None) == Some(process));
+            assert(r1.slot_holds(process, WITNESS_THREAD_SLOT, nt, thread_of(bt)));
+            lemma_owned_listed(r1, nt);
+            assert(r1.list.childless(nt));
+            assert(r1.cap_at(process, at_thread) == Some(nt));
+            assert(r1.can_delete_at(process, at_thread));
+            Self::lemma_acknowledged_kept(r0, r1, bt / PAGE_SZ);
+            Self::lemma_acknowledged_kept(r0, r1, (bt / PAGE_SZ + 1) as usize);
+        }
+
+        // Delete the thread's capability, the last reference to its block.
+        let ok2 = self.delete(process, at_thread);
+        let ghost r2 = *self;
+        proof {
+            assert(ok2 is Some);
+            assert(Self::cap_deleted_at(r1, r2, process, at_thread));
+            assert(Self::object_dropped(r1, r2, nt));
+            assert(r1.payload_of(nt).kind is Thread);
+            assert(r2.blocks.pages@[(bt / PAGE_SZ) as int].refs == 0);
+            lemma_deleted_dead(r2, nt);
+            assert(r2.tables == r0.tables);
+            assert(r2.threads.records == r1.threads.records);
+            assert(r2.root_live(process));
+            lemma_slot_kept_but(r1, r2, process, ROOT_UNTYPED_SLOT, nt);
+            Self::lemma_caps_frame(r1, r2, nt, nt, u);
+            assert(r2.list.nodes@[child as int].live == r1.list.nodes@[child as int].live);
+            assert(r2.list.nodes@[child as int].live);
+            assert(r2.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_owned_listed(r2, child);
+            assert(r2.list.d(u) < MAX_DEPTH);
+            assert(r2.can_retype_under(process, ROOT_UNTYPED_SLOT, bt, THREAD_ORDER));
+            assert(r2.thread_is_dead(bt));
+            assert(r2.can_unbind_thread(process, ROOT_UNTYPED_SLOT, bt));
+            assert forall|x: int| bt < x < bt + NODES_PER_PAGE implies !#[trigger] r2.list.nodes@[x].live by {
+                assert(x != nt);
+                assert(r2.list.nodes@[x].live == r1.list.nodes@[x].live);
+            }
+            Self::lemma_acknowledged_kept(r1, r2, bt / PAGE_SZ);
+            Self::lemma_acknowledged_kept(r1, r2, (bt / PAGE_SZ + 1) as usize);
+        }
+
+        // Retype the thread's block: the thread is dead and bound, so the retype unbinds it.
+        let ok3 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, bt, Tracked(&mut steps));
+        let ghost r3 = *self;
+        proof {
+            assert(ok3 is Slice);
+            assert(r2.thread_unbound(r3, process, ROOT_UNTYPED_SLOT, bt));
+            assert(Self::unbound(r2, r3, bt));
+            assert(r3.threads.records@[bt].value() == unbound_record(r2.threads.records@[bt].value()));
+            assert(r3.threads.records@[bt].value().process is None);
+            assert forall|k: int| 0 <= k < NODES_PER_PAGE implies !(#[trigger] r3.list.nodes@[bt + k]).live by {
+                if k != 0 {
+                    assert(r3.list.nodes@[bt + k].live == r2.list.nodes@[bt + k].live);
+                    assert(!r2.list.nodes@[bt + k].live);
+                }
+            }
+            assert(r3.thread_is_spent(bt));
+            assert(r3.tables == r2.tables);
+            assert(r3.root_live(process));
+            assert(!r2.list.nodes@[bt as int].live || !r2.tables.owner@.contains_key(bt)) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_slot_kept_but(r2, r3, process, ROOT_UNTYPED_SLOT, bt);
+            assert(r3.list.nodes@[u as int].depth == r2.list.nodes@[u as int].depth);
+            assert(r3.can_retype_under(process, ROOT_UNTYPED_SLOT, bt, 1));
+            Self::lemma_acknowledged_kept(r2, r3, bt / PAGE_SZ);
+            Self::lemma_acknowledged_kept(r2, r3, (bt / PAGE_SZ + 1) as usize);
+        }
+
+        // Retype it again: the thread is spent and its pages acknowledged, so the block is freed.
+        let ok4 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, bt, Tracked(&mut steps));
+        proof {
+            assert(ok4 is Freed);
+            assert(r3.thread_freed(*self, 0, process, ROOT_UNTYPED_SLOT, bt));
+        }
+        (ok1, ok2.is_some(), ok3, ok4)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

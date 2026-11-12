@@ -816,6 +816,12 @@ impl CapKernel {
             old(self).table_pages.maps@.contains_key(base) && ret is Slice ==> old(self).table_sliced(*final(self), root, from, base),
             old(self).table_pages.maps@.contains_key(base) && ret is Freed ==> old(self).table_freed(*final(self), c, root, from, base),
             old(self).can_unbind_thread(root, from, base) ==> ret is Slice,
+            old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base)
+                ==> if old(self).acknowledged(base / PAGE_SZ) && old(self).acknowledged((base / PAGE_SZ + 1) as usize) {
+                    ret is Freed
+                } else {
+                    ret is Again
+                },
             old(self).threads.records@.contains_key(base) && ret is Slice ==> old(self).thread_unbound(*final(self), root, from, base),
             old(self).threads.records@.contains_key(base) && ret is Freed ==> old(self).thread_freed(*final(self), c, root, from, base),
             old(self).can_unlink_leaf(root, from, base) ==> ret is Unlinked && old(self).leaf_unlinked(*final(self), root, from, base),
