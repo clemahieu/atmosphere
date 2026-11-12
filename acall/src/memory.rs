@@ -32,11 +32,12 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
     let ghost pre = caller@;
     let out = step(caller, OPERATION_RETYPE, untyped, kind, base, word, level, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_RETYPE, untyped, kind, base, word, level, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Retype);
-        CapKernel::lemma_retype_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_retype_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
@@ -55,11 +56,12 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
     let ghost pre = caller@;
     let out = step(caller, OPERATION_DERIVE, from, to, rights, base, order, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_DERIVE, from, to, rights, base, order, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Derive);
-        CapKernel::lemma_derive_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_derive_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
@@ -77,11 +79,12 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
     let ghost pre = caller@;
     let out = step(caller, OPERATION_INSPECT, at, 0, 0, 0, 0, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_INSPECT, at, 0, 0, 0, 0, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Inspect);
-        CapKernel::lemma_inspect_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_inspect_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
@@ -101,11 +104,12 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
     let ghost pre = caller@;
     let out = step(caller, OPERATION_LINK, slot, va, level, from, child, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_LINK, slot, va, level, from, child, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Link);
-        CapKernel::lemma_link_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_link_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
@@ -119,17 +123,18 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::map_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, page as usize, out),
-        loaded_across(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root()),
+        returned_on(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_MAP, slot, va, level, from, page, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_MAP, slot, va, level, from, page, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Map);
-        CapKernel::lemma_map_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_map_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
@@ -148,11 +153,12 @@ pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (o
     let ghost pre = caller@;
     let out = step(caller, OPERATION_UNMAP, slot, va, level, 0, 0, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_UNMAP, slot, va, level, 0, 0, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Unmap);
-        CapKernel::lemma_unmap_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_unmap_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }

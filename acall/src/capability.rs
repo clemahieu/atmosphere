@@ -31,11 +31,12 @@ pub fn move_cap(caller: &mut Tracked<Caller>, from: u64, to: u64) -> (out: Outco
     let ghost pre = caller@;
     let out = step(caller, OPERATION_MOVE, from, to, 0, 0, 0, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_MOVE, from, to, 0, 0, 0, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Move);
-        CapKernel::lemma_move_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_move_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
@@ -53,11 +54,12 @@ pub fn delete(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
     let ghost pre = caller@;
     let out = step(caller, OPERATION_DELETE, at, 0, 0, 0, 0, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_DELETE, at, 0, 0, 0, 0, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Delete);
-        CapKernel::lemma_delete_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_delete_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
@@ -76,11 +78,12 @@ pub fn revoke(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
     let ghost pre = caller@;
     let out = step(caller, OPERATION_REVOKE, at, 0, 0, 0, 0, 0);
     proof {
-        let frame = choose|frame: Registers|
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_REVOKE, at, 0, 0, 0, 0, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Revoke);
-        CapKernel::lemma_revoke_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        CapKernel::lemma_revoke_contract(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }

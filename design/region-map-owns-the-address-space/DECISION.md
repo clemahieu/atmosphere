@@ -5,7 +5,7 @@ status: active
 tags: [user, memory, address-space, proof, trusted-base]
 one_line: "Between the kernel, which decides what can be mapped, and the heap, which carves pages it was given, a region map says which part of a program owns which addresses: built once at entry from what the kernel reports empty, it holds a tracked token per page saying which frame is mapped there or none, acall maps and unmaps in the caller's own space only against such a token, and the proof holds for a process whose code and controller keep four rules."
 revisit_if: "The kernel comes to keep a revoked entry claimed until its owner unmaps it, which would let the kernel's table be the only record and the tokens go; or several threads of one process must map at once, which one authority per process does not serve; or a program that keeps the four rules is found whose memory proof still fails."
-confidence: "The hole is measured: a throwaway against the tree verifies false, below. That page tokens close it was checked on a model outside the tree whose kernel is a bare map, not on the tree. What the tokens need of the kernel, that other callers only remove a sealed process's entries and that a call returns with nothing stale on its core, is not proven. Where the proof stops, the four rules, is the human's choice."
+confidence: "The hole is measured: a throwaway against the tree verifies false, below. That page tokens close it was checked on a model outside the tree whose kernel is a bare map, not on the tree. Of what the tokens need of the kernel, that a call returns with nothing stale on its core is proven, from the kernel's entry through acall's step; that other callers only remove a sealed process's entries is not. Where the proof stops, the four rules, is the human's choice."
 ---
 
 # The region map
@@ -51,7 +51,7 @@ The tree showed the missing layer in other ways. `Eager::new` took the process's
 
 **The rules are few because the tokens carry the rest.** Disjointness between clients, a frame backing one page, an address not reused under a held permission: verified code cannot break these, so nothing asks a program to keep them. The four rules are what is left for code no proof reads.
 
-**The calling core must hold nothing stale.** Today the core that made a call acknowledges the flush epoch only when that call moved it (`owed`, `kernel/src/flush.rs`, outside the proof), so a core behind because another core's revoke moved the epoch returns to its thread behind until the IPI reaches it. The residual claim needs the verified step to say the core returns with nothing stale of its own space.
+**The calling core holds nothing stale.** The kernel's verified entry acknowledges the flush epoch on the calling core whenever that core is behind, whichever core's unmap or revoke moved it, `design/flush-without-waiting/`, and acall's step restates that the core returns to its thread caught up, holding no translation of the caller's space to a page no space maps. The residual claim takes that from the map's own step.
 
 **On a model.** A standalone file over vstd's ghost map, with the kernel as a bare map from page to frame and the step specifications restated by hand, verified the own-space calls keeping the invariant under removal by others, and refused four throwaways: a second map at a page whose permission is held, one frame at two pages, an unmap through the raw step, and a forged token. It is not in the tree and shows only that the shape is consistent.
 
