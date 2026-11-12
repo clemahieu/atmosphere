@@ -7,22 +7,10 @@
 //! The tokens the glue and the capability kernel pass are defined here, once for both targets. Their
 //! fields are private to this module and its per-target submodules, so no code above it can build or
 //! change one: proof code cannot write the struct, and verified code cannot call Tracked::assume_new,
-//! which Verus marks external. None is Copy or Clone, so a tracked token is used once.
-//! tools/check-external-body.py refuses `unsafe` outside
-//! counted glue, by which exec code could zero one up or read one out twice (core::mem::zeroed,
-//! core::ptr::read), and every spec of exec code Verus does not read (a vstd `*SpecImpl`, the
-//! StructuralEq derive, the exec_spec macros), by which a safe impl outside verus! could be said to
-//! return a token it never made, or an earlier one. It refuses every impl outside verus! too, whose
-//! methods rust_verify does not verify though a call through a generic bound gets its trait's ensures,
-//! and what could write one where it sees none: a derive or an attribute macro outside verus!, a macro
-//! definition, a macro other than the vstd and core ones the crates use. Inside verus! it refuses a derive
-//! of any trait but Clone, Copy, Debug, PartialEq and Eq, the automatically_derived attribute and an
-//! import renaming derive or renaming something to one of those, and anywhere a raw identifier, which
-//! rustc reads as the name after r# (r#derive as derive): Verus marks a derived Default
-//! external, vstd's Default ensures nothing for a crate's type, and use_type_invariant would assume the
-//! invariant of the value it returns, which no verified code built. Only the glue that does what a token attests makes or changes it, but for
-//! TlbModel::grow and IotlbModel::grow, by which proof code may add entries to a model of what a TLB
-//! holds, since a model that holds more claims less.
+//! which Verus marks external. None is Copy or Clone, so a tracked token is used once. Only the glue
+//! that does what a token attests makes or changes it, but for TlbModel::grow and IotlbModel::grow, by
+//! which proof code may add entries to a model of what a TLB holds, since a model that holds more
+//! claims less.
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::TlbEntry;
