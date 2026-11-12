@@ -2,7 +2,7 @@
 
 # Design decisions
 
-41 records: 41 active, 0 superseded.
+42 records: 42 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -133,6 +133,9 @@ in `revisit if` what would make it worth reopening.
 - **[who-vouches-for-an-unproven-claim](./who-vouches-for-an-unproven-claim/DECISION.md)** (2026-11-12): A hardware guarantee is a plain Rust function after the verus! block, with no attribute, holding only the instruction or register access, or nothing for a standing property no instruction asks for, with an assume_specification beside it in the arch module that cites the manual section it restates; a user-side system call is the same form naming the kernel-side item whose proof vouches for it; a claim only the language's rules make is the same form quoting the passage of the pinned toolchain's rust-src that states it; every external_body left in a verified crate is debt that nothing outside the proof vouches for.
   - *confidence:* The mechanism was tried on flush_every_context on both targets: it verifies with the same counts as external_body, and dropping one conjunct of the assumed specification fails Kernel::acknowledge, so callers rest on it. That a citation is the right warrant for a hardware claim is judgement.
   - *revisit if:* Verus drops or changes assume_specification so that it no longer binds a spec to an external function with tracked arguments, or a hardware guarantee needs a body that is more than one instruction sequence and a wait on the device, which is when the line between the leaf and the verified code above it has to be drawn again.
+- **[witness-per-way-an-operation-succeeds](./witness-per-way-an-operation-succeeds/DECISION.md)** (2026-11-12): The inventory's unit is an operation and one value of its result type that is not a refusal. Operations are found from the source, by what the entry calls and by visibility, not from a list. A witness is of the model's operation and claims an outcome in its ensures, over a returned value every binding of which is a call of that operation; the entry is covered by one witness and one proof per wired operation. A throwaway is a function in the tree behind a cfg, calling the witness and claiming false, one module each, and a gate step expects each to fail. What has no witness is a list in the tree that the gate holds equal to the inventory and that only the human lengthens.
+  - *confidence:* The throwaway's cost is measured, below. That a claim in an ensures is checked is Verus's. The rule that ties a claim to a call is read from text by a tool, and holds against accident, not against intent: design/committer-is-not-the-adversary/. The split between a witness of the model and a proof of the entry is a judgement about cost.
+  - *revisit if:* The linkage the tool reads from text lets a witness count that reaches nothing, found by a skeptic or by accident; or the throwaway step costs more than the verify step it runs beside; or an operation's success cannot be told from a value it returns.
 
 ## By tag
 
@@ -144,7 +147,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
-- `gate`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads
+- `gate`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, witness-per-way-an-operation-succeeds
 - `glue`: machine-glue-below-the-kernel
 - `heap`: heap-size-classes, page-buddy-metadata-in-the-span
 - `interrupt`: machine-glue-below-the-kernel
@@ -174,8 +177,10 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
+- `tools`: witness-per-way-an-operation-succeeds
 - `tracker`: review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `trusted-base`: region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
-- `verified`: arch-module, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
+- `verified`: arch-module, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, witness-per-way-an-operation-succeeds
 - `virtualization`: vmm-over-svm
+- `witness`: witness-per-way-an-operation-succeeds
