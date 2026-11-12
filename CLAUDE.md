@@ -76,26 +76,33 @@ A commit is tested when the gate, `tools/gate.py`, exits 0, or when it changes o
 
 # Working in the tree
 
+Each tool's opening comment is its manual: what it does, its options and its exit statuses. A line here says only when to reach for it.
+
 ```
 source tools/env.sh     # Verus and RUSTC_BOOTSTRAP
 tools/gate.py           # the gate; --target and --step run part of it
-cargo test --workspace  # every member's host tests, from the root; boot-host-tests reads the built dom0, so after a build
-tools/run.py            # build loader, kernel, dom0 and payload; boot under QEMU, with KVM when /dev/kvm is writable; --no-kvm forces TCG; --kernel-feature FEATURE builds the kernel with one of its features
+cargo test --workspace  # every member's host tests, from the root, after a build
+tools/run.py            # build the images and boot them under QEMU; --iommu, --no-kvm, --gdb, --kernel-feature FEATURE
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
-tools/check-upstream-copies.py --update   # rewrite the recorded delta of a copied upstream file after a deliberate change to it or a Verus pin that moves its upstream
-tools/check-boot-log.py --arch x86_64|aarch64 [--translation] LOG   # hold a dom0 boot's serial log to the gate's boot checks; - reads standard input
-tools/gdb.py            # attach gdb to a tools/run.py --gdb run, with the kernel's symbols
-tools/land.py           # from a task worktree: rebase onto main, gate, land by fast-forward and push; when the gate fails, say whether the change fails or main does, from the trees gates have judged (logs/gate-ledger at the project root); --judge-base gates main's commit by itself when none has judged it; a change to only what no gate step reads lands without a gate; a change that adds a `gap` or `unproven` item to `tools/external-body-list`, new or reclassed, stops with exit 7 before the gate unless `--approve PATH:ITEM:ATTRIBUTE` names each
-tools/build.py          # the gate's build: every workspace member from its own directory, then the loader, kernel (also with lock_stats), dom0 and payload, each ELF under the stack-frame check; --target aarch64 builds the loader, kernel, dom0 and payload for aarch64 and holds each to file(1)
-tools/aarch64-esp.py    # build the aarch64 loader, kernel, dom0 and payload and lay out the ESP that tools/orangepi-kvm.py --esp boots on the board
-tools/board.py          # build the aarch64 images, boot dom0 on the Orange Pi under KVM until QEMU exits, and hold the exit and the serial log (target/orangepi-serial.log) to the gate's boot checks, as the gate's aarch64 boot does but failing when the board is unreachable; a run that fails is also kept as logs/<worktree>-orangepi-<time>-<pid>.log at the project root and named on a 'kept:' line; --command-line LINE writes the kernel's command line to the partition; --iommu puts an SMMUv3 on the machine and requires its translation enabled; --gate runs the gate's aarch64 boot
-tools/orangepi-stack-overflow.py   # boot an aarch64 kernel that overflows its boot stack, or with --stack syscall its syscall stack, on the board and check its one report; not part of the gate
-tools/loop.py           # run rounds until the loop stops, each round, prover and skeptic a claude -p session in main whose temporary directory is scratch at the project root, with the model, autocompact window and effort loop.toml at the project root gives its kind, read before every session; Ctrl-C or --stop [PID] stops after the run in flight, twice or --stop --now ends it; --reload [PID] re-executes it after the run in flight; not part of the gate
-tools/reviews.py        # list the finished epics in the order an epic round takes them, each with what it needs: to close on its children's evidence, to close on the review that covers it, or a review written because none does; not part of the gate
-tools/bead-status.py    # serve the state of the Beads tree as a page at http://127.0.0.1:8377/ (--bind and --port move it): the issues not closed over time, what each session holds and the stage of its round, the questions waiting on the human, the graph of what waits on what, epics and leaves alike, each issue of it opening its details, the ready leaves, each top epic's progress, and the tokens each issue cost with those below it and those spent an hour, by who spent them, on the range the issue charts share, out of the token ledger it harvests every minute; a running server executes itself again when its script changes, so a landed change needs no restart; not part of the gate
-tools/token-ledger.py   # harvest this project's Claude Code transcripts into logs/token-ledger.sqlite at the project root, one row per API call under the issue its transcript was working, and print each agent kind's total; not part of the gate
-tools/check-stray-timer.py   # boot a kernel built with stray_timer, which arms CPU 0's timer for nothing, under KVM here and on the board (--target picks one), and check that the core reports the interrupt once and stops; not part of the gate
-tools/check-boot-panic.py   # boot a kernel built with boot_panic, which panics at boot, under tools/run.py here and on the board (--target picks one), and check that the panic ends QEMU with status 1 by itself, on x86_64 within seconds of the panic line; not part of the gate
+tools/build.py          # the gate's build; --target aarch64 builds that target's images
+tools/land.py           # from a task worktree: rebase onto main, gate, land by fast-forward and push
+tools/gdb.py            # attach gdb to a tools/run.py --gdb run
+tools/check-upstream-copies.py --update   # rewrite the recorded delta of a copied upstream file
+tools/check-boot-log.py --arch ARCH LOG   # hold a dom0 boot's serial log to the gate's boot checks
+tools/aarch64-esp.py    # build the aarch64 images and lay out the ESP the board boots
+tools/board.py          # boot dom0 on the Orange Pi under KVM and hold the run to the gate's boot checks; fails when the board is unreachable
+```
+
+Not part of the gate:
+
+```
+tools/loop.py           # run rounds until the loop stops; loop.toml at the project root gives each session's model
+tools/reviews.py        # the finished epics, in the order an epic round takes them, each with what it needs
+tools/bead-status.py    # serve the state of the Beads tree as a page at http://127.0.0.1:8377/
+tools/token-ledger.py   # harvest the transcripts' token counts into logs/token-ledger.sqlite at the project root
+tools/check-stray-timer.py         # a kernel whose timer fires for nothing reports it once and stops, on both targets
+tools/check-boot-panic.py          # a kernel that panics at boot ends QEMU with status 1, on both targets
+tools/orangepi-stack-overflow.py   # an aarch64 kernel that overflows a stack on the board reports it once
 ```
 
 `tools/setup-verus.sh` builds Verus under `verus` at the project root, beside the worktrees and in no tree, at the commit the workspace `Cargo.toml` pins as vstd's revision; every worktree's tools read that one build, so a new worktree needs no setup. The host is an AMD Ryzen 9 9950X3D; `/dev/kvm` is world-writable; edk2-ovmf is at `/usr/share/edk2/ovmf`.
