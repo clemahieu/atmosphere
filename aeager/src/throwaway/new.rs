@@ -6,8 +6,12 @@
 //! only under cfg(throwaway), which nothing else sets. design/witness-per-way-an-operation-succeeds/.
 #![allow(unused_imports)]
 use vstd::prelude::*;
+use acall::step::Caller;
+use aheap::source::*;
 use verified::capability::table::TABLE_INDICES;
 use crate::eager::*;
+use crate::exercise::*;
+use crate::glue::names_own_space;
 use crate::{Eager, MAX_PAGES, REGION_BYTES};
 
 verus! {
