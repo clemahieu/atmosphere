@@ -16,7 +16,6 @@ kernel/verified/capability/moving.rs	move_cap	true
 kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some
 kernel/verified/capability/power.rs	power_off	returns
-kernel/verified/capability/probe.rs	probe_at	Some
 kernel/verified/capability/reclaim.rs	reclaim_large_frame	Again
 kernel/verified/capability/reclaim.rs	reclaim_large_frame	Freed
 kernel/verified/capability/reclaim.rs	reclaim_large_frame	Unlinked
@@ -27,7 +26,6 @@ kernel/verified/capability/revoke.rs	revoke	Exhausted
 kernel/verified/capability/space.rs	retype_table_page	true
 kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again
-kernel/verified/capability/unmap.rs	unmap_at	Some
 aeager/src/eager.rs	Eager::reserve	Some
 aeager/src/eager.rs	Eager::back	Some
 aeager/src/eager.rs	Eager::release	returns

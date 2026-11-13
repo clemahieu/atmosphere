@@ -5262,6 +5262,9 @@ impl CapKernel {
                 &&& space_mapping(tree, process) == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), process).insert(path, entry)
                 &&& space_mapping(tree, process).contains_key(path)
                 &&& space_mapping(tree, process)[path] == entry
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& final(self).root_live(process)
+                &&& final(self).can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path)
             }),
     {
         hide(CapKernel::wf);
@@ -5489,8 +5492,89 @@ impl CapKernel {
             assert(space_mapping(a4, process) == space_mapping(a0, process).insert(path, entry));
             assert(space_mapping(a4, process).contains_key(path));
             assert(space_mapping(a4, process)[path] == entry);
+            // The entry the map wrote is present, under the root's process capability, which the map
+            // left as it was, and no step moved the flush epoch from where boot left it.
+            assert(s0.flush_epoch == 0);
+            assert(s3.flush_epoch == s0.flush_epoch);
+            assert(s4.flush_epoch == 0);
+            assert(s4.tables == s3.tables);
+            assert(s3.tables.has_slot(&s3.list, process, ROOT_PROCESS_SLOT));
+            assert(s3.payload_of(pn).base == process);
+            lemma_map_kept(s3, s4, mapping_node(walk_table(a3, process, path)->0, 0), nf);
+            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] s3.list.nodes@[j].live implies s4.list.nodes@[j].live by {}
+            CapKernel::lemma_slot_stays(s3, s4, process, ROOT_PROCESS_SLOT);
+            assert(s4.tables.has_slot(&s4.list, process, ROOT_PROCESS_SLOT));
+            assert(s4.is_cap(pn) && s4.payload_of(pn) == process_of(process));
+            assert(walk_table(a4, process, path) == walk_table(a3, process, path));
+            assert(walk(a4, process, path) is Some);
+            assert(a4.entry(walk_table(a4, process, path)->0, 0).perm.present);
+            assert(s4.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path));
         }
         (ok1, ok3, ok4)
+    }
+
+    /// From the state boot leaves, the root maps a frame at entry 0 of the level 1 table under entry l4
+    /// of its own space as witness_root_maps_a_frame_into_its_own_space maps it, with l4 in the lower
+    /// half. Through its process capability it then probes that one entry, which reads and clears the
+    /// entry's accessed and dirty bits and answers Some, and unmaps it, which clears the entry and
+    /// answers Some. The use is a pager reading which of its pages were touched, then taking one back.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_probes_and_unmaps_its_frame(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+        l4: usize,
+    ) -> (ret: (Option<crate::capability::probe::Probed>, Option<crate::capability::unmap::Unmapped>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES / 2,
+            !image_l4(image@, l4),
+        ensures
+            ret.0 is Some,
+            ret.1 is Some,
+            final(self).wf(),
+    {
+        hide(CapKernel::wf);
+        let ghost path = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+        let _ = self.witness_root_maps_a_frame_into_its_own_space(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, l4);
+        let ghost s1 = *self;
+        let va: u64 = (l4 as u64) * (SIZE_512G as u64);
+        proof {
+            lemma_top_entry_address(l4);
+            assert(va == (l4 * SIZE_512G) as u64);
+            assert(names_entry(va, 1));
+            assert(address_path(va) == path);
+            assert(s1.can_probe(process, ROOT_PROCESS_SLOT, va, 1));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let probed = self.probe_at(process, ROOT_PROCESS_SLOT, va, 1, Tracked(&mut steps));
+        let ghost s2 = *self;
+        proof {
+            let a1 = tree_of(&s1.table_pages, &s1.spaces);
+            let a2 = tree_of(&s2.table_pages, &s2.spaces);
+            assert(probed is Some);
+            assert(Self::probe_done(s1, s2, process, ROOT_PROCESS_SLOT, va, 1, probed->0));
+            assert(walk_table(a2, process, path) == walk_table(a1, process, path));
+            let t1 = walk_table(a1, process, path)->0;
+            assert(a2.entry(t1, 0) == a1.entry(t1, 0));
+            assert(s2.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path));
+            assert(s2.can_unmap_at(process, ROOT_PROCESS_SLOT, va, 1));
+        }
+        let unmapped = self.unmap_at(process, ROOT_PROCESS_SLOT, va, 1, Tracked(&mut steps));
+        (probed, unmapped)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

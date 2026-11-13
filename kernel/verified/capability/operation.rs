@@ -879,6 +879,46 @@ impl CapKernel {
     {
     }
 
+    /// An unmap reaches unmap_at: refused with nothing changed unless the caller may unmap the entry the
+    /// address in argument 1 and the level in argument 2 name, in the space of the capability in the
+    /// slot; ok otherwise, with that entry unmapped as page_unmapped says and its bits in the results.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_unmap_at(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Unmap),
+        ensures
+            ({
+                let slot = frame.slot() as usize;
+                let va = frame.argument(1);
+                let level = frame.argument(2);
+                &&& !pre.can_unmap_at(root, slot, va, level) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_unmap_at(root, slot, va, level) ==> out.status == STATUS_OK
+                    && exists|read: usize| Self::page_unmapped(pre, post, root, slot, va, level, #[trigger] unmapped_of(out, read))
+            }),
+    {
+    }
+
+    /// A probe reaches probe_at: refused with nothing changed unless the caller may probe the count in
+    /// argument 2 of level 1 entries from the one the address in argument 1 names, in the space of the
+    /// capability in the slot; ok otherwise, with those entries probed as probe_done says and the masks
+    /// in the results. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_probe_at(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Probe),
+        ensures
+            ({
+                let slot = frame.slot() as usize;
+                let va = frame.argument(1);
+                let count = frame.argument(2);
+                &&& !pre.can_probe(root, slot, va, count) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_probe(root, slot, va, count) ==> out.status == STATUS_OK
+                    && exists|read: Seq<usize>| Self::probe_done(pre, post, root, slot, va, count, #[trigger] probed_of(out, read))
+            }),
+    {
+    }
+
     /// An unmap, allowed or refused, leaves the tables, the list's parents and the bound threads as they
     /// were, and changes the kind or the liveness of no node but a mapping node, so no capability.
     pub proof fn lemma_unmapped_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)

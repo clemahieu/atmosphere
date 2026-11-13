@@ -1206,6 +1206,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).cores == old(self).cores,
+            final(self).flush_epoch == old(self).flush_epoch,
             ret == old(self).can_map_at(root, slot, va, level, from, page),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::page_mapped(*old(self), *final(self), root, slot, va, level, from, page),
