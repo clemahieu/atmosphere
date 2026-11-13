@@ -810,7 +810,8 @@ impl SizeClass {
 
     /// No slab record of this class is one of `other`'s: each class holds its records'
     /// permissions. It changes nothing.
-    pub fn records_apart(
+    #[cfg(verus_keep_ghost)]
+    pub(crate) fn records_apart(
         &mut self,
         other: &SizeClass,
         Ghost(store): Ghost<RecordStore>,
@@ -1423,7 +1424,7 @@ impl SizeClass {
     }
 
     /// Size class `c` with no slab, well formed over every store, page buddy and source.
-    pub fn new(c: usize) -> (r: Self)
+    pub(crate) fn new(c: usize) -> (r: Self)
         requires
             c < CLASSES,
         ensures
@@ -1455,7 +1456,7 @@ impl SizeClass {
     /// back what the call took.
     /// Either way it keeps what every class over the same three stands on.
     #[verifier::spinoff_prover]
-    pub fn alloc_small<S: SpanSource>(&mut self, store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>) -> (r:
+    pub(crate) fn alloc_small<S: SpanSource>(&mut self, store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>) -> (r:
         Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
             old(src).serves(old(token)@),
@@ -1916,7 +1917,7 @@ impl SizeClass {
     /// heads, the store, the page buddy and the source; a slab left with every slot free is retired,
     /// its run released and freed to the page buddy, its record put back in the store, and its base
     /// gone from the heads.
-    pub fn free_small<S: SpanSource>(
+    pub(crate) fn free_small<S: SpanSource>(
         &mut self,
         store: &mut RecordStore,
         pb: &mut PageBuddy,

@@ -152,7 +152,7 @@ pub proof fn lemma_class(c: nat)
 }
 
 /// The slot size of class `c`.
-pub fn size(c: usize) -> (r: usize)
+pub(crate) fn size(c: usize) -> (r: usize)
     requires
         c < CLASSES,
     ensures
@@ -187,7 +187,7 @@ pub fn size(c: usize) -> (r: usize)
 }
 
 /// The order of the runs class `c`'s slabs are cut from.
-pub fn order(c: usize) -> (r: usize)
+pub(crate) fn order(c: usize) -> (r: usize)
     requires
         c < CLASSES,
     ensures
@@ -229,7 +229,8 @@ pub fn order(c: usize) -> (r: usize)
 }
 
 /// The smallest class whose slots hold `n` bytes.
-pub fn class_of(n: usize) -> (c: usize)
+#[cfg(verus_keep_ghost)]
+pub(crate) fn class_of(n: usize) -> (c: usize)
     requires
         n <= PAGE_BYTES,
     ensures

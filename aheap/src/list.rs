@@ -8,7 +8,6 @@
 //! its full ones. The list writes the links of its records and nothing else of them.
 //!
 //! - `first()` is the first record, or none on an empty list.
-//! - `slab(p)` is the slab of the record at `p`, by reference.
 //! - `find(a)` walks the list from the first record to the one whose slab's run holds the address
 //!   `a`, or returns none when no record's does; linear in the list's length.
 //! - `push(p, perm)` puts the record at `p`, with the permission to it, on the front.
@@ -19,6 +18,7 @@ use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
 use crate::record::Record;
+#[cfg(verus_keep_ghost)]
 use crate::slab::Slab;
 
 verus! {
@@ -129,7 +129,8 @@ impl ClassList {
 
     /// No record is on both this list and `other`: each list holds its records' permissions, and two
     /// permissions to one record cannot be held at once. It changes nothing.
-    pub fn apart(&mut self, other: &ClassList, Ghost(prov): Ghost<Provenance>, Ghost(prov2): Ghost<Provenance>)
+    #[cfg(verus_keep_ghost)]
+    pub(crate) fn apart(&mut self, other: &ClassList, Ghost(prov): Ghost<Provenance>, Ghost(prov2): Ghost<Provenance>)
         requires
             old(self).wf(prov),
             other.wf(prov2),
@@ -151,7 +152,7 @@ impl ClassList {
     }
 
     /// An empty list, well formed with any provenance.
-    pub fn new() -> (r: Self)
+    pub(crate) fn new() -> (r: Self)
         ensures
             r.seq() == Seq::<int>::empty(),
             r.slabs() == Map::<int, Slab>::empty(),
@@ -165,7 +166,7 @@ impl ClassList {
     }
 
     /// The first record, or none when the list is empty.
-    pub fn first(&self, Ghost(prov): Ghost<Provenance>) -> (r: Option<*mut Record>)
+    pub(crate) fn first(&self, Ghost(prov): Ghost<Provenance>) -> (r: Option<*mut Record>)
         requires
             self.wf(prov),
         ensures
@@ -180,26 +181,8 @@ impl ClassList {
         self.head
     }
 
-    /// The slab of the record at `p`, by reference.
-    pub fn slab(&self, p: *mut Record, Ghost(prov): Ghost<Provenance>) -> (r: &Slab)
-        requires
-            self.wf(prov),
-            self.seq().contains(p@.addr as int),
-            p@.provenance == prov,
-        ensures
-            *r == self.slabs()[p@.addr as int],
-    {
-        let ghost a = p@.addr as int;
-        proof {
-            self.lemma_at(self.order@.index_of(a), prov);
-            assert(p == record_ptr(a, prov));
-        }
-        let tracked perm = self.perms.borrow().tracked_borrow(a);
-        &ptr_ref(p, Tracked(perm)).slab
-    }
-
     /// The record whose slab's run holds the address `a`, or none when no record's does.
-    pub fn find(&self, a: usize, Ghost(prov): Ghost<Provenance>) -> (r: Option<*mut Record>)
+    pub(crate) fn find(&self, a: usize, Ghost(prov): Ghost<Provenance>) -> (r: Option<*mut Record>)
         requires
             self.wf(prov),
         ensures
@@ -264,7 +247,7 @@ impl ClassList {
     }
 
     /// Puts the record at `p`, with the permission to it, on the front of the list.
-    pub fn push(&mut self, p: *mut Record, perm: Tracked<PointsTo<Record>>, Ghost(prov): Ghost<Provenance>)
+    pub(crate) fn push(&mut self, p: *mut Record, perm: Tracked<PointsTo<Record>>, Ghost(prov): Ghost<Provenance>)
         requires
             old(self).wf(prov),
             perm@.ptr() == p,
@@ -340,7 +323,7 @@ impl ClassList {
     }
 
     /// Takes the record at `p` off the list and returns the permission to it.
-    pub fn remove(&mut self, p: *mut Record, Ghost(prov): Ghost<Provenance>) -> (perm: Tracked<PointsTo<Record>>)
+    pub(crate) fn remove(&mut self, p: *mut Record, Ghost(prov): Ghost<Provenance>) -> (perm: Tracked<PointsTo<Record>>)
         requires
             old(self).wf(prov),
             old(self).seq().contains(p@.addr as int),

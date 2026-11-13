@@ -23,7 +23,6 @@
 //!   is the old one with the span reserved and the run backed.
 //! - `free_large(src, token, p, perm)` takes a large object's base and the permission to its pages, never
 //!   refuses, and leaves the source's view the old one without the span.
-//! - `contains(p)` says whether `p` is a large object's base.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -366,7 +365,7 @@ impl LargeMap {
     }
 
     /// The map holding no object.
-    pub fn new() -> (r: Self)
+    pub(crate) fn new() -> (r: Self)
         ensures
             r.objects() == Map::<int, nat>::empty(),
             forall|s: SourceView| #[trigger] r.wf(s),
@@ -466,21 +465,10 @@ impl LargeMap {
         None
     }
 
-    /// Whether `p` is a large object's base.
-    pub fn contains(&self, p: usize, Ghost(src): Ghost<SourceView>) -> (r: bool)
-        requires
-            self.wf(src),
-            src.wf(),
-        ensures
-            r == self.objects().contains_key(p as int),
-    {
-        self.locate(p, Ghost(src)).is_some()
-    }
-
     /// Reserves a span for an object of `size` bytes, more than one block's, and backs the object's
     /// pages and its record page; or refuses, when the source refused the reserve or the back in
     /// this call, and changes nothing but the refusal the source records.
-    pub fn alloc_large<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, size: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
+    pub(crate) fn alloc_large<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, size: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
             old(src).serves(old(token)@),
             old(self).wf(old(src)@),
@@ -654,7 +642,7 @@ impl LargeMap {
 
     /// Takes back the large object at `p` with the permission to its pages, and gives its span back
     /// to the source, record page and all.
-    pub fn free_large<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, perm: Tracked<PointsToRaw>)
+    pub(crate) fn free_large<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, perm: Tracked<PointsToRaw>)
         requires
             old(src).serves(old(token)@),
             old(self).wf(old(src)@),

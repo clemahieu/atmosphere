@@ -516,7 +516,7 @@ impl RecordStore {
     }
 
     /// A store with no record page, over any page buddy and source.
-    pub fn new() -> (r: Self)
+    pub(crate) fn new() -> (r: Self)
         ensures
             r.pages() == Set::<int>::empty(),
             r.taken() == Set::<int>::empty(),
@@ -1165,7 +1165,7 @@ impl RecordStore {
     /// page and returns its first record. Refuses only when every record is in use and the page
     /// buddy, with no free page in a held span, refused the run, or the source refused to back it,
     /// and then frees the run again.
-    pub fn take<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>) -> (r: Option<
+    pub(crate) fn take<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>) -> (r: Option<
         (*mut Record, Tracked<PointsTo<Record>>),
     >)
         requires
@@ -1347,7 +1347,7 @@ impl RecordStore {
     /// Takes back the record at `p` with the permission to its bytes; a record page left with no
     /// record in use is given back, its page released and its run freed. Every run held at a head
     /// that is no record page stays held.
-    pub fn put<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>, p: *mut Record, perm: Tracked<PointsTo<Record>>)
+    pub(crate) fn put<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S, token: &mut Tracked<S::Token>, p: *mut Record, perm: Tracked<PointsTo<Record>>)
         requires
             old(src).serves(old(token)@),
             old(self).wf(*old(pb), old(src)@),

@@ -1089,7 +1089,7 @@ impl PageBuddy {
     }
 
     /// A page buddy holding no span, keeping `spares` idle spans, over any source.
-    pub fn new(spares: usize) -> (r: Self)
+    pub(crate) fn new(spares: usize) -> (r: Self)
         ensures
             forall|src: SourceView| #[trigger] src.wf() ==> r.wf(src),
             r.spares() == spares,
@@ -1826,7 +1826,7 @@ impl PageBuddy {
     /// `k`, or from a new span when no held span has one. Refuses, and changes no held span, only
     /// when no held span has one and the source refused, in this call, the reserve of the span or the
     /// back of its metadata page, which its view records.
-    pub fn alloc_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, k: usize) -> (r: Result<usize, Refused>)
+    pub(crate) fn alloc_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, k: usize) -> (r: Result<usize, Refused>)
         requires
             old(src).serves(old(token)@),
             old(self).wf(old(src)@),
@@ -1879,7 +1879,7 @@ impl PageBuddy {
     /// back to the source with its metadata page, unless fewer than the spares are idle, when it
     /// stays as a spare.
     #[verifier::spinoff_prover]
-    pub fn free_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize)
+    pub(crate) fn free_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize)
         requires
             old(src).serves(old(token)@),
             old(self).wf(old(src)@),
@@ -2245,7 +2245,7 @@ impl PageBuddy {
     /// through the source, and returns a pointer to the run with the permission to exactly those
     /// pages' bytes; or refuses, backs nothing and changes nothing but the source's record of the
     /// back it refused. A caller that writes the whole run passes `pages(k)`.
-    pub fn back_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, k: usize, n: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
+    pub(crate) fn back_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, k: usize, n: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
             old(src).serves(old(token)@),
             old(self).wf(old(src)@),
@@ -2328,7 +2328,7 @@ impl PageBuddy {
 
     /// Gives back through the source the first `n` pages of the allocated run of order `k` at `p`,
     /// every one of them backed, taking the permission to their bytes.
-    pub fn release_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, k: usize, n: usize, perm: Tracked<PointsToRaw>)
+    pub(crate) fn release_run<S: SpanSource>(&mut self, src: &mut S, token: &mut Tracked<S::Token>, p: usize, k: usize, n: usize, perm: Tracked<PointsToRaw>)
         requires
             old(src).serves(old(token)@),
             old(self).wf(old(src)@),

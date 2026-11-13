@@ -676,7 +676,7 @@ impl Slab {
     /// A slab over the run of `bytes` bytes at `base`, cut into slots of `slot` bytes, every slot
     /// free: the permission to the run goes into `perms`, a slot's bytes at the slot's address and
     /// the tail at the address after the last slot.
-    pub fn new(
+    pub(crate) fn new(
         base: *mut u8,
         bytes: usize,
         slot: usize,
@@ -849,7 +849,7 @@ impl Slab {
 
     /// A free slot, now live: its pointer, with the run's provenance, and the permission to its
     /// bytes, taken out of `perms`; or None, changing nothing, exactly when no slot is free.
-    pub fn alloc(&mut self, Tracked(perms): Tracked<&mut Map<int, PointsToRaw>>) -> (r: Option<
+    pub(crate) fn alloc(&mut self, Tracked(perms): Tracked<&mut Map<int, PointsToRaw>>) -> (r: Option<
         (*mut u8, Tracked<PointsToRaw>),
     >)
         requires
@@ -970,7 +970,7 @@ impl Slab {
     }
 
     /// Takes back the permission to the live slot at `a`; the slot is free again.
-    pub fn free(
+    pub(crate) fn free(
         &mut self,
         a: usize,
         perm: Tracked<PointsToRaw>,
@@ -1037,7 +1037,7 @@ impl Slab {
     }
 
     /// No slot is free.
-    pub fn is_full(&self) -> (r: bool)
+    pub(crate) fn is_full(&self) -> (r: bool)
         requires
             self.wf(),
         ensures
@@ -1050,7 +1050,7 @@ impl Slab {
     }
 
     /// Every slot is free.
-    pub fn is_empty(&self) -> (r: bool)
+    pub(crate) fn is_empty(&self) -> (r: bool)
         requires
             self.wf(),
         ensures
@@ -1066,7 +1066,7 @@ impl Slab {
     }
 
     /// The start of the run.
-    pub fn start(&self) -> (r: *mut u8)
+    pub(crate) fn start(&self) -> (r: *mut u8)
         ensures
             r == self.base(),
     {
@@ -1074,7 +1074,7 @@ impl Slab {
     }
 
     /// The address `a` is in the run.
-    pub fn holds_address(&self, a: usize) -> (r: bool)
+    pub(crate) fn holds_address(&self, a: usize) -> (r: bool)
         ensures
             r == self.within(a as int),
     {
@@ -1083,7 +1083,7 @@ impl Slab {
     }
 
     /// Takes the permission to the whole run out of `perms`, every slot being free.
-    pub fn retire(&self, Tracked(perms): Tracked<&mut Map<int, PointsToRaw>>) -> (run: Tracked<
+    pub(crate) fn retire(&self, Tracked(perms): Tracked<&mut Map<int, PointsToRaw>>) -> (run: Tracked<
         PointsToRaw,
     >)
         requires

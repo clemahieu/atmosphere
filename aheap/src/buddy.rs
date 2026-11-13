@@ -798,7 +798,7 @@ impl BlockBuddy {
     }
 
     /// One free block of order BLOCK_ORDER.
-    pub fn new() -> (r: Self)
+    pub(crate) fn new() -> (r: Self)
         ensures
             r.wf(),
             r.blocks() == initial(),
@@ -898,7 +898,7 @@ impl BlockBuddy {
     }
 
     /// The smallest order at or above `k` that a free block has, if any.
-    pub fn fit_order(&self, k: usize) -> (r: Option<usize>)
+    pub(crate) fn fit_order(&self, k: usize) -> (r: Option<usize>)
         requires
             self.wf(),
             k <= BLOCK_ORDER,
@@ -934,7 +934,7 @@ impl BlockBuddy {
     /// Cuts a run of order `k` from the free block of the smallest order at or above `k`, and
     /// returns its first page; or refuses, and changes nothing, when no free block has order `k` or
     /// more.
-    pub fn alloc(&mut self, k: usize) -> (r: Option<usize>)
+    pub(crate) fn alloc(&mut self, k: usize) -> (r: Option<usize>)
         requires
             old(self).wf(),
             k <= BLOCK_ORDER,
@@ -1015,7 +1015,7 @@ impl BlockBuddy {
     }
 
     /// Takes back the run at `p`, coalescing it with its buddy while the buddy is free.
-    pub fn free(&mut self, p: usize)
+    pub(crate) fn free(&mut self, p: usize)
         requires
             old(self).wf(),
             old(self).used().contains_key(p as int),
@@ -1127,7 +1127,7 @@ impl BlockBuddy {
     }
 
     /// Whether no run is allocated at page `from` or above.
-    pub fn idle_from(&self, from: usize) -> (r: bool)
+    pub(crate) fn idle_from(&self, from: usize) -> (r: bool)
         requires
             self.wf(),
             from <= BLOCK_PAGES,
@@ -1171,7 +1171,7 @@ impl BlockBuddy {
     }
 
     /// Whether no run is allocated, which is when the view is the initial one (`lemma_idle`).
-    pub fn is_idle(&self) -> (r: bool)
+    pub(crate) fn is_idle(&self) -> (r: bool)
         requires
             self.wf(),
         ensures
