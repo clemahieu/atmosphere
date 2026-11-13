@@ -368,12 +368,12 @@ pub struct RecordStore {
     chain: Ghost<Seq<int>>,
     /// The index of each record in use, by address.
     owner: Ghost<Map<int, int>>,
-    // Only proofs read the headers and the rests, and a cargo build erases them.
+    // Only proofs read the headers and the rests, so only Verus compiles them.
     /// The permission to each record page's header, by page.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    #[cfg(verus_keep_ghost)]
     headers: Tracked<Map<int, PointsTo<PageHeader>>>,
     /// The permission to the spare bytes of each record page, by page.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    #[cfg(verus_keep_ghost)]
     rests: Tracked<Map<int, PointsToRaw>>,
 }
 
@@ -527,7 +527,9 @@ impl RecordStore {
             head: None,
             chain: Ghost(Seq::empty()),
             owner: Ghost(Map::empty()),
+            #[cfg(verus_keep_ghost)]
             headers: Tracked(Map::tracked_empty()),
+            #[cfg(verus_keep_ghost)]
             rests: Tracked(Map::tracked_empty()),
         };
         proof {

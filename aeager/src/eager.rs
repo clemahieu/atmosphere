@@ -632,13 +632,13 @@ struct Record {
     tabled: [bool; WINDOW_BLOCKS],
     state: [u8; MAX_PAGES],
     owner: [usize; MAX_PAGES],
-    /// The permission to each parked page's bytes, by page. Only proofs read it, and a cargo build
-    /// erases them.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    /// The permission to each parked page's bytes, by page. Only proofs read it, so only Verus
+    /// compiles it.
+    #[cfg(verus_keep_ghost)]
     parked: Tracked<Map<int, PointsToRaw>>,
-    /// The provenance of every permission the record hands out. Only proofs read it, and a cargo
-    /// build erases them.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    /// The provenance of every permission the record hands out. Only proofs read it, so only Verus
+    /// compiles it.
+    #[cfg(verus_keep_ghost)]
     provenance: Ghost<Provenance>,
 }
 
@@ -1594,7 +1594,9 @@ impl Eager {
                 tabled: [false; WINDOW_BLOCKS],
                 state: [FREE; MAX_PAGES],
                 owner: [0; MAX_PAGES],
+                #[cfg(verus_keep_ghost)]
                 parked: Tracked(Map::tracked_empty()),
+                #[cfg(verus_keep_ghost)]
                 provenance: Ghost(exposed@@),
             },
             exposed,

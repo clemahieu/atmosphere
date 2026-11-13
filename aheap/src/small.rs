@@ -651,8 +651,8 @@ pub struct SizeClass {
     /// The slabs with no free slot.
     full: ClassList,
     /// The permission to each free slot of the class's slabs, by address, and to each slab's tail.
-    /// Only proofs read it, and a cargo build erases them.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    /// Only proofs read it, so only Verus compiles it.
+    #[cfg(verus_keep_ghost)]
     perms: Tracked<Map<int, PointsToRaw>>,
 }
 
@@ -1438,6 +1438,7 @@ impl SizeClass {
             class: c,
             partial: ClassList::new(),
             full: ClassList::new(),
+            #[cfg(verus_keep_ghost)]
             perms: Tracked(Map::tracked_empty()),
         };
         proof {

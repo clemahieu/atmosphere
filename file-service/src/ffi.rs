@@ -11,11 +11,11 @@ use std::sync::{Mutex, Once};
 
 use super::{Client, Service};
 
-// `client` is dropped first, so its record locks release while `service` is alive.
+// `client` is dropped first, so its record locks release while `_service` is alive. Nothing reads
+// `_service`: it is held so the service lives as long as the client.
 struct Live {
     client: Client,
-    #[allow(dead_code)]
-    service: Service,
+    _service: Service,
 }
 
 static LIVE: Mutex<Option<Live>> = Mutex::new(None);
@@ -82,7 +82,7 @@ pub fn shim_create(image: &Path, map_size: u64) -> io::Result<()> {
     ensure_bound();
     let service = Service::create(image, map_size)?;
     let client = service.client();
-    *LIVE.lock().expect("live") = Some(Live { client, service });
+    *LIVE.lock().expect("live") = Some(Live { client, _service: service });
     Ok(())
 }
 

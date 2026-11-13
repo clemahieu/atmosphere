@@ -36,9 +36,9 @@ pub struct ClassList {
     head: Option<*mut Record>,
     /// The records' addresses, from the first.
     order: Ghost<Seq<int>>,
-    /// The permission to each record on the list, by address. Only proofs read it, and a cargo
-    /// build erases them.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    /// The permission to each record on the list, by address. Only proofs read it, so
+    /// only Verus compiles it.
+    #[cfg(verus_keep_ghost)]
     perms: Tracked<Map<int, PointsTo<Record>>>,
 }
 
@@ -158,7 +158,12 @@ impl ClassList {
             r.slabs() == Map::<int, Slab>::empty(),
             forall|prov: Provenance| #[trigger] r.wf(prov),
     {
-        let r = ClassList { head: None, order: Ghost(Seq::empty()), perms: Tracked(Map::tracked_empty()) };
+        let r = ClassList {
+            head: None,
+            order: Ghost(Seq::empty()),
+            #[cfg(verus_keep_ghost)]
+            perms: Tracked(Map::tracked_empty()),
+        };
         proof {
             assert(r.slabs() =~= Map::<int, Slab>::empty());
         }

@@ -22,6 +22,7 @@ use asys::operation;
 use verified::arch::Registers;
 #[cfg(verus_keep_ghost)]
 use verified::define::NUM_CPUS;
+#[cfg(verus_keep_ghost)]
 use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::kernel::TlbEntry;
@@ -32,11 +33,12 @@ verus! {
 /// What a process knows of the kernel as it calls: the kernel's state, and the root of its own table,
 /// which names the process to the kernel and never changes. A token: its fields are private and it has
 /// no constructor and no copy, so verified code holds only the one it was handed at the process's
-/// start and cannot keep an old one to call with again. Only specifications read its fields, and a
-/// cargo build erases them.
-#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+/// start and cannot keep an old one to call with again. Only specifications read its fields, so only
+/// Verus compiles them.
 pub tracked struct Caller {
+    #[cfg(verus_keep_ghost)]
     ghost kernel: CapKernel,
+    #[cfg(verus_keep_ghost)]
     ghost root: usize,
 }
 

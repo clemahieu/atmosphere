@@ -200,12 +200,12 @@ pub struct LargeMap {
     head: Option<*mut u8>,
     /// The bases of the objects, in the order their nodes link them.
     chain: Ghost<Seq<int>>,
-    // Only proofs read the nodes and the rests, and a cargo build erases them.
+    // Only proofs read the nodes and the rests, so only Verus compiles them.
     /// The permission to each object's node, by base.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    #[cfg(verus_keep_ghost)]
     nodes: Tracked<Map<int, PointsTo<LargeNode>>>,
     /// The permission to the rest of each object's record page, after its node, by base.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    #[cfg(verus_keep_ghost)]
     rests: Tracked<Map<int, PointsToRaw>>,
 }
 
@@ -373,7 +373,9 @@ impl LargeMap {
         let r = LargeMap {
             head: None,
             chain: Ghost(Seq::empty()),
+            #[cfg(verus_keep_ghost)]
             nodes: Tracked(Map::tracked_empty()),
+            #[cfg(verus_keep_ghost)]
             rests: Tracked(Map::tracked_empty()),
         };
         assert(r.objects() =~= Map::<int, nat>::empty());

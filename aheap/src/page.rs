@@ -619,12 +619,12 @@ pub struct PageBuddy {
     chain: Ghost<Seq<int>>,
     /// The metadata pages of the held spans.
     metas: Ghost<Set<int>>,
-    // Only proofs read the nodes and the rests, and a cargo build erases them.
+    // Only proofs read the nodes and the rests, so only Verus compiles them.
     /// The permission to each held span's node, by base.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    #[cfg(verus_keep_ghost)]
     nodes: Tracked<Map<int, PointsTo<Node>>>,
     /// The permission to the rest of each held span's metadata page, after its node, by base.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    #[cfg(verus_keep_ghost)]
     rests: Tracked<Map<int, PointsToRaw>>,
 }
 
@@ -1104,7 +1104,9 @@ impl PageBuddy {
             idle: 0,
             chain: Ghost(Seq::empty()),
             metas: Ghost(Set::empty()),
+            #[cfg(verus_keep_ghost)]
             nodes: Tracked(Map::tracked_empty()),
+            #[cfg(verus_keep_ghost)]
             rests: Tracked(Map::tracked_empty()),
         };
         assert(r.spans() =~= Map::<int, Map<int, Block>>::empty());

@@ -26,11 +26,15 @@
 // A cargo build erases specifications and proofs, so there a variable only they read looks unused.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
 
+#[cfg(not(verus_keep_ghost))]
+use core::marker::PhantomData;
 use vstd::atomic_ghost::*;
 use vstd::cell::pcell::{PCell, PointsTo};
 use vstd::cell::CellId;
 use vstd::prelude::*;
-use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
+#[cfg(verus_keep_ghost)]
+use vstd::resource::ghost_var::GhostVar;
+use vstd::resource::ghost_var::GhostVarAuth;
 use vstd::resource::Loc;
 
 verus! {
@@ -95,8 +99,11 @@ pub ghost struct ConsumerView<T> {
 /// The producer's ghost token, held in `Producer::token` so a caller holding `&Producer<T>` can
 /// pass `Tracked(Some(p.token.borrow()))` to `Consumer::observe` with no runtime argument.
 pub tracked struct ProducerToken<T> {
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    // Only proofs read the variable, so only Verus compiles it.
+    #[cfg(verus_keep_ghost)]
     tracked var: GhostVar<ProducerView<T>>,
+    #[cfg(not(verus_keep_ghost))]
+    v: PhantomData<T>,
 }
 
 impl<T> ProducerToken<T> {
@@ -244,10 +251,26 @@ impl<T> Mailbox<T> {
         );
         let m = Mailbox { word, s0, s1, s2 };
         let p = Producer {
-            slot: ProducerSlot { held: 0, perm: Tracked(p0), atomics: Ghost(0) },
+            slot: ProducerSlot {
+                held: 0,
+                #[cfg(verus_keep_ghost)]
+                perm: Tracked(p0),
+                #[cfg(not(verus_keep_ghost))]
+                v: PhantomData,
+                atomics: Ghost(0),
+            },
             token: Tracked(ProducerToken { var: pv }),
         };
-        let c = Consumer { held: 1, perm: Tracked(p1), token: Tracked(cv), atomics: Ghost(0) };
+        let c = Consumer {
+            held: 1,
+            #[cfg(verus_keep_ghost)]
+            perm: Tracked(p1),
+            #[cfg(verus_keep_ghost)]
+            token: Tracked(cv),
+            #[cfg(not(verus_keep_ghost))]
+            v: PhantomData,
+            atomics: Ghost(0),
+        };
         (m, p, c)
     }
 }
@@ -256,9 +279,11 @@ impl<T> Mailbox<T> {
 /// ghost code without exposing the slot index or permission.
 pub struct ProducerSlot<T> {
     held: u32,
-    // Only proofs read the permission, and a cargo build erases it.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    // Only proofs read the permission, so only Verus compiles it.
+    #[cfg(verus_keep_ghost)]
     perm: Tracked<PointsTo<T>>,
+    #[cfg(not(verus_keep_ghost))]
+    v: PhantomData<T>,
     atomics: Ghost<nat>,
 }
 
@@ -372,11 +397,13 @@ impl<T> Producer<T> {
 /// The consuming end.
 pub struct Consumer<T> {
     held: u32,
-    // Only proofs read the permission and the token, and a cargo build erases them.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    // Only proofs read the permission and the token, so only Verus compiles them.
+    #[cfg(verus_keep_ghost)]
     perm: Tracked<PointsTo<T>>,
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    #[cfg(verus_keep_ghost)]
     token: Tracked<GhostVar<ConsumerView<T>>>,
+    #[cfg(not(verus_keep_ghost))]
+    v: PhantomData<T>,
     atomics: Ghost<nat>,
 }
 
