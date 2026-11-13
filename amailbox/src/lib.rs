@@ -92,6 +92,30 @@ pub ghost struct ConsumerView<T> {
     pub armed: bool,
 }
 
+/// The producer's ghost token, held in `Producer::token` so a caller holding `&Producer<T>` can
+/// pass `Tracked(Some(p.token.borrow()))` to `Consumer::observe` with no runtime argument.
+pub tracked struct ProducerToken<T> {
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    tracked var: GhostVar<ProducerView<T>>,
+}
+
+impl<T> ProducerToken<T> {
+    /// Whether this token belongs to `m`'s producer.
+    pub closed spec fn wf(&self, m: &Mailbox<T>) -> bool {
+        self.var.id() == m.ids().producer
+    }
+
+    /// How many times the producer has published.
+    pub closed spec fn count(&self) -> nat {
+        self.var@.count
+    }
+
+    /// The value of the latest publish.
+    pub closed spec fn last(&self) -> T {
+        self.var@.last
+    }
+}
+
 /// What the word's invariant owns: the shared slot's permission and each end's authoritative ghost
 /// state.
 pub tracked struct Shared<T> {
@@ -219,54 +243,70 @@ impl<T> Mailbox<T> {
             Tracked(Shared { slot: p2, producer: pa, consumer: ca }),
         );
         let m = Mailbox { word, s0, s1, s2 };
-        let p = Producer { held: 0, perm: Tracked(p0), token: Tracked(pv), atomics: Ghost(0) };
+        let p = Producer {
+            slot: ProducerSlot { held: 0, perm: Tracked(p0), atomics: Ghost(0) },
+            token: Tracked(ProducerToken { var: pv }),
+        };
         let c = Consumer { held: 1, perm: Tracked(p1), token: Tracked(cv), atomics: Ghost(0) };
         (m, p, c)
     }
 }
 
-/// The producing end.
-pub struct Producer<T> {
+/// The private slot state of `Producer<T>`, kept opaque so `Producer::token` can be borrowed in
+/// ghost code without exposing the slot index or permission.
+pub struct ProducerSlot<T> {
     held: u32,
-    // Only proofs read the permission and the token, and a cargo build erases them.
+    // Only proofs read the permission, and a cargo build erases it.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     perm: Tracked<PointsTo<T>>,
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
-    token: Tracked<GhostVar<ProducerView<T>>>,
     atomics: Ghost<nat>,
+}
+
+impl<T> ProducerSlot<T> {
+    pub closed spec fn wf(&self, m: &Mailbox<T>, token: ProducerToken<T>) -> bool {
+        &&& self.held < 3
+        &&& self.perm@.id() == m.ids().cells[self.held as int]
+        &&& token.var.id() == m.ids().producer
+        &&& token.var@.held == self.held
+    }
+}
+
+/// The producing end.
+pub struct Producer<T> {
+    pub slot: ProducerSlot<T>,
+    /// The producer's ghost token, for `Consumer::observe` when the caller holds both ends.
+    pub token: Tracked<ProducerToken<T>>,
 }
 
 impl<T> Producer<T> {
     /// The slot the producer holds and may write.
     pub closed spec fn held(&self) -> u32 {
-        self.held
+        self.slot.held
     }
 
     /// The value in the producer's slot.
     pub closed spec fn value(&self) -> T {
-        *self.perm@.value()
+        *self.slot.perm@.value()
     }
 
     /// How many times the producer has published.
-    pub closed spec fn count(&self) -> nat {
-        self.token@@.count
+    pub open spec fn count(&self) -> nat {
+        self.token@.count()
     }
 
     /// The value of the latest publish.
-    pub closed spec fn last(&self) -> T {
-        self.token@@.last
+    pub open spec fn last(&self) -> T {
+        self.token@.last()
     }
 
     /// How many atomic operations on the word this end has performed.
     pub closed spec fn atomics(&self) -> nat {
-        self.atomics@
+        self.slot.atomics@
     }
 
-    pub closed spec fn wf(&self, m: &Mailbox<T>) -> bool {
-        &&& self.held < 3
-        &&& self.perm@.id() == m.ids().cells[self.held as int]
-        &&& self.token@.id() == m.ids().producer
-        &&& self.token@@.held == self.held
+    pub open spec fn wf(&self, m: &Mailbox<T>) -> bool {
+        &&& self.slot.wf(m, self.token@)
+        &&& self.token@.wf(m)
     }
 
     /// Stores `v` in the producer's slot. Nothing else changes: the slot is the producer's alone.
@@ -282,8 +322,8 @@ impl<T> Producer<T> {
             final(self).last() == old(self).last(),
             final(self).atomics() == old(self).atomics(),
     {
-        let cell = m.cell(self.held);
-        cell.write(Tracked(self.perm.borrow_mut()), v);
+        let cell = m.cell(self.slot.held);
+        cell.write(Tracked(self.slot.perm.borrow_mut()), v);
     }
 
     /// Hands the producer's slot to the consumer as the latest value, and takes the slot the word
@@ -300,18 +340,19 @@ impl<T> Producer<T> {
             final(self).atomics() == old(self).atomics() + 1,
     {
         proof {
-            lemma_word(self.held);
+            lemma_word(self.slot.held);
         }
-        let ghost held = self.held;
+        let ghost held = self.slot.held;
         let ghost value = self.value();
-        let back = atomic_with_ghost!(&m.word => swap(self.held | FRESH);
+        let back = atomic_with_ghost!(&m.word => swap(self.slot.held | FRESH);
             update prev -> next;
             ghost g => {
-                g.producer.agree(self.token.borrow());
-                vstd::modes::tracked_swap(self.perm.borrow_mut(), &mut g.slot);
-                let count = self.token@@.count + 1;
+                g.producer.agree(&self.token.borrow().var);
+                vstd::modes::tracked_swap(self.slot.perm.borrow_mut(), &mut g.slot);
+                let count = self.token@.var@.count + 1;
+                let tracked tok = self.token.borrow_mut();
                 g.producer.update(
-                    self.token.borrow_mut(),
+                    &mut tok.var,
                     ProducerView { held: index(prev), count, last: value },
                 );
                 let c = g.consumer@;
@@ -323,8 +364,8 @@ impl<T> Producer<T> {
         proof {
             assert(back & 3 == index(back));
         }
-        self.held = back & INDEX;
-        self.atomics = Ghost(self.atomics@ + 1);
+        self.slot.held = back & INDEX;
+        self.slot.atomics = Ghost(self.slot.atomics@ + 1);
     }
 }
 
@@ -384,10 +425,19 @@ impl<T> Consumer<T> {
     /// Takes the latest publish when the word is fresh. One load; when it finds the word stale the
     /// consumer's slot stays where it is, and when it finds it fresh one swap takes the fresh slot
     /// and returns the consumer's. Returns whether the consumer took a newer publish.
-    pub fn observe(&mut self, m: &Mailbox<T>) -> (adopted: bool)
+    ///
+    /// A caller holding `&Producer<T>` passes `Tracked(Some(p.token.borrow()))` to connect `adopted`
+    /// and the resulting slot to `p.count()` and `p.last()`; a caller without the producer passes
+    /// `Tracked(None)`.
+    pub fn observe(
+        &mut self,
+        m: &Mailbox<T>,
+        Tracked(producer): Tracked<Option<&ProducerToken<T>>>,
+    ) -> (adopted: bool)
         requires
             m.wf(),
             old(self).wf(m),
+            producer is Some ==> producer.unwrap().wf(m),
         ensures
             final(self).wf(m),
             !adopted ==> final(self).held() == old(self).held(),
@@ -400,11 +450,17 @@ impl<T> Consumer<T> {
             } else {
                 1nat
             },
+            producer is Some ==> (adopted <==> old(self).seen() < producer.unwrap().count()),
+            producer is Some ==> final(self).seen() == producer.unwrap().count(),
+            producer is Some ==> final(self).value() == producer.unwrap().last(),
     {
         let w = atomic_with_ghost!(&m.word => load();
             returning r;
             ghost g => {
                 g.consumer.agree(self.token.borrow());
+                if let Some(pt) = &producer {
+                    g.producer.agree(&pt.var);
+                }
                 if fresh(r) {
                     let c = g.consumer@;
                     g.consumer.update(self.token.borrow_mut(), ConsumerView { armed: true, ..c });
@@ -433,6 +489,9 @@ impl<T> Consumer<T> {
             update prev -> next;
             ghost g => {
                 g.consumer.agree(self.token.borrow());
+                if let Some(pt) = &producer {
+                    g.producer.agree(&pt.var);
+                }
                 let p = g.producer@;
                 vstd::modes::tracked_swap(self.perm.borrow_mut(), &mut g.slot);
                 g.consumer.update(
@@ -462,10 +521,15 @@ pub fn held_apart<T>(m: &Mailbox<T>, p: &Producer<T>, c: &Consumer<T>)
 {
     atomic_with_ghost!(&m.word => no_op();
         ghost g => {
-            g.producer.agree(p.token.borrow());
+            g.producer.agree(&p.token.borrow().var);
             g.consumer.agree(c.token.borrow());
         }
     );
 }
 
 } // verus!
+
+#[cfg(throwaway)]
+pub mod throwaway;
+#[cfg(verus_keep_ghost)]
+pub mod witness;
