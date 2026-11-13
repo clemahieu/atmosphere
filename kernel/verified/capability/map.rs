@@ -598,8 +598,8 @@ pub proof fn lemma_walk_table_entry_written(a: TableTree, b: TableTree, t: usize
     }
 }
 
-/// Clearing frame mapping e of table t moves no table walk: a step reads only entries that name a child,
-/// which the entry does in neither tree.
+/// Clearing frame mapping e of table t moves no step and no table walk: a step reads only entries that
+/// name a child, which the entry does in neither tree.
 pub proof fn lemma_walk_table_entry_cleared(a: TableTree, b: TableTree, t: usize, e: usize)
     requires
         b.maps.dom() == a.maps.dom(),
@@ -610,6 +610,7 @@ pub proof fn lemma_walk_table_entry_cleared(a: TableTree, b: TableTree, t: usize
         !b.entry(t, e).perm.present,
         forall|u: usize, i: usize| #![trigger b.entry(u, i)] i < ENTRIES && !(u == t && i == e) ==> b.entry(u, i) == a.entry(u, i),
     ensures
+        forall|u: usize, i: usize| #[trigger] step(b, u, i) == step(a, u, i),
         forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q),
 {
     assert(!a.names_child(t, e));
@@ -629,6 +630,130 @@ pub proof fn lemma_walk_table_entry_cleared(a: TableTree, b: TableTree, t: usize
             }
         }
     }
+}
+
+/// Node x of the list is live.
+pub open spec fn node_live(list: Tree, x: usize) -> bool {
+    x < NODE_SPACE && list.nodes@[x as int].live
+}
+
+/// What b keeps of a's links while the list's table nodes are as list says: every root is one still, and
+/// every entry that named a child table whose node is live names it still. A revoke step cuts only the
+/// table whose node it takes, and clears only frame entries otherwise.
+pub open spec fn links_kept(a: TableTree, b: TableTree, list: Tree) -> bool {
+    &&& forall|s: usize| #[trigger] b.is_root(s) == a.is_root(s)
+    &&& forall|u: usize, i: usize| #[trigger] step(a, u, i) is Some && node_live(list, step(a, u, i)->0)
+        ==> step(b, u, i) == step(a, u, i)
+}
+
+/// Each table the walk of path p from root s passes through, levels 3 to 1, has its node live in list.
+pub open spec fn walk_tables_live(a: TableTree, list: Tree, s: usize, p: SpacePath) -> bool {
+    match step(a, s, p.l4) {
+        None => false,
+        Some(t3) => node_live(list, t3) && match step(a, t3, p.l3) {
+            None => false,
+            Some(t2) => node_live(list, t2) && match step(a, t2, p.l2) {
+                None => false,
+                Some(t1) => node_live(list, t1),
+            },
+        },
+    }
+}
+
+/// A tree keeps its own links.
+pub proof fn lemma_links_kept_same(a: TableTree, list: Tree)
+    ensures
+        links_kept(a, a, list),
+{
+}
+
+/// A tree keeps the links of one whose steps are all its own.
+pub proof fn lemma_links_kept_steps(a: TableTree, b: TableTree, list: Tree)
+    requires
+        forall|s: usize| #[trigger] b.is_root(s) == a.is_root(s),
+        forall|u: usize, i: usize| #[trigger] step(b, u, i) == step(a, u, i),
+    ensures
+        links_kept(a, b, list),
+{
+}
+
+/// Kept links compose, when what is live at the end was live in the middle.
+pub proof fn lemma_links_kept_compose(a: TableTree, m: TableTree, b: TableTree, l1: Tree, l2: Tree)
+    requires
+        links_kept(a, m, l1),
+        links_kept(m, b, l2),
+        forall|x: usize| #[trigger] node_live(l2, x) ==> node_live(l1, x),
+    ensures
+        links_kept(a, b, l2),
+{
+    assert forall|u: usize, i: usize| #[trigger] step(a, u, i) is Some && node_live(l2, step(a, u, i)->0)
+        implies step(b, u, i) == step(a, u, i) by {
+        assert(node_live(l1, step(a, u, i)->0));
+        assert(step(m, u, i) == step(a, u, i));
+    }
+}
+
+/// A detach that cut the child whose node went keeps every other link.
+pub proof fn lemma_links_kept_detached(a: TableTree, b: TableTree, parent: usize, entry: usize, child: usize, list: Tree)
+    requires
+        detached(a, b, parent, entry, child),
+        step(a, parent, entry) == Some(child),
+        !node_live(list, child),
+    ensures
+        links_kept(a, b, list),
+{
+    assert forall|u: usize| #[trigger] b.is_root(u) == a.is_root(u) by {
+        assert(b.roots.contains_key(u) == a.roots.contains_key(u));
+    }
+    assert forall|u: usize| #[trigger] b.is_table(u) == a.is_table(u) by {
+        assert(b.maps.contains_key(u) == a.maps.contains_key(u));
+        assert(b.roots.contains_key(u) == a.roots.contains_key(u));
+    }
+    assert forall|u: usize, i: usize| #[trigger] step(a, u, i) is Some && node_live(list, step(a, u, i)->0)
+        implies step(b, u, i) == step(a, u, i) by {
+        assert(!(u == parent && i == entry));
+        if a.is_table(u) && i < ENTRIES {
+            assert(b.entry(u, i) == a.entry(u, i));
+            assert(b.record(u).level == a.record(u).level);
+            if a.is_root(u) {
+                assert(b.space_records[u].value().kind == a.space_records[u].value().kind);
+            }
+        }
+    }
+}
+
+/// Every walk whose tables' nodes are live in list finds in b the table it found in a.
+pub open spec fn walks_kept(a: TableTree, b: TableTree, list: Tree) -> bool {
+    forall|s: usize, p: SpacePath| walk_tables_live(a, list, s, p) ==> #[trigger] walk_table(b, s, p) == walk_table(a, s, p)
+}
+
+/// Kept links keep every walk through tables whose nodes are live.
+pub proof fn lemma_walks_kept(a: TableTree, b: TableTree, list: Tree)
+    requires
+        links_kept(a, b, list),
+    ensures
+        walks_kept(a, b, list),
+{
+    assert forall|s: usize, p: SpacePath| walk_tables_live(a, list, s, p)
+        implies #[trigger] walk_table(b, s, p) == walk_table(a, s, p) by {
+        lemma_walk_table_kept(a, b, list, s, p);
+    }
+}
+
+/// A walk whose tables' nodes stay live finds the table it found, where the links are kept.
+pub proof fn lemma_walk_table_kept(a: TableTree, b: TableTree, list: Tree, s: usize, p: SpacePath)
+    requires
+        links_kept(a, b, list),
+        walk_tables_live(a, list, s, p),
+    ensures
+        walk_table(b, s, p) == walk_table(a, s, p),
+{
+    assert(b.is_root(s) == a.is_root(s));
+    let t3 = step(a, s, p.l4)->0;
+    let t2 = step(a, t3, p.l3)->0;
+    assert(step(b, s, p.l4) == step(a, s, p.l4));
+    assert(step(b, t3, p.l3) == step(a, t3, p.l3));
+    assert(step(b, t2, p.l2) == step(a, t2, p.l2));
 }
 
 /// One path reaches a level 1 table's entry: each table has one parent entry, so a walk that ends at

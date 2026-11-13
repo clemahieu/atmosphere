@@ -10,6 +10,8 @@ verus! {
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::map::*;
 use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
@@ -297,7 +299,8 @@ impl CapKernel {
     /// What a revoke of the capability at a position did when it was not refused, by a thread of the
     /// process whose table is at root: the position names a capability, which stays one, at most
     /// REVOKE_BUDGET nodes of its run went and no other node, no mapping appeared, the tables are as they
-    /// were, no node changed its parent or its depth, the threads bound are those that were whose bindings are still
+    /// were, no node changed its parent or its depth, every table walk through tables whose nodes are left
+    /// finds what it found, the threads bound are those that were whose bindings are still
     /// live, the devices unbound are those whose binding nodes went, every process's record is as it was, and
     /// the step discharges the revoke's effect for the caller, which commands the capability.
     pub open spec fn cap_revoking_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
@@ -308,6 +311,7 @@ impl CapKernel {
         &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == pre.list.nodes@[x].depth
         &&& post.tables == pre.tables
         &&& Self::mappings_shrunk(pre, post)
+        &&& walks_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), post.list)
         &&& pre.list.seq@.len() - post.list.seq@.len() <= REVOKE_BUDGET
         &&& post.list.parent == pre.list.parent
         &&& discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c })
@@ -519,6 +523,7 @@ impl CapKernel {
             assert(pre.view().names.contains_key(c));
             assert(discharges(pre.view(), pre.view(), root, Effect::Revoke { cap: c }));
             lemma_bound_threads_live(&pre.list, &pre.tables);
+            lemma_links_kept_same(tree_of(&pre.table_pages, &pre.spaces), pre.list);
         }
         let ghost start = steps.count;
         let ghost mut gone: Seq<usize> = Seq::empty();
@@ -538,6 +543,7 @@ impl CapKernel {
                 pre == *old(self),
                 pre.flush_epoch == usize::MAX ==> *self == pre,
                 Self::mappings_shrunk(pre, *self),
+                links_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&self.table_pages, &self.spaces), self.list),
                 pre.cap_at(root, at) == Some(c),
                 c < NODE_SPACE,
                 self.is_cap(c),
@@ -571,6 +577,7 @@ impl CapKernel {
             if self.revoke_step(Ghost(holder), c, Tracked(steps)) {
                 proof {
                     assert(self.view() == mid.view());
+                    lemma_walks_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&self.table_pages, &self.spaces), self.list);
                 }
                 return RevokeStep::Done;
             }
@@ -591,6 +598,16 @@ impl CapKernel {
                     && (!(mid.list.nodes@[r as int].kind is Binding) ==> bound_threads(&self.list, &self.tables)
                         == bound_threads(&mid.list, &mid.tables));
                 Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, r);
+                assert forall|x: usize| #[trigger] node_live(self.list, x) implies node_live(mid.list, x) by {
+                    assert(x != r);
+                }
+                lemma_links_kept_compose(
+                    tree_of(&pre.table_pages, &pre.spaces),
+                    tree_of(&mid.table_pages, &mid.spaces),
+                    tree_of(&self.table_pages, &self.spaces),
+                    mid.list,
+                    self.list,
+                );
                 assert(mid.devices.wf()) by {
                     reveal(devices_wf);
                 }
@@ -620,6 +637,7 @@ impl CapKernel {
                 requires
                     taken <= REVOKE_BUDGET,
             ;
+            lemma_walks_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&self.table_pages, &self.spaces), self.list);
         }
         if self.list.is_childless(c) {
             RevokeStep::Done
@@ -643,6 +661,7 @@ impl CapKernel {
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
+            links_kept(tree_of(&old(self).table_pages, &old(self).spaces), tree_of(&final(self).table_pages, &final(self).spaces), final(self).list),
             final(self).is_cap(c),
             final(self).tables == old(self).tables,
             forall|x: int| 0 <= x < NODE_SPACE && #[trigger] final(self).list.nodes@[x].live
@@ -683,6 +702,7 @@ impl CapKernel {
         proof {
             pre.lemma_no_change_discharges_revoke(root, c);
             Self::lemma_blocks_revoked_none(pre, pre);
+            lemma_links_kept_same(tree_of(&pre.table_pages, &pre.spaces), pre.list);
         }
         let r = match self.list.leaf_of_run(c, Tracked(&mut *steps)) {
             Some(found) => found,
@@ -704,6 +724,7 @@ impl CapKernel {
             assert(Self::records_shrunk(pre, mid));
             assert(saved_registers(&mid.threads) =~= saved_registers(&cut.threads));
             Self::lemma_revoke_step_wf(cut, mid, *self, root, c, r);
+            Self::lemma_revoke_step_links(pre, cut, mid, *self, r);
             if pre.hidden_table(r) {
                 assert(cut.blocks == pre.blocks && cut.holders == pre.holders);
             }
@@ -764,6 +785,112 @@ impl CapKernel {
             }
         }
         false
+    }
+
+    /// A revoke step keeps every link to a table whose node it leaves: a hidden table's cut takes the one
+    /// entry that named the table its node is, a mapping's arm clears a frame entry, and nothing else of
+    /// the step writes a table.
+    proof fn lemma_revoke_step_links(pre: Self, cut: Self, mid: Self, post: Self, r: usize)
+        requires
+            pre.wf(),
+            r < NODE_SPACE,
+            pre.list.nodes@[r as int].live,
+            pre.hidden_table(r) ==> Self::detach_recorded(pre, cut, r),
+            !pre.hidden_table(r) ==> cut == pre,
+            cut.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(cut, mid, r),
+            !(cut.list.nodes@[r as int].kind is Mapping) ==> Self::same_tree(cut, mid),
+            mid.spaces.roots == cut.spaces.roots,
+            mid.spaces.records == cut.spaces.records,
+            mid.table_pages.records == cut.table_pages.records,
+            post.table_pages == mid.table_pages,
+            post.spaces == mid.spaces,
+            !post.list.nodes@[r as int].live,
+        ensures
+            links_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), post.list),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let k = tree_of(&cut.table_pages, &cut.spaces);
+        let m = tree_of(&mid.table_pages, &mid.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert(b == m);
+        assert(!node_live(post.list, r));
+        if pre.hidden_table(r) {
+            assert(cut.list == pre.list);
+            assert(k == m);
+            let q = a.record(r).parent;
+            if q is None {
+                assert(k == a);
+                lemma_links_kept_same(a, post.list);
+            } else {
+                let q = q->0;
+                assert(a.maps.contains_key(r));
+                assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, r));
+                lemma_table_bound(r);
+                assert(a.names_child(q.table, q.entry));
+                assert(a.entry(q.table, q.entry).addr == table_addr(r));
+                assert(step(a, q.table, q.entry) == Some(r));
+                lemma_links_kept_detached(a, k, q.table, q.entry, r, post.list);
+            }
+        } else if pre.list.nodes@[r as int].kind is Mapping {
+            assert(pre.mappings@.contains_key(r));
+            let mr = pre.mappings@[r];
+            assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, r));
+            assert(m.maps.dom() =~= a.maps.dom());
+            assert(frame_slot(a, mr.table, mr.entry));
+            reveal(entries_cleared);
+            lemma_walk_table_entry_cleared(a, m, mr.table, mr.entry);
+            lemma_links_kept_steps(a, m, post.list);
+        } else {
+            assert(m == a);
+            lemma_links_kept_same(a, post.list);
+        }
+    }
+
+    /// A revoke that took only mapping nodes keeps every table walk: a table a walk passes through is a
+    /// table page with a parent, so its node is live and hidden, and the revoke left it. So a map through
+    /// a walk that reached a table before the revoke reaches it after.
+    pub proof fn lemma_revoked_mappings_keep_walks(pre: Self, post: Self, root: usize, at: Position, s: usize, p: SpacePath)
+        requires
+            pre.wf(),
+            Self::cap_revoking_at(pre, post, root, at),
+            forall|x: int| 0 <= x < NODE_SPACE && pre.list.nodes@[x].live && !#[trigger] post.list.nodes@[x].live
+                ==> pre.list.nodes@[x].kind is Mapping,
+            walk_table(tree_of(&pre.table_pages, &pre.spaces), s, p) is Some,
+        ensures
+            walk_table(tree_of(&post.table_pages, &post.spaces), s, p) == walk_table(tree_of(&pre.table_pages, &pre.spaces), s, p),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let t3 = step(a, s, p.l4)->0;
+        let t2 = step(a, t3, p.l3)->0;
+        let t1 = step(a, t2, p.l2)->0;
+        pre.lemma_walked_table_left(post, s, p.l4);
+        pre.lemma_walked_table_left(post, t3, p.l3);
+        pre.lemma_walked_table_left(post, t2, p.l2);
+        assert(walk_tables_live(a, post.list, s, p));
+    }
+
+    /// A table a step reaches is a table page with a parent, so its node is live and hidden, and a revoke
+    /// that took only mapping nodes left it.
+    proof fn lemma_walked_table_left(self, post: Self, u: usize, i: usize)
+        requires
+            self.wf(),
+            forall|x: int| 0 <= x < NODE_SPACE && self.list.nodes@[x].live && !#[trigger] post.list.nodes@[x].live
+                ==> self.list.nodes@[x].kind is Mapping,
+            step(tree_of(&self.table_pages, &self.spaces), u, i) is Some,
+        ensures
+            node_live(post.list, step(tree_of(&self.table_pages, &self.spaces), u, i)->0),
+    {
+        let a = tree_of(&self.table_pages, &self.spaces);
+        let c = step(a, u, i)->0;
+        assert(a.names_child(u, i));
+        let _ = a.entry(u, i);
+        assert(a.is_page(c));
+        assert(a.record(c).parent is Some);
+        assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, c));
+        assert(self.list.nodes@[c as int].live);
+        lemma_table_bound(c);
+        assert(c < NODE_SPACE);
+        assert(post.list.nodes@[c as int].live);
     }
 
     /// The state after the leaf r of c's run has its arm unlinked and its node removed: well formed,
