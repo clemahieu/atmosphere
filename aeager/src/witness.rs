@@ -9,7 +9,7 @@ use verified::capability::table::TABLE_INDICES;
 
 use crate::eager::*;
 use crate::exercise::*;
-use crate::glue::names_own_space;
+use crate::glue::{names_own_space, own_process};
 use crate::{Eager, MAX_PAGES, REGION_BYTES};
 
 verus! {
@@ -35,6 +35,7 @@ pub fn witness_new(space: u64, untyped: u64, window: *mut u8) -> (r: Option<Eage
 pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (seen: Exercised)
     requires
         old(token)@.wf(),
+        own_process(old(token)@),
         names_own_space(old(token)@, space),
         window@.addr != 0,
         window@.addr as int % REGION_BYTES as int == 0,
@@ -58,6 +59,7 @@ pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tr
         window@.addr as int % REGION_BYTES as int == 0,
         window@.addr + WINDOW_BYTES <= usize::MAX,
         old(token)@.wf(),
+        own_process(old(token)@),
         names_own_space(old(token)@, space),
     ensures
         r is Some,
@@ -79,6 +81,7 @@ pub fn witness_release_span(space: u64, untyped: u64, window: *mut u8, token: &m
         window@.addr as int % REGION_BYTES as int == 0,
         window@.addr + WINDOW_BYTES <= usize::MAX,
         old(token)@.wf(),
+        own_process(old(token)@),
         names_own_space(old(token)@, space),
     ensures
         r.1 is Some,

@@ -643,10 +643,11 @@ struct Record {
 }
 
 impl Record {
-    /// `caller` is a token of the process whose space the record's system calls change: the slot at
-    /// `space` names its own.
+    /// `caller` is a token of the process whose space the record's system calls change, a process that
+    /// is its own: the slot at `space` names its own space.
     spec fn serves(&self, caller: Caller) -> bool {
         &&& caller.wf()
+        &&& own_process(caller)
         &&& names_own_space(caller, self.space)
         &&& frames_held(caller.kernel(), caller.root(), self.frames())
     }
@@ -790,10 +791,8 @@ impl Record {
                 let slot = self.slot(i);
                 let ghost before = *self;
                 proof {
-                    // Every frame held is mapped, and its slot is another page's, which frame slots keep apart.
-                    assert forall|u: int| #[trigger] before.frames().contains_key(u) implies before.frames()[u].1 is Some
-                        && before.frames()[u].0 != slot as usize by {
-                        assert(before.state@[u] != HELD);
+                    // Every frame held is another page's, whose slot frame slots keep apart.
+                    assert forall|u: int| #[trigger] before.frames().contains_key(u) implies before.frames()[u].0 != slot as usize by {
                         assert(u != i);
                         assert(0 <= frame_slot(self.slots as int, u) < TABLE_INDICES);
                         if u < i {
@@ -1148,6 +1147,15 @@ impl Record {
         assert(!live.contains(addr));
         let ghost held = *self;
         assert(held.frames().contains_key(i as int));
+        proof {
+            // No page the source holds is at addr: every mapped or parked page's address is live.
+            assert forall|j: int| #[trigger] held.frames().contains_key(j) && held.frames()[j].1 is Some implies held.frames()[j].1->0 != addr by {
+                if held.owner@[j] == addr {
+                    assert(occupied(held.state@[j]));
+                    assert(live.contains(addr));
+                }
+            }
+        }
         match map_page(caller, self.space, addr, slot, provenance, Ghost(live), Ghost(held.frames()), Ghost(i as int)) {
             Some(perm) => {
                 self.state[i] = MAPPED;
@@ -1619,6 +1627,7 @@ impl SpanSource for Eager {
 
     open spec fn serves(&self, token: Caller) -> bool {
         &&& token.wf()
+        &&& own_process(token)
         &&& names_own_space(token, self.space())
         &&& self.holds(token)
     }

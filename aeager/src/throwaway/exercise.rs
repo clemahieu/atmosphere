@@ -11,7 +11,7 @@ use aheap::source::*;
 use verified::capability::table::TABLE_INDICES;
 use crate::eager::*;
 use crate::exercise::*;
-use crate::glue::names_own_space;
+use crate::glue::{names_own_space, own_process};
 use crate::{Eager, MAX_PAGES, REGION_BYTES};
 
 verus! {
@@ -21,6 +21,7 @@ use crate::witness::*;
 pub fn throwaway_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>)
     requires
         old(token)@.wf(),
+        own_process(old(token)@),
         names_own_space(old(token)@, space),
         window@.addr != 0,
         window@.addr as int % REGION_BYTES as int == 0,
