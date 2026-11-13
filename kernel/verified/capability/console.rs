@@ -9,7 +9,6 @@ verus! {
 
 use crate::arch::serial_write_byte;
 use crate::capability::kernel::*;
-use crate::capability::operation::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::steps::Steps;
@@ -77,7 +76,8 @@ impl CapKernel {
     /// Writes the bytes the five words carry to the serial port, through the console capability at index
     /// i of the table at root; asys's PRINT says how the words carry bytes. The index comes from user
     /// space, so it can name no console, and then print is refused. Either way the kernel is unchanged.
-    pub fn print(&mut self, root: usize, i: usize, a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Tracked<&mut Steps>) -> (status: u64)
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub fn print(&mut self, root: usize, i: usize, a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -85,7 +85,7 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + PRINT_BYTES,
             *final(self) == *old(self),
-            status == if old(self).holds_console(root, i) { STATUS_OK } else { STATUS_REFUSED },
+            ret == old(self).holds_console(root, i),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
     {
         proof {
@@ -94,9 +94,9 @@ impl CapKernel {
         match self.held_kind(root, i) {
             Some(CapKind::Console) => {
                 serial_write(a, b, c, d, e, Tracked(steps));
-                STATUS_OK
+                true
             },
-            _ => STATUS_REFUSED,
+            _ => false,
         }
     }
 }

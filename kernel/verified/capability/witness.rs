@@ -25,7 +25,8 @@
 //! process's table into its own. And it can set and read the registers of a thread it has not started,
 //! through the thread's control capability.
 //! Beside those, boot can build the capability kernel from no prior state of `self`, and start the
-//! root: core 0 loads the root's space and enters its thread.
+//! root: core 0 loads the root's space and enters its thread. Through its console and power
+//! capabilities, the root can print and ask for power-off.
 //! And an IOMMU's flush leaves the frames, the threads and the view as they were.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
@@ -11098,6 +11099,77 @@ impl CapKernel {
             lemma_large_retyped_slot(m4, s10, process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, nf, big);
         }
         (r1, r2, ok5, Ghost((s7, s8, s9)))
+    }
+
+    /// From the state boot leaves, the root prints five words through its console capability in
+    /// ROOT_CONSOLE_SLOT: print accepts the call and leaves the kernel unchanged.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub fn witness_root_prints(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        a: u64,
+        b: u64,
+        c: u64,
+        d: u64,
+        e: u64,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret,
+            *final(self) == *old(self),
+    {
+        hide(CapKernel::wf);
+        proof {
+            assert(self.tables.roots@.contains_key(process));
+            assert(self.holds_console(process, ROOT_CONSOLE_SLOT));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.print(process, ROOT_CONSOLE_SLOT, a, b, c, d, e, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, the root asks for power-off through its power capability in
+    /// ROOT_POWER_SLOT: power_off accepts the call and leaves the kernel unchanged.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub fn witness_root_powers_off(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret,
+            *final(self) == *old(self),
+    {
+        hide(CapKernel::wf);
+        proof {
+            assert(self.tables.roots@.contains_key(process));
+            assert(self.holds_power(process, ROOT_POWER_SLOT));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.power_off(process, ROOT_POWER_SLOT, Tracked(&mut steps))
     }
 
     /// An IOMMU's flush changes nothing a process can see: its frames' bytes, the threads and the

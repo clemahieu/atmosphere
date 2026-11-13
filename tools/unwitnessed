@@ -6,14 +6,12 @@
 # tools/land.py refuses a landing that adds one unless --approve names it, as path:operation:way.
 # Fields, separated by tabs: path from the repository root, operation, way.
 #
-kernel/verified/capability/console.rs	print	returns
 kernel/verified/capability/delete.rs	delete	Some
 kernel/verified/capability/derive.rs	derive	true
 kernel/verified/capability/device.rs	add_devices	true
 kernel/verified/capability/moving.rs	move_cap	true
 kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some
-kernel/verified/capability/power.rs	power_off	returns
 kernel/verified/capability/retype.rs	retype_frame	true
 kernel/verified/capability/retype.rs	retype_leaf	true
 kernel/verified/capability/space.rs	retype_table_page	true

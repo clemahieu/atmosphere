@@ -979,6 +979,39 @@ impl CapKernel {
     {
     }
 
+    /// A print reaches print: the kernel is unchanged, refused unless the slot holds a console
+    /// capability, and ok when it does, whatever words arguments 1 to 5 carry.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_print(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Print),
+        ensures
+            ({
+                let slot = frame.slot() as usize;
+                &&& post == pre
+                &&& !pre.holds_console(root, slot) ==> out == status_only(STATUS_REFUSED)
+                &&& pre.holds_console(root, slot) ==> out == status_only(STATUS_OK)
+            }),
+    {
+    }
+
+    /// A power-off reaches power_off: the kernel is unchanged, refused unless the slot holds a power
+    /// capability, and ok when it does. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_power_off(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::PowerOff),
+        ensures
+            ({
+                let slot = frame.slot() as usize;
+                &&& post == pre
+                &&& !pre.holds_power(root, slot) ==> out == status_only(STATUS_REFUSED)
+                &&& pre.holds_power(root, slot) ==> out == status_only(STATUS_OK)
+            }),
+    {
+    }
+
     /// An unmap, allowed or refused, leaves the tables, the list's parents and the bound threads as they
     /// were, and changes the kind or the liveness of no node but a mapping node, so no capability.
     pub proof fn lemma_unmapped_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
@@ -1105,9 +1138,15 @@ impl CapKernel {
             Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(&mut steps))),
             Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(&mut steps))),
             Some(Operation::Print) => Some(status_only_outcome(
-                self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(&mut steps)),
+                if self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(&mut steps)) {
+                    STATUS_OK
+                } else {
+                    STATUS_REFUSED
+                },
             )),
-            Some(Operation::PowerOff) => Some(status_only_outcome(self.power_off(root, frame.slot() as usize, Tracked(&mut steps)))),
+            Some(Operation::PowerOff) => Some(status_only_outcome(
+                if self.power_off(root, frame.slot() as usize, Tracked(&mut steps)) { STATUS_OK } else { STATUS_REFUSED },
+            )),
             Some(Operation::Inspect) => Some(match position(frame.slot()) {
                 Some(at) => match self.inspect(root, at, Tracked(&mut steps)) {
                     Some(payload) => inspect_outcome(payload),
