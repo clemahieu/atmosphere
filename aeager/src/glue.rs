@@ -53,10 +53,196 @@ use verified::define::NUM_CPUS;
 use verified::capability::table::block_bytes;
 #[cfg(verus_keep_ghost)]
 use verified::define::{ENTRIES, PAGE_SZ, SIZE_1G, SIZE_2M, SIZE_512G};
+#[cfg(verus_keep_ghost)]
+use verified::capability::position::spec_position;
 use verified::capability::operation::*;
+#[cfg(verus_keep_ghost)]
 use verified::capability::position::POSITION_INDEX_MASK;
 
 verus! {
+
+/// One memory system call the eager source makes through `acall::memory`.
+pub ghost enum AcallCall {
+    Retype { untyped: u64, kind: u64, base: u64, word: u64, level: u64 },
+    Inspect { at: u64 },
+    Link { slot: u64, va: u64, level: u64, from: u64, child: u64 },
+    Map { slot: u64, va: u64, level: u64, from: u64, page: u64 },
+    Unmap { slot: u64, va: u64, level: u64 },
+}
+
+/// One step `acall::memory` took for the process at `root`, from `pre` to `post`, returning `out`.
+pub ghost struct AcallStep {
+    pub pre: CapKernel,
+    pub post: CapKernel,
+    pub root: usize,
+    pub call: AcallCall,
+    pub out: Outcome,
+}
+
+impl AcallStep {
+    /// `self` satisfies the `acall::memory` contract of `self.call` from `self.pre` to `self.post`
+    /// for `self.root` with outcome `self.out`.
+    #[verifier::opaque]
+    pub open spec fn valid(self) -> bool {
+        &&& self.pre.wf()
+        &&& self.post.wf()
+        &&& match self.call {
+            AcallCall::Retype { untyped, kind, base, word, level } =>
+                CapKernel::retype_contract(
+                    self.pre, self.post, self.root, kind, untyped as usize, base as usize, word, level as usize, self.out,
+                ),
+            AcallCall::Inspect { at } =>
+                CapKernel::inspect_contract(self.pre, self.post, self.root, spec_position(at), self.out),
+            AcallCall::Link { slot, va, level, from, child } =>
+                CapKernel::link_contract(
+                    self.pre, self.post, self.root, slot as usize, va, level, from as usize, child as usize, self.out,
+                ),
+            AcallCall::Map { slot, va, level, from, page } =>
+                CapKernel::map_contract(
+                    self.pre, self.post, self.root, slot as usize, va, level, from as usize, page as usize, self.out,
+                ),
+            AcallCall::Unmap { slot, va, level } =>
+                CapKernel::unmap_contract(self.pre, self.post, self.root, slot as usize, va, level, self.out),
+        }
+    }
+}
+
+/// `steps` is a contiguous sequence of valid `acall::memory` steps taking `pre` to `post`.
+#[verifier::opaque]
+pub open spec fn acall_steps(pre: Caller, post: Caller, steps: Seq<AcallStep>) -> bool {
+    &&& post.root() == pre.root()
+    &&& if steps.len() == 0 {
+        post.kernel() == pre.kernel()
+    } else {
+        &&& steps[0].pre == pre.kernel()
+        &&& steps.last().post == post.kernel()
+        &&& forall|k: int| 0 <= k < steps.len() ==> {
+            &&& (#[trigger] steps[k]).root == pre.root()
+            &&& steps[k].valid()
+        }
+        &&& forall|j: int, k: int|
+            0 <= j && k == j + 1 && k < steps.len() ==> (#[trigger] steps[j]).post == (#[trigger] steps[k]).pre
+    }
+}
+
+/// Every step in `steps` was accepted by the kernel (`STATUS_OK`).
+pub open spec fn acall_ok(steps: Seq<AcallStep>) -> bool {
+    forall|k: int| 0 <= k < steps.len() ==> (#[trigger] steps[k]).out.status == STATUS_OK
+}
+
+/// No step takes a caller to itself.
+pub proof fn lemma_acall_steps_none(c: Caller)
+    ensures
+        acall_steps(c, c, Seq::<AcallStep>::empty()),
+{
+    reveal(acall_steps);
+}
+
+/// One valid step of `pre`'s process from `pre`'s kernel to `post`'s takes `pre` to `post`.
+pub proof fn lemma_acall_steps_one(pre: Caller, post: Caller, step: AcallStep)
+    requires
+        post.root() == pre.root(),
+        step.pre == pre.kernel(),
+        step.post == post.kernel(),
+        step.root == pre.root(),
+        step.valid(),
+    ensures
+        acall_steps(pre, post, seq![step]),
+{
+    reveal(acall_steps);
+    let s = seq![step];
+    assert(s[0] == step && s.last() == step);
+}
+
+/// Concatenating two contiguous `acall::memory` step sequences produces one from the first's start to
+/// the second's end.
+pub proof fn lemma_acall_steps_append(a: Caller, b: Caller, c: Caller, s1: Seq<AcallStep>, s2: Seq<AcallStep>)
+    requires
+        acall_steps(a, b, s1),
+        acall_steps(b, c, s2),
+    ensures
+        acall_steps(a, c, s1 + s2),
+{
+    reveal(acall_steps);
+    let s = s1 + s2;
+    if s1.len() == 0 {
+        assert(s =~= s2);
+    } else if s2.len() == 0 {
+        assert(s =~= s1);
+    } else {
+        assert(s[0] == s1[0]);
+        assert(s.last() == s2.last());
+        assert forall|k: int| 0 <= k < s.len() implies {
+            &&& (#[trigger] s[k]).root == a.root()
+            &&& s[k].valid()
+        } by {
+            if k < s1.len() {
+                assert(s[k] == s1[k]);
+            } else {
+                assert(s[k] == s2[k - s1.len()]);
+            }
+        }
+        assert forall|j: int, k: int| 0 <= j && k == j + 1 && k < s.len() implies (#[trigger] s[j]).post == (#[trigger] s[k]).pre by {
+            if k < s1.len() {
+                assert(s[j] == s1[j]);
+                assert(s[k] == s1[k]);
+            } else if j == s1.len() - 1 {
+                assert(s[j] == s1.last());
+                assert(s[k] == s2[0]);
+            } else {
+                assert(s[j] == s2[j - s1.len()]);
+                assert(s[k] == s2[k - s1.len()]);
+            }
+        }
+    }
+}
+
+/// Concatenating two accepted step sequences is accepted, and vice versa.
+pub proof fn lemma_acall_ok_append(s1: Seq<AcallStep>, s2: Seq<AcallStep>)
+    ensures
+        acall_ok(s1 + s2) <==> (acall_ok(s1) && acall_ok(s2)),
+{
+    let s = s1 + s2;
+    if acall_ok(s1) && acall_ok(s2) {
+        assert forall|k: int| 0 <= k < s.len() implies (#[trigger] s[k]).out.status == STATUS_OK by {
+            if k < s1.len() {
+                assert(s[k] == s1[k]);
+            } else {
+                assert(s[k] == s2[k - s1.len()]);
+            }
+        }
+    }
+    if acall_ok(s) {
+        assert forall|k: int| 0 <= k < s1.len() implies (#[trigger] s1[k]).out.status == STATUS_OK by {
+            assert(s1[k] == s[k]);
+        }
+        assert forall|k: int| 0 <= k < s2.len() implies (#[trigger] s2[k]).out.status == STATUS_OK by {
+            assert(s2[k] == s[s1.len() + k]);
+        }
+    }
+}
+
+/// Appending a sequence ending in a refused step after an accepted prefix ends in that same refused
+/// step, with every earlier step accepted.
+pub proof fn lemma_acall_refused_after_ok(s1: Seq<AcallStep>, s2: Seq<AcallStep>)
+    requires
+        acall_ok(s1),
+        s2.len() > 0,
+        acall_ok(s2.drop_last()),
+        s2.last().out.status == STATUS_REFUSED,
+    ensures
+        (s1 + s2).len() > 0,
+        acall_ok((s1 + s2).drop_last()),
+        (s1 + s2).last() == s2.last(),
+        !acall_ok(s1 + s2),
+{
+    let s = s1 + s2;
+    assert(s.last() == s2.last());
+    assert(s.drop_last() =~= s1 + s2.drop_last());
+    lemma_acall_ok_append(s1, s2.drop_last());
+    assert(s[s.len() - 1] == s2.last());
+    assert(STATUS_REFUSED != STATUS_OK);
+}
 
 /// The count of the block that holds page `page`: one for each capability that holds the block and
 /// one for each entry that maps a page of it.
@@ -79,7 +265,7 @@ pub open spec fn own_process(caller: Caller) -> bool {
 }
 
 /// One frame a source holds, `(slot, at)`: `at`, when there is one, is an address one entry maps; while
-/// `slot` of the table at `root` holds a capability, it is a one-page frame whose block no other table
+/// `slot` of the table at `root` holds a capability, it is a writable one-page frame whose block no other table
 /// holds a capability of, counted at most by that capability and the entry at `at`, or by the capability
 /// alone when there is no `at`, and the entry at `at`, while there is one, maps that frame's page.
 pub open spec fn frame_held(k: CapKernel, root: usize, f: (usize, Option<usize>)) -> bool {
@@ -89,6 +275,7 @@ pub open spec fn frame_held(k: CapKernel, root: usize, f: (usize, Option<usize>)
     &&& v.contains_key(f.0) ==> {
         &&& v[f.0].kind is Frame
         &&& v[f.0].order == 0
+        &&& v[f.0].rights & right_bit(Right::Write) != 0
         &&& k.held_by(block_ref(&k.blocks, slot_page(k, root, f.0)), root)
         &&& frame_refs(k, slot_page(k, root, f.0)) <= if f.1 is Some { 2usize } else { 1usize }
         &&& f.1 is Some && m.contains_key(address_path(f.1->0 as u64))
@@ -440,6 +627,7 @@ proof fn lemma_frames_retyped(
             assert(block_ref(&post.blocks, view_frame(fv, 0)) != block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], q)));
         }
     }
+    assert(7u32 & 2u32 != 0) by (bit_vector);
     assert(frame_held(post, root, (slot, None::<usize>)));
     assert forall|i: int| #[trigger] f.contains_key(i) implies frame_held(post, root, f[i]) by {
         if i != key {
@@ -608,16 +796,23 @@ proof fn lemma_frames_unmapped(
 }
 
 /// The level whose entry maps one page.
-const PAGE_LEVEL: u64 = 1;
+pub const PAGE_LEVEL: u64 = 1;
 
 /// The write right's bit, as inspect returns rights.
 const RIGHT_WRITE: u64 = 2;
 
 /// Retypes the free page at physical `base`, inside the untyped at `untyped`, as a frame whose
-/// capability goes in the slot `destination`. Whether the kernel accepted. No frame of `frames` names
-/// `destination`; each is kept, and the new frame, mapped nowhere, is held under `key` once the kernel
-/// accepted.
-pub(crate) fn retype_frame(caller: &mut Tracked<Caller>, untyped: u64, base: u64, destination: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>, key: Ghost<int>) -> (r: bool)
+/// capability goes in the slot `destination`. Whether the kernel accepted, and the step it took. No
+/// frame of `frames` names `destination`; each is kept, and the new frame, mapped nowhere, is held under
+/// `key` once the kernel accepted.
+pub(crate) fn retype_frame(
+    caller: &mut Tracked<Caller>,
+    untyped: u64,
+    base: u64,
+    destination: u64,
+    frames: Ghost<Map<int, (usize, Option<usize>)>>,
+    key: Ghost<int>,
+) -> (r: (bool, Ghost<AcallStep>))
     requires
         old(caller)@.wf(),
         own_process(old(caller)@),
@@ -629,12 +824,23 @@ pub(crate) fn retype_frame(caller: &mut Tracked<Caller>, untyped: u64, base: u64
         final(caller)@.root() == old(caller)@.root(),
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
-        r ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.insert(key@, (destination as usize, None))),
-        !r ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
+        r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.insert(key@, (destination as usize, None))),
+        !r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
+        acall_steps(old(caller)@, final(caller)@, seq![r.1@]),
+        r.1@.call == (AcallCall::Retype { untyped, kind: RETYPE_FRAME, base, word: destination, level: 0 }),
+        r.0 <==> r.1@.out.status == STATUS_OK,
+        !r.0 ==> r.1@.out.status == STATUS_REFUSED,
     no_unwind
 {
     let ghost pre = caller@;
     let out = memory::retype(caller, untyped, RETYPE_FRAME, base, destination, 0);
+    let ghost step = AcallStep {
+        pre: pre.kernel(),
+        post: caller@.kernel(),
+        root: pre.root(),
+        call: AcallCall::Retype { untyped, kind: RETYPE_FRAME, base, word: destination, level: 0 },
+        out,
+    };
     proof {
         // The destination comes to hold a frame, which writes no space.
         assert forall|space: u64| #[trigger] names_own_space(pre, space) implies names_own_space(caller@, space) by {}
@@ -645,14 +851,24 @@ pub(crate) fn retype_frame(caller: &mut Tracked<Caller>, untyped: u64, base: u64
         } else {
             lemma_frames_same(pre.kernel(), caller@.kernel(), root, frames@);
         }
+        assert(step.valid()) by {
+            reveal(AcallStep::valid);
+        }
+        lemma_acall_steps_one(pre, caller@, step);
     }
-    out.status == STATUS_OK
+    (out.status == STATUS_OK, Ghost(step))
 }
 
 /// Retypes the free order-3 block at physical `base`, inside the untyped at `untyped`, as an unlinked
-/// table page of `level`. Whether the kernel accepted.
+/// table page of `level`. Whether the kernel accepted, and the step it took.
 /// Every frame of `frames` is kept.
-pub(crate) fn retype_table_page(caller: &mut Tracked<Caller>, untyped: u64, base: u64, level: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>) -> bool
+pub(crate) fn retype_table_page(
+    caller: &mut Tracked<Caller>,
+    untyped: u64,
+    base: u64,
+    level: u64,
+    frames: Ghost<Map<int, (usize, Option<usize>)>>,
+) -> (r: (bool, Ghost<AcallStep>))
     requires
         old(caller)@.wf(),
         own_process(old(caller)@),
@@ -663,24 +879,47 @@ pub(crate) fn retype_table_page(caller: &mut Tracked<Caller>, untyped: u64, base
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
         frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
+        acall_steps(old(caller)@, final(caller)@, seq![r.1@]),
+        r.1@.call == (AcallCall::Retype { untyped, kind: RETYPE_TABLE_PAGE, base, word: 0, level }),
+        r.0 <==> r.1@.out.status == STATUS_OK,
+        !r.0 ==> r.1@.out.status == STATUS_REFUSED,
     no_unwind
 {
     let ghost pre = caller@;
     let out = memory::retype(caller, untyped, RETYPE_TABLE_PAGE, base, 0, level);
+    let ghost step = AcallStep {
+        pre: pre.kernel(),
+        post: caller@.kernel(),
+        root: pre.root(),
+        call: AcallCall::Retype { untyped, kind: RETYPE_TABLE_PAGE, base, word: 0, level },
+        out,
+    };
     proof {
         if out.status == STATUS_OK {
             lemma_frames_kept(pre.kernel(), caller@.kernel(), pre.root(), frames@);
         } else {
             lemma_frames_same(pre.kernel(), caller@.kernel(), pre.root(), frames@);
         }
+        assert(step.valid()) by {
+            reveal(AcallStep::valid);
+        }
+        lemma_acall_steps_one(pre, caller@, step);
     }
-    out.status == STATUS_OK
+    (out.status == STATUS_OK, Ghost(step))
 }
 
 /// Links the unlinked table page at physical `table`, inside the untyped at `untyped`, into the entry
-/// at `level` that `address` names in the space at `space`. Whether the kernel accepted.
-/// Every frame of `frames` is kept.
-pub(crate) fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, level: u64, untyped: u64, table: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>) -> bool
+/// at `level` that `address` names in the space at `space`. Whether the kernel accepted, and the step
+/// it took. Every frame of `frames` is kept.
+pub(crate) fn link(
+    caller: &mut Tracked<Caller>,
+    space: u64,
+    address: usize,
+    level: u64,
+    untyped: u64,
+    table: u64,
+    frames: Ghost<Map<int, (usize, Option<usize>)>>,
+) -> (r: (bool, Ghost<AcallStep>))
     requires
         old(caller)@.wf(),
         own_process(old(caller)@),
@@ -691,25 +930,41 @@ pub(crate) fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, lev
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
         frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
+        acall_steps(old(caller)@, final(caller)@, seq![r.1@]),
+        r.1@.call == (AcallCall::Link { slot: space, va: address as u64, level, from: untyped, child: table }),
+        r.0 <==> r.1@.out.status == STATUS_OK,
+        !r.0 ==> r.1@.out.status == STATUS_REFUSED,
     no_unwind
 {
     let ghost pre = caller@;
     let out = memory::link(caller, space, address as u64, level, untyped, table);
+    let ghost step = AcallStep {
+        pre: pre.kernel(),
+        post: caller@.kernel(),
+        root: pre.root(),
+        call: AcallCall::Link { slot: space, va: address as u64, level, from: untyped, child: table },
+        out,
+    };
     proof {
         assert(space_mapping(tree_of(&caller@.kernel().table_pages, &caller@.kernel().spaces), pre.root())
             == space_mapping(tree_of(&pre.kernel().table_pages, &pre.kernel().spaces), pre.root()));
         lemma_frames_same(pre.kernel(), caller@.kernel(), pre.root(), frames@);
+        assert(step.valid()) by {
+            reveal(AcallStep::valid);
+        }
+        lemma_acall_steps_one(pre, caller@, step);
     }
-    out.status == STATUS_OK
+    (out.status == STATUS_OK, Ghost(step))
 }
 
 /// Maps the frame whose capability is at `frame`, which the source holds under `key` of `frames`,
 /// mapped nowhere, at the page `address` in the space at `space`: on success the permission to the
 /// page's bytes, with `provenance`, and the frame held mapped there; otherwise every frame kept. The frame is
 /// inspected first and mapped only with the write right, so the page is one the hardware lets the
-/// caller write; a frame whose capability lacks it, or a slot no inspect of the caller's own table
-/// names, is refused here. The slot at `space` names the caller's own space, the one its thread runs
-/// in, and no other frame of `frames` is at `address`. `live` holds every address of the window whose
+/// caller write; a slot no inspect of the caller's own table names is refused here, and a frame the
+/// source holds has the write right. Also returns the steps it took: the inspect, and the map when the
+/// inspect was accepted. The slot at `space` names the caller's own space, the one its thread runs in,
+/// and no other frame of `frames` is at `address`. `live` holds every address of the window whose
 /// page's permission the caller holds or has handed out, and `address` is not among them.
 pub(crate) fn map_page(
     caller: &mut Tracked<Caller>,
@@ -720,12 +975,13 @@ pub(crate) fn map_page(
     live: Ghost<ISet<usize>>,
     frames: Ghost<Map<int, (usize, Option<usize>)>>,
     key: Ghost<int>,
-) -> (r: Option<Tracked<PointsToRaw>>)
+) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(caller)@.wf(),
         own_process(old(caller)@),
         names_own_space(old(caller)@, space),
         !live@.contains(address),
+        frame <= POSITION_INDEX_MASK,
         frames_held(old(caller)@.kernel(), old(caller)@.root(), frames@),
         frames@.contains_key(key@),
         frames@[key@] == (frame as usize, None::<usize>),
@@ -735,31 +991,71 @@ pub(crate) fn map_page(
         final(caller)@.root() == old(caller)@.root(),
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
-        match r {
+        match r.0 {
             Some(perm) => {
                 &&& perm@.is_range(address as int, PAGE_BYTES as int)
                 &&& perm@.provenance() == provenance@
                 &&& frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.insert(key@, (frame as usize, Some(address))))
+                &&& acall_ok(r.1@)
             },
-            None => frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
+            None => {
+                &&& frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@)
+                &&& r.1@.len() > 0
+                &&& acall_ok(r.1@.drop_last())
+                &&& r.1@.last().out.status == STATUS_REFUSED
+            },
         },
+        acall_steps(old(caller)@, final(caller)@, r.1@),
+        1 <= r.1@.len() <= 2,
+        r.1@[0].call == (AcallCall::Inspect { at: frame }),
+        r.1@.len() == 2 ==> r.1@[1].call == (AcallCall::Map { slot: space, va: address as u64, level: PAGE_LEVEL, from: frame, page: 0 }),
     no_unwind
 {
-    if frame > POSITION_INDEX_MASK {
-        return None;
-    }
+    // The body relates three states; their invariants stay folded, and the lemmas open them.
+    hide(CapKernel::wf);
     proof {
         lemma_own_position(frame);
     }
     let ghost first = caller@;
     let seen = memory::inspect(caller, frame);
+    let ghost mid = caller@;
+    let ghost step1 = AcallStep {
+        pre: first.kernel(),
+        post: mid.kernel(),
+        root: first.root(),
+        call: AcallCall::Inspect { at: frame },
+        out: seen,
+    };
     proof {
         assert(space_mapping(tree_of(&caller@.kernel().table_pages, &caller@.kernel().spaces), first.root())
             == space_mapping(tree_of(&first.kernel().table_pages, &first.kernel().spaces), first.root()));
         lemma_frames_same(first.kernel(), caller@.kernel(), first.root(), frames@);
+        assert(step1.valid()) by {
+            reveal(AcallStep::valid);
+        }
+        lemma_acall_steps_one(first, mid, step1);
+        let root = first.root();
+        if seen.status == STATUS_OK {
+            // An accepted inspect names a slot of the caller's own table, and a frame the source holds
+            // there has the write right.
+            assert(first.kernel().view_table_at(root, None) == Some(root));
+            assert(first.kernel().table_view(root).contains_key(frame as usize));
+            assert(frame_held(first.kernel(), root, frames@[key@]));
+            let rights = first.kernel().table_view(root)[frame as usize].rights;
+            assert(rights & right_bit(Right::Write) != 0);
+            assert(seen.result_4 == rights as u64);
+            assert((rights as u64) & 2u64 != 0) by (bit_vector)
+                requires
+                    rights & 2u32 != 0;
+            assert(seen.result_4 & RIGHT_WRITE != 0);
+        } else {
+            assert(seen.status == STATUS_REFUSED);
+            assert(seq![step1].drop_last() =~= Seq::<AcallStep>::empty());
+        }
     }
+    let ghost inspected = seq![step1];
     if seen.status != STATUS_OK || seen.result_4 & RIGHT_WRITE == 0 {
-        return None;
+        return (None, Ghost(inspected));
     }
     let ghost before = caller@.kernel();
     let ghost root = caller@.root();
@@ -771,17 +1067,38 @@ pub(crate) fn map_page(
                 (rights as u64) & 2u64 != 0;
     }
     let out = memory::map(caller, space, address as u64, PAGE_LEVEL, frame, 0);
+    let ghost step2 = AcallStep {
+        pre: before,
+        post: caller@.kernel(),
+        root,
+        call: AcallCall::Map { slot: space, va: address as u64, level: PAGE_LEVEL, from: frame, page: 0 },
+        out,
+    };
+    let ghost steps = seq![step1, step2];
     proof {
         if out.status == STATUS_OK {
             lemma_frames_mapped(before, caller@.kernel(), root, space, address, frames@, key@, out);
         } else {
             lemma_frames_same(before, caller@.kernel(), root, frames@);
         }
+        assert(step2.valid()) by {
+            reveal(AcallStep::valid);
+        }
+        lemma_acall_steps_one(mid, caller@, step2);
+        lemma_acall_steps_append(first, mid, caller@, seq![step1], seq![step2]);
+        assert(seq![step1] + seq![step2] =~= steps);
+        assert(steps[0] == step1 && steps[1] == step2 && steps.last() == step2);
+        if out.status != STATUS_OK {
+            assert(steps.drop_last() =~= seq![step1]);
+        }
     }
     if out.status == STATUS_OK {
-        Some(mapped_permission(Ghost(before), Ghost(caller@.kernel()), Ghost(root), space, address, frame, Ghost(out), provenance, live))
+        (
+            Some(mapped_permission(Ghost(before), Ghost(caller@.kernel()), Ghost(root), space, address, frame, Ghost(out), provenance, live)),
+            Ghost(steps),
+        )
     } else {
-        None
+        (None, Ghost(steps))
     }
 }
 
@@ -894,8 +1211,9 @@ fn page_permission(
 }
 
 /// Unmaps the page at `address` in the space at `space`, the caller's own, taking the permission to its
-/// bytes. Whether the kernel accepted. The frame the source holds under `key` of `frames` is the one
-/// mapped there: once the kernel accepted it is held mapped nowhere, and otherwise it is dropped.
+/// bytes. Whether the kernel accepted, and the step it took. The frame the source holds under `key` of
+/// `frames` is the one mapped there: once the kernel accepted it is held mapped nowhere, and otherwise
+/// it is dropped.
 pub(crate) fn unmap_page(
     caller: &mut Tracked<Caller>,
     space: u64,
@@ -903,7 +1221,7 @@ pub(crate) fn unmap_page(
     perm: Tracked<PointsToRaw>,
     frames: Ghost<Map<int, (usize, Option<usize>)>>,
     key: Ghost<int>,
-) -> (r: bool)
+) -> (r: (bool, Ghost<AcallStep>))
     requires
         old(caller)@.wf(),
         own_process(old(caller)@),
@@ -917,13 +1235,24 @@ pub(crate) fn unmap_page(
         final(caller)@.root() == old(caller)@.root(),
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
-        r ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.insert(key@, (frames@[key@].0, None))),
-        !r ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.remove(key@)),
+        r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.insert(key@, (frames@[key@].0, None))),
+        !r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.remove(key@)),
+        acall_steps(old(caller)@, final(caller)@, seq![r.1@]),
+        r.1@.call == (AcallCall::Unmap { slot: space, va: address as u64, level: PAGE_LEVEL }),
+        r.0 <==> r.1@.out.status == STATUS_OK,
+        !r.0 ==> r.1@.out.status == STATUS_REFUSED,
     no_unwind
 {
     let ghost pre = caller@;
     // The caller gave up the permission to every byte of the page, so nothing it uses is there.
     let out = memory::unmap(caller, space, address as u64, PAGE_LEVEL);
+    let ghost step = AcallStep {
+        pre: pre.kernel(),
+        post: caller@.kernel(),
+        root: pre.root(),
+        call: AcallCall::Unmap { slot: space, va: address as u64, level: PAGE_LEVEL },
+        out,
+    };
     proof {
         let root = pre.root();
         assert forall|s: u64| #[trigger] names_own_space(pre, s) implies names_own_space(caller@, s) by {
@@ -935,8 +1264,12 @@ pub(crate) fn unmap_page(
             lemma_frames_same(pre.kernel(), caller@.kernel(), root, frames@);
             lemma_frames_drop(caller@.kernel(), root, frames@, key@);
         }
+        assert(step.valid()) by {
+            reveal(AcallStep::valid);
+        }
+        lemma_acall_steps_one(pre, caller@, step);
     }
-    out.status == STATUS_OK
+    (out.status == STATUS_OK, Ghost(step))
 }
 
 } // verus!
