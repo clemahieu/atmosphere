@@ -70,4 +70,33 @@ pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tr
     src.reserve(token, 1)
 }
 
+/// Reserves a one-block span from a fresh eager source over a region-aligned window, releases it and
+/// reserves again: the second reservation is granted at the base the first was, which the released
+/// span held.
+pub fn witness_release_span(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: (*mut u8, Option<*mut u8>))
+    requires
+        window@.addr != 0,
+        window@.addr as int % REGION_BYTES as int == 0,
+        window@.addr + WINDOW_BYTES <= usize::MAX,
+        old(token)@.wf(),
+        names_own_space(old(token)@, space),
+    ensures
+        r.1 is Some,
+        r.1->0@.addr == r.0@.addr,
+{
+    proof {
+        assert(1int % LEAF_INDICES as int != 0) by (compute);
+        assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+    }
+    let mut src: Eager = Eager::new(space, untyped, 0, MAX_PAGES, 1, window).unwrap();
+    let first = src.reserve(token, 1).unwrap();
+    src.release_span(token, first.addr());
+    proof {
+        assert(src@.spans =~= Map::<int, Span>::empty());
+        assert(src.window_fits(0, 1));
+    }
+    let again = src.reserve(token, 1);
+    (first, again)
+}
+
 } // verus!

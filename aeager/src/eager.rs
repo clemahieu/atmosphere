@@ -552,6 +552,7 @@ impl Spans {
             view@.wf(),
         ensures
             final(self).inv(),
+            final(self).window == old(self).window,
             final(self).map@ == old(self).map@.remove(span as int),
         no_unwind
     {
@@ -1759,7 +1760,10 @@ impl SpanSource for Eager {
         self.record.release_run(start, pages, perm);
     }
 
-    fn release_span(&mut self, token: &mut Tracked<Caller>, span: usize) {
+    fn release_span(&mut self, token: &mut Tracked<Caller>, span: usize)
+        ensures
+            final(self).window() == old(self).window(),
+    {
         proof {
             use_type_invariant(&*self);
             lemma_released_span_wf(self@, span as int);

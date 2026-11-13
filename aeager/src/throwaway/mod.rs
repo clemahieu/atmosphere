@@ -5,4 +5,5 @@
 //! compiled only under cfg(throwaway). design/witness-per-way-an-operation-succeeds/.
 pub mod exercise;
 pub mod new;
+pub mod release_span;
 pub mod reserve;
