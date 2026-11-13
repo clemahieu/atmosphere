@@ -1486,6 +1486,8 @@ impl CapKernel {
             } else if kind is Binding {
                 reveal(thread_bound);
                 assert(thread_bound(&self.threads, x));
+            } else if kind is Placement {
+                reveal(placements_wf);
             }
         }
         if self.devices.records@[d].space is None && self.list.nodes@[x as int].live {
@@ -1888,6 +1890,20 @@ impl CapKernel {
             assert(post.is_cap(y));
         }
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|y: usize| y < NODE_SPACE implies ((#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Placement)
+            == (pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Placement) by {
+            if y != x {
+                assert(post.list.nodes@[y as int].live == pre.list.nodes@[y as int].live);
+            }
+        }
+        assert forall|y: usize| #[trigger] pre.tables.is_cap(&pre.list, y) && pre.tables.payload_of(y).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, y)
+            &&& post.tables.payload_of(y) == pre.tables.payload_of(y)
+        } by {
+            assert(pre.is_cap(y));
+            assert(post.is_cap(y));
+        }
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert forall|e: int| 0 <= e < post.devices.count && (#[trigger] post.devices.records@[e]).space is Some implies {
             &&& post.iommus.present@[post.devices.records@[e].iommu as int]
             &&& post.devices.records@[e].unbound <= post.iommus.acked@[post.devices.records@[e].iommu as int]

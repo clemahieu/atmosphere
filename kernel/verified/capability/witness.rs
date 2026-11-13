@@ -22,8 +22,9 @@
 //! A VMM can give its guest memory: the root retypes a nested table, gives it the tables of one
 //! guest-physical path and maps a frame there.
 //! A creator can take back what it gave a process it controls: it claims a capability out of the
-//! process's table into its own. And it can set and read the registers of a thread it has not started,
-//! through the thread's control capability.
+//! process's table into its own. It can set and read the registers of a thread it has not started,
+//! through the thread's control capability, and place that thread on a core at a priority through a
+//! core capability and start it.
 //! Beside those, boot can build the capability kernel from no prior state of `self`, and start the
 //! root: core 0 loads the root's space and enters its thread. Through its console and power
 //! capabilities, the root can print and ask for power-off; through a core's capability it can hand on
@@ -1831,13 +1832,12 @@ impl CapKernel {
         self.switch_space(0, Some(base), base + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
     }
 
-    /// From the state boot leaves, with a second process built at `base` as
-    /// witness_process_holds_capability builds it, with its thread at `base + 10 * PAGE_SZ`: core 0
-    /// loads the second space, points its register at it and enters that thread; switch_thread takes
-    /// the core to idle, on the kernel's root; the core then loads the root's space and points its
-    /// register there with no thread; and switch_thread takes it back to the thread straight from the
-    /// root's space, in one write that keeps the generation. A switch between threads of two processes
-    /// waits on a thread being placed on a core, which no verified operation does yet. See
+    /// From the state boot leaves, with a second process built at `base` and its thread at
+    /// `base + 10 * PAGE_SZ` placed on core 0 and started as witness_root_starts_placed_thread starts
+    /// it: core 0 loads the second space, points its register at it and switches in that thread;
+    /// switch_thread takes the core to idle, on the kernel's root; the core then loads the root's space
+    /// and points its register there with no thread; and switch_thread takes it back to the thread
+    /// straight from the root's space, in one write that keeps the generation. See
     /// design/core-names-a-space-while-running-its-thread/.
     pub fn witness_thread_switch(
         &mut self,
@@ -1874,10 +1874,13 @@ impl CapKernel {
     {
         hide(CapKernel::wf);
         let ghost s0 = *self;
-        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, Ghost(kernel_root), base);
+        let _ = self.witness_root_starts_placed_thread(root, process, leaf, frames, t, free, image, untyped, frame, present, Ghost(kernel_root), base);
         let thread = base + 10 * PAGE_SZ;
         let ghost s1 = *self;
         proof {
+            assert(s1.cores@.len() == NUM_CPUS) by {
+                reveal(CapKernel::wf);
+            }
             assert(s1.cores == s0.cores);
             assert(s1.cores@[0].generation == 1);
             assert(s1.cores@[0].next_pcid == 1);
@@ -1907,7 +1910,7 @@ impl CapKernel {
             assert(s2.threads == s1.threads);
             assert(s2.cores@[0].current_thread is None);
         }
-        self.enter_boot_thread(0, thread);
+        self.switch_in(0, thread);
         let ghost s3 = *self;
         proof {
             assert(s3.cores@[0].current_thread == Some(thread));
@@ -11605,6 +11608,304 @@ impl CapKernel {
             assert(s2.view().holds(process, n));
         }
         ok2
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// of two free ones past those boot's tables took from the first untyped: the root retypes a leaf
+    /// into root entry 2 of its own table, a process at `base` into slot 1 of that leaf, and a thread
+    /// at `base + 10 * PAGE_SZ` into slot 2 bound to that process, then places the thread on core 0 at
+    /// priority 0 through its core capability in ROOT_CORE_SLOT and starts it. Both `place` and `start`
+    /// succeed: the thread's placement node is a child of the core capability, its record names core 0
+    /// at priority 0, and its state is Runnable on core 0.
+    /// design/witness-per-way-an-operation-succeeds/, design/cpu-time-as-capability/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_starts_placed_thread(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: (bool, bool))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret.0,
+            ret.1,
+            ({
+                let thread = (base + 10 * PAGE_SZ) as usize;
+                let core_cap = (leaf@ + ROOT_CORE_SLOT) as usize;
+                &&& base + 10 * PAGE_SZ <= usize::MAX
+                &&& final(self).wf()
+                &&& final(self).cores == old(self).cores
+                &&& final(self).spaces.kernel_root == old(self).spaces.kernel_root
+                &&& witness_alive(*final(self), process)
+                &&& witness_alive(*final(self), base)
+                &&& final(self).threads.records@.contains_key(thread)
+                &&& final(self).threads.records@[thread].value().process == Some(base)
+                &&& final(self).threads.records@[thread].value().state == (ThreadState::Runnable { core: 0 })
+                &&& final(self).threads.records@[thread].value().placement == Some(Placement { core: 0, priority: 0 })
+                &&& !final(self).threads.records@[thread].value().pending_stop
+                &&& !final(self).threads.records@[thread].value().dying
+                &&& final(self).list.is_child(core_cap, placement_node(thread))
+                &&& final(self).list.nodes@[placement_node(thread) as int].kind is Placement
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let ghost itb = image_tables_bound(image@);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let ghost core_cap = (leaf@ + ROOT_CORE_SLOT) as usize;
+        proof {
+            lemma2_to64();
+            lemma_tables_bound_nonneg(image@);
+            assert(0 < untyped@);
+            assert(s0.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s0.list.nodes@[u as int].depth == 1);
+            assert(s0.tables.is_cap(&s0.list, u));
+            assert(s0.tables.caps_wf(&s0.list)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(cap_wf(first));
+            assert(payload_wf(first));
+            assert(first.kind is Untyped && first.rights == UNTYPED_RIGHTS);
+            assert(UNTYPED_RIGHTS & right_bit(Right::Retype) != 0) by (compute_only);
+            let pn = (leaf@ + 1) as usize;
+            assert(s0.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)));
+            s0.lemma_process_cap(pn);
+            assert(s0.processes.records@.contains_key(process));
+            assert(!s0.processes.records@[process].value().dead);
+            assert(s0.slot_holds(process, ROOT_CORE_SLOT, core_cap, core_payload(0, MAX_PRIORITY)));
+            assert(s0.list.nodes@[core_cap as int].depth == 1);
+            assert(s0.tables.has_slot(&s0.list, process, ROOT_CORE_SLOT));
+            assert(s0.is_cap(core_cap));
+            assert(s0.root_untyped(process) == u);
+            assert(s0.root_table_block(process, cursor_block(first.base, itb)));
+            assert(s0.root_table_block(process, cursor_block(first.base, itb + 1)));
+            lemma_pow2_pos(first.order as nat);
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((itb + 2) * PROCESS_BYTES <= block_bytes(first.order));
+            assert(first.base + block_bytes(first.order) <= NODE_SPACE);
+            assert(base == first.base + itb * PROCESS_BYTES);
+            assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
+            lemma_runs_blocks(free@, MAX_ORDER as nat);
+            let b0 = bs[0];
+            assert(b0.1 <= MAX_ORDER && b0.0 + pow2(b0.1) <= NUM_PAGES);
+            assert(b0.0 * PAGE_SZ <= NUM_PAGES * PAGE_SZ) by (nonlinear_arith)
+                requires
+                    b0.0 <= NUM_PAGES,
+            ;
+            assert(first.base == b0.0 * PAGE_SZ);
+            assert((b0.1 as u8) as nat == b0.1);
+            assert(block_bytes(first.order) == pow2(b0.1) * PAGE_SZ);
+            lemma_fundamental_div_mod_converse(base as int, PAGE_SZ as int, b0.0 + 8 * itb, 0);
+            assert(base / PAGE_SZ == b0.0 + 8 * itb);
+        }
+        let b2 = base + PROCESS_BYTES;
+        let bt = b2 + 2 * PAGE_SZ;
+        proof {
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
+            assert(base % PROCESS_BYTES == 0);
+            assert(b2 % PROCESS_BYTES == 0);
+            lemma_block_page(base, 0);
+            lemma_block_page(b2, 0);
+            lemma_block_page(b2, 2);
+            assert(b2 / PAGE_SZ == base / PAGE_SZ + 8);
+            assert(bt / PAGE_SZ == b2 / PAGE_SZ + 2);
+            assert(!s0.blocks.covered((base / PAGE_SZ) as int));
+            assert(!s0.blocks.covered((b2 / PAGE_SZ) as int));
+            assert(!s0.blocks.covered(b2 / PAGE_SZ + 2));
+            assert forall|i: int| base / PAGE_SZ <= i < base / PAGE_SZ + 8 implies #[trigger] s0.blocks.pages@[i].kind is Free by {
+                assert(s0.blocks.pages@[base / PAGE_SZ + (i - base / PAGE_SZ)].kind is Free);
+            }
+            assert forall|i: int| b2 / PAGE_SZ <= i < b2 / PAGE_SZ + 8 implies #[trigger] s0.blocks.pages@[i].kind is Free by {
+                assert(s0.blocks.pages@[b2 / PAGE_SZ + (i - b2 / PAGE_SZ)].kind is Free);
+            }
+        }
+
+        // A leaf for the root, in root entry 2 of its own table.
+        let at1 = Position { through: None, index: 2 };
+        proof {
+            assert(s0.destination_at(process, None) == Some(process));
+            assert(s0.tables.leaf(process, 2) == NO_LEAF);
+            assert(s0.can_retype_under(process, ROOT_UNTYPED_SLOT, b2, 1));
+            assert(s0.blocks.small_free((b2 / PAGE_SZ) as int, 1));
+            assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at1, b2));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at1, b2, Tracked(&mut steps));
+        let ghost s1 = *self;
+        proof {
+            assert(ok1);
+            assert(Self::leaf_retyped(s0, s1, process, ROOT_UNTYPED_SLOT, at1, b2));
+            assert(s1.tables.leaf(process, 2) == b2);
+            assert(s0.tables.has_slot(&s0.list, process, ROOT_UNTYPED_SLOT));
+            assert(s0.is_cap(u));
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_UNTYPED_SLOT));
+            assert(s1.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(s1.is_cap(u) && s1.payload_of(u) == first && s1.list.nodes@[u as int].depth == 1);
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT));
+            assert(s1.tables.node_of(process, ROOT_CORE_SLOT) == core_cap);
+            assert(s1.is_cap(core_cap) && s1.payload_of(core_cap) == core_payload(0, MAX_PRIORITY) && s1.list.nodes@[core_cap as int].depth == 1);
+            assert(index_ok(WITNESS_PROCESS_SLOT) && index_entry(WITNESS_PROCESS_SLOT) == 2);
+            assert(index_ok(WITNESS_THREAD_SLOT) && index_entry(WITNESS_THREAD_SLOT) == 2);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_PROCESS_SLOT));
+            assert(!s1.list.nodes@[s1.tables.node_of(process, WITNESS_PROCESS_SLOT) as int].live);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_THREAD_SLOT));
+            assert(!s1.list.nodes@[s1.tables.node_of(process, WITNESS_THREAD_SLOT) as int].live);
+            assert(s1.tables.node_of(process, WITNESS_PROCESS_SLOT) == b2 + 1);
+            assert(s1.tables.node_of(process, WITNESS_THREAD_SLOT) == b2 + 2);
+            assert(s1.processes == s0.processes);
+            assert(s1.tables.roots@.contains_key(process));
+            assert(s1.root_live(process));
+            assert forall|i: int| base / PAGE_SZ <= i < base / PAGE_SZ + 8 || b2 / PAGE_SZ + 2 <= i < b2 / PAGE_SZ + 8
+                implies #[trigger] s1.blocks.pages@[i].kind is Free by {
+                assert(s0.blocks.tracks(i));
+                assert(s0.blocks.pages@[i].kind is Free);
+            }
+        }
+
+        // A process, in slot 1 of that leaf.
+        proof {
+            assert(s1.can_retype_under(process, ROOT_UNTYPED_SLOT, base, 3));
+            assert(s1.blocks.small_free((base / PAGE_SZ) as int, 3)) by {
+                assert forall|k: int| 0 <= k < order_pages(3) implies #[trigger] s1.blocks.pages@[base / PAGE_SZ + k].kind is Free by {
+                    assert(s1.blocks.pages@[(base / PAGE_SZ + k) as int].kind is Free);
+                }
+            }
+            assert(s1.can_retype_block(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base, PROCESS_ORDER));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok2 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base, Tracked(&mut steps));
+        let ghost s2 = *self;
+        let ghost np = (b2 + 1) as usize;
+        proof {
+            assert(ok2);
+            assert(Self::retype_keeps(s1, s2, np, (base / PAGE_SZ) as int, 3, None));
+            assert(s2.processes.records@.contains_key(base));
+            assert(!s2.processes.records@[base].value().dead);
+            assert(s2.payload_of(np) == process_of(base));
+            assert(s2.payload_of(np).rights & right_bit(Right::Control) != 0);
+            assert(s2.list.nodes@[np as int].depth == 2);
+            assert(s2.is_cap(np));
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_UNTYPED_SLOT));
+            assert(s1.is_cap(u));
+            assert(s2.tables.has_slot(&s2.list, process, ROOT_UNTYPED_SLOT));
+            assert(s2.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(s2.is_cap(u) && s2.payload_of(u) == first && s2.list.nodes@[u as int].depth == 1);
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT));
+            assert(s1.is_cap(core_cap));
+            assert(s2.tables.has_slot(&s2.list, process, ROOT_CORE_SLOT));
+            assert(s2.tables.node_of(process, ROOT_CORE_SLOT) == core_cap);
+            assert(s2.is_cap(core_cap) && s2.payload_of(core_cap) == core_payload(0, MAX_PRIORITY) && s2.list.nodes@[core_cap as int].depth == 1);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_PROCESS_SLOT));
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_PROCESS_SLOT));
+            assert(s2.tables.node_of(process, WITNESS_PROCESS_SLOT) == np);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_THREAD_SLOT));
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_THREAD_SLOT));
+            assert(s2.tables.node_of(process, WITNESS_THREAD_SLOT) == b2 + 2);
+            assert(!s2.list.nodes@[(b2 + 2) as int].live);
+            assert(s1.processes.records@.contains_key(process));
+            assert(s2.processes.records@.contains_key(process));
+            assert(s2.root_live(process));
+            assert(s2.tables.roots@.contains_key(process));
+            assert forall|i: int| b2 / PAGE_SZ + 2 <= i < b2 / PAGE_SZ + 8 implies #[trigger] s2.blocks.pages@[i].kind is Free by {
+                assert(s1.blocks.tracks(i));
+                assert(s1.blocks.pages@[i].kind is Free);
+            }
+        }
+
+        // A thread, in slot 2 of the root's leaf, bound to the process.
+        proof {
+            assert(block_refs(&s2.blocks, BlockRef::Small(base / PAGE_SZ)) == 1);
+            assert(!s2.cap_dead(np));
+            assert(s2.can_hold_thread(process, WITNESS_PROCESS_SLOT));
+            assert(s2.can_retype_under(process, ROOT_UNTYPED_SLOT, bt, THREAD_ORDER));
+            assert(s2.blocks.small_free((bt / PAGE_SZ) as int, THREAD_ORDER as usize)) by {
+                assert forall|k: int| 0 <= k < order_pages(1) implies #[trigger] s2.blocks.pages@[bt / PAGE_SZ + k].kind is Free by {
+                    assert(s2.blocks.pages@[(b2 / PAGE_SZ + 2 + k) as int].kind is Free);
+                }
+            }
+            assert(s2.can_retype_thread(process, ROOT_UNTYPED_SLOT, WITNESS_THREAD_SLOT, bt, WITNESS_PROCESS_SLOT));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok3 = self.retype_thread(process, ROOT_UNTYPED_SLOT, WITNESS_THREAD_SLOT, bt, WITNESS_PROCESS_SLOT, Tracked(&mut steps));
+        let ghost s3 = *self;
+        let ghost nt = (b2 + 2) as usize;
+        proof {
+            assert(ok3);
+            assert(Self::retype_keeps(s2, s3, nt, (bt / PAGE_SZ) as int, 1, None));
+            assert(s2.tables.has_slot(&s2.list, process, ROOT_CORE_SLOT));
+            assert(s2.is_cap(core_cap));
+            assert(s3.tables.has_slot(&s3.list, process, ROOT_CORE_SLOT));
+            assert(s3.tables.node_of(process, ROOT_CORE_SLOT) == core_cap);
+            assert(s3.is_cap(core_cap) && s3.payload_of(core_cap) == core_payload(0, MAX_PRIORITY) && s3.list.nodes@[core_cap as int].depth == 1);
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_THREAD_SLOT));
+            assert(s3.tables.has_slot(&s3.list, process, WITNESS_THREAD_SLOT));
+            assert(s3.tables.node_of(process, WITNESS_THREAD_SLOT) == nt);
+            assert(s3.is_cap(nt) && s3.payload_of(nt) == thread_of(bt));
+            assert(s3.payload_of(nt).rights & right_bit(Right::Control) != 0);
+            assert(s2.processes.records@.contains_key(process));
+            assert(s3.processes.records@.contains_key(process));
+            assert(s3.root_live(process));
+            assert(s3.tables.roots@.contains_key(process));
+            assert(s3.processes.records@.contains_key(base));
+            assert(!s3.processes.records@[base].value().dead);
+            assert(!s3.cap_dead(nt));
+            assert(s3.can_control(process, WITNESS_THREAD_SLOT));
+            assert(1usize < MAX_DEPTH) by (compute_only);
+            assert(s3.holds_core(process, ROOT_CORE_SLOT, 0));
+            assert(s3.can_place(process, WITNESS_THREAD_SLOT, ROOT_CORE_SLOT, 0));
+        }
+
+        // Place the thread on core 0 at priority 0, then start it.
+        let placed = self.place(process, WITNESS_THREAD_SLOT, ROOT_CORE_SLOT, 0);
+        let ghost s4 = *self;
+        proof {
+            assert(placed);
+            lemma_core_of(core_object(0));
+            assert(core_of(core_object(0)) == 0);
+            assert(Self::placed(s3, s4, core_cap, bt, Placement { core: 0, priority: 0 }));
+            assert(s4.tables == s3.tables);
+            assert(s4.processes == s3.processes);
+            assert(b2 != placement_node(bt));
+            assert(s3.tables.leaf(process, 2) == b2);
+            assert(s3.list.nodes@[b2 as int].live);
+            assert(b2 < NODE_SPACE);
+            assert(s4.list.nodes@[b2 as int].live == s3.list.nodes@[b2 as int].live);
+            assert(s4.tables.has_slot(&s4.list, process, WITNESS_THREAD_SLOT));
+            assert(s4.tables.node_of(process, WITNESS_THREAD_SLOT) == nt);
+            assert(s4.is_cap(nt) && s4.payload_of(nt) == thread_of(bt));
+            assert(!s4.cap_dead(nt));
+            assert(s4.can_control(process, WITNESS_THREAD_SLOT));
+            assert(s4.can_start(process, WITNESS_THREAD_SLOT));
+        }
+        let started = self.start(process, WITNESS_THREAD_SLOT);
+        proof {
+            let s5 = *self;
+            assert(started);
+            assert(bt == base + 10 * PAGE_SZ);
+            assert(Self::state_written(s4, s5, bt, ThreadState::Runnable { core: 0 }));
+            assert(witness_alive(s5, process));
+            assert(witness_alive(s5, base));
+        }
+        (placed, started)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

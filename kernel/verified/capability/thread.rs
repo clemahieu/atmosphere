@@ -13,6 +13,8 @@ verus! {
 
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::cpu::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::derive::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
@@ -24,6 +26,7 @@ use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::process::*;
+use crate::capability::reach::CORE_OBJECTS;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::refs::*;
@@ -127,6 +130,14 @@ pub open spec fn saved_registers_of(save: FrameSave) -> Registers {
     }
 }
 
+/// Where a thread is placed: the core it may run on and the priority it runs at there, bounded by
+/// the core capability its placement node hangs under. See design/cpu-time-as-capability/.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    pub core: usize,
+    pub priority: usize,
+}
+
 /// What a thread keeps at the start of its record's page. Its XSAVE area lies after it in the same
 /// page, inside the record's permission.
 #[derive(Clone, Copy)]
@@ -147,9 +158,9 @@ pub struct ThreadRecord {
     /// The process it is bound to: its node page's first node is then a binding under a capability to
     /// that process, holding a reference on the process's block.
     pub process: Option<usize>,
-    /// The core it runs on once started. A placement is a binding under a capability to that core,
-    /// design/cpu-time-as-capability/; no operation places a thread yet, so it is None.
-    pub placement: Option<usize>,
+    /// The core and priority it runs at once started: node 1 of its node page is then a placement
+    /// node under a capability to that core, design/cpu-time-as-capability/.
+    pub placement: Option<Placement>,
 }
 
 /// Marker `saved` and `frame` match the save `save` that produced them. Opaque so the thread
@@ -250,6 +261,9 @@ pub open spec fn thread_of(base: usize) -> Payload {
 pub struct Threads {
     pub records: Tracked<Map<usize, PointsTo<ThreadRecord>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
+    /// The root thread boot created, which enters user mode once through `enter_boot_thread`
+    /// without a placement: design/root-process-at-boot/.
+    pub boot_thread: Ghost<Option<usize>>,
 }
 
 impl Threads {
@@ -257,8 +271,9 @@ impl Threads {
         ensures
             ret.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty(),
             ret.holders@ == IMap::<usize, Set<usize>>::empty(),
+            ret.boot_thread@ is None,
     {
-        Threads { records: Tracked(Map::tracked_empty()), holders: Ghost(IMap::empty()) }
+        Threads { records: Tracked(Map::tracked_empty()), holders: Ghost(IMap::empty()), boot_thread: Ghost(None) }
     }
 }
 
@@ -329,6 +344,45 @@ pub proof fn lemma_current_same(pre: Seq<CoreState>, post: Seq<CoreState>, a: Ma
         assert(post[c as int].current_thread == pre[c as int].current_thread);
     }
     assert forall|t: usize| #[trigger] b.contains_key(t) && b[t].value().pending_stop implies b[t].value().state is Running by {
+        assert(a.contains_key(t));
+    }
+}
+
+/// Thread record r, if Runnable or Running without a stop pending, has a placement on that core.
+pub open spec fn thread_placed_running(r: ThreadRecord) -> bool {
+    &&& r.state is Runnable ==> r.placement is Some && r.placement->Some_0.core == r.state->Runnable_core
+    &&& (r.state is Running && !r.pending_stop) ==> r.placement is Some && r.placement->Some_0.core == r.state->Running_core
+}
+
+/// Every thread other than the boot thread that is Runnable on a core, or Running on a core with
+/// no stop pending, has a placement on that core; one whose placement went has a stop pending.
+/// See design/cpu-time-as-capability/ and design/root-process-at-boot/.
+#[verifier::opaque]
+pub open spec fn placed_running_wf(boot_thread: Option<usize>, records: Map<usize, PointsTo<ThreadRecord>>) -> bool {
+    forall|t: usize| #[trigger] records.contains_key(t) && Some(t) != boot_thread
+        ==> thread_placed_running(records[t].value())
+}
+
+/// Each thread kept its state, its pending stop and its placement, and the boot thread stayed.
+pub proof fn lemma_placed_running_same(
+    boot_thread: Option<usize>,
+    a: Map<usize, PointsTo<ThreadRecord>>,
+    b: Map<usize, PointsTo<ThreadRecord>>,
+)
+    requires
+        placed_running_wf(boot_thread, a),
+        b.dom() == a.dom(),
+        forall|t: usize| #[trigger] b.contains_key(t) ==> {
+            &&& b[t].value().state == a[t].value().state
+            &&& b[t].value().pending_stop == a[t].value().pending_stop
+            &&& b[t].value().placement == a[t].value().placement
+        },
+    ensures
+        placed_running_wf(boot_thread, b),
+{
+    reveal(placed_running_wf);
+    assert forall|t: usize| #[trigger] b.contains_key(t) && Some(t) != boot_thread
+        implies thread_placed_running(b[t].value()) by {
         assert(a.contains_key(t));
     }
 }
@@ -528,13 +582,121 @@ pub proof fn lemma_binding_parents_kept(la: &Tree, ta: &Tables, tha: &Threads, l
     }
 }
 
-/// The live binding nodes of a are those of b, a thread's and a device's.
+/// Thread t's placement node: node 1 of its node page, after its process binding at node 0.
+pub open spec fn placement_node(t: usize) -> usize {
+    (t + 1) as usize
+}
+
+/// Placement node x's parent is a live core capability for `pl.core` allowing at least `pl.priority`.
+pub open spec fn placement_parent(list: &Tree, tables: &Tables, x: usize, pl: Placement) -> bool {
+    let m = list.parent@[x];
+    &&& list.parent@.contains_key(x)
+    &&& tables.is_cap(list, m)
+    &&& tables.payload_of(m).kind is Core
+    &&& pl.core < NUM_CPUS
+    &&& tables.payload_of(m).base == core_object(pl.core as int)
+    &&& pl.priority <= tables.payload_of(m).priority
+}
+
+/// A live placement node is node 1 of a thread whose record names that placement, under a core
+/// capability for that core at or above that priority, and a thread whose record names a placement
+/// has that placement node live under such a core capability. Opaque so its node quantifier does
+/// not chain into the tables in unrelated proofs. See design/cpu-time-as-capability/.
+#[verifier::opaque]
+pub open spec fn placements_wf(list: &Tree, tables: &Tables, threads: &Threads) -> bool {
+    &&& forall|x: usize| x < NODE_SPACE && (#[trigger] list.nodes@[x as int]).live && list.nodes@[x as int].kind is Placement ==> {
+        let t = page_of(x);
+        &&& threads.records@.contains_key(t)
+        &&& x == placement_node(t)
+        &&& threads.records@[t].value().placement is Some
+        &&& placement_parent(list, tables, x, threads.records@[t].value().placement->Some_0)
+    }
+    &&& forall|t: usize| #[trigger] threads.records@.contains_key(t) && threads.records@[t].value().placement is Some ==> {
+        let x = placement_node(t);
+        let pl = threads.records@[t].value().placement->Some_0;
+        &&& t + 1 < NODE_SPACE
+        &&& list.nodes@[x as int].live
+        &&& list.nodes@[x as int].kind is Placement
+        &&& pl.core < NUM_CPUS
+        &&& pl.priority <= MAX_PRIORITY
+        &&& placement_parent(list, tables, x, pl)
+    }
+}
+
+/// The placements after a step that kept the live placement nodes, every live node's parent, every
+/// core capability, and every placed thread's placement, and added no thread already placed.
+pub proof fn lemma_placements_kept(
+    la: &Tree,
+    ta: &Tables,
+    tha: &Threads,
+    lb: &Tree,
+    tb: &Tables,
+    thb: &Threads,
+)
+    requires
+        placements_wf(la, ta, tha),
+        forall|x: usize| x < NODE_SPACE ==> ((#[trigger] lb.nodes@[x as int]).live && lb.nodes@[x as int].kind is Placement)
+            == (la.nodes@[x as int].live && la.nodes@[x as int].kind is Placement),
+        forall|x: usize| x < NODE_SPACE && la.nodes@[x as int].live && #[trigger] la.parent@.contains_key(x)
+            ==> lb.parent@.contains_key(x) && lb.parent@[x] == la.parent@[x],
+        forall|x: usize| #[trigger] ta.is_cap(la, x) && ta.payload_of(x).kind is Core ==> {
+            &&& tb.is_cap(lb, x)
+            &&& tb.payload_of(x) == ta.payload_of(x)
+        },
+        forall|t: usize| #[trigger] tha.records@.contains_key(t) && tha.records@[t].value().placement is Some ==> {
+            &&& thb.records@.contains_key(t)
+            &&& thb.records@[t].value().placement == tha.records@[t].value().placement
+        },
+        forall|t: usize| #[trigger] thb.records@.contains_key(t) && thb.records@[t].value().placement is Some ==> {
+            &&& tha.records@.contains_key(t)
+            &&& tha.records@[t].value().placement == thb.records@[t].value().placement
+        },
+    ensures
+        placements_wf(lb, tb, thb),
+{
+    reveal(placements_wf);
+    assert forall|x: usize| x < NODE_SPACE && (#[trigger] lb.nodes@[x as int]).live && lb.nodes@[x as int].kind is Placement
+        implies {
+            let t = page_of(x);
+            &&& thb.records@.contains_key(t)
+            &&& x == placement_node(t)
+            &&& thb.records@[t].value().placement is Some
+            &&& placement_parent(lb, tb, x, thb.records@[t].value().placement->Some_0)
+        } by {
+        assert(la.nodes@[x as int].live && la.nodes@[x as int].kind is Placement);
+        let t = page_of(x);
+        assert(tha.records@.contains_key(t));
+        let m = la.parent@[x];
+        assert(ta.is_cap(la, m) && ta.payload_of(m).kind is Core);
+    }
+    assert forall|t: usize| #[trigger] thb.records@.contains_key(t) && thb.records@[t].value().placement is Some
+        implies {
+            let x = placement_node(t);
+            let pl = thb.records@[t].value().placement->Some_0;
+            &&& t + 1 < NODE_SPACE
+            &&& lb.nodes@[x as int].live
+            &&& lb.nodes@[x as int].kind is Placement
+            &&& pl.core < NUM_CPUS
+            &&& pl.priority <= MAX_PRIORITY
+            &&& placement_parent(lb, tb, x, pl)
+        } by {
+        assert(tha.records@.contains_key(t));
+        let x = placement_node(t);
+        assert(la.nodes@[x as int].live && la.nodes@[x as int].kind is Placement);
+        let m = la.parent@[x];
+        assert(ta.is_cap(la, m) && ta.payload_of(m).kind is Core);
+    }
+}
+
+/// The live binding and placement nodes of a are those of b, a thread's and a device's.
 pub open spec fn same_bindings(list_a: &Tree, list_b: &Tree) -> bool {
     forall|n: usize| #![trigger list_a.nodes@[n as int]] #![trigger list_b.nodes@[n as int]] n < NODE_SPACE ==> {
         &&& (list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Binding)
             == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding)
         &&& (list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is DeviceBinding)
             == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is DeviceBinding)
+        &&& (list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Placement)
+            == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Placement)
     }
 }
 
@@ -783,6 +945,25 @@ pub open spec fn unbound_record(r: ThreadRecord) -> ThreadRecord {
     }
 }
 
+/// A record with its core placement undone: no placement, and Inactive unless it is Dead, or Running,
+/// which only its core may change and so gets a pending stop its core acts on at its next entry.
+pub open spec fn unplaced_record(r: ThreadRecord) -> ThreadRecord {
+    ThreadRecord {
+        state: match r.state {
+            ThreadState::Running { .. } => r.state,
+            ThreadState::Dead => r.state,
+            _ => ThreadState::Inactive,
+        },
+        frame: r.frame,
+        saved: r.saved,
+        save: r.save,
+        pending_stop: r.state is Running,
+        dying: r.dying,
+        process: r.process,
+        placement: None,
+    }
+}
+
 /// The binding nodes after a step that added pages, whose nodes are dead, then made x and y live as
 /// something other than bindings.
 pub proof fn lemma_binding_nodes_grown(a: Tree, mid: Tree, b: Tree, x: usize, y: usize)
@@ -801,12 +982,15 @@ pub proof fn lemma_binding_nodes_grown(a: Tree, mid: Tree, b: Tree, x: usize, y:
         !(b.nodes@[y as int].kind is Binding),
         !(b.nodes@[x as int].kind is DeviceBinding),
         !(b.nodes@[y as int].kind is DeviceBinding),
+        !(b.nodes@[x as int].kind is Placement),
+        !(b.nodes@[y as int].kind is Placement),
     ensures
         same_bindings(&a, &b),
 {
     assert forall|i: usize| i < NODE_SPACE implies {
         &&& ((#[trigger] b.nodes@[i as int]).live && b.nodes@[i as int].kind is Binding) == (a.nodes@[i as int].live && a.nodes@[i as int].kind is Binding)
         &&& (b.nodes@[i as int].live && b.nodes@[i as int].kind is DeviceBinding) == (a.nodes@[i as int].live && a.nodes@[i as int].kind is DeviceBinding)
+        &&& (b.nodes@[i as int].live && b.nodes@[i as int].kind is Placement) == (a.nodes@[i as int].live && a.nodes@[i as int].kind is Placement)
     } by {
         if i != x && i != y {
             assert(mid.nodes@[i as int].live == a.nodes@[i as int].live);
@@ -832,6 +1016,8 @@ pub proof fn lemma_same_bindings_frame(a: &Tree, b: &Tree, n: usize, m: usize)
             ==> !(b.nodes@[x as int].live && b.nodes@[x as int].kind is Binding),
         forall|x: usize| x < NODE_SPACE && #[trigger] b.valid(x) && !a.valid(x) && x != n && x != m
             ==> !(b.nodes@[x as int].live && b.nodes@[x as int].kind is DeviceBinding),
+        forall|x: usize| x < NODE_SPACE && #[trigger] b.valid(x) && !a.valid(x) && x != n && x != m
+            ==> !(b.nodes@[x as int].live && b.nodes@[x as int].kind is Placement),
         !(a.nodes@[n as int].live && a.nodes@[n as int].kind is Binding),
         !(b.nodes@[n as int].live && b.nodes@[n as int].kind is Binding),
         !(a.nodes@[m as int].live && a.nodes@[m as int].kind is Binding),
@@ -840,6 +1026,10 @@ pub proof fn lemma_same_bindings_frame(a: &Tree, b: &Tree, n: usize, m: usize)
         !(b.nodes@[n as int].live && b.nodes@[n as int].kind is DeviceBinding),
         !(a.nodes@[m as int].live && a.nodes@[m as int].kind is DeviceBinding),
         !(b.nodes@[m as int].live && b.nodes@[m as int].kind is DeviceBinding),
+        !(a.nodes@[n as int].live && a.nodes@[n as int].kind is Placement),
+        !(b.nodes@[n as int].live && b.nodes@[n as int].kind is Placement),
+        !(a.nodes@[m as int].live && a.nodes@[m as int].kind is Placement),
+        !(b.nodes@[m as int].live && b.nodes@[m as int].kind is Placement),
     ensures
         same_bindings(a, b),
 {
@@ -848,6 +1038,8 @@ pub proof fn lemma_same_bindings_frame(a: &Tree, b: &Tree, n: usize, m: usize)
             == (a.nodes@[x as int].live && a.nodes@[x as int].kind is Binding)
         &&& (b.nodes@[x as int].live && b.nodes@[x as int].kind is DeviceBinding)
             == (a.nodes@[x as int].live && a.nodes@[x as int].kind is DeviceBinding)
+        &&& (b.nodes@[x as int].live && b.nodes@[x as int].kind is Placement)
+            == (a.nodes@[x as int].live && a.nodes@[x as int].kind is Placement)
     } by {
         if x != n && x != m {
             if a.valid(x) {
@@ -1137,20 +1329,28 @@ impl CapKernel {
             !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is DeviceBinding),
             !(pre.list.nodes@[m as int].live && pre.list.nodes@[m as int].kind is DeviceBinding),
             !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is DeviceBinding),
+            !(pre.list.nodes@[n as int].live && pre.list.nodes@[n as int].kind is Placement),
+            !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Placement),
+            !(pre.list.nodes@[m as int].live && pre.list.nodes@[m as int].kind is Placement),
+            !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Placement),
             device_spaces_kept(&pre.devices, &post.devices),
             bound_kept(pre.spaces.bound@, post.spaces.bound@),
         ensures
             bindings_wf(&post.list, &post.threads, &post.processes),
             binding_parents(&post.list, &post.tables, &post.threads),
             device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
+            placements_wf(&post.list, &post.tables, &post.threads),
     {
         Self::lemma_binding_parents_caps_frame(pre, post, n, m);
         Self::lemma_device_bindings_caps_frame(pre, post, n, m);
+        Self::lemma_placements_caps_frame(pre, post, n, m);
         assert forall|x: usize| x < NODE_SPACE implies {
             &&& ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
                 == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding)
             &&& (post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is DeviceBinding)
                 == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding)
+            &&& (post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Placement)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement)
         } by {
             if x != n && x != m {
                 assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
@@ -1159,6 +1359,74 @@ impl CapKernel {
         }
         assert(same_bindings(&pre.list, &post.list));
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+    }
+
+    /// The placements after a step that changed no node but n and m, neither a placement before or
+    /// after, kept every thread's record, and renamed n to m in the parent map at most. A placement's
+    /// parent is a capability with a child, so it is n or m only when n, renamed m, says the same.
+    pub proof fn lemma_placements_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            !(pre.list.nodes@[n as int].live && pre.list.nodes@[n as int].kind is Placement),
+            !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Placement),
+            !(pre.list.nodes@[m as int].live && pre.list.nodes@[m as int].kind is Placement),
+            !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Placement),
+            post.threads.records == pre.threads.records,
+            forall|x: usize| x != n && x != m && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], n, m),
+            pre.is_cap(n) ==> pre.list.childless(n) || (post.is_cap(m) && post.payload_of(m) == pre.payload_of(n)),
+            pre.is_cap(m) && m != n ==> pre.list.childless(m),
+        ensures
+            placements_wf(&post.list, &post.tables, &post.threads),
+    {
+        reveal(placements_wf);
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
+            && post.list.nodes@[x as int].kind is Placement
+            implies {
+                let t = page_of(x);
+                &&& post.threads.records@.contains_key(t)
+                &&& x == placement_node(t)
+                &&& post.threads.records@[t].value().placement is Some
+                &&& placement_parent(&post.list, &post.tables, x, post.threads.records@[t].value().placement->Some_0)
+            } by {
+            assert(x != n && x != m);
+            assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement);
+            let a = pre.list.parent@[x];
+            assert(pre.is_cap(a));
+            let s = pre.list.seq@;
+            assert(has(s, x));
+            lemma_has(s, x);
+            assert(pre.list.nodes@[s[0] as int].kind is Capability);
+            assert(pre.list.is_child(a, x));
+            assert(pre.list.nodes@[a as int].live);
+            if a == n {
+                if pre.list.childless(n) {
+                    pre.list.lemma_childless(n, x);
+                }
+                assert(post.is_cap(m) && post.payload_of(m) == pre.payload_of(n));
+            } else if a == m {
+                pre.list.lemma_childless(m, x);
+            } else {
+                Self::lemma_caps_frame(pre, post, n, m, a);
+            }
+        }
+        assert forall|t: usize| #[trigger] post.threads.records@.contains_key(t) && post.threads.records@[t].value().placement is Some
+            implies {
+                let x = placement_node(t);
+                let pl = post.threads.records@[t].value().placement->Some_0;
+                &&& t + 1 < NODE_SPACE
+                &&& post.list.nodes@[x as int].live
+                &&& post.list.nodes@[x as int].kind is Placement
+                &&& pl.core < NUM_CPUS
+                &&& pl.priority <= MAX_PRIORITY
+                &&& placement_parent(&post.list, &post.tables, x, pl)
+            } by {
+            assert(pre.threads.records@.contains_key(t));
+            let x = placement_node(t);
+            assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement);
+            assert(x != n && x != m);
+            assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Placement);
+        }
     }
 
     /// The binding parents after a step that changed no node but n and m, neither a binding after it,
@@ -1209,10 +1477,11 @@ impl CapKernel {
     }
 
     /// The binding parents after a step that made no binding, kept every live node's parent, every
-    /// capability saying the same, and every thread's process.
+    /// capability saying the same, and every thread's process and placement.
     pub proof fn lemma_binding_parents_same_caps(pre: Self, post: Self)
         requires
             binding_parents(&pre.list, &pre.tables, &pre.threads),
+            placements_wf(&pre.list, &pre.tables, &pre.threads),
             same_bindings(&pre.list, &post.list),
             forall|x: usize| x < NODE_SPACE && pre.list.nodes@[x as int].live && #[trigger] pre.list.parent@.contains_key(x)
                 ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == pre.list.parent@[x],
@@ -1220,13 +1489,17 @@ impl CapKernel {
             forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) ==> {
                 &&& post.threads.records@.contains_key(t)
                 &&& post.threads.records@[t].value().process == pre.threads.records@[t].value().process
+                &&& post.threads.records@[t].value().placement == pre.threads.records@[t].value().placement
             },
+            forall|t: usize| #[trigger] post.threads.records@.contains_key(t) && post.threads.records@[t].value().placement is Some
+                ==> pre.threads.records@.contains_key(t),
             device_bindings_wf(&pre.list, &pre.tables, pre.spaces.bound@, &pre.devices),
             device_spaces_kept(&pre.devices, &post.devices),
             bound_kept(pre.spaces.bound@, post.spaces.bound@),
         ensures
             binding_parents(&post.list, &post.tables, &post.threads),
             device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
+            placements_wf(&post.list, &post.tables, &post.threads),
     {
         Self::lemma_device_bindings_same_caps(pre, post);
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
@@ -1235,7 +1508,14 @@ impl CapKernel {
         } by {
             assert(pre.is_cap(x));
         }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(pre.is_cap(x));
+        }
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
     }
 
     /// A live binding node's parent is a capability to the process its thread's record names.
@@ -1305,6 +1585,7 @@ impl CapKernel {
         &&& post.processes.holders == pre.processes.holders
         &&& post.processes.bound@ == pre.processes.bound@.insert(p, pre.processes.bound@[p].remove(t))
         &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
             ==> post.threads.records@[x] == pre.threads.records@[x]
@@ -1390,6 +1671,98 @@ impl CapKernel {
         }
         drop_block_ref(&mut self.blocks, BlockRef::Small(p / PAGE_SZ));
         self.processes.bound = Ghost(pre.processes.bound@.insert(p, pre.processes.bound@[p].remove(t)));
+    }
+
+    /// Thread `page_of(x)`'s placement on a core, node x, is undone: the thread names no placement and
+    /// is Inactive unless it is Running or Dead.
+    pub open spec fn unplaced(pre: Self, post: Self, x: usize) -> bool {
+        let t = page_of(x);
+        let r = pre.threads.records@[t].value();
+        &&& pre.threads.records@.contains_key(t)
+        &&& x == placement_node(t)
+        &&& r.placement is Some
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& forall|y: usize| y != t && #[trigger] post.threads.records@.contains_key(y)
+            ==> post.threads.records@[y] == pre.threads.records@[y]
+        &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
+        &&& post.threads.records@[t].is_init()
+        &&& post.threads.records@[t].value() == unplaced_record(r)
+        &&& post.stop_ipis@ == match r.state {
+            ThreadState::Running { core } => pre.stop_ipis@.push(core),
+            _ => pre.stop_ipis@,
+        }
+    }
+
+    /// Undoes a thread's placement on its core, node x, before revoke unlinks the node. A thread
+    /// Running on a core gets a pending stop and that core an IPI, and is left to that core.
+    pub(crate) fn unplace(&mut self, x: usize)
+        requires
+            old(self).wf(),
+            x < NODE_SPACE,
+            old(self).list.nodes@[x as int].live,
+            old(self).list.nodes@[x as int].kind is Placement,
+        ensures
+            Self::unplaced(*old(self), *final(self), x),
+            final(self).blocks == old(self).blocks,
+            final(self).holders == old(self).holders,
+            final(self).processes == old(self).processes,
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).frames == old(self).frames,
+            final(self).zeroing == old(self).zeroing,
+            final(self).cores == old(self).cores,
+            final(self).devices == old(self).devices,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).tlb == old(self).tlb,
+            final(self).iommus == old(self).iommus,
+            final(self).mapped == old(self).mapped,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).table_pages == old(self).table_pages,
+            final(self).spaces == old(self).spaces,
+            final(self).mappings == old(self).mappings,
+            final(self).flush_ipis == old(self).flush_ipis,
+    {
+        let ghost pre = *old(self);
+        proof {
+            reveal(placements_wf);
+            let gt = page_of(x);
+            assert(pre.threads.records@.contains_key(gt));
+            assert(x == placement_node(gt));
+            assert(pre.threads.records@[gt].value().placement is Some);
+            assert(gt + 1 < NODE_SPACE);
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, gt));
+        }
+        let t = x - 1;
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        let (state, running) = match record.state {
+            ThreadState::Running { core } => {
+                self.stop_ipis = Ghost(pre.stop_ipis@.push(core));
+                (ThreadState::Running { core }, true)
+            },
+            ThreadState::Dead => (ThreadState::Dead, false),
+            _ => (ThreadState::Inactive, false),
+        };
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state,
+            frame: record.frame,
+            saved: record.saved,
+            save: record.save,
+            pending_stop: running,
+            dying: record.dying,
+            process: record.process,
+            placement: None,
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+        }
     }
 
     /// A thread capability names a thread, whose block holds its reference, lies in no typed region
@@ -1838,6 +2211,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> base as int + THREAD_BYTES <= NODE_SPACE as int,
             ret ==> final(self).processes == old(self).processes,
+            ret ==> final(self).threads.boot_thread == old(self).threads.boot_thread,
             ret ==> final(self).tables.roots == old(self).tables.roots,
             ret ==> forall|x: usize| x != base ==> #[trigger] thread_process(&final(self).threads, x) == thread_process(&old(self).threads, x),
             ret ==> forall|x: usize| #[trigger] old(self).is_cap(x) ==> {
@@ -2060,6 +2434,19 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             Self::lemma_devices_same_caps(pre, post);
+            pre.lemma_first_page_apart();
+            assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+                reveal(placed_running_wf);
+                assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
+                    && Some(x) != post.threads.boot_thread@
+                    implies thread_placed_running(post.threads.records@[x].value()) by {
+                    if x == base {
+                        assert(post.threads.records@[base].value() == fresh_thread());
+                    } else {
+                        assert(pre.threads.records@.contains_key(x));
+                    }
+                }
+            }
             lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
             lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
@@ -2278,6 +2665,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
+            final(self).threads.boot_thread == old(self).threads.boot_thread,
             !ret ==> *final(self) == *old(self),
             !ret ==> bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret == old(self).can_retype_thread(root, from, to, base, j),
@@ -2476,6 +2864,7 @@ impl CapKernel {
         &&& post.devices == pre.devices
         &&& post.tlb == pre.tlb
         &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
             ==> post.threads.records@[x] == pre.threads.records@[x]
@@ -2501,6 +2890,20 @@ impl CapKernel {
             frame_save_wf(post.threads.records@[t].value()),
             post.cores.wf(),
             current_wf(post.cores@, post.threads.records@),
+            Some(t) == post.threads.boot_thread@
+                || thread_placed_running(post.threads.records@[t].value())
+                || ({
+                    let r0 = pre.threads.records@[t].value();
+                    let r1 = post.threads.records@[t].value();
+                    &&& r1.state is Runnable ==> (
+                        (r0.state is Runnable && r0.state->Runnable_core == r1.state->Runnable_core)
+                        || (r0.state is Running && !r0.pending_stop && r0.state->Running_core == r1.state->Runnable_core)
+                    )
+                    &&& (r1.state is Running && !r1.pending_stop) ==> (
+                        (r0.state is Runnable && r0.state->Runnable_core == r1.state->Running_core)
+                        || (r0.state is Running && !r0.pending_stop && r0.state->Running_core == r1.state->Running_core)
+                    )
+                }),
         ensures
             post.wf(),
     {
@@ -2529,7 +2932,17 @@ impl CapKernel {
         assert forall|x: usize| #[trigger] pre.threads.records@.contains_key(x) implies {
             &&& post.threads.records@.contains_key(x)
             &&& post.threads.records@[x].value().process == pre.threads.records@[x].value().process
+            &&& post.threads.records@[x].value().placement == pre.threads.records@[x].value().placement
         } by {}
+        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+            reveal(placed_running_wf);
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
+                && Some(x) != post.threads.boot_thread@
+                implies thread_placed_running(post.threads.records@[x].value()) by {
+                assert(pre.threads.records@.contains_key(x));
+                assert(thread_placed_running(pre.threads.records@[x].value()));
+            }
+        }
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
         Self::lemma_binding_parents_same_caps(pre, post);
         Self::lemma_iommus_same(pre, post);
@@ -2650,6 +3063,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).cores@[c as int].current_thread is None,
+            old(self).threads.boot_thread@ == Some(t),
             old(self).threads.records@.contains_key(t),
             old(self).threads.records@[t].value().state is Inactive,
             runs_in_space(old(self).cores@, old(self).threads.records@, c as int, t),
@@ -2859,6 +3273,7 @@ impl CapKernel {
         &&& post.tlb == pre.tlb
         &&& post.cores == pre.cores
         &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
             ==> post.threads.records@[x] == pre.threads.records@[x]
@@ -3087,7 +3502,7 @@ impl CapKernel {
             ret ==> {
                 let n = old(self).tables.node_of(root, i);
                 let t = old(self).payload_of(n).base;
-                let core = old(self).threads.records@[t].value().placement->Some_0;
+                let core = old(self).threads.records@[t].value().placement->Some_0.core;
                 &&& old(self).threads.records@.contains_key(t)
                 &&& Self::state_written(*old(self), *final(self), t, ThreadState::Runnable { core })
                 &&& final(self).cores == old(self).cores
@@ -3113,7 +3528,7 @@ impl CapKernel {
             None => { return false; },
         }
         let core = match record.placement {
-            Some(core) => core,
+            Some(pl) => pl.core,
             None => { return false; },
         };
         let tracked mut perm;
@@ -3181,6 +3596,7 @@ impl CapKernel {
         &&& post.devices == pre.devices
         &&& post.tlb == pre.tlb
         &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
             ==> post.threads.records@[x] == pre.threads.records@[x]
@@ -3823,6 +4239,7 @@ impl CapKernel {
         &&& post.processes.holders == pre.processes.holders
         &&& post.processes.bound@ == pre.processes.bound@.insert(p, pre.processes.bound@[p].insert(t))
         &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
             ==> post.threads.records@[x] == pre.threads.records@[x]
@@ -4086,6 +4503,22 @@ impl CapKernel {
             }
         }
         Self::lemma_device_bindings_space_caps(pre, post);
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(x != t);
+            assert(pre.is_cap(x));
+        }
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Placement)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement) by {
+            if x != t {
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+            }
+        }
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        lemma_placed_running_same(post.threads.boot_thread@, pre.threads.records@, post.threads.records@);
         Self::lemma_tlb_same(pre, post);
         assert(process_tables_wf(&post.tables, &post.processes));
         assert(post.frames_wf());
@@ -4209,6 +4642,681 @@ impl CapKernel {
             Self::lemma_bind_wf(pre, post, n, t);
             Self::lemma_bind_nodes(pre, post, n, t);
         }
+    }
+
+    /// Any thread other than the boot thread that is Runnable on a core, or Running on a core with no
+    /// stop pending, has a live placement node on that core under a core capability at or above its
+    /// priority.
+    pub proof fn lemma_running_placed(&self, t: usize)
+        requires
+            self.wf(),
+            self.threads.records@.contains_key(t),
+            Some(t) != self.threads.boot_thread@,
+            ({
+                let r = self.threads.records@[t].value();
+                r.state is Runnable || (r.state is Running && !r.pending_stop)
+            }),
+        ensures
+            ({
+                let r = self.threads.records@[t].value();
+                let core = if r.state is Runnable { r.state->Runnable_core } else { r.state->Running_core };
+                let x = placement_node(t);
+                &&& r.placement is Some
+                &&& r.placement->Some_0.core == core
+                &&& t + 1 < NODE_SPACE
+                &&& self.list.nodes@[x as int].live
+                &&& self.list.nodes@[x as int].kind is Placement
+                &&& placement_parent(&self.list, &self.tables, x, r.placement->Some_0)
+            }),
+    {
+        reveal(placed_running_wf);
+        reveal(placements_wf);
+    }
+
+    /// Thread t's placement node, node 1 of its node page, lies outside every leaf, table page,
+    /// mapping, device space and the list's first page, and is no capability: live, it is a placement,
+    /// and it is live only while thread t is placed.
+    pub proof fn lemma_placement_node_apart(&self, t: usize)
+        requires
+            self.wf(),
+            self.threads.records@.contains_key(t),
+        ensures
+            t + 1 < NODE_SPACE,
+            placement_node(t) < NODE_SPACE,
+            placement_node(t) % PAGE_SZ == 1,
+            page_of(placement_node(t)) == t,
+            self.list.valid(placement_node(t)),
+            placement_node(t) != self.list.seq@[0],
+            !self.tables.owner@.contains_key(placement_node(t)),
+            !self.tables.owner@.contains_key(page_of(placement_node(t))),
+            !self.table_pages.maps@.contains_key(placement_node(t)),
+            !self.threads.records@.contains_key(placement_node(t)),
+            !self.mappings@.contains_key(placement_node(t)),
+            !self.is_cap(placement_node(t)),
+            self.list.nodes@[placement_node(t) as int].live
+                ==> self.list.nodes@[placement_node(t) as int].kind is Placement,
+            self.threads.records@[t].value().placement is None
+                ==> !self.list.nodes@[placement_node(t) as int].live,
+            forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+                self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                ==> table_node(u, k, i) != placement_node(t),
+            forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+                self.spaces.roots@.contains_key(s) && !(self.spaces.records@[s].value().kind is Process)
+                    && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                ==> table_node(s, k, i) != placement_node(t),
+    {
+        reveal(placements_wf);
+        self.lemma_first_page_apart();
+        self.lemma_thread_node_apart(t);
+        assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+        let b = (t / PAGE_SZ) as int;
+        assert(self.blocks.tracks_addr_run(t, 2));
+        assert(t + PAGE_SZ <= NODE_SPACE) by {
+            assert(NODE_SPACE % PAGE_SZ == 0) by (compute_only);
+            assert(t % PAGE_SZ == 0);
+            assert(t < NODE_SPACE);
+            assert(t + PAGE_SZ <= NODE_SPACE) by (nonlinear_arith)
+                requires
+                    t < NODE_SPACE,
+                    t % PAGE_SZ == 0,
+                    NODE_SPACE % PAGE_SZ == 0,
+                    PAGE_SZ > 0,
+            ;
+        }
+        let x = placement_node(t);
+        assert(x == t + 1);
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(t as int, 1, PAGE_SZ as int);
+        vstd::arithmetic::div_mod::lemma_small_mod(1nat, PAGE_SZ as nat);
+        assert(x % PAGE_SZ == 1);
+        assert(page_of(x) == t) by {
+            assert((t + 1) / (PAGE_SZ as int) == (t as int) / (PAGE_SZ as int)) by (nonlinear_arith)
+                requires
+                    t % PAGE_SZ == 0,
+                    PAGE_SZ > 1,
+            ;
+            assert((t / PAGE_SZ) * PAGE_SZ == t) by (nonlinear_arith)
+                requires
+                    t % PAGE_SZ == 0,
+                    PAGE_SZ > 0,
+            ;
+        }
+        assert(self.list.valid(x));
+        self.lemma_slot_not_owned(x);
+        self.lemma_slot_not_table_page(x);
+        if self.threads.records@.contains_key(x) {
+            self.lemma_thread_node_apart(x);
+        }
+        assert forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+            self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies table_node(u, k, i) != x by {
+            if table_node(u, k, i) == x {
+                self.lemma_table_node_in_block(u, k, i);
+                lemma_table_node_place(u, k, i);
+                assert(table_node_page(u, k) == page_of(x));
+                assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, u));
+                let q = (u / PAGE_SZ) as int;
+                assert(b == q + k);
+                if k > 0 {
+                    self.blocks.lemma_base(q);
+                    assert(order_pages(3) == 8);
+                    self.blocks.lemma_member_of(q, q + k);
+                }
+            }
+        }
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            self.spaces.roots@.contains_key(s) && !(self.spaces.records@[s].value().kind is Process)
+                && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies table_node(s, k, i) != x by {
+            if table_node(s, k, i) == x {
+                self.lemma_space_node_in_block(s, k, i);
+                lemma_table_node_place(s, k, i);
+                assert(table_node_page(s, k) == page_of(x));
+                assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+                let q = (s / PAGE_SZ) as int;
+                self.blocks.lemma_base(q);
+                assert(order_pages(3) == 8);
+                assert(b == q + k);
+                if k > 0 {
+                    self.blocks.lemma_member_of(q, q + k);
+                }
+            }
+        }
+        if self.mappings@.contains_key(x) {
+            let r = self.mappings@[x];
+            assert(mapping_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@, x));
+            self.lemma_table_page_room(r.table);
+            lemma_mapping_node_place(r.table, r.entry);
+            let k = ((r.entry + 1) / (NODES_PER_PAGE as int)) as usize;
+            let i = ((r.entry + 1) % (NODES_PER_PAGE as int)) as usize;
+            assert(table_node(r.table, k, i) == mapping_node(r.table, r.entry));
+        }
+        if self.list.nodes@[x as int].live {
+            let kind = self.list.nodes@[x as int].kind;
+            if kind is Capability {
+                assert(self.tables.is_cap(&self.list, x));
+            } else if kind is Hidden {
+                assert(self.tables.owner@.contains_key(x) || self.table_pages.maps@.contains_key(x));
+            } else if kind is Mapping {
+                assert(self.mappings@.contains_key(x));
+            } else if kind is Binding {
+                reveal(thread_bound);
+                assert(thread_bound(&self.threads, x));
+                self.lemma_thread_node_apart(x);
+            } else if kind is DeviceBinding {
+                reveal(device_bindings_wf);
+                let d = binding_device(&self.devices, x);
+                assert(0 <= d < self.devices.count);
+                assert(binding_node(&self.devices, d) == x);
+                self.lemma_binding_node_apart(d);
+            }
+        }
+    }
+
+    /// Index j of the table at root holds a core capability below the depth limit, whose priority
+    /// allows placing a thread at `priority`.
+    pub open spec fn holds_core(&self, root: usize, j: usize, priority: usize) -> bool {
+        let m = self.tables.node_of(root, j);
+        &&& self.tables.has_slot(&self.list, root, j)
+        &&& self.is_cap(m)
+        &&& self.payload_of(m).kind is Core
+        &&& self.list.nodes@[m as int].depth < MAX_DEPTH
+        &&& priority <= self.payload_of(m).priority
+    }
+
+    /// The thread the control capability at index i names can be placed at `priority` through the core
+    /// capability at index j: the thread is live, Inactive and unplaced, and index j holds a core
+    /// capability below the depth limit with priority at least `priority`. Both indices and the
+    /// priority come from user space. See design/cpu-time-as-capability/.
+    pub open spec fn can_place(&self, root: usize, i: usize, j: usize, priority: usize) -> bool {
+        let r = self.threads.records@[self.payload_of(self.tables.node_of(root, i)).base].value();
+        &&& self.can_control(root, i)
+        &&& r.state is Inactive
+        &&& r.placement is None
+        &&& self.holds_core(root, j, priority)
+    }
+
+    /// Thread t, unplaced, is placed on `pl.core` at `pl.priority` under core capability m: node
+    /// `placement_node(t)` is a live Placement child of m, and t's record names `Some(pl)`. Nothing
+    /// else changed.
+    pub open spec fn placed(pre: Self, post: Self, m: usize, t: usize, pl: Placement) -> bool {
+        let x = placement_node(t);
+        let r = pre.threads.records@[t].value();
+        &&& pre.threads.records@.contains_key(t)
+        &&& r.placement is None
+        &&& post.list.wf()
+        &&& post.list.is_child(m, x)
+        &&& post.list.parent@ == pre.list.parent@.insert(x, m)
+        &&& post.list.pages@.dom() == pre.list.pages@.dom()
+        &&& post.list.seq@[0] == pre.list.seq@[0]
+        &&& post.list.nodes@[x as int].live
+        &&& post.list.nodes@[x as int].kind is Placement
+        &&& forall|y: int| #![trigger post.list.nodes@[y]] 0 <= y < NODE_SPACE && y != x ==> {
+            &&& post.list.nodes@[y].live == pre.list.nodes@[y].live
+            &&& post.list.nodes@[y].kind == pre.list.nodes@[y].kind
+        }
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& forall|y: usize| y != t && #[trigger] post.threads.records@.contains_key(y)
+            ==> post.threads.records@[y] == pre.threads.records@[y]
+        &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
+        &&& post.threads.records@[t].is_init()
+        &&& post.threads.records@[t].value() == ThreadRecord {
+            placement: Some(pl),
+            ..r
+        }
+        &&& post.blocks == pre.blocks
+        &&& post.processes == pre.processes
+        &&& post.holders == pre.holders
+        &&& post.tables == pre.tables
+        &&& post.frames == pre.frames
+        &&& post.zeroing == pre.zeroing
+        &&& post.cores == pre.cores
+        &&& post.devices == pre.devices
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.tlb == pre.tlb
+        &&& post.iommus == pre.iommus
+        &&& post.mapped == pre.mapped
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.table_pages == pre.table_pages
+        &&& post.spaces == pre.spaces
+        &&& post.mappings == pre.mappings
+        &&& post.stop_ipis == pre.stop_ipis
+        &&& post.flush_ipis == pre.flush_ipis
+    }
+
+    /// The kinds of node after a place: the new node is a placement, outside every leaf, table page
+    /// and device space, so no clause about capability, hidden, table or space nodes changes.
+    proof fn lemma_place_nodes(pre: Self, post: Self, m: usize, t: usize, pl: Placement)
+        requires
+            pre.wf(),
+            pre.is_cap(m),
+            Self::placed(pre, post, m, t, pl),
+        ensures
+            forall|y: usize| #[trigger] post.is_cap(y) == pre.is_cap(y),
+            Self::caps_frame(pre, post, placement_node(t), placement_node(t)),
+            post.tables.wf(&post.list),
+            post.tables.caps_wf(&post.list),
+            hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
+            parents_are_capabilities(&post.list),
+            capability_nodes_are_slots(&post.list, &post.tables),
+            first_node_outside_leaves(&post.list, &post.tables),
+            leaf_slots_are_capabilities(&post.list, &post.tables),
+            table_nodes_are_mappings(&post.list, &post.table_pages),
+            space_nodes_dead(&post.list, &post.spaces),
+            devices_wf(&post.list, &post.tables, &post.devices),
+    {
+        let x = placement_node(t);
+        pre.lemma_placement_node_apart(t);
+        pre.lemma_slot_bound(m);
+        assert(Self::caps_frame(pre, post, x, x));
+        assert forall|y: usize| #[trigger] post.is_cap(y) == pre.is_cap(y) by {
+            if y == x {
+                assert(!(post.list.nodes@[y as int].kind is Capability));
+            } else {
+                Self::lemma_caps_frame(pre, post, x, x, y);
+            }
+        }
+        pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
+        assert forall|y: usize| #[trigger] post.tables.is_cap(&post.list, y)
+            implies cap_wf(post.tables.payload_of(y)) by {
+            assert(pre.tables.is_cap(&pre.list, y));
+        }
+        assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Hidden
+            implies post.tables.owner@.contains_key(y) || post.table_pages.maps@.contains_key(y) by {
+            assert(y != x);
+            assert(pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Hidden);
+        }
+        lemma_parents_derived(pre.list, post.list, m, x);
+        assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Capability
+            && y != post.list.seq@[0] implies post.tables.is_cap(&post.list, y) by {
+            assert(y != x);
+            assert(pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Capability);
+            assert(pre.tables.is_cap(&pre.list, y));
+        }
+        assert forall|y: usize| #[trigger] post.list.nodes@[y as int].live && post.tables.owner@.contains_key(page_of(y))
+            && y % PAGE_SZ != 0 && y % PAGE_SZ < NODES_PER_PAGE implies post.list.nodes@[y as int].kind is Capability by {
+            assert(y != x);
+            pre.lemma_slot_bound(y);
+            assert(pre.list.nodes@[y as int].live);
+        }
+        assert forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+            post.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE && (k != 0 || i != 0)
+                && post.list.nodes@[table_node(u, k, i) as int].live
+            implies post.list.nodes@[table_node(u, k, i) as int].kind is Mapping by {
+            assert(table_node(u, k, i) != x);
+        }
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process) && k < TABLE_NODE_PAGES
+                && i < NODES_PER_PAGE
+            implies !post.list.nodes@[table_node(s, k, i) as int].live by {
+            assert(table_node(s, k, i) != x);
+        }
+        Self::lemma_devices_same_caps(pre, post);
+    }
+
+    /// The counted parts after a place: no block reference, capability, holder, leaf, table page or
+    /// mapping changed, and thread t's record was updated in place.
+    proof fn lemma_place_objects(pre: Self, post: Self, m: usize, t: usize, pl: Placement)
+        requires
+            pre.wf(),
+            pre.is_cap(m),
+            Self::placed(pre, post, m, t, pl),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+            bindings_wf(&post.list, &post.threads, &post.processes),
+            current_wf(post.cores@, post.threads.records@),
+    {
+        let x = placement_node(t);
+        Self::lemma_place_nodes(pre, post, m, t, pl);
+        pre.lemma_placement_node_apart(t);
+        assert forall|y: usize| y != x implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, y) == pre.tables.is_cap(&pre.list, y)
+            &&& pre.tables.is_cap(&pre.list, y) ==> post.tables.payload_of(y) == pre.tables.payload_of(y)
+        } by {
+            Self::lemma_caps_frame(pre, post, x, x, y);
+        }
+        assert(!pre.is_cap(x));
+        assert(!post.is_cap(x));
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert(same_frames(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_threads(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_processes(&pre.list, &pre.tables, &post.list, &post.tables));
+        lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+        assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) implies {
+            &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
+        } by {
+            assert(l != x);
+        }
+        lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
+        assert forall|u: usize| #[trigger] pre.table_pages.maps@.contains_key(u) implies {
+            &&& post.list.nodes@[u as int].live == pre.list.nodes@[u as int].live
+            &&& post.list.nodes@[u as int].kind == pre.list.nodes@[u as int].kind
+        } by {
+            assert(u != x);
+        }
+        lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
+        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s)
+            implies space_wf(&post.list, &post.spaces, &post.blocks, s) by {
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+        }
+        assert forall|y: usize| #[trigger] post.tables.is_cap(&post.list, y) && post.tables.payload_of(y).kind is Space implies {
+            &&& post.spaces.roots@.contains_key(post.tables.payload_of(y).base)
+            &&& post.spaces.holders@[post.tables.payload_of(y).base].contains(y)
+            &&& post.tables.payload_of(y).order == 3
+        } by {
+            assert(pre.tables.is_cap(&pre.list, y));
+        }
+        assert forall|s: usize, y: usize| post.spaces.roots@.contains_key(s) && #[trigger] post.spaces.holders@[s].contains(y) implies {
+            &&& post.tables.is_cap(&post.list, y)
+            &&& post.tables.payload_of(y).kind is Space
+            &&& post.tables.payload_of(y).base == s
+        } by {
+            assert(pre.tables.is_cap(&pre.list, y));
+        }
+        assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u)
+            implies thread_wf(&post.list, &pre.threads, &post.blocks, u) by {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
+        }
+        assert forall|y: usize| #[trigger] post.tables.is_cap(&post.list, y) && post.tables.payload_of(y).kind is Thread implies {
+            &&& pre.threads.records@.contains_key(post.tables.payload_of(y).base)
+            &&& pre.threads.holders@[post.tables.payload_of(y).base].contains(y)
+            &&& post.tables.payload_of(y).order == THREAD_ORDER
+        } by {
+            assert(pre.tables.is_cap(&pre.list, y));
+        }
+        assert forall|u: usize, y: usize| pre.threads.records@.contains_key(u) && #[trigger] pre.threads.holders@[u].contains(y) implies {
+            &&& post.tables.is_cap(&post.list, y)
+            &&& post.tables.payload_of(y).kind is Thread
+            &&& post.tables.payload_of(y).base == u
+        } by {
+            assert(pre.tables.is_cap(&pre.list, y));
+        }
+        assert(threads_wf(&post.list, &post.tables, &pre.threads, &post.blocks));
+        assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
+        lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &post.blocks);
+        assert forall|mn: usize| #[trigger] pre.mappings@.contains_key(mn) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[mn].frame, mn,
+        ) by {
+            pre.lemma_mapping_node(mn);
+            let c = pre.list.parent@[mn];
+            assert(mn != x);
+            assert(c != x);
+            Self::lemma_caps_frame(pre, post, x, x, c);
+        }
+        Self::lemma_mappings_same_tree(pre, post);
+        assert forall|y: usize| y < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Binding)
+                == (pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Binding) by {
+            if y != x {
+                assert(post.list.nodes@[y as int].live == pre.list.nodes@[y as int].live);
+            }
+        }
+        lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+        lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
+    }
+
+    /// Everything the invariant says after a place.
+    proof fn lemma_place_wf(pre: Self, post: Self, m: usize, t: usize, pl: Placement)
+        requires
+            pre.wf(),
+            pre.is_cap(m),
+            pre.payload_of(m).kind is Core,
+            pl.core < NUM_CPUS,
+            pre.payload_of(m).base == core_object(pl.core as int),
+            pl.priority <= pre.payload_of(m).priority,
+            pl.priority <= MAX_PRIORITY,
+            pre.threads.records@[t].value().state is Inactive,
+            Self::placed(pre, post, m, t, pl),
+        ensures
+            post.wf(),
+    {
+        let x = placement_node(t);
+        pre.lemma_placement_node_apart(t);
+        Self::lemma_place_nodes(pre, post, m, t, pl);
+        Self::lemma_place_objects(pre, post, m, t, pl);
+        assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Binding
+            implies pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Binding by {
+            assert(y != x);
+        }
+        assert forall|y: usize| #[trigger] pre.tables.is_cap(&pre.list, y) && pre.tables.payload_of(y).kind is Process implies {
+            &&& post.tables.is_cap(&post.list, y)
+            &&& post.tables.payload_of(y) == pre.tables.payload_of(y)
+        } by {
+            assert(pre.is_cap(y));
+        }
+        lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|y: usize| #[trigger] pre.is_cap(y) && pre.payload_of(y).kind is Space
+            implies post.is_cap(y) && post.payload_of(y) == pre.payload_of(y) by {
+            assert(y != x);
+        }
+        assert forall|y: usize| y < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is DeviceBinding)
+                == (pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is DeviceBinding) by {
+            if y != x {
+                assert(post.list.nodes@[y as int].live == pre.list.nodes@[y as int].live);
+            }
+        }
+        Self::lemma_device_bindings_space_caps(pre, post);
+        assert(placements_wf(&post.list, &post.tables, &post.threads)) by {
+            reveal(placements_wf);
+            assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live
+                && post.list.nodes@[y as int].kind is Placement
+                implies {
+                    let u = page_of(y);
+                    &&& post.threads.records@.contains_key(u)
+                    &&& y == placement_node(u)
+                    &&& post.threads.records@[u].value().placement is Some
+                    &&& placement_parent(&post.list, &post.tables, y, post.threads.records@[u].value().placement->Some_0)
+                } by {
+                if y == x {
+                    assert(post.is_cap(m));
+                    assert(post.list.parent@[x] == m);
+                } else {
+                    assert(pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Placement);
+                    let u = page_of(y);
+                    assert(pre.threads.records@.contains_key(u));
+                    assert(u != t);
+                    let a = pre.list.parent@[y];
+                    assert(pre.tables.is_cap(&pre.list, a));
+                    assert(pre.is_cap(a));
+                    assert(post.is_cap(a));
+                    assert(post.list.parent@[y] == a);
+                }
+            }
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
+                && post.threads.records@[u].value().placement is Some
+                implies {
+                    let y = placement_node(u);
+                    let upl = post.threads.records@[u].value().placement->Some_0;
+                    &&& u + 1 < NODE_SPACE
+                    &&& post.list.nodes@[y as int].live
+                    &&& post.list.nodes@[y as int].kind is Placement
+                    &&& upl.core < NUM_CPUS
+                    &&& upl.priority <= MAX_PRIORITY
+                    &&& placement_parent(&post.list, &post.tables, y, upl)
+                } by {
+                if u == t {
+                    assert(post.is_cap(m));
+                    assert(post.list.parent@[x] == m);
+                } else {
+                    assert(pre.threads.records@.contains_key(u));
+                    let y = placement_node(u);
+                    assert(pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Placement);
+                    assert(y != x);
+                    let a = pre.list.parent@[y];
+                    assert(pre.tables.is_cap(&pre.list, a));
+                    assert(pre.is_cap(a));
+                    assert(post.is_cap(a));
+                    assert(post.list.parent@[y] == a);
+                }
+            }
+        }
+        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+            reveal(placed_running_wf);
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
+                && Some(u) != post.threads.boot_thread@
+                implies thread_placed_running(post.threads.records@[u].value()) by {
+                if u != t {
+                    assert(pre.threads.records@.contains_key(u));
+                }
+            }
+        }
+        Self::lemma_tlb_same(pre, post);
+        assert(process_tables_wf(&post.tables, &post.processes));
+        assert(post.frames_wf());
+    }
+
+    /// Finds the core capability at index j and the placement at `priority` it authorizes. Both the
+    /// index and the priority come from user space.
+    fn core_slot(&self, root: usize, j: usize, priority: usize) -> (ret: Option<(usize, Placement)>)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+        ensures
+            ret is Some == self.holds_core(root, j, priority),
+            ret is Some ==> {
+                let (m, pl) = ret->0;
+                &&& m == self.tables.node_of(root, j)
+                &&& pl.core < NUM_CPUS
+                &&& pl.core == core_of(self.payload_of(m).base)
+                &&& self.payload_of(m).base == core_object(pl.core as int)
+                &&& pl.priority == priority
+                &&& pl.priority <= self.payload_of(m).priority
+                &&& pl.priority <= MAX_PRIORITY
+            },
+    {
+        let (m, cap) = match self.tables.lookup(&self.list, root, j) {
+            Some(found) => found,
+            None => { return None; },
+        };
+        let node = self.list.get(m);
+        let live_cap = match node.kind {
+            NodeKind::Capability => node.live,
+            _ => false,
+        };
+        if !live_cap {
+            return None;
+        }
+        proof {
+            self.lemma_slot(root, j);
+            assert(self.tables.is_cap(&self.list, m));
+            assert(cap == self.payload_of(m));
+        }
+        let is_core = match cap.kind {
+            CapKind::Core => true,
+            _ => false,
+        };
+        if !is_core || node.depth >= MAX_DEPTH || priority > cap.priority {
+            return None;
+        }
+        proof {
+            assert(cap_wf(cap));
+            lemma_core_of(cap.base);
+        }
+        let core = (cap.base - CORE_OBJECTS) / PAGE_SZ;
+        Some((m, Placement { core, priority }))
+    }
+
+    /// Places the live, Inactive, unplaced thread named by the control capability at index i onto the
+    /// core named by the core capability at index j at `priority`, deriving the thread's placement
+    /// node under that core capability so revoking the core capability undoes the placement. Both
+    /// indices and the priority come from user space; every refusal changes nothing. See
+    /// design/cpu-time-as-capability/.
+    pub fn place(&mut self, root: usize, i: usize, j: usize, priority: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_place(root, i, j, priority),
+            !ret ==> *final(self) == *old(self),
+            forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            ret ==> {
+                let n = old(self).tables.node_of(root, i);
+                let m = old(self).tables.node_of(root, j);
+                let t = old(self).payload_of(n).base;
+                let pl = Placement { core: core_of(old(self).payload_of(m).base), priority };
+                &&& old(self).threads.records@.contains_key(t)
+                &&& pl.core < NUM_CPUS
+                &&& old(self).payload_of(m).base == core_object(pl.core as int)
+                &&& Self::placed(*old(self), *final(self), m, t, pl)
+                &&& !final(self).can_delete(root, j)
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
+            },
+    {
+        let ghost pre = *old(self);
+        let (n, t, dead) = match self.thread_control(root, i) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        if dead {
+            return false;
+        }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        match record.state {
+            ThreadState::Inactive => {},
+            _ => { return false; },
+        }
+        if record.placement.is_some() {
+            return false;
+        }
+        let (m, pl) = match self.core_slot(root, j, priority) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        proof {
+            pre.lemma_placement_node_apart(t);
+            pre.list.lemma_seq_fits();
+            pre.lemma_slot_bound(m);
+        }
+        let x = t + 1;
+        self.list.derive(m, x, NodeKind::Placement);
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state: record.state,
+            frame: record.frame,
+            saved: record.saved,
+            save: record.save,
+            pending_stop: record.pending_stop,
+            dying: record.dying,
+            process: record.process,
+            placement: Some(pl),
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+            let post = *self;
+            assert(Self::placed(pre, post, m, t, pl));
+            Self::lemma_place_wf(pre, post, m, t, pl);
+            Self::lemma_place_nodes(pre, post, m, t, pl);
+            post.lemma_parent_undeletable(root, j, x);
+            assert(bound_threads(&post.list, &post.tables) =~= bound_threads(&pre.list, &pre.tables)) by {
+                broadcast use vstd::set::lemma_set_filter;
+            }
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            Self::lemma_leaf_added_discharges(pre, post, root, m, x);
+            let e = Effect::Control { cap: n, thread: t };
+            assert(authorized(pre.view(), root, e));
+            assert(discharges(pre.view(), post.view(), root, e));
+        }
+        true
     }
 }
 

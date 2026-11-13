@@ -2756,6 +2756,8 @@ impl CapKernel {
                 == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding)
             &&& (post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is DeviceBinding)
                 == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding)
+            &&& (post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Placement)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement)
         } by {
             if x != node {
                 assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);

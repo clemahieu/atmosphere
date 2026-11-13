@@ -620,6 +620,7 @@ impl CapKernel {
             post.spaces == pre.spaces,
             post.threads.records@ == pre.threads.records@.remove(base),
             post.threads.holders == pre.threads.holders,
+            post.threads.boot_thread@ == (if pre.threads.boot_thread@ == Some(base) { None } else { pre.threads.boot_thread@ }),
             post.processes == pre.processes,
             post.mappings == pre.mappings,
         ensures
@@ -730,6 +731,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads.records@ == pre.threads.records@.remove(base),
             post.threads.holders == pre.threads.holders,
+            post.threads.boot_thread@ == (if pre.threads.boot_thread@ == Some(base) { None } else { pre.threads.boot_thread@ }),
             post.processes == pre.processes,
             post.stop_ipis == pre.stop_ipis,
         ensures
@@ -770,6 +772,46 @@ impl CapKernel {
             implies binding_parent(&post.list, &post.tables, &post.threads, t) by {
             assert(binding_parent(&pre.list, &pre.tables, &pre.threads, t));
             assert(t != base);
+        }
+        assert(placements_wf(&post.list, &post.tables, &post.threads)) by {
+            reveal(placements_wf);
+            assert(1int < NODES_PER_PAGE as int) by (compute_only);
+            assert(!pre.list.nodes@[base + 1].live);
+            assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Placement
+                implies {
+                    let t = page_of(x);
+                    &&& post.threads.records@.contains_key(t)
+                    &&& x == placement_node(t)
+                    &&& post.threads.records@[t].value().placement is Some
+                    &&& placement_parent(&post.list, &post.tables, x, post.threads.records@[t].value().placement->Some_0)
+                } by {
+                assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement);
+                let t = page_of(x);
+                assert(x == placement_node(t));
+                assert(t != base);
+            }
+            assert forall|t: usize| #[trigger] post.threads.records@.contains_key(t) && post.threads.records@[t].value().placement is Some
+                implies {
+                    let x = placement_node(t);
+                    let pl = post.threads.records@[t].value().placement->Some_0;
+                    &&& t + 1 < NODE_SPACE
+                    &&& post.list.nodes@[x as int].live
+                    &&& post.list.nodes@[x as int].kind is Placement
+                    &&& pl.core < NUM_CPUS
+                    &&& pl.priority <= MAX_PRIORITY
+                    &&& placement_parent(&post.list, &post.tables, x, pl)
+                } by {
+                assert(pre.threads.records@.contains_key(t));
+            }
+        }
+        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+            reveal(placed_running_wf);
+            assert forall|t: usize| #[trigger] post.threads.records@.contains_key(t) && Some(t) != post.threads.boot_thread@
+                implies thread_placed_running(post.threads.records@[t].value()) by {
+                assert(t != base);
+                assert(pre.threads.records@.contains_key(t));
+                assert(Some(t) != pre.threads.boot_thread@);
+            }
         }
         reveal(thread_bound);
         assert forall|n: usize| n < NODE_SPACE && (#[trigger] post.list.nodes@[n as int]).live && post.list.nodes@[n as int].kind is Binding
@@ -828,6 +870,7 @@ impl CapKernel {
         self.blocks.mark_torn_down(page);
         let ghost mid = *self;
         let Tracked(nodes) = self.list.remove_page(base);
+        self.threads.boot_thread = Ghost(if pre.threads.boot_thread@ == Some(base) { None } else { pre.threads.boot_thread@ });
         let tracked mut perms = Map::<usize, PagePerm4k>::tracked_empty();
         proof {
             let tracked mut nodes = nodes;

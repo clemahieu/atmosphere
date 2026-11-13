@@ -122,6 +122,7 @@ impl CapKernel {
             &&& post.holders == pre.holders
             &&& post.spaces == pre.spaces
             &&& post.threads.records == pre.threads.records
+            &&& post.threads.boot_thread == pre.threads.boot_thread
             &&& post.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].remove(n))
             &&& post.processes == pre.processes
         }

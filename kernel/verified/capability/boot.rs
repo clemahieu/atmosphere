@@ -200,6 +200,7 @@ impl CapKernel {
             final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1,
             !final(self).blocks.pages@[(base / PAGE_SZ) as int].dead,
             final(self).table_pages == old(self).table_pages,
+            final(self).threads == old(self).threads,
             final(self).list.pages@.dom() == set![root, leaf],
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
@@ -426,6 +427,7 @@ impl CapKernel {
             old(self).payload_of((leaf + 1) as usize) == process_of(process),
             old(self).list.nodes@[leaf + 1].depth == 1,
             !old(self).list.nodes@[leaf + 2].live,
+            old(self).threads.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty(),
             old(self).blocks.pages@[(process / PAGE_SZ) as int].refs == 1,
             t % THREAD_BYTES == 0,
             old(self).blocks.tracks_addr_run(t, 2),
@@ -453,6 +455,7 @@ impl CapKernel {
             final(self).payload_of((leaf + 2) as usize).rights & CONTROL_RIGHT != 0,
             final(self).list.is_child(root, (leaf + 2) as usize),
             final(self).list.nodes@[leaf + 2].depth == 1,
+            final(self).threads.boot_thread@ == Some(t),
             final(self).threads.records@.contains_key(t),
             final(self).threads.records@[t].value() == (ThreadRecord {
                 state: crate::capability::thread::ThreadState::Inactive,
@@ -604,6 +607,7 @@ impl CapKernel {
             Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base: t, badge: 0, priority: 0 },
         );
         self.threads.holders = Ghost(freed.threads.holders@.insert(t, set![cap]));
+        self.threads.boot_thread = Ghost(Some(t));
         proof {
             Self::lemma_boot_thread_typed(freed, *self, mid, root, process, leaf, t);
         }
@@ -904,6 +908,7 @@ impl CapKernel {
             final(self).list.nodes@[frames as int].depth == 1,
             forall|x: int| 0 <= x < NODE_SPACE && #[trigger] final(self).list.nodes@[x].live
                 && final(self).list.nodes@[x].kind is Hidden ==> x == leaf || x == frames,
+            final(self).threads.boot_thread@ == Some(t),
             final(self).threads.records@.contains_key(t),
             final(self).threads.records@[t].value() == (ThreadRecord {
                 state: crate::capability::thread::ThreadState::Inactive,
@@ -1860,6 +1865,8 @@ impl CapKernel {
                 x != leaf + 2 && x % PAGE_SZ < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(x))
                 ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
             // The thread.
+            pre.threads.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty(),
+            post.threads.boot_thread@ == Some(t),
             post.threads.records@ == pre.threads.records@.insert(t, post.threads.records@[t]),
             post.threads.records@[t].addr() == t + THREAD_RECORD_PAGE * PAGE_SZ,
             post.threads.records@[t].is_init(),
@@ -2012,6 +2019,10 @@ impl CapKernel {
             Self::lemma_space_cap_frame(pre, post, child, x);
         }
         Self::lemma_devices_same_caps(pre, post);
+        pre.lemma_first_page_apart();
+        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+            reveal(placed_running_wf);
+        }
         lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
         Self::lemma_binding_parents_same_caps(pre, post);
@@ -2714,6 +2725,16 @@ impl CapKernel {
             assert forall|t: usize| t < NODE_SPACE && (#[trigger] list.nodes@[t as int]).live
                 implies !(list.nodes@[t as int].kind is Binding) by {
                 assert(t == root || t == leaf || t == cap);
+            }
+        }
+        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+            reveal(placed_running_wf);
+        }
+        assert(placements_wf(&list, &post.tables, &post.threads)) by {
+            reveal(placements_wf);
+            assert forall|x: usize| x < NODE_SPACE && (#[trigger] list.nodes@[x as int]).live
+                implies !(list.nodes@[x as int].kind is Placement) by {
+                assert(x == root || x == leaf || x == cap);
             }
         }
         assert(device_bindings_wf(&list, &post.tables, post.spaces.bound@, &post.devices)) by {

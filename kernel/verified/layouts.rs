@@ -34,9 +34,9 @@ global layout PageMap is size == 4096, align == 8;
 global layout TableRecord is size == 56, align == 8;
 global layout SpaceCores is size == 272, align == 8;
 #[cfg(target_arch = "x86_64")]
-global layout ThreadRecord is size == 224, align == 8;
+global layout ThreadRecord is size == 232, align == 8;
 #[cfg(target_arch = "aarch64")]
-global layout ThreadRecord is size == 328, align == 8;
+global layout ThreadRecord is size == 336, align == 8;
 global layout ProcessRecord is size == 1, align == 1;
 
 /// A page becomes an uninitialised node page.

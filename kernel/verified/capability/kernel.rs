@@ -1654,8 +1654,10 @@ impl CapKernel {
         &&& process_tables_wf(&self.tables, &self.processes)
         &&& process_spaces_wf(&self.spaces, &self.processes)
         &&& current_wf(self.cores@, self.threads.records@)
+        &&& placed_running_wf(self.threads.boot_thread@, self.threads.records@)
         &&& bindings_wf(&self.list, &self.threads, &self.processes)
         &&& binding_parents(&self.list, &self.tables, &self.threads)
+        &&& placements_wf(&self.list, &self.tables, &self.threads)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
         &&& mapped_wf(self.mapped@, self.mappings@)
         &&& mappings_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@)
@@ -1670,6 +1672,7 @@ impl CapKernel {
         &&& devices_wf(&self.list, &self.tables, &self.devices)
         &&& device_bindings_wf(&self.list, &self.tables, self.spaces.bound@, &self.devices)
         &&& devices_placed(&self.list, self.iommus.present@, self.iommus.acked@, &self.devices)
+        &&& !self.threads.records@.contains_key(self.devices.page)
     }
 
     /// A frame's permission is for its own page.
@@ -2155,7 +2158,9 @@ impl CapKernel {
             reveal(registers_wf);
             reveal(devices_wf);
             reveal(current_wf);
+            reveal(placed_running_wf);
             reveal(binding_parents);
+            reveal(placements_wf);
             reveal(device_bindings_wf);
             assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(self.cores@, c, t) implies false by {
                 assert(self.cores@[c].current_thread is None);

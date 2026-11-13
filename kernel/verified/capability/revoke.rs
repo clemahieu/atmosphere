@@ -166,12 +166,17 @@ impl CapKernel {
                     block_dead(&old(self).blocks, br) || block_refs(&old(self).blocks, br) == 1,
                 )
                 &&& final(self).holders == old(self).holders
+                &&& final(self).threads.boot_thread == old(self).threads.boot_thread
                 &&& final(self).threads.holders@ == old(self).threads.holders@.insert(t, old(self).threads.holders@[t].remove(n))
             },
-            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Thread) && !(old(self).list.nodes@[n as int].kind is Binding)
+            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Thread)
+                && !(old(self).list.nodes@[n as int].kind is Binding)
+                && !(old(self).list.nodes@[n as int].kind is Placement)
                 ==> final(self).threads == old(self).threads,
-            !(old(self).list.nodes@[n as int].kind is Binding) ==> final(self).threads.records == old(self).threads.records,
+            !(old(self).list.nodes@[n as int].kind is Binding) && !(old(self).list.nodes@[n as int].kind is Placement)
+                ==> final(self).threads.records == old(self).threads.records,
             old(self).list.nodes@[n as int].kind is Binding ==> Self::unbound(*old(self), *final(self), n),
+            old(self).list.nodes@[n as int].kind is Placement ==> Self::unplaced(*old(self), *final(self), n),
             old(self).is_cap(n) && old(self).payload_of(n).kind is Process ==> {
                 let p = old(self).payload_of(n).base;
                 let br = BlockRef::Small(p / PAGE_SZ);
@@ -275,6 +280,7 @@ impl CapKernel {
                 word = self.clear_mapping(n, Tracked(steps));
             },
             NodeKind::Binding => { self.unbind(n); },
+            NodeKind::Placement => { self.unplace(n); },
             NodeKind::DeviceBinding => { self.unbind_device(n, Tracked(steps)); },
         }
         proof {
@@ -317,7 +323,46 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c })
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&post.list))
         &&& Self::devices_revoked(pre, post)
+        &&& Self::threads_revoked(pre, post)
         &&& post.processes.records == pre.processes.records
+    }
+
+    /// What unbinding a thread or unplacing it leaves of its state and pending stop: a Running thread
+    /// stays Running with a stop pending, a Dead thread stays Dead, and any other becomes Inactive.
+    pub open spec fn stopped_state(r: ThreadRecord) -> (ThreadState, bool) {
+        match r.state {
+            ThreadState::Running { core } => (ThreadState::Running { core }, true),
+            ThreadState::Dead => (ThreadState::Dead, false),
+            _ => (ThreadState::Inactive, false),
+        }
+    }
+
+    /// The threads after revoke steps from pre: no thread appeared or went, the boot thread is as it was,
+    /// and each thread whose binding or placement node went lost that binding or placement and moved off
+    /// Runnable or Blocked to Inactive (or got a stop pending if Running), while every other thread's
+    /// record is as it was.
+    pub open spec fn threads_revoked(pre: Self, post: Self) -> bool {
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) ==> {
+            let before = pre.threads.records@[t].value();
+            let now = post.threads.records@[t].value();
+            let bind_gone = t < NODE_SPACE && pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding
+                && !post.list.nodes@[t as int].live;
+            let place_gone = t + 1 < NODE_SPACE && pre.list.nodes@[t + 1].live && pre.list.nodes@[t + 1].kind is Placement
+                && !post.list.nodes@[t + 1].live;
+            &&& now.frame == before.frame
+            &&& now.saved == before.saved
+            &&& now.save == before.save
+            &&& now.dying == before.dying
+            &&& now.process == if bind_gone { None } else { before.process }
+            &&& now.placement == if place_gone { None } else { before.placement }
+            &&& (now.state, now.pending_stop) == if bind_gone || place_gone {
+                Self::stopped_state(before)
+            } else {
+                (before.state, before.pending_stop)
+            }
+        }
     }
 
     /// The devices after revoke steps from pre: a device whose binding node went is bound to nothing,
@@ -556,6 +601,7 @@ impl CapKernel {
                 discharges(pre.view(), self.view(), root, Effect::Revoke { cap: c }),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
                 Self::devices_revoked(pre, *self),
+                Self::threads_revoked(pre, *self),
                 pre.flush_epoch <= self.flush_epoch,
                 forall|n: usize, g: usize| pre.mappings@.contains_key(n) && !self.mappings@.contains_key(n)
                     && #[trigger] record_pages(pre.mappings@[n]).contains(g)
@@ -590,6 +636,12 @@ impl CapKernel {
                     && mid.list.nodes@[r as int].live
                     && (mid.list.nodes@[r as int].kind is DeviceBinding ==> Self::device_unbound(mid, *self, r))
                     && (!(mid.list.nodes@[r as int].kind is DeviceBinding) ==> self.devices == mid.devices)
+                    && (mid.list.nodes@[r as int].kind is Binding ==> Self::unbound(mid, *self, r))
+                    && (mid.list.nodes@[r as int].kind is Placement ==> Self::unplaced(mid, *self, r))
+                    && (!(mid.list.nodes@[r as int].kind is Binding) && !(mid.list.nodes@[r as int].kind is Placement) ==> {
+                        &&& self.threads.records == mid.threads.records
+                        &&& self.threads.boot_thread == mid.threads.boot_thread
+                    })
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
                     && (mid.hidden_table(r) ==> Self::table_unlinked(mid, *self, r))
@@ -612,6 +664,7 @@ impl CapKernel {
                     reveal(devices_wf);
                 }
                 Self::lemma_devices_revoked_step(pre, mid, *self, c, r);
+                Self::lemma_threads_revoked_step(pre, mid, *self, c, r);
                 Self::lemma_blocks_revoked_compose(pre, mid, *self);
                 lemma_revoked_seq_step(pre.list, mid.list, self.list, c, r, gone);
                 lemma_run_shrunk_step(pre.list, mid.list, self.list, c, r);
@@ -675,6 +728,12 @@ impl CapKernel {
                 && old(self).list.nodes@[r as int].live
                 && (old(self).list.nodes@[r as int].kind is DeviceBinding ==> Self::device_unbound(*old(self), *final(self), r))
                 && (!(old(self).list.nodes@[r as int].kind is DeviceBinding) ==> final(self).devices == old(self).devices)
+                && (old(self).list.nodes@[r as int].kind is Binding ==> Self::unbound(*old(self), *final(self), r))
+                && (old(self).list.nodes@[r as int].kind is Placement ==> Self::unplaced(*old(self), *final(self), r))
+                && (!(old(self).list.nodes@[r as int].kind is Binding) && !(old(self).list.nodes@[r as int].kind is Placement) ==> {
+                    &&& final(self).threads.records == old(self).threads.records
+                    &&& final(self).threads.boot_thread == old(self).threads.boot_thread
+                })
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r))
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), r))
                 && (old(self).hidden_table(r) ==> Self::table_unlinked(*old(self), *final(self), r))
@@ -752,6 +811,17 @@ impl CapKernel {
                 assert(Self::device_unbound(pre, *self, r));
             } else {
                 assert(self.devices == pre.devices);
+            }
+            if pre.list.nodes@[r as int].kind is Binding {
+                assert(cut == pre);
+                assert(Self::unbound(pre, *self, r));
+            } else if pre.list.nodes@[r as int].kind is Placement {
+                assert(cut == pre);
+                assert(Self::unplaced(pre, *self, r));
+            } else {
+                assert(cut.threads == pre.threads);
+                assert(self.threads.records == pre.threads.records);
+                assert(self.threads.boot_thread == pre.threads.boot_thread);
             }
             // Each part of the step bumps the epoch or keeps it, and a word it writes is at the new epoch,
             // so a page above an acknowledgement no later than the step's first epoch stays above it.
@@ -967,12 +1037,17 @@ impl CapKernel {
                     block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
                 )
                 &&& mid.holders == pre.holders
+                &&& mid.threads.boot_thread == pre.threads.boot_thread
                 &&& mid.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].remove(r))
             },
-            !(pre.is_cap(r) && pre.payload_of(r).kind is Thread) && !(pre.list.nodes@[r as int].kind is Binding)
+            !(pre.is_cap(r) && pre.payload_of(r).kind is Thread)
+                && !(pre.list.nodes@[r as int].kind is Binding)
+                && !(pre.list.nodes@[r as int].kind is Placement)
                 ==> mid.threads == pre.threads,
-            !(pre.list.nodes@[r as int].kind is Binding) ==> mid.threads.records == pre.threads.records,
+            !(pre.list.nodes@[r as int].kind is Binding) && !(pre.list.nodes@[r as int].kind is Placement)
+                ==> mid.threads.records == pre.threads.records,
             pre.list.nodes@[r as int].kind is Binding ==> Self::unbound(pre, mid, r),
+            pre.list.nodes@[r as int].kind is Placement ==> Self::unplaced(pre, mid, r),
             pre.is_cap(r) && pre.payload_of(r).kind is Process ==> {
                 let p = pre.payload_of(r).base;
                 let br = BlockRef::Small(p / PAGE_SZ);
@@ -1120,6 +1195,10 @@ impl CapKernel {
             Self::lemma_revoke_binding_holders(pre, post, r);
             Self::lemma_same_tree_shrunk(pre, post);
             Self::lemma_device_bindings_caps_frame(pre, post, r, r);
+        } else if pre.list.nodes@[r as int].kind is Placement {
+            Self::lemma_revoke_placement_holders(pre, post, r);
+            Self::lemma_same_tree_shrunk(pre, post);
+            Self::lemma_device_bindings_caps_frame(pre, post, r, r);
         } else if pre.list.nodes@[r as int].kind is DeviceBinding {
             Self::lemma_revoke_device_binding_holders(pre, post, r);
             Self::lemma_same_tree_shrunk(pre, post);
@@ -1147,7 +1226,98 @@ impl CapKernel {
             assert forall|x: usize| x != r implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {}
             Self::lemma_bound_threads_remove(pre, post, r);
         } else {
+            assert forall|x: usize| #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
+                if pre.list.nodes@[r as int].kind is Placement && x == page_of(r) {
+                    assert(post.threads.records@[x].value().process == pre.threads.records@[x].value().process);
+                }
+            }
             Self::lemma_bound_threads_same(pre, post);
+        }
+    }
+
+    /// A revoke step that took r from mid keeps the threads as threads_revoked says from the state the
+    /// revoke began in: r's thread, if r is a binding or a placement, loses that binding or placement and
+    /// stops or goes Inactive, and every other thread's record is as it was.
+    proof fn lemma_threads_revoked_step(pre: Self, mid: Self, post: Self, c: usize, r: usize)
+        requires
+            mid.wf(),
+            mid.list.nodes@.len() == NODE_SPACE,
+            Self::threads_revoked(pre, mid),
+            run_shrunk(pre.list, mid.list, c),
+            revoked_one(mid.list, post.list, c, r),
+            mid.list.nodes@[r as int].live,
+            mid.list.nodes@[r as int].kind is Binding ==> Self::unbound(mid, post, r),
+            mid.list.nodes@[r as int].kind is Placement ==> Self::unplaced(mid, post, r),
+            !(mid.list.nodes@[r as int].kind is Binding) && !(mid.list.nodes@[r as int].kind is Placement) ==> {
+                &&& post.threads.records == mid.threads.records
+                &&& post.threads.boot_thread == mid.threads.boot_thread
+            },
+        ensures
+            Self::threads_revoked(pre, post),
+    {
+        assert forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) implies {
+            let before = pre.threads.records@[t].value();
+            let now = post.threads.records@[t].value();
+            let bind_gone = t < NODE_SPACE && pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding
+                && !post.list.nodes@[t as int].live;
+            let place_gone = t + 1 < NODE_SPACE && pre.list.nodes@[t + 1].live && pre.list.nodes@[t + 1].kind is Placement
+                && !post.list.nodes@[t + 1].live;
+            &&& now.frame == before.frame
+            &&& now.saved == before.saved
+            &&& now.save == before.save
+            &&& now.dying == before.dying
+            &&& now.process == if bind_gone { None } else { before.process }
+            &&& now.placement == if place_gone { None } else { before.placement }
+            &&& (now.state, now.pending_stop) == if bind_gone || place_gone {
+                Self::stopped_state(before)
+            } else {
+                (before.state, before.pending_stop)
+            }
+        } by {
+            assert(mid.threads.records@.contains_key(t));
+            assert(thread_wf(&mid.list, &mid.threads, &mid.blocks, t));
+            mid.lemma_thread_node_apart(t);
+            mid.lemma_placement_node_apart(t);
+            let before = pre.threads.records@[t].value();
+            let mrec = mid.threads.records@[t].value();
+            let bind_mid = t < NODE_SPACE && pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding
+                && !mid.list.nodes@[t as int].live;
+            let place_mid = t + 1 < NODE_SPACE && pre.list.nodes@[t + 1].live && pre.list.nodes@[t + 1].kind is Placement
+                && !mid.list.nodes@[t + 1].live;
+            assert(mid.list.nodes@[t as int].live ==> pre.list.nodes@[t as int].live && mid.list.nodes@[t as int].kind == pre.list.nodes@[t as int].kind);
+            assert(mid.list.nodes@[t + 1].live ==> pre.list.nodes@[t + 1].live && mid.list.nodes@[t + 1].kind == pre.list.nodes@[t + 1].kind);
+            if t != r {
+                assert(post.list.nodes@[t as int].live == mid.list.nodes@[t as int].live);
+            }
+            if t + 1 != r as int {
+                assert(post.list.nodes@[t + 1].live == mid.list.nodes@[t + 1].live);
+            }
+            if mid.list.nodes@[r as int].kind is Binding {
+                mid.lemma_thread_node_apart(r);
+                assert(t + 1 != r as int);
+                if t == r {
+                    assert(mrec == crate::capability::thread::unbound_record(mrec)
+                        || post.threads.records@[t].value() == crate::capability::thread::unbound_record(mrec));
+                    if place_mid {
+                        assert(Self::stopped_state(mrec) == Self::stopped_state(before));
+                    }
+                }
+            } else if mid.list.nodes@[r as int].kind is Placement {
+                reveal(placements_wf);
+                let t0 = page_of(r);
+                assert(r == placement_node(t0));
+                assert(t != r);
+                if t == t0 {
+                    if bind_mid {
+                        assert(Self::stopped_state(mrec) == Self::stopped_state(before));
+                    }
+                } else {
+                    assert(t + 1 != r as int);
+                }
+            } else {
+                assert(t != r || !(pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding && mid.list.nodes@[t as int].live));
+                assert(t + 1 != r as int || !(pre.list.nodes@[t + 1].live && pre.list.nodes@[t + 1].kind is Placement && mid.list.nodes@[t + 1].live));
+            }
         }
     }
 
@@ -1347,7 +1517,9 @@ impl CapKernel {
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
             bindings_wf(&post.list, &post.threads, &post.processes),
             binding_parents(&post.list, &post.tables, &post.threads),
+            placements_wf(&post.list, &post.tables, &post.threads),
             current_wf(post.cores@, post.threads.records@),
+            placed_running_wf(post.threads.boot_thread@, post.threads.records@),
     {
         reveal(thread_bound);
         let t = n;
@@ -1445,6 +1617,170 @@ impl CapKernel {
                 assert(pre.threads.records@.contains_key(x));
             }
         }
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Placement)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement) by {
+            if x != n {
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+                assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);
+            }
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(x != n);
+        }
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+            reveal(placed_running_wf);
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && Some(x) != post.threads.boot_thread@
+                implies thread_placed_running(post.threads.records@[x].value()) by {
+                assert(pre.threads.records@.contains_key(x));
+            }
+        }
+    }
+
+    /// The invariant's parts after placement node n goes with its thread's placement: no capability,
+    /// block reference, mapping, frame, space, process or device changed, and the thread moved off
+    /// Runnable or Blocked to Inactive (or got a stop pending if Running).
+    pub proof fn lemma_revoke_placement_holders(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
+            pre.list.nodes@[n as int].live,
+            pre.list.nodes@[n as int].kind is Placement,
+            pre.list.childless(n),
+            !post.list.nodes@[n as int].live,
+            post.blocks == pre.blocks,
+            post.holders == pre.holders,
+            post.zeroing == pre.zeroing,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.list.parent@ == pre.list.parent@,
+            post.tables == pre.tables,
+            post.spaces == pre.spaces,
+            post.table_pages == pre.table_pages,
+            post.mappings == pre.mappings,
+            post.cores == pre.cores,
+            post.processes == pre.processes,
+            Self::unplaced(pre, post, n),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+            bindings_wf(&post.list, &post.threads, &post.processes),
+            binding_parents(&post.list, &post.tables, &post.threads),
+            placements_wf(&post.list, &post.tables, &post.threads),
+            current_wf(post.cores@, post.threads.records@),
+            placed_running_wf(post.threads.boot_thread@, post.threads.records@),
+    {
+        reveal(placements_wf);
+        let t = page_of(n);
+        assert(pre.threads.records@.contains_key(t));
+        assert(n == placement_node(t));
+        assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        pre.lemma_placement_node_apart(t);
+        assert forall|x: usize| x != n implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, n, n, x);
+        }
+        assert(!pre.is_cap(n));
+        assert(!post.is_cap(n));
+        pre.lemma_unhidden_not_owned(n);
+        Self::lemma_same_leaf_nodes(pre, post, n, n);
+        lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
+        pre.lemma_unhidden_not_table_page(n);
+        Self::lemma_same_table_nodes(pre, post, n, n);
+        lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
+        lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+        lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
+        lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
+        lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
+        lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
+        Self::lemma_delete_mappings(pre, post, n);
+        Self::lemma_binding_parents_caps_frame(pre, post, n, n);
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding) by {
+            if x != n {
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+                assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);
+            }
+        }
+        lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Placement
+            implies {
+                let u = page_of(x);
+                &&& post.threads.records@.contains_key(u)
+                &&& x == placement_node(u)
+                &&& post.threads.records@[u].value().placement is Some
+                &&& placement_parent(&post.list, &post.tables, x, post.threads.records@[u].value().placement->Some_0)
+            } by {
+            assert(x != n);
+            assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement);
+            let u = page_of(x);
+            assert(x == placement_node(u));
+            assert(u != t);
+            assert(post.threads.records@[u] == pre.threads.records@[u]);
+            let m = pre.list.parent@[x];
+            assert(m != n);
+            Self::lemma_caps_frame(pre, post, n, n, m);
+        }
+        assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) && post.threads.records@[u].value().placement is Some
+            implies {
+                let x = placement_node(u);
+                let pl = post.threads.records@[u].value().placement->Some_0;
+                &&& u + 1 < NODE_SPACE
+                &&& post.list.nodes@[x as int].live
+                &&& post.list.nodes@[x as int].kind is Placement
+                &&& pl.core < NUM_CPUS
+                &&& pl.priority <= MAX_PRIORITY
+                &&& placement_parent(&post.list, &post.tables, x, pl)
+            } by {
+            assert(u != t);
+            assert(pre.threads.records@.contains_key(u));
+            assert(post.threads.records@[u] == pre.threads.records@[u]);
+            let x = placement_node(u);
+            assert(x != n);
+            assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Placement);
+        }
+        assert(current_wf(post.cores@, post.threads.records@)) by {
+            reveal(current_wf);
+            assert forall|c: int, x: usize| 0 <= c < NUM_CPUS && #[trigger] runs(post.cores@, c, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: c as usize })
+            } by {
+                assert(runs(pre.cores@, c, x));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(pre.threads.records@.contains_key(x));
+                assert(post.threads.records@[x].value().state == pre.threads.records@[x].value().state);
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
+                implies post.threads.records@[x].value().state is Running by {
+                assert(pre.threads.records@.contains_key(x));
+            }
+        }
+        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+            reveal(placed_running_wf);
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && Some(x) != post.threads.boot_thread@
+                implies thread_placed_running(post.threads.records@[x].value()) by {
+                assert(pre.threads.records@.contains_key(x));
+            }
+        }
     }
 
     /// The invariant's parts after device binding node n goes with its device's binding and its
@@ -1480,6 +1816,7 @@ impl CapKernel {
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
             bindings_wf(&post.list, &post.threads, &post.processes),
             binding_parents(&post.list, &post.tables, &post.threads),
+            placements_wf(&post.list, &post.tables, &post.threads),
             device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
     {
         let d = binding_device(&pre.devices, n);
@@ -1569,6 +1906,21 @@ impl CapKernel {
             }
         }
         lemma_bindings_same(&pre.list, &post.list, &pre.threads, &pre.processes);
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Placement)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Placement) by {
+            if x != n {
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+                assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);
+            }
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(x != n);
+        }
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         Self::lemma_revoke_device_bindings(pre, post, n);
     }
 

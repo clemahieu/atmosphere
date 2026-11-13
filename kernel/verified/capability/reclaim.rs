@@ -2351,6 +2351,13 @@ impl CapKernel {
             assert(post.tables.is_cap(&pre.list, x));
         }
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(post.tables.is_cap(&pre.list, x));
+        }
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
             implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
             assert(post.tables.is_cap(&pre.list, x));
@@ -2831,6 +2838,13 @@ impl CapKernel {
         Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_node_block_caps(pre, post, base);
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(post.tables.is_cap(&pre.list, x));
+        }
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
             implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
             assert(post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x));
@@ -3135,6 +3149,13 @@ impl CapKernel {
         Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_node_block_caps(pre, post, base);
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(post.tables.is_cap(&pre.list, x));
+        }
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
             implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
             assert(post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x));

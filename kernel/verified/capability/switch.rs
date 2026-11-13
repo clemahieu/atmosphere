@@ -126,6 +126,7 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).threads.records@.dom() == old(self).threads.records@.dom(),
             final(self).threads.holders == old(self).threads.holders,
+            final(self).threads.boot_thread == old(self).threads.boot_thread,
             forall|x: usize| #[trigger] final(self).threads.records@.contains_key(x)
                 && old(self).cores@[c as int].current_thread != Some(x) && next != Some(x)
                 ==> final(self).threads.records@[x] == old(self).threads.records@[x],
@@ -142,6 +143,7 @@ impl CapKernel {
                     &&& final(self).threads.records@[o].value().saved == saved
                     &&& final(self).threads.records@[o].value().save@ == entry_frame_save(frame, saved)
                     &&& final(self).threads.records@[o].value().process == old(self).threads.records@[o].value().process
+                    &&& final(self).threads.records@[o].value().placement == old(self).threads.records@[o].value().placement
                     &&& final(self).threads.records@[o].value().dying == old(self).threads.records@[o].value().dying
                 },
                 None => true,
@@ -153,6 +155,7 @@ impl CapKernel {
                     let tag = tag_written(c as int, pcid);
                     &&& final(self).threads.records@[t].value().state == (ThreadState::Running { core: c })
                     &&& final(self).threads.records@[t].value().process == Some(p)
+                    &&& final(self).threads.records@[t].value().placement == old(self).threads.records@[t].value().placement
                     // The thread made current is not one cap_dead calls dead: Running, not dying, and
                     // bound to a process that is not dead.
                     &&& !final(self).threads.records@[t].value().dying

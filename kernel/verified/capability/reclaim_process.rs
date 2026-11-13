@@ -789,6 +789,7 @@ impl CapKernel {
             process_spaces_wf(&post.spaces, &post.processes),
             bindings_wf(&post.list, &post.threads, &post.processes),
             binding_parents(&post.list, &post.tables, &post.threads),
+            placements_wf(&post.list, &post.tables, &post.threads),
             device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
             list_pages_used(&post.list, &post.blocks),
     {
@@ -842,6 +843,14 @@ impl CapKernel {
             assert(pre.processes.bound@[p].contains(t));
         }
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x));
+            assert(post.tables.payload_of(x) == pre.tables.payload_of(x));
+        }
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert(pre.processes.records@.contains_key(base));
         pre.lemma_bound_empty(base);
         lemma_bound_kept_empty(pre.spaces.bound@, base);

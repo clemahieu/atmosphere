@@ -42,6 +42,9 @@ pub enum NodeKind {
     /// A device's binding to a device space, under the space capability that bound it:
     /// design/device-binding-under-the-space-capability/.
     DeviceBinding,
+    /// A thread's placement on a core, under the core capability that placed it:
+    /// design/cpu-time-as-capability/.
+    Placement,
 }
 
 #[derive(Clone, Copy)]

@@ -393,6 +393,7 @@ impl CapKernel {
             },
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             final(self).threads.records == old(self).threads.records,
+            final(self).threads.boot_thread == old(self).threads.boot_thread,
     {
         let ghost pre = *old(self);
         let (parent, payload) = match self.tables.lookup(&self.list, src, from) {
@@ -576,6 +577,7 @@ impl CapKernel {
                 &&& post.holders == pre.holders
                 &&& post.spaces == pre.spaces
                 &&& post.threads.records == pre.threads.records
+                &&& post.threads.boot_thread == pre.threads.boot_thread
                 &&& post.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].insert(child))
                 &&& post.processes == pre.processes
             },

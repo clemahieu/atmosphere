@@ -70,6 +70,7 @@ pub proof fn lemma_core_object(c: int)
         is_core_object(core_object(c)),
         core_object(c) % PAGE_SZ == 0,
         POWER_OBJECT < core_object(c),
+        core_of(core_object(c)) == c as usize,
 {
     assert(CORE_OBJECTS % PAGE_SZ == 0) by (compute_only);
     assert((CORE_OBJECTS + c * PAGE_SZ) % (PAGE_SZ as int) == 0) by (nonlinear_arith)
@@ -78,6 +79,43 @@ pub proof fn lemma_core_object(c: int)
             PAGE_SZ > 0,
             c >= 0,
     ;
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(c, PAGE_SZ as int);
+}
+
+/// The core whose object o is.
+pub open spec fn core_of(o: ObjectId) -> usize {
+    ((o - CORE_OBJECTS) / PAGE_SZ as int) as usize
+}
+
+/// Every core object names one core, whose object it is.
+pub proof fn lemma_core_of(o: ObjectId)
+    requires
+        is_core_object(o),
+    ensures
+        core_of(o) < NUM_CPUS,
+        core_object(core_of(o) as int) == o,
+        o >= CORE_OBJECTS,
+        ((o - CORE_OBJECTS) as usize) % PAGE_SZ == 0,
+        ((o - CORE_OBJECTS) as usize) / PAGE_SZ == core_of(o),
+{
+    assert(CORE_OBJECTS % PAGE_SZ == 0) by (compute_only);
+    assert(CORE_OBJECTS + NUM_CPUS * PAGE_SZ <= usize::MAX) by (compute_only);
+    vstd::arithmetic::div_mod::lemma_sub_mod_noop(o as int, CORE_OBJECTS as int, PAGE_SZ as int);
+    vstd::arithmetic::div_mod::lemma_small_mod(0nat, PAGE_SZ as nat);
+    assert((o - CORE_OBJECTS) % (PAGE_SZ as int) == 0);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(o - CORE_OBJECTS, PAGE_SZ as int);
+    let d = (o - CORE_OBJECTS) / (PAGE_SZ as int);
+    assert(o - CORE_OBJECTS == (PAGE_SZ as int) * d);
+    assert(0 <= d < NUM_CPUS && (PAGE_SZ as int) * d == d * PAGE_SZ) by (nonlinear_arith)
+        requires
+            CORE_OBJECTS <= o < CORE_OBJECTS + NUM_CPUS * PAGE_SZ,
+            o - CORE_OBJECTS == (PAGE_SZ as int) * d,
+            PAGE_SZ > 0,
+    ;
+    let diff: usize = (o - CORE_OBJECTS) as usize;
+    assert(diff as int == o - CORE_OBJECTS);
+    assert((diff % PAGE_SZ) as int == (o - CORE_OBJECTS) % (PAGE_SZ as int));
+    assert((diff / PAGE_SZ) as int == d);
 }
 
 } // verus!
