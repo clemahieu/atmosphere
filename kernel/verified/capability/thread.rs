@@ -84,6 +84,49 @@ pub enum ThreadState {
     Dead,
 }
 
+/// Which save produced a thread's saved frame: fresh zeroing at retype or boot, a controller write,
+/// an interrupt or exception keeping the full frame, or a system call keeping the partial copy.
+/// See design/cpu-time-as-capability/ and design/syscall-abi-in-registers/.
+#[derive(Clone, Copy)]
+pub enum FrameSave {
+    /// Freshly typed thread (`new_thread_record`): zeroed full frame.
+    Fresh,
+    /// Controller wrote the thread's registers (`write_registers`): `user_frame(input)`.
+    Written { input: Registers },
+    /// Saved on an interrupt or exception: the full `frame` entered with.
+    Interrupt { frame: Registers },
+    /// Saved at a system call: `partial_frame(frame)`.
+    Syscall { frame: Registers },
+}
+
+/// The save provenance for an entry save of `kind` from `frame`.
+pub open spec fn entry_frame_save(frame: Registers, kind: FrameKind) -> FrameSave {
+    match kind {
+        FrameKind::Full => FrameSave::Interrupt { frame },
+        FrameKind::Partial => FrameSave::Syscall { frame },
+    }
+}
+
+/// The marker kind that corresponds to `save`.
+pub open spec fn save_kind(save: FrameSave) -> FrameKind {
+    match save {
+        FrameSave::Fresh => FrameKind::Full,
+        FrameSave::Written { .. } => FrameKind::Full,
+        FrameSave::Interrupt { .. } => FrameKind::Full,
+        FrameSave::Syscall { .. } => FrameKind::Partial,
+    }
+}
+
+/// The registers that `save` stores in the thread's record.
+pub open spec fn saved_registers_of(save: FrameSave) -> Registers {
+    match save {
+        FrameSave::Fresh => zero_registers(),
+        FrameSave::Written { input } => user_frame(input),
+        FrameSave::Interrupt { frame } => frame,
+        FrameSave::Syscall { frame } => partial_frame(frame),
+    }
+}
+
 /// What a thread keeps at the start of its record's page. Its XSAVE area lies after it in the same
 /// page, inside the record's permission.
 #[derive(Clone, Copy)]
@@ -91,6 +134,11 @@ pub struct ThreadRecord {
     pub state: ThreadState,
     /// The registers saved when it last left user mode.
     pub frame: Registers,
+    /// Whether `frame` is a full saved frame or a blocked or stopped system call caller's partial
+    /// copy: design/cpu-time-as-capability/.
+    pub saved: FrameKind,
+    /// Which save produced `frame` and `saved`.
+    pub save: Ghost<FrameSave>,
     /// Set when it must stop on its core's next kernel entry.
     pub pending_stop: bool,
     /// Set with a pending stop when it is destroyed while Running: the stop makes it Dead rather than
@@ -102,6 +150,45 @@ pub struct ThreadRecord {
     /// The core it runs on once started. A placement is a binding under a capability to that core,
     /// design/cpu-time-as-capability/; no operation places a thread yet, so it is None.
     pub placement: Option<usize>,
+}
+
+/// Marker `saved` and `frame` match the save `save` that produced them. Opaque so the thread
+/// quantifier of `threads_wf` does not expand the register constructors in unrelated proofs;
+/// `frame_save_wf` projects `saved`, `frame` and `save@` from a `ThreadRecord`, so keeping those
+/// three fields keeps `frame_save_wf` by congruence alone.
+#[verifier::opaque]
+pub open spec fn frame_save_matches(saved: FrameKind, frame: Registers, save: FrameSave) -> bool {
+    &&& saved == save_kind(save)
+    &&& frame == saved_registers_of(save)
+}
+
+/// The thread record's marker `saved` and `frame` match the save `save@` that produced them.
+pub open spec fn frame_save_wf(r: ThreadRecord) -> bool {
+    frame_save_matches(r.saved, r.frame, r.save@)
+}
+
+impl ThreadRecord {
+    /// Selects the return path (`FrameKind::Full` or `FrameKind::Partial`) from `self.saved` and
+    /// returns the registers that path restores. Under `frame_save_wf(*self)`, what that path
+    /// restores is identical to `self.frame` and to `saved_registers_of(self.save@)`.
+    pub fn resume_frame(&self) -> (ret: (FrameKind, Registers))
+        requires
+            frame_save_wf(*self),
+        ensures
+            ret.0 == self.saved,
+            ret.0 == save_kind(self.save@),
+            ret.1 == saved_frame(self.frame, self.saved),
+            ret.1 == self.frame,
+            ret.1 == saved_registers_of(self.save@),
+    {
+        proof {
+            reveal(frame_save_matches);
+            if let FrameKind::Partial = self.saved {
+                lemma_partial_frame_idempotent(self.save@->Syscall_frame);
+            }
+        }
+        (self.saved, save_frame_of(self.frame, self.saved))
+    }
 }
 
 /// What a suspend did.
@@ -126,7 +213,16 @@ pub enum CurrentStep {
 
 /// A thread's record when it is typed: inactive, with zeroed registers and no stop pending.
 pub open spec fn fresh_thread() -> ThreadRecord {
-    ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, dying: false, process: None, placement: None }
+    ThreadRecord {
+        state: ThreadState::Inactive,
+        frame: zero_registers(),
+        saved: FrameKind::Full,
+        save: Ghost(FrameSave::Fresh),
+        pending_stop: false,
+        dying: false,
+        process: None,
+        placement: None,
+    }
 }
 
 pub fn new_thread_record() -> (ret: ThreadRecord)
@@ -136,6 +232,8 @@ pub fn new_thread_record() -> (ret: ThreadRecord)
     ThreadRecord {
         state: ThreadState::Inactive,
         frame: zero_frame(),
+        saved: FrameKind::Full,
+        save: Ghost(FrameSave::Fresh),
         pending_stop: false,
         dying: false,
         process: None,
@@ -318,13 +416,14 @@ pub open spec fn thread_block(blocks: &BlockTable, b: usize) -> bool {
     &&& blocks.pages@[b as int].object is Thread
 }
 
-/// The thread at t has its record and its node page. Its block's references are exactly its holders,
-/// and it is dead at once when they go.
+/// The thread at t has its record and its node page, and its saved-frame marker matches its frame.
+/// Its block's references are exactly its holders, and it is dead at once when they go.
 pub open spec fn thread_wf(list: &Tree, threads: &Threads, blocks: &BlockTable, t: usize) -> bool {
     &&& t % THREAD_BYTES == 0
     &&& blocks.tracks_addr_run(t, 2)
     &&& threads.records@[t].addr() == t + THREAD_RECORD_PAGE * PAGE_SZ
     &&& threads.records@[t].is_init()
+    &&& frame_save_wf(threads.records@[t].value())
     &&& blocks.pages@[(t / PAGE_SZ) as int].kind is Base
     &&& blocks.pages@[(t / PAGE_SZ) as int].object is Thread
     &&& blocks.pages@[(t / PAGE_SZ) as int].order == 1
@@ -634,7 +733,11 @@ pub proof fn lemma_threads_record_written(list: &Tree, tables: &Tables, a: &Thre
         b.holders == a.holders,
         b.records@.dom() == a.records@.dom(),
         forall|x: usize| x != t && #[trigger] b.records@.contains_key(x) ==> b.records@[x] == a.records@[x],
-        a.records@.contains_key(t) ==> b.records@[t].addr() == a.records@[t].addr() && b.records@[t].is_init(),
+        a.records@.contains_key(t) ==> {
+            &&& b.records@[t].addr() == a.records@[t].addr()
+            &&& b.records@[t].is_init()
+            &&& frame_save_wf(b.records@[t].value())
+        },
     ensures
         threads_wf(list, tables, b, blocks),
 {
@@ -671,6 +774,8 @@ pub open spec fn unbound_record(r: ThreadRecord) -> ThreadRecord {
             _ => ThreadState::Inactive,
         },
         frame: r.frame,
+        saved: r.saved,
+        save: r.save,
         pending_stop: r.state is Running,
         dying: r.dying,
         process: None,
@@ -1269,7 +1374,16 @@ impl CapKernel {
         proof {
             perm = self.threads.records.borrow_mut().tracked_remove(t);
         }
-        ptr.write(Tracked(&mut perm), ThreadRecord { state, frame: record.frame, pending_stop: running, dying: record.dying, process: None, placement: record.placement });
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state,
+            frame: record.frame,
+            saved: record.saved,
+            save: record.save,
+            pending_stop: running,
+            dying: record.dying,
+            process: None,
+            placement: record.placement,
+        });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
             assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
@@ -1563,6 +1677,7 @@ impl CapKernel {
             post.threads.records@ == pre.threads.records@.insert(base, post.threads.records@[base]),
             post.threads.records@[base].addr() == base + THREAD_RECORD_PAGE * PAGE_SZ,
             post.threads.records@[base].is_init(),
+            frame_save_wf(post.threads.records@[base].value()),
             post.threads.holders@ == pre.threads.holders@.insert(base, set![child]),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
@@ -1890,6 +2005,7 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 2);
+            reveal(frame_save_matches);
             Self::lemma_threads_thread_added(pre, post, base, page, child);
             assert(!pre.threads.records@.contains_key(base)) by {
                 if pre.threads.records@.contains_key(base) {
@@ -2184,6 +2300,8 @@ impl CapKernel {
                 &&& final(self).threads.records@[base].value() == ThreadRecord {
                     state: ThreadState::Inactive,
                     frame: zero_registers(),
+                    saved: FrameKind::Full,
+                    save: Ghost(FrameSave::Fresh),
                     pending_stop: false,
                     dying: false,
                     process: Some(p),
@@ -2380,6 +2498,7 @@ impl CapKernel {
             0 <= c < NUM_CPUS,
             pre.threads.records@.contains_key(t),
             Self::switch_frame(pre, post, c, t),
+            frame_save_wf(post.threads.records@[t].value()),
             post.cores.wf(),
             current_wf(post.cores@, post.threads.records@),
         ensures
@@ -2447,6 +2566,8 @@ impl CapKernel {
             final(self).cores@[c as int].current_thread == Some(t),
             final(self).threads.records@[t].value().state == (ThreadState::Running { core: c }),
             final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame,
+            final(self).threads.records@[t].value().saved == old(self).threads.records@[t].value().saved,
+            final(self).threads.records@[t].value().save == old(self).threads.records@[t].value().save,
             final(self).threads.records@[t].value().pending_stop == old(self).threads.records@[t].value().pending_stop,
             final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying,
             final(self).threads.records@[t].value().process == old(self).threads.records@[t].value().process,
@@ -2473,6 +2594,8 @@ impl CapKernel {
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: ThreadState::Running { core: c },
             frame: record.frame,
+            saved: record.saved,
+            save: record.save,
             pending_stop: record.pending_stop,
             dying: record.dying,
             process: record.process,
@@ -2535,6 +2658,9 @@ impl CapKernel {
             Self::switch_frame(*old(self), *final(self), c as int, t),
             final(self).cores@[c as int].current_thread == Some(t),
             final(self).threads.records@[t].value().state == (ThreadState::Running { core: c }),
+            final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame,
+            final(self).threads.records@[t].value().saved == old(self).threads.records@[t].value().saved,
+            final(self).threads.records@[t].value().save == old(self).threads.records@[t].value().save,
             final(self).threads.records@[t].value().pending_stop == old(self).threads.records@[t].value().pending_stop,
             final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying,
             final(self).threads.records@[t].value().process == old(self).threads.records@[t].value().process,
@@ -2553,6 +2679,8 @@ impl CapKernel {
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: ThreadState::Runnable { core: c },
             frame: record.frame,
+            saved: record.saved,
+            save: record.save,
             pending_stop: record.pending_stop,
             dying: record.dying,
             process: record.process,
@@ -2587,9 +2715,10 @@ impl CapKernel {
         self.switch_in(c, t);
     }
 
-    /// Core c saves its current thread's frame and leaves it Runnable on c, running nothing until it
-    /// switches in again. A thread that must leave is moved off instead, by check_current.
-    pub(crate) fn switch_out(&mut self, c: usize, frame: Registers)
+    /// Core c saves its current thread's frame with marker `saved` (full on an interrupt or
+    /// exception, partial copy at a system call) and leaves it Runnable on c, running nothing until
+    /// it switches in again. A thread that must leave is moved off instead, by check_current.
+    pub(crate) fn switch_out(&mut self, c: usize, frame: Registers, saved: FrameKind)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -2604,7 +2733,9 @@ impl CapKernel {
                 &&& old(self).threads.records@[t].value().state == (ThreadState::Running { core: c })
                 &&& final(self).cores@[c as int].current_thread is None
                 &&& final(self).threads.records@[t].value().state == (ThreadState::Runnable { core: c })
-                &&& final(self).threads.records@[t].value().frame == frame
+                &&& final(self).threads.records@[t].value().frame == saved_frame(frame, saved)
+                &&& final(self).threads.records@[t].value().saved == saved
+                &&& final(self).threads.records@[t].value().save@ == entry_frame_save(frame, saved)
                 &&& !final(self).threads.records@[t].value().pending_stop
                 &&& final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying
                 &&& final(self).stop_ipis == old(self).stop_ipis
@@ -2637,7 +2768,9 @@ impl CapKernel {
         let record = ptr.read(Tracked(&perm));
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: ThreadState::Runnable { core: c },
-            frame,
+            frame: save_frame_of(frame, saved),
+            saved,
+            save: Ghost(entry_frame_save(frame, saved)),
             pending_stop: record.pending_stop,
             dying: record.dying,
             process: record.process,
@@ -2646,6 +2779,7 @@ impl CapKernel {
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
             reveal(current_wf);
+            reveal(frame_save_matches);
             let post = *self;
             assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
@@ -2705,8 +2839,8 @@ impl CapKernel {
         &&& self.threads.records@[self.payload_of(self.tables.node_of(root, i)).base].value().state is Inactive
     }
 
-    /// The step wrote thread t's saved frame and nothing else.
-    pub open spec fn frame_written(pre: Self, post: Self, t: usize, frame: Registers) -> bool {
+    /// The step wrote thread t's saved frame from `input` as a full user frame and nothing else.
+    pub open spec fn frame_written(pre: Self, post: Self, t: usize, input: Registers) -> bool {
         &&& post.list == pre.list
         &&& post.tables == pre.tables
         &&& post.blocks == pre.blocks
@@ -2732,7 +2866,9 @@ impl CapKernel {
         &&& post.threads.records@[t].is_init()
         &&& post.threads.records@[t].value() == ThreadRecord {
             state: pre.threads.records@[t].value().state,
-            frame,
+            frame: user_frame(input),
+            saved: FrameKind::Full,
+            save: Ghost(FrameSave::Written { input }),
             pending_stop: pre.threads.records@[t].value().pending_stop,
             dying: pre.threads.records@[t].value().dying,
             process: pre.threads.records@[t].value().process,
@@ -2842,7 +2978,7 @@ impl CapKernel {
                 let n = old(self).tables.node_of(root, i);
                 let t = old(self).payload_of(n).base;
                 &&& old(self).threads.records@.contains_key(t)
-                &&& Self::frame_written(*old(self), *final(self), t, user_frame(frame))
+                &&& Self::frame_written(*old(self), *final(self), t, frame)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
             },
     {
@@ -2870,6 +3006,8 @@ impl CapKernel {
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: record.state,
             frame: user_frame_of(frame),
+            saved: FrameKind::Full,
+            save: Ghost(FrameSave::Written { input: frame }),
             pending_stop: record.pending_stop,
             dying: record.dying,
             process: record.process,
@@ -2877,9 +3015,10 @@ impl CapKernel {
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
+            reveal(frame_save_matches);
             let post = *self;
             assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
-            assert(Self::frame_written(pre, post, t, user_frame(frame)));
+            assert(Self::frame_written(pre, post, t, frame));
             lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
             Self::lemma_switch_wf(pre, post, 0, t);
             let (a, b) = (pre.view(), post.view());
@@ -2984,6 +3123,8 @@ impl CapKernel {
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: ThreadState::Runnable { core },
             frame: record.frame,
+            saved: record.saved,
+            save: record.save,
             pending_stop: record.pending_stop,
             dying: record.dying,
             process: record.process,
@@ -3152,6 +3293,8 @@ impl CapKernel {
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: ThreadState::Inactive,
             frame: record.frame,
+            saved: record.saved,
+            save: record.save,
             pending_stop: false,
             dying: record.dying,
             process: record.process,
@@ -3222,6 +3365,8 @@ impl CapKernel {
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: record.state,
             frame: record.frame,
+            saved: record.saved,
+            save: record.save,
             pending_stop: true,
             dying: record.dying,
             process: record.process,
@@ -3305,6 +3450,8 @@ impl CapKernel {
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state,
             frame: record.frame,
+            saved: record.saved,
+            save: record.save,
             pending_stop: stop,
             dying: stop,
             process: record.process,
@@ -3393,12 +3540,36 @@ impl CapKernel {
     {
     }
 
-    /// From pre to post, core c moved its current thread off with frame saved, as check_current does
-    /// for a thread that must leave: the thread's record is written Inactive, or Dead when it was marked
-    /// to die, with no stop pending and the frame it entered with; core c runs nothing; every other
-    /// object, core and record is as it was, and the view changed only in what the thread's frame
-    /// shows.
-    pub open spec fn moved_off(pre: Self, post: Self, c: int, frame: Registers) -> bool {
+    /// Every thread's saved-frame marker matches its frame and the save that produced it, so the
+    /// resume path selected by `r.saved` restores `r.frame` as saved.
+    pub proof fn lemma_thread_saved_frame(&self, t: usize)
+        requires
+            self.wf(),
+            self.threads.records@.contains_key(t),
+        ensures
+            ({
+                let r = self.threads.records@[t].value();
+                &&& frame_save_wf(r)
+                &&& r.saved == save_kind(r.save@)
+                &&& r.frame == saved_registers_of(r.save@)
+                &&& saved_frame(r.frame, r.saved) == r.frame
+                &&& saved_frame(r.frame, r.saved) == saved_registers_of(r.save@)
+            }),
+    {
+        assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+        reveal(frame_save_matches);
+        let r = self.threads.records@[t].value();
+        if let FrameKind::Partial = r.saved {
+            lemma_partial_frame_idempotent(r.save@->Syscall_frame);
+        }
+    }
+
+    /// From pre to post, core c moved its current thread off with `saved_frame(frame, saved)` and
+    /// marker `saved`, as check_current does for a thread that must leave: the thread's record is
+    /// written Inactive, or Dead when it was marked to die, with no stop pending and the full or
+    /// partial frame corresponding to `saved`; core c runs nothing; every other object, core and
+    /// record is as it was, and the view changed only in what the thread's frame shows.
+    pub open spec fn moved_off(pre: Self, post: Self, c: int, frame: Registers, saved: FrameKind) -> bool {
         let t = pre.cores@[c].current_thread->Some_0;
         let r = pre.threads.records@[t].value();
         &&& pre.cores@[c].current_thread is Some
@@ -3406,7 +3577,9 @@ impl CapKernel {
         &&& r.state == (ThreadState::Running { core: c as usize })
         &&& Self::record_written(pre, post, t, ThreadRecord {
             state: if r.dying { ThreadState::Dead } else { ThreadState::Inactive },
-            frame,
+            frame: saved_frame(frame, saved),
+            saved,
+            save: Ghost(entry_frame_save(frame, saved)),
             pending_stop: false,
             dying: false,
             ..r
@@ -3421,11 +3594,11 @@ impl CapKernel {
 
     /// Core c's check of its current thread on kernel entry and before returning to user mode: one load
     /// of the thread's record and one of its process's. A thread that must leave is moved off: core c
-    /// saves the frame it entered with, makes it Inactive, or Dead when it was destroyed while Running,
-    /// with no stop pending, and runs nothing. So a thread that destroys itself or its own process does
-    /// not return to user mode. Only core c moves its current thread off: see
-    /// design/one-lock-bounded-steps/.
-    pub fn check_current(&mut self, c: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: CurrentStep)
+    /// saves its frame with marker `saved` (full on an interrupt or exception, partial copy at a
+    /// system call), makes it Inactive, or Dead when it was destroyed while Running, with no stop
+    /// pending, and runs nothing. So a thread that destroys itself or its own process does not return
+    /// to user mode. Only core c moves its current thread off: see design/one-lock-bounded-steps/.
+    pub fn check_current(&mut self, c: usize, frame: Registers, saved: FrameKind, Tracked(steps): Tracked<&mut Steps>) -> (ret: CurrentStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -3438,7 +3611,7 @@ impl CapKernel {
             final(self).current_live(c as int),
             ret is Kept ==> final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret is MovedOff ==> Self::moved_off(*old(self), *final(self), c as int, frame),
+            ret is MovedOff ==> Self::moved_off(*old(self), *final(self), c as int, frame, saved),
     {
         let ghost pre = *self;
         let state = *self.cores.get(c);
@@ -3486,7 +3659,9 @@ impl CapKernel {
         }
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: if record.dying { ThreadState::Dead } else { ThreadState::Inactive },
-            frame,
+            frame: save_frame_of(frame, saved),
+            saved,
+            save: Ghost(entry_frame_save(frame, saved)),
             pending_stop: false,
             dying: false,
             process: record.process,
@@ -3495,6 +3670,7 @@ impl CapKernel {
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
             reveal(current_wf);
+            reveal(frame_save_matches);
             let post = *self;
             assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
@@ -3526,7 +3702,7 @@ impl CapKernel {
                 assert(pre.threads.records@.contains_key(x));
             }
             Self::lemma_switch_wf(pre, post, c as int, t);
-            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads).insert(t, frame));
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads).insert(t, saved_frame(frame, saved)));
             assert(same_but_contents(pre.view(), post.view()));
             assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) implies o == t by {
                 assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
@@ -3655,6 +3831,8 @@ impl CapKernel {
         &&& post.threads.records@[t].value() == ThreadRecord {
             state: r.state,
             frame: r.frame,
+            saved: r.saved,
+            save: r.save,
             pending_stop: r.pending_stop,
             dying: r.dying,
             process: Some(p),
@@ -3823,6 +4001,7 @@ impl CapKernel {
         lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
         lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
+        assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
         lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
         lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
         assert(!pre.processes.bound@[p].contains(t)) by {
@@ -4012,6 +4191,8 @@ impl CapKernel {
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: record.state,
             frame: record.frame,
+            saved: record.saved,
+            save: record.save,
             pending_stop: record.pending_stop,
             dying: record.dying,
             process: Some(p),

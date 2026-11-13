@@ -1337,6 +1337,27 @@ pub open spec fn user_frame(f: Registers) -> Registers {
     }
 }
 
+/// A blocked or stopped system call caller's partial frame copy: the preserved registers, the return
+/// program counter, flags and stack pointer, and the seven invocation positions, with the clobbered
+/// and interrupt-only slots zeroed. See design/syscall-abi-in-registers/ and
+/// design/cpu-time-as-capability/.
+pub open spec fn partial_frame(f: Registers) -> Registers {
+    Registers { r11: 0, rcx: 0, error_code: 0, cs: 0, ss: 0, ..f }
+}
+
+pub fn partial_frame_of(f: Registers) -> (ret: Registers)
+    ensures
+        ret == partial_frame(f),
+{
+    Registers { r11: 0, rcx: 0, error_code: 0, cs: 0, ss: 0, ..f }
+}
+
+pub proof fn lemma_partial_frame_idempotent(f: Registers)
+    ensures
+        partial_frame(partial_frame(f)) == partial_frame(f),
+{
+}
+
 /// COM1's base port, the serial port the kernel crate's console writes. The PC's COM1 is a 16550 at this
 /// port, a fact of the machine.
 pub const COM1: u16 = 0x3f8;

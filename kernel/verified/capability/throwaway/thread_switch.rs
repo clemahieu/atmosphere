@@ -45,7 +45,7 @@ use crate::capability::revoke::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{user_frame, user_rip, Registers};
+use crate::arch::{partial_frame, saved_frame, user_frame, user_rip, FrameKind, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -68,6 +68,7 @@ impl CapKernel {
         base: usize,
         kernel_root: usize,
         registers: Registers,
+        saved: FrameKind,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
@@ -76,7 +77,7 @@ impl CapKernel {
         ensures
             false,
     {
-        self.witness_thread_switch(root, process, leaf, frames, t, free, image, untyped, frame, present, base, kernel_root, registers);
+        self.witness_thread_switch(root, process, leaf, frames, t, free, image, untyped, frame, present, base, kernel_root, registers, saved);
     }
 }
 

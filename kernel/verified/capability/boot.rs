@@ -448,6 +448,8 @@ impl CapKernel {
             final(self).threads.records@[t].value() == (ThreadRecord {
                 state: crate::capability::thread::ThreadState::Inactive,
                 frame: zero_registers(),
+                saved: FrameKind::Full,
+                save: Ghost(FrameSave::Fresh),
                 pending_stop: false,
                 dying: false,
                 process: Some(process),
@@ -620,6 +622,8 @@ impl CapKernel {
             assert(post.threads.records@[t].value() == (ThreadRecord {
                 state: crate::capability::thread::ThreadState::Inactive,
                 frame: zero_registers(),
+                saved: FrameKind::Full,
+                save: Ghost(FrameSave::Fresh),
                 pending_stop: false,
                 dying: false,
                 process: Some(process),
@@ -894,6 +898,8 @@ impl CapKernel {
             final(self).threads.records@[t].value() == (ThreadRecord {
                 state: crate::capability::thread::ThreadState::Inactive,
                 frame: zero_registers(),
+                saved: FrameKind::Full,
+                save: Ghost(FrameSave::Fresh),
                 pending_stop: false,
                 dying: false,
                 process: Some(process),
@@ -1765,6 +1771,7 @@ impl CapKernel {
             Self::lemma_space_cap_frame(pre, post, child, x);
         }
         lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 2);
+        reveal(frame_save_matches);
         Self::lemma_threads_thread_added(pre, post, base, page, child);
         assert(!pre.threads.records@.contains_key(base)) by {
             if pre.threads.records@.contains_key(base) {

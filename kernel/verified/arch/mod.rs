@@ -139,6 +139,36 @@ impl IotlbModel {
     }
 }
 
+/// Whether a thread's saved frame is a full frame from an interrupt, exception or controller write,
+/// or a partial copy from a system call: design/cpu-time-as-capability/ and
+/// design/syscall-abi-in-registers/.
+#[derive(Clone, Copy)]
+pub enum FrameKind {
+    /// Full saved frame: every register in `Registers` is kept and restored.
+    Full,
+    /// Partial copy saved at a system call: the preserved registers, return state and seven
+    /// invocation positions are kept; clobbered slots are zeroed.
+    Partial,
+}
+
+/// What a save of `kind` keeps of `f`, and what the resume path for `kind` restores from `f`.
+pub open spec fn saved_frame(f: Registers, kind: FrameKind) -> Registers {
+    match kind {
+        FrameKind::Full => f,
+        FrameKind::Partial => partial_frame(f),
+    }
+}
+
+pub fn save_frame_of(f: Registers, kind: FrameKind) -> (ret: Registers)
+    ensures
+        ret == saved_frame(f, kind),
+{
+    match kind {
+        FrameKind::Full => f,
+        FrameKind::Partial => partial_frame_of(f),
+    }
+}
+
 } // verus!
 
 #[cfg(target_arch = "x86_64")]

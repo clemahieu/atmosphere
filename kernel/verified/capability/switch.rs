@@ -70,7 +70,7 @@ impl CapKernel {
     /// a stop pending leaves by check_current, not here. The arriving thread is live, not dying and in a
     /// process that is not dead, so a switch never makes current a thread that cap_dead calls dead:
     /// see design/teardown-driven-by-retype/.
-    pub fn switch_thread(&mut self, c: usize, frame: Registers, next: Option<usize>, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub fn switch_thread(&mut self, c: usize, frame: Registers, saved: FrameKind, next: Option<usize>, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -138,7 +138,9 @@ impl CapKernel {
             match old(self).cores@[c as int].current_thread {
                 Some(o) => {
                     &&& final(self).threads.records@[o].value().state == (ThreadState::Runnable { core: c })
-                    &&& final(self).threads.records@[o].value().frame == frame
+                    &&& final(self).threads.records@[o].value().frame == saved_frame(frame, saved)
+                    &&& final(self).threads.records@[o].value().saved == saved
+                    &&& final(self).threads.records@[o].value().save@ == entry_frame_save(frame, saved)
                     &&& final(self).threads.records@[o].value().process == old(self).threads.records@[o].value().process
                     &&& final(self).threads.records@[o].value().dying == old(self).threads.records@[o].value().dying
                 },
@@ -157,6 +159,8 @@ impl CapKernel {
                     &&& !final(self).processes.records@[p].value().dead
                     &&& final(self).current_live(c as int)
                     &&& final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame
+                    &&& final(self).threads.records@[t].value().saved == old(self).threads.records@[t].value().saved
+                    &&& final(self).threads.records@[t].value().save == old(self).threads.records@[t].value().save
                     &&& old(self).cores@[c as int].next_pcid != PCID_MAX
                         ==> final(self).cores@[c as int].next_pcid <= old(self).cores@[c as int].next_pcid + 1
                     &&& final(self).cores@[c as int].space == Some(p)
@@ -190,12 +194,12 @@ impl CapKernel {
         let ghost s0 = *self;
         let leaving = self.cores.get(c).current_thread;
         if leaving.is_some() {
-            self.switch_out(c, frame);
+            self.switch_out(c, frame, saved);
         }
         let ghost s1 = *self;
         proof {
             if let Some(o) = leaving {
-                assert(saved_registers(&s1.threads) =~= saved_registers(&s0.threads).insert(o, frame));
+                assert(saved_registers(&s1.threads) =~= saved_registers(&s0.threads).insert(o, saved_frame(frame, saved)));
             }
             assert(s1.cores@[c as int].current_thread is None);
             assert(s1.spaces == s0.spaces);

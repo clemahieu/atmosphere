@@ -27,7 +27,7 @@ use crate::capability::revoke::*;
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
-use crate::arch::Registers;
+use crate::arch::{FrameKind, Registers};
 use crate::define::*;
 
 /// The position a word names is reached through a process capability, in another process's table.
@@ -568,9 +568,9 @@ impl CapKernel {
 
     /// check_current, on any core, and dispatch when it reaches no operation: the core's thread moved
     /// off, or nothing changed.
-    pub proof fn lemma_check_current_keeps_slots(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+    pub proof fn lemma_check_current_keeps_slots(pre: Self, post: Self, c: int, frame: Registers, saved: FrameKind, root: usize)
         requires
-            post == pre || Self::moved_off(pre, post, c, frame),
+            post == pre || Self::moved_off(pre, post, c, frame, saved),
         ensures
             Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
@@ -1047,9 +1047,9 @@ impl CapKernel {
     }
 
     /// check_current, on any core, and dispatch when it reaches no operation.
-    pub proof fn lemma_check_current_keeps_space(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+    pub proof fn lemma_check_current_keeps_space(pre: Self, post: Self, c: int, frame: Registers, saved: FrameKind, root: usize)
         requires
-            post == pre || Self::moved_off(pre, post, c, frame),
+            post == pre || Self::moved_off(pre, post, c, frame, saved),
         ensures
             Self::space_kept(pre, post, root),
     {
@@ -1229,9 +1229,9 @@ impl CapKernel {
     {
     }
 
-    pub proof fn lemma_check_current_keeps_record(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+    pub proof fn lemma_check_current_keeps_record(pre: Self, post: Self, c: int, frame: Registers, saved: FrameKind, root: usize)
         requires
-            post == pre || Self::moved_off(pre, post, c, frame),
+            post == pre || Self::moved_off(pre, post, c, frame, saved),
         ensures
             Self::record_kept(pre, post, root),
     {
@@ -1844,9 +1844,9 @@ impl CapKernel {
     }
 
     /// check_current, on any core, and dispatch when it reaches no operation.
-    pub proof fn lemma_check_current_keeps_count(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+    pub proof fn lemma_check_current_keeps_count(pre: Self, post: Self, c: int, frame: Registers, saved: FrameKind, root: usize)
         requires
-            post == pre || Self::moved_off(pre, post, c, frame),
+            post == pre || Self::moved_off(pre, post, c, frame, saved),
         ensures
             Self::count_kept(pre, post, root),
     {
@@ -2127,17 +2127,17 @@ impl CapKernel {
     }
 
     /// check_current, on any core, and dispatch when it reaches no operation.
-    pub proof fn lemma_check_current_keeps_rely(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+    pub proof fn lemma_check_current_keeps_rely(pre: Self, post: Self, c: int, frame: Registers, saved: FrameKind, root: usize)
         requires
-            post == pre || Self::moved_off(pre, post, c, frame),
+            post == pre || Self::moved_off(pre, post, c, frame, saved),
         ensures
             Self::rely(pre, post, root),
             Self::root_kept(pre, post, root),
     {
-        Self::lemma_check_current_keeps_slots(pre, post, c, frame, root);
-        Self::lemma_check_current_keeps_record(pre, post, c, frame, root);
-        Self::lemma_check_current_keeps_space(pre, post, c, frame, root);
-        Self::lemma_check_current_keeps_count(pre, post, c, frame, root);
+        Self::lemma_check_current_keeps_slots(pre, post, c, frame, saved, root);
+        Self::lemma_check_current_keeps_record(pre, post, c, frame, saved, root);
+        Self::lemma_check_current_keeps_space(pre, post, c, frame, saved, root);
+        Self::lemma_check_current_keeps_count(pre, post, c, frame, saved, root);
     }
 
     /// destroy of a process, by any caller.

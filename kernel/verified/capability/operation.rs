@@ -39,7 +39,7 @@ use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
 use crate::define::*;
 use crate::pptr::*;
-use crate::arch::Registers;
+use crate::arch::{FrameKind, Registers};
 
 /// The operation was done.
 pub const STATUS_OK: u64 = 0;
@@ -1186,7 +1186,7 @@ impl CapKernel {
                 && pre.processes.records@[pre.threads.records@[t].value().process->Some_0].value().dead
                 ==> ret is None
         })
-        &&& (pre.must_leave(c) ==> Self::moved_off(pre, post, c, frame))
+        &&& (pre.must_leave(c) ==> Self::moved_off(pre, post, c, frame, FrameKind::Partial))
         &&& (pre.cores@[c].current_thread is None ==> post == pre)
         &&& (ret is Some ==> {
             let t = pre.cores@[c].current_thread->Some_0;
@@ -1209,7 +1209,7 @@ impl CapKernel {
             0 <= c < NUM_CPUS,
             Self::dispatched(pre, post, c, frame, ret),
         ensures
-            pre.must_leave(c) ==> ret is None && Self::moved_off(pre, post, c, frame),
+            pre.must_leave(c) ==> ret is None && Self::moved_off(pre, post, c, frame, FrameKind::Partial),
             !pre.must_leave(c) ==> pre.current_live(c),
             !pre.must_leave(c) && pre.cores@[c].current_thread is None ==> ret is None && post == pre,
             (!pre.must_leave(c) && pre.cores@[c].current_thread is Some) <==> ret is Some,
@@ -1232,8 +1232,8 @@ impl CapKernel {
     /// caller is core c's current thread and the table is its process's, never a name from user
     /// space, and check_current runs first: design/one-lock-bounded-steps/. Returns None when core c
     /// runs no thread after the check, so nothing returns to user mode, and then the step is the
-    /// check's alone: the thread moved off, or nothing when core c ran none. Otherwise what returns to
-    /// the thread, with the operation's effect on the kernel.
+    /// check's alone: the thread moved off with its partial frame copy, or nothing when core c ran
+    /// none. Otherwise what returns to the thread, with the operation's effect on the kernel.
     pub fn dispatch(&mut self, c: usize, frame: Registers) -> (ret: Option<Outcome>)
         requires
             old(self).wf(),
@@ -1243,7 +1243,7 @@ impl CapKernel {
     {
         // The one counter of this entry, on a path that holds the kernel's lock: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        match self.check_current(c, frame, Tracked(&mut steps)) {
+        match self.check_current(c, frame, FrameKind::Partial, Tracked(&mut steps)) {
             CurrentStep::MovedOff => { return None; },
             CurrentStep::Kept => {},
         }

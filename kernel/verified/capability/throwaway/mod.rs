@@ -39,5 +39,6 @@ pub mod root_revokes_more_than_a_budget;
 pub mod root_suspends_itself;
 pub mod root_thread_enters;
 pub mod switch_between_processes;
+pub mod syscall_saves_partial_frame;
 pub mod thread_registers;
 pub mod thread_switch;

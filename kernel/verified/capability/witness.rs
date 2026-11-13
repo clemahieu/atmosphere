@@ -71,7 +71,7 @@ use crate::capability::revoke::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{user_frame, user_rip, Registers};
+use crate::arch::{partial_frame, saved_frame, user_frame, user_rip, FrameKind, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -1370,6 +1370,7 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         registers: Registers,
+        saved: FrameKind,
     ) -> (ret: CurrentStep)
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
@@ -1413,14 +1414,14 @@ impl CapKernel {
             assert(!s3.processes.records@[process].value().dead);
             assert(!s3.must_leave(0));
         }
-        self.check_current(0, registers, Tracked(&mut steps))
+        self.check_current(0, registers, saved, Tracked(&mut steps))
     }
 
     /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
     /// enters it, destroys its own process through ROOT_PROCESS_SLOT, and then check_current runs on
-    /// core 0. Because its process is dead, the thread must leave user mode: check_current returns
-    /// CurrentStep::MovedOff, leaves core 0 running nothing, and saves the frame into the Inactive
-    /// thread record.
+    /// core 0 with marker `saved`. Because its process is dead, the thread must leave user mode:
+    /// check_current returns CurrentStep::MovedOff, leaves core 0 running nothing, and saves the
+    /// frame for `saved` into the Inactive thread record with matching marker and provenance.
     pub fn witness_check_current_moved_off(
         &mut self,
         root: Ghost<usize>,
@@ -1435,6 +1436,7 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         registers: Registers,
+        saved: FrameKind,
     ) -> (ret: CurrentStep)
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
@@ -1445,7 +1447,9 @@ impl CapKernel {
             final(self).cores@[0].current_thread is None,
             final(self).processes.records@[process].value().dead,
             final(self).threads.records@[t].value().state is Inactive,
-            final(self).threads.records@[t].value().frame == registers,
+            final(self).threads.records@[t].value().frame == saved_frame(registers, saved),
+            final(self).threads.records@[t].value().saved == saved,
+            final(self).threads.records@[t].value().save@ == entry_frame_save(registers, saved),
             !final(self).threads.records@[t].value().pending_stop,
     {
         hide(CapKernel::wf);
@@ -1494,7 +1498,97 @@ impl CapKernel {
             assert(s4.threads == s3.threads);
             assert(!s4.threads.records@[t].value().dying);
         }
-        self.check_current(0, registers, Tracked(&mut steps))
+        self.check_current(0, registers, saved, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, the root's thread entered on core 0 destroys its own process
+    /// through ROOT_PROCESS_SLOT, and then invokes a system call through dispatch: dispatch moves it
+    /// off with `FrameKind::Partial`, saving `partial_frame(registers)` and `FrameSave::Syscall`, and
+    /// `resume_frame` on the saved record restores that exact partial copy.
+    pub fn witness_syscall_saves_partial_frame(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        registers: Registers,
+    ) -> (ret: (Option<Outcome>, (FrameKind, Registers)))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret.0 is None,
+            ret.1.0 is Partial,
+            ret.1.1 == partial_frame(registers),
+            final(self).wf(),
+            final(self).cores@[0].current_thread is None,
+            final(self).threads.records@[t].value().state is Inactive,
+            final(self).threads.records@[t].value().frame == partial_frame(registers),
+            final(self).threads.records@[t].value().saved is Partial,
+            final(self).threads.records@[t].value().save@ == (FrameSave::Syscall { frame: registers }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&s0.spaces, &s0.processes));
+            assert(s0.spaces.roots@.contains_key(process));
+            assert(s0.spaces.records@[process].value().kind is Process);
+        }
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s0.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.threads.records@[t].value().state == (ThreadState::Running { core: 0 }));
+            assert(s3.list == s0.list);
+            assert(s3.tables == s0.tables);
+            assert(s3.processes == s0.processes);
+            assert(s3.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            s3.lemma_slot(process, ROOT_PROCESS_SLOT);
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(!s3.processes.records@[process].value().dead);
+            assert(!s3.cap_dead((leaf@ + 1) as usize));
+            assert(s3.root_live(process));
+            assert(s3.can_destroy(process, ROOT_PROCESS_SLOT));
+            assert(s3.destroys_own(0, process, ROOT_PROCESS_SLOT));
+        }
+        let destroyed = self.destroy(0, process, ROOT_PROCESS_SLOT, Tracked(&mut steps));
+        let ghost s4 = *self;
+        proof {
+            assert(destroyed);
+            assert(s4.must_leave(0));
+            assert(Self::process_destroyed(s3, s4, process));
+            assert(s4.threads == s3.threads);
+            assert(!s4.threads.records@[t].value().dying);
+        }
+        let out = self.dispatch(0, registers);
+        proof {
+            self.lemma_thread_saved_frame(t);
+            reveal(CapKernel::wf);
+            assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+        }
+        let record = crate::pptr::PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+            Tracked(self.threads.records.borrow().tracked_borrow(t)),
+        );
+        let resumed = record.resume_frame();
+        (out, resumed)
     }
 
     /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
@@ -1727,6 +1821,7 @@ impl CapKernel {
         base: usize,
         kernel_root: usize,
         registers: Registers,
+        saved: FrameKind,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
@@ -1736,7 +1831,9 @@ impl CapKernel {
             final(self).wf(),
             final(self).cores@[0].current_thread == Some((base + 10 * PAGE_SZ) as usize),
             final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().state == (ThreadState::Running { core: 0 }),
-            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().frame == registers,
+            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().frame == saved_frame(registers, saved),
+            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().saved == saved,
+            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().save@ == entry_frame_save(registers, saved),
             final(self).cores@[0].space == Some(base),
             final(self).spaces.registers@[0].root() == base + SPACE_ROOT_PAGE * PAGE_SZ,
             final(self).cores@[0].generation == 1,
@@ -1789,7 +1886,7 @@ impl CapKernel {
             assert(s3.cores@[0].generation == 1);
         }
         // The thread leaves, and the core goes idle on the kernel's root.
-        self.switch_thread(0, registers, None, kernel_root, Tracked(&mut steps));
+        self.switch_thread(0, registers, saved, None, kernel_root, Tracked(&mut steps));
         let ghost s4 = *self;
         proof {
             assert(s4.cores@[0].current_thread is None);
@@ -1817,7 +1914,7 @@ impl CapKernel {
             assert(witness_alive(s5, base));
         }
         // The thread comes back, straight from the root's space.
-        self.switch_thread(0, registers, Some(thread), kernel_root, Tracked(&mut steps));
+        self.switch_thread(0, registers, saved, Some(thread), kernel_root, Tracked(&mut steps));
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -2865,6 +2962,8 @@ impl CapKernel {
             ret.0,
             ret.1 is Some,
             ret.1 == Some(user_frame(registers)),
+            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().saved is Full,
+            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().save@ == (FrameSave::Written { input: registers }),
             final(self).wf(),
     {
         let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
@@ -2882,7 +2981,7 @@ impl CapKernel {
         let ghost s2 = *self;
         proof {
             assert(ok1);
-            assert(Self::frame_written(s1, s2, thread, user_frame(registers)));
+            assert(Self::frame_written(s1, s2, thread, registers));
             assert(s2.threads.records@[thread].value().state is Inactive);
             assert(s2.tables == s1.tables && s2.list == s1.list && s2.processes == s1.processes);
             assert(s2.root_live(process));

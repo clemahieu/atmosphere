@@ -1182,6 +1182,54 @@ pub open spec fn user_frame(f: Registers) -> Registers {
     Registers { spsr_el1: (f.spsr_el1 & USER_SPSR_KEPT) | USER_SPSR_MODE, ..f }
 }
 
+/// A blocked or stopped system call caller's partial frame copy: the preserved registers, the return
+/// program counter, state and stack pointer, and the seven invocation positions, with the clobbered
+/// registers zeroed. See design/syscall-abi-in-registers/ and design/cpu-time-as-capability/.
+pub open spec fn partial_frame(f: Registers) -> Registers {
+    Registers {
+        x6: 0,
+        x7: 0,
+        x9: 0,
+        x10: 0,
+        x11: 0,
+        x12: 0,
+        x13: 0,
+        x14: 0,
+        x15: 0,
+        x16: 0,
+        x17: 0,
+        x30: 0,
+        ..f
+    }
+}
+
+pub fn partial_frame_of(f: Registers) -> (ret: Registers)
+    ensures
+        ret == partial_frame(f),
+{
+    Registers {
+        x6: 0,
+        x7: 0,
+        x9: 0,
+        x10: 0,
+        x11: 0,
+        x12: 0,
+        x13: 0,
+        x14: 0,
+        x15: 0,
+        x16: 0,
+        x17: 0,
+        x30: 0,
+        ..f
+    }
+}
+
+pub proof fn lemma_partial_frame_idempotent(f: Registers)
+    ensures
+        partial_frame(partial_frame(f)) == partial_frame(f),
+{
+}
+
 /// The PL011 the console writes, at the address QEMU virt's device tree gives it: node pl011@9000000,
 /// one page, the machine's stdout-path. The kernel reads and writes the device at this address, so the
 /// address space it runs in maps the page there.
