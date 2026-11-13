@@ -44,11 +44,35 @@ epic round to the harness and model difficulty configured under `[routes.<key>]`
 `[profiles.<name>]` slice (`kinds`, `stages`, `epics`, `delegate`). When nothing matches, no LLM session
 is started: the loop waits if another loop or actor is active, and stops otherwise.
 
-Per-harness quota cooldowns. When one harness (`claude` or `agy`) hits a rate or usage limit in routed
-or profiled mode, only that harness's routes enter cooldown until its reset timestamp: any pre-claimed
-issue is released back to open keeping its stage label, specialist hand-offs targeting the cooled-down
-harness park on `stage:needs-prover`, `stage:needs-skeptic`, or `stage:escalated`, and ready work routed
-to non-limited harnesses continues immediately.
+Shared meter and cooldown state. The pool and its workers share `<project root>/logs/loop/state.json`,
+updated under `<project root>/logs/loop/.state.lock` and replaced atomically so readers never see half a
+file and the readings history survives a supervisor restart. The pool samples Claude's meters from
+`~/.claude.json` (`cachedUsageUtilization`: `claude-week`, `claude-5h` when the plan has a five-hour
+window, and each scoped model limit `claude-<model>` such as `claude-fable`) and Gemini's buckets from
+`agy -p /usage --output-format json` (`Gemini Models`: `gemini-week` and `gemini-5h`, keeping the last
+readings when `/usage` fails); workers also record `rate_limit_event` readings streamed by Claude
+sessions and write any harness usage-limit cooldown (`claude` or `agy`) immediately. Every worker reads
+this file before claiming or starting a session: when one worker hits a usage limit, every worker skips
+that harness's offerings until its reset without spending a session, parks specialist hand-offs on
+`stage:needs-prover`, `stage:needs-skeptic` or `stage:escalated`, and continues ready work on non-limited
+harnesses. Schema of `logs/loop/state.json`:
+
+  {
+    "meters": {
+      "<meter>": {
+        "harness": "claude" | "agy",
+        "percent": <float 0..100>,
+        "resets_at": <float epoch seconds | null>,
+        "read": <float epoch seconds>,
+        "rate": <float percent per hour fitted reset-aware over recent readings | null>,
+        "history": [{"read": <float>, "percent": <float>, "resets_at": <float | null>}, ...]
+      }
+    },
+    "cooldown": {
+      "claude": <float epoch seconds | null>,
+      "agy": <float epoch seconds | null>
+    }
+  }
 
 Stopping. SIGINT (Ctrl-C) or SIGTERM to the pool, or `tools/loop.py --stop`, is passed to every worker
 as SIGTERM, which lets the agent run in flight finish and ends that loop; a prover or skeptic pass a finished round handed over is not started, and its
@@ -87,6 +111,7 @@ usage: tools/loop.py [--profile NAME] [--wait SECONDS]            run a pool of 
        tools/loop.py --test                                       this script's own tests
 """
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -101,6 +126,7 @@ import time
 import tomllib
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -108,6 +134,16 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "main"
 PIDS = ROOT / "logs" / "loop"
+STATE_FILE = "state.json"
+STATE_LOCK = ".state.lock"
+AGY_GROUP = "Gemini Models"
+AGY_USAGE_INTERVAL = 300
+AGY_USAGE_TIMEOUT = 30
+RATE_WINDOW = 12 * 3600
+HISTORY_MAX_AGE = 24 * 3600
+MAX_HISTORY = 500
+MIN_RATE_SPAN = 60
+RESET_JITTER = 300
 CONFIG = ROOT / "loop.toml"
 SCRATCH = ROOT / "scratch"
 KINDS = ("round", "prover", "skeptic")
@@ -219,6 +255,7 @@ class Run:
     turns: int = 0
     weighted: float = 0.0
     utilization: float = None
+    readings: dict = field(default_factory=dict)
 
 
 def weighted(usage):
@@ -305,6 +342,9 @@ def follow(lines, show):
                 if run.utilization is None or int(100 * info["utilization"]) != int(100 * run.utilization):
                     show(f"weekly usage {100 * info['utilization']:.0f}%")
                 run.utilization = info["utilization"]
+            meter = stream_meter(info.get("rateLimitType"))
+            if info.get("utilization") is not None and meter:
+                run.readings[meter] = (100 * info["utilization"], info.get("resetsAt"))
             if not str(info.get("status", "allowed")).startswith("allowed"):
                 run.limited = True
                 run.reset = info.get("resetsAt") or run.reset
@@ -646,6 +686,138 @@ def read_pid_file(folder, pid):
     return held if isinstance(held, dict) else {}
 
 
+# The shared meter and cooldown state (the opening comment gives its schema).
+
+def empty_state():
+    return {"meters": {}, "cooldown": {"claude": None, "agy": None}}
+
+
+def read_state(folder):
+    """The state file in `folder`, or an empty state when there is none or it is not the schema's shape."""
+    try:
+        state = json.loads((Path(folder) / STATE_FILE).read_text())
+    except (OSError, ValueError):
+        return empty_state()
+    if not isinstance(state, dict) or not isinstance(state.get("meters"), dict) or not isinstance(state.get("cooldown"), dict):
+        return empty_state()
+    state["cooldown"] = {**empty_state()["cooldown"], **state["cooldown"]}
+    return state
+
+
+def update_state(folder, change):
+    """Apply change(state) to the state file under its lock and replace the file atomically, so the pool
+    and every worker write in turn and a reader never sees half a file."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / STATE_LOCK, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = read_state(folder)
+        change(state)
+        scratch = folder / f".{STATE_FILE}.{os.getpid()}.new"
+        scratch.write_text(json.dumps(state, indent=1, sort_keys=True) + "\n")
+        os.replace(scratch, folder / STATE_FILE)
+    return state
+
+
+def epoch(stamp):
+    """Epoch seconds from an ISO 8601 time, or None for none."""
+    return None if stamp is None else datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+
+
+def reset_between(earlier, later):
+    """Whether the meter reset between two readings: it went down, or its window moved on."""
+    if later["percent"] < earlier["percent"] - 1.0:
+        return True
+    return (earlier["resets_at"] is not None and later["resets_at"] is not None
+            and later["resets_at"] - earlier["resets_at"] > RESET_JITTER)
+
+
+def fit_rate(history):
+    """Percent per hour, fitted over the readings of the last RATE_WINDOW. A reset splits the readings into
+    windows, and the rate is one least-squares slope shared by every window of two readings or more, each
+    about its own mean. With none such, a window whose first reading follows a scheduled reset is taken
+    as starting from 0% at that reset. None when nothing spans MIN_RATE_SPAN."""
+    points = sorted(history, key=lambda reading: reading["read"])
+    if not points:
+        return None
+    points = [reading for reading in points if reading["read"] >= points[-1]["read"] - RATE_WINDOW]
+    windows, previous = [], None
+    for reading in points:
+        if previous is None or reset_between(previous, reading):
+            windows.append({"after": previous, "readings": []})
+        windows[-1]["readings"].append(reading)
+        previous = reading
+    sxx = sxy = span = 0.0
+    for window in windows:
+        readings = window["readings"]
+        if len(readings) < 2:
+            continue
+        mean_t = sum(r["read"] for r in readings) / len(readings)
+        mean_p = sum(r["percent"] for r in readings) / len(readings)
+        sxx += sum((r["read"] - mean_t) ** 2 for r in readings)
+        sxy += sum((r["read"] - mean_t) * (r["percent"] - mean_p) for r in readings)
+        span += readings[-1]["read"] - readings[0]["read"]
+    if span >= MIN_RATE_SPAN and sxx > 0:
+        return 3600 * sxy / sxx
+    for window in reversed(windows):
+        after, first = window["after"], window["readings"][0]
+        reset = after["resets_at"] if after else None
+        if reset is not None and after["read"] < reset <= first["read"] - MIN_RATE_SPAN:
+            return 3600 * first["percent"] / (first["read"] - reset)
+    return None
+
+
+def add_reading(state, meter, harness, percent, resets_at, read):
+    """Keep one reading of a meter: its history, pruned by age and count, and the meter's latest reading
+    and fitted rate. A reading at a time already kept is the same reading and is not kept twice."""
+    held = state["meters"].setdefault(meter, {"harness": harness, "history": []})
+    history = [r for r in held.get("history", []) if r["read"] != read]
+    history.append({"read": float(read), "percent": float(percent),
+                    "resets_at": None if resets_at is None else float(resets_at)})
+    history.sort(key=lambda r: r["read"])
+    newest = history[-1]["read"]
+    history = [r for r in history if r["read"] >= newest - HISTORY_MAX_AGE][-MAX_HISTORY:]
+    held.update(harness=harness, history=history, percent=history[-1]["percent"],
+                resets_at=history[-1]["resets_at"], read=history[-1]["read"], rate=fit_rate(history))
+
+
+def stream_meter(limit_type):
+    """The meter a Claude rate_limit_event's rateLimitType reads: seven_day is the week, five_hour the
+    five-hour window, seven_day_<model> that model's week."""
+    if limit_type == "seven_day":
+        return "claude-week"
+    if limit_type == "five_hour":
+        return "claude-5h"
+    if limit_type and limit_type.startswith("seven_day_"):
+        return "claude-" + limit_type.removeprefix("seven_day_")
+    return None
+
+
+def claude_readings(account):
+    """(meter, percent, resets_at, read) for each Claude meter in ~/.claude.json's cachedUsageUtilization:
+    the week, the five-hour window when the plan has one, and each scoped limit that names a model."""
+    cached = json.loads(Path(account).read_text())["cachedUsageUtilization"]
+    meter, read = cached["utilization"], cached["fetchedAtMs"] / 1000
+    readings = [("claude-week", meter["seven_day"]["utilization"], epoch(meter["seven_day"]["resets_at"]), read)]
+    if meter.get("five_hour"):
+        readings.append(("claude-5h", meter["five_hour"]["utilization"], epoch(meter["five_hour"]["resets_at"]), read))
+    for limit in meter.get("limits") or []:
+        model = (limit.get("scope") or {}).get("model") if limit["kind"] == "weekly_scoped" else None
+        if model and model.get("display_name"):
+            readings.append((f"claude-{model['display_name'].lower()}", limit["percent"], epoch(limit["resets_at"]), read))
+    return readings
+
+
+def agy_readings(text, read):
+    """(meter, percent, resets_at, read) for each bucket of agy's Gemini group, out of what
+    `agy -p /usage --output-format json` printed."""
+    names = {"weekly": "gemini-week", "5h": "gemini-5h"}
+    groups = json.loads(text)["command"]["data"]["groups"]
+    return [(names[bucket["window"]], 100 * (1 - bucket["remaining_fraction"]), epoch(bucket["reset_time"]), read)
+            for group in groups if group["name"] == AGY_GROUP
+            for bucket in group["buckets"] if bucket["window"] in names]
+
+
 def flag(flags, name):
     """The value given to --name among the flags, or None."""
     for at, given in enumerate(flags[:-1]):
@@ -687,7 +859,6 @@ class Loop:
         self.child = None
         self.retry = None
         self.active_route = None
-        self.cooldown = {}
 
     def record(self, kind=None, spec=None):
         """Rewrite the loop's pid file to name the session it runs, or none."""
@@ -729,21 +900,35 @@ class Loop:
         return not self.stopping and not self.reloading
 
     def cooled_down(self, harness):
-        """Whether `harness` is currently in a rate/usage-limit cooldown window."""
-        exp = self.cooldown.get(harness)
-        if exp is None:
-            return False
-        if self.now() >= exp:
-            self.cooldown.pop(harness, None)
-            return False
-        return True
+        """Whether `harness` is in a usage-limit cooldown that any loop of the pool wrote to the state file."""
+        until = read_state(self.pids)["cooldown"].get(harness)
+        return until is not None and self.now() < until
+
+    def cooldowns(self):
+        """The ends of the cooldowns still running, of every harness."""
+        return [until for until in read_state(self.pids)["cooldown"].values() if until is not None and self.now() < until]
 
     def mark_cooldown(self, harness, reset):
-        """Put `harness` into cooldown until its reported reset timestamp (or 1 hour + 60 s)."""
-        until = (reset if reset is not None else self.now() + 3600) + 60
-        self.cooldown[harness] = max(self.cooldown.get(harness, 0.0), until)
-        wait_s = max(self.cooldown[harness] - self.now(), 0.0)
-        self.say("loop", f"{harness} usage limit: cooling down {harness} routes for {wait_s:.0f} s")
+        """Cool `harness` down for every loop until its reported reset (or for an hour when none was given)."""
+        until = float(reset) if reset is not None else self.now() + 3600
+
+        def cool(state):
+            state["cooldown"][harness] = max(state["cooldown"].get(harness) or 0.0, until)
+        state = update_state(self.pids, cool)
+        wait_s = max(state["cooldown"][harness] - self.now(), 0.0)
+        self.say("loop", f"{harness} usage limit: cooling down {harness} offerings for every loop for {wait_s:.0f} s")
+
+    def keep_readings(self, run, spec):
+        """Write what the session told of its meters, and any usage limit it hit, to the state file."""
+        if run.readings:
+            read = self.now()
+
+            def keep(state):
+                for meter, (percent, resets_at) in run.readings.items():
+                    add_reading(state, meter, spec.harness, percent, resets_at, read)
+            update_state(self.pids, keep)
+        if run.limited:
+            self.mark_cooldown(spec.harness, run.reset)
 
     # Sessions.
 
@@ -843,6 +1028,7 @@ class Loop:
                 self.child.stdout.close()
             self.child = None
             self.record()
+        self.keep_readings(run, spec)
         minutes = (self.now() - started) / 60
         usage = f", weekly {100 * run.utilization:.0f}%" if run.utilization is not None else ""
         self.say(kind, f"end: exit {run.exit}, {minutes:.1f} min, {run.turns} turns, "
@@ -1059,7 +1245,6 @@ class Loop:
         else:
             run = self.agent(kind, prompt)
             if run.limited and self.profile_cfg.filtered:
-                self.mark_cooldown(spec.harness, run.reset)
                 stage = STAGE_FOR_DELEGATE[kind]
                 self.say(kind, f"{spec.harness} hit usage limit; parking {issue} on stage:{stage}")
                 self.beads("update", issue, "--add-label", f"stage:{stage}", "-s", "open", "--assignee", "")
@@ -1083,11 +1268,8 @@ class Loop:
         prompt = (f"Issue {issue}, worktree {self.cwd.parent / issue}. Your input is the issue's last Prover input note."
                   if kind == "prover" else
                   f"Review {issue}. Your input is the review's last Skeptic input note.")
-        spec = self.route_spec(kind)
         run = self.agent(kind, prompt)
         if run.limited:
-            if spec is not None:
-                self.mark_cooldown(spec.harness, run.reset)
             self.beads("update", issue, "-s", "open", "--assignee", "")
             return "cooldown", run
         report = run.report.strip() if run.report.strip() and not run.error else (
@@ -1129,16 +1311,18 @@ class Loop:
         self.tune()
         issue, self.retry = self.retry, None
         if issue:
+            if self.cooled_down(self.spec_for("round", RETRY).harness):
+                self.retry = issue
+                return "cooldown_wait", Run()
             run = self.agent("round", f"Run one round. Issue {issue} is yours: a round of this loop left it unfinished.", RETRY)
             if run.limited and self.profile_cfg.filtered:
-                rspec = self.route_spec(RETRY)
-                if rspec is not None:
-                    self.mark_cooldown(rspec.harness, run.reset)
                 self.beads("update", issue, "--add-label", "stage:escalated", "-s", "open", "--assignee", "")
                 return "cooldown", run
             return self.finish_round_report(run)
 
         if not self.profile_cfg.filtered:
+            if self.cooled_down(self.spec_for("round").harness):
+                return "cooldown_wait", Run()
             run = self.agent("round", "Run one round.")
             return self.finish_round_report(run)
 
@@ -1148,56 +1332,41 @@ class Loop:
             return self.run_specialist_stage(action.split(":", 1)[1], target)
         if action == "stage:escalated":
             target, rkey = payload
-            spec = self.route_spec(rkey)
             run = self.agent("round",
                              f"Run one round. Issue {target} is yours: a round left it unfinished; take no other issue.",
                              RETRY)
             if run.limited:
-                if spec is not None:
-                    self.mark_cooldown(spec.harness, run.reset)
                 self.release_if_held(target)
                 return "cooldown", run
             return self.finish_round_report(run, clear_stage=(target, "stage:escalated"))
         if action == "stage:needs-land":
             target, rkey = payload
             owner = f"profile {self.profile_name}" if self.profile_name else f"route {rkey}"
-            spec = self.route_spec(rkey)
             run = self.run_routed(rkey, "round",
                                   f"Run one round. Issue {target} is yours (claimed for {owner}; take no other issue).")
             if run.limited:
-                if spec is not None:
-                    self.mark_cooldown(spec.harness, run.reset)
                 self.release_if_held(target)
                 return "cooldown", run
             return self.finish_round_report(run, clear_stage=(target, "stage:needs-land"))
         if action == "leaf":
             target, rkey = payload
             owner = f"profile {self.profile_name}" if self.profile_name else f"route {rkey}"
-            spec = self.route_spec(rkey)
             run = self.run_routed(rkey, "round",
                                   f"Run one round. Issue {target} is yours (claimed for {owner}; take no other issue).")
             if run.limited:
-                if spec is not None:
-                    self.mark_cooldown(spec.harness, run.reset)
                 self.release_if_held(target)
                 return "cooldown", run
             return self.finish_round_report(run)
         if action == "epic_finished":
-            spec = self.route_spec("epic-close")
             run = self.run_routed("epic-close", "round",
                                   "Run one round. Epic round only: act on finished epics from tools/reviews.py; "
                                   "do not claim from bd ready and do not run an epic split round.")
             if run.limited:
-                if spec is not None:
-                    self.mark_cooldown(spec.harness, run.reset)
                 return "cooldown", run
             return self.finish_round_report(run)
         if action == "epic_split":
-            spec = self.route_spec("epic-split")
             run = self.run_routed("epic-split", "round", "Run one round.")
             if run.limited:
-                if spec is not None:
-                    self.mark_cooldown(spec.harness, run.reset)
                 return "cooldown", run
             return self.finish_round_report(run)
         return action, Run()
@@ -1230,7 +1399,7 @@ class Loop:
                 if once:
                     self.say("loop", "remaining ready work waits on a cooled-down harness; stopping (--once)")
                     return 0
-                active = [exp for h, exp in list(self.cooldown.items()) if self.cooled_down(h)]
+                active = self.cooldowns()
                 until = max(min(min(active) - self.now(), self.wait), 1.0) if active else self.wait
                 self.pause(until, "cooldown on rate-limited harness")
                 continue
@@ -1265,8 +1434,10 @@ class Pool:
     """
 
     def __init__(self, worker, pids=PIDS, config=CONFIG, tick=TICK, sleep=time.sleep, out=sys.stdout,
-                 execute=os.execv, argv=None):
+                 execute=os.execv, argv=None, claude_account=Path.home() / ".claude.json", agy="agy", now=time.time):
         self.worker = list(worker)
+        self.claude_account, self.agy, self.now = Path(claude_account), agy, now
+        self.asked_agy = self.claude_failure = None
         self.pids, self.config, self.tick = Path(pids), Path(config), tick
         self.sleep, self.out, self.execute = sleep, out, execute
         self.argv = argv or [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
@@ -1310,6 +1481,39 @@ class Pool:
         self.stopping = True
         self.say(why)
         self.signal_workers(signal.SIGTERM, [pid for pid in self.workers if pid not in self.leaving])
+
+    # The meters.
+
+    def keep(self, readings, harness):
+        def change(state):
+            for meter, percent, resets_at, read in readings:
+                add_reading(state, meter, harness, percent, resets_at, read)
+        update_state(self.pids, change)
+
+    def sample(self):
+        """Keep Claude's meters as Claude Code last fetched them, when it fetched them since, and every
+        AGY_USAGE_INTERVAL ask agy for Gemini's; a reading that fails keeps the last ones."""
+        try:
+            readings = claude_readings(self.claude_account)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as failure:
+            # ~/.claude.json is Claude Code's own file: one it has not written, or of a shape this does not know, keeps the last readings.
+            readings = []
+            if self.claude_account.exists() and repr(failure) != self.claude_failure:
+                self.say(f"claude usage: {failure!r}; keeping the last readings")
+            self.claude_failure = repr(failure)
+        held = read_state(self.pids)["meters"]
+        if any(held.get(meter, {}).get("read") != read for meter, _, _, read in readings):
+            self.keep(readings, "claude")
+        if self.asked_agy is not None and self.now() - self.asked_agy < AGY_USAGE_INTERVAL:
+            return
+        self.asked_agy = self.now()
+        try:
+            done = subprocess.run([self.agy, "-p", "/usage", "--output-format", "json"], stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=AGY_USAGE_TIMEOUT, check=True)
+            self.keep(agy_readings(done.stdout, self.asked_agy), "agy")
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as failure:
+            # agy is another program: one it lacks, or a reply of a shape this does not know, keeps the last readings.
+            self.say(f"agy usage: {failure!r}; keeping the last readings")
 
     # The tick.
 
@@ -1383,6 +1587,7 @@ class Pool:
     def step(self):
         """One tick. False once the pool is over."""
         self.tune()
+        self.sample()
         self.reap()
         if self.reloading and not self.stopping:
             self.say("re-executing; each worker re-executes after its run in flight")
@@ -2296,7 +2501,9 @@ class Tests(unittest.TestCase):
         sys.exit(int(open(quit).read()))
         """)
 
-    def pool(self, folder, jobs):
+    def pool(self, folder, jobs, **given):
+        given.setdefault("claude_account", folder / "no-claude.json")
+        given.setdefault("agy", str(folder / "no-agy"))
         (folder / "tools").mkdir(exist_ok=True)
         (folder / "tools" / "loop.py").write_text(self.FAKE_WORKER)
         (folder / "loop.toml").write_text(f"[pool]\njobs = {jobs}\n")
@@ -2306,7 +2513,7 @@ class Tests(unittest.TestCase):
         executed = []
         pool = Pool([sys.executable, str(folder / "tools" / "loop.py")], pids=folder / "pids", config=folder / "loop.toml",
                     tick=0, sleep=lambda seconds: None, out=sink, argv=["python", "loop.py"],
-                    execute=lambda path, argv: executed.append(argv))
+                    execute=lambda path, argv: executed.append(argv), **given)
         self.addCleanup(self.end_workers, pool)
         return pool, executed
 
@@ -2471,6 +2678,216 @@ class Tests(unittest.TestCase):
                      "pool = 2\n", "[pool]\njobs = 2\n[round]\neffort = \"huge\"\n"):
             with self.assertRaises(ValueError, msg=text):
                 pool_jobs(text)
+
+    def test_fit_rate_computes_hourly_slope_and_handles_scheduled_and_manual_resets(self):
+        self.assertIsNone(fit_rate([]))
+        self.assertIsNone(fit_rate([{"read": 1000.0, "percent": 25.0, "resets_at": 10000.0}]))
+        # Steady spend: 10% -> 15% -> 20% across one hour = 10%/h.
+        steady = [
+            {"read": 0.0, "percent": 10.0, "resets_at": 50000.0},
+            {"read": 1800.0, "percent": 15.0, "resets_at": 50000.0},
+            {"read": 3600.0, "percent": 20.0, "resets_at": 50000.0},
+        ]
+        self.assertAlmostEqual(fit_rate(steady), 10.0)
+
+        # Scheduled window rollover between two readings: 80% -> 90% in 1h, reset, 5% -> 15% in 1h = 10%/h.
+        rollover = [
+            {"read": 0.0, "percent": 80.0, "resets_at": 5000.0},
+            {"read": 3600.0, "percent": 90.0, "resets_at": 5000.0},
+            {"read": 7200.0, "percent": 5.0, "resets_at": 23000.0},
+            {"read": 10800.0, "percent": 15.0, "resets_at": 23000.0},
+        ]
+        self.assertAlmostEqual(fit_rate(rollover), 10.0)
+
+        # Manual reset within the same window (resets_at unchanged, percent drops): still 12%/h.
+        manual_reset = [
+            {"read": 0.0, "percent": 70.0, "resets_at": 50000.0},
+            {"read": 3600.0, "percent": 82.0, "resets_at": 50000.0},
+            {"read": 7200.0, "percent": 4.0, "resets_at": 50000.0},
+            {"read": 10800.0, "percent": 16.0, "resets_at": 50000.0},
+        ]
+        self.assertAlmostEqual(fit_rate(manual_reset), 12.0)
+
+        # Reset right before the latest reading (only one point after reset): keeps pre-reset slope.
+        just_reset = [
+            {"read": 0.0, "percent": 80.0, "resets_at": 5000.0},
+            {"read": 3600.0, "percent": 90.0, "resets_at": 5000.0},
+            {"read": 7200.0, "percent": 2.0, "resets_at": 23000.0},
+        ]
+        self.assertAlmostEqual(fit_rate(just_reset), 10.0)
+
+        # Only two readings total, straddling a scheduled reset at t=1800: 15% spent in 1h after reset = 15%/h.
+        two_across_reset = [
+            {"read": 1000.0, "percent": 92.0, "resets_at": 1800.0},
+            {"read": 5400.0, "percent": 15.0, "resets_at": 19800.0},
+        ]
+        self.assertAlmostEqual(fit_rate(two_across_reset), 15.0)
+
+    def test_a_limit_in_one_workers_stream_cools_the_harness_for_a_second_worker_until_reset(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            fake_claude = folder / "claude_stream"
+            fake_claude.write_text(
+                f"#!{sys.executable}\nimport json, os, sys\n"
+                f"log = {str(folder / 'claude.log')!r}\n"
+                "calls = sum(1 for _ in open(log)) if os.path.exists(log) else 0\n"
+                "open(log, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "if calls == 0:\n"
+                "    print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': "
+                "{'status': 'rejected', 'rateLimitType': 'seven_day', 'utilization': 1.0, 'resetsAt': 5000}}))\n"
+                "    print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': True, 'result': 'You hit your usage limit'}))\n"
+                "else:\n"
+                "    print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Loop: continue\\n', 'num_turns': 1, 'usage': {}}))\n"
+            )
+            fake_claude.chmod(0o755)
+            fake_agy = folder / "agy"
+            fake_agy.write_text(
+                f"#!{sys.executable}\nimport json, sys\n"
+                f"open({str(folder / 'agy.log')!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "print(json.dumps({'event': 'result', 'result': {'status': 'SUCCESS', 'response': 'Loop: continue\\n', 'num_turns': 1, 'usage': {}}}))\n"
+            )
+            fake_agy.chmod(0o755)
+            (folder / "loop.toml").write_text(textwrap.dedent("""\
+                [routes.default]
+                harness = "agy"
+                model = "gemini-4-carbon-medium"
+                [routes.arch]
+                harness = "claude"
+                model = "opus"
+                effort = "high"
+                """))
+            worker1, clock1 = self.driver(folder, agy=str(fake_agy))
+            worker1.claude = str(fake_claude)
+            worker2, clock2 = self.driver(folder, agy=str(fake_agy))
+            worker2.claude = str(fake_claude)
+            clock1[0] = clock2[0] = 100.0
+
+            # Worker 1 hits a claude usage limit on atmo-1.1, then falls over to agy on atmo-1.2.
+            (folder / "ready.json").write_text(json.dumps([
+                {"id": "atmo-1.1", "title": "Design doc", "issue_type": "task", "priority": 0, "labels": ["kind:arch"]},
+                {"id": "atmo-1.2", "title": "Tool fix", "issue_type": "task", "priority": 2, "labels": ["kind:tool"]},
+            ]))
+            self.assertEqual(worker1.drive(once=True), 0)
+            self.assertEqual(len(self.log(folder, "claude")), 1)
+            self.assertEqual(len(self.log(folder, "agy")), 1)
+
+            state = read_state(folder)
+            self.assertEqual(state["cooldown"]["claude"], 5000.0)
+            self.assertIsNone(state["cooldown"]["agy"])
+            self.assertEqual(state["meters"]["claude-week"]["percent"], 100.0)
+            self.assertEqual(state["meters"]["claude-week"]["resets_at"], 5000.0)
+
+            # Worker 2 (separate Loop instance) sees the cooldown in state.json and skips claude without spending a session.
+            (folder / "ready.json").write_text(json.dumps([
+                {"id": "atmo-1.1", "title": "Design doc", "issue_type": "task", "priority": 0, "labels": ["kind:arch"]},
+                {"id": "atmo-1.3", "title": "Another tool", "issue_type": "task", "priority": 2, "labels": ["kind:tool"]},
+            ]))
+            clock2[0] = 4999.0
+            self.assertTrue(worker2.cooled_down("claude"))
+            self.assertEqual(worker2.drive(once=True), 0)
+            self.assertEqual(len(self.log(folder, "claude")), 1)
+            self.assertEqual(len(self.log(folder, "agy")), 2)
+
+            # With only claude work left before reset, worker 2 spends no session at all.
+            (folder / "ready.json").write_text(json.dumps([
+                {"id": "atmo-1.1", "title": "Design doc", "issue_type": "task", "priority": 0, "labels": ["kind:arch"]},
+            ]))
+            self.assertEqual(worker2.drive(once=True), 0)
+            self.assertEqual(len(self.log(folder, "claude")), 1)
+
+            # Once the reset time arrives, worker 2 runs the claude session.
+            clock2[0] = 5000.0
+            self.assertFalse(worker2.cooled_down("claude"))
+            self.assertEqual(worker2.drive(once=True), 0)
+            self.assertEqual(len(self.log(folder, "claude")), 2)
+
+    def test_pool_samples_meters_survives_restart_and_keeps_last_readings_on_failed_agy_usage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            pids = folder / "pids"
+            account = folder / "claude.json"
+            usage_file = folder / "usage.json"
+            fail_flag = folder / "fail-agy"
+            fake_agy = folder / "agy"
+            fake_agy.write_text(
+                f"#!/bin/sh\n[ -e {fail_flag} ] && exit 1\ncat {usage_file}\n"
+            )
+            fake_agy.chmod(0o755)
+
+            def write_sources(fetched_ms, c_week, c_5h, fable, g_rem_week, g_rem_5h):
+                account.write_text(json.dumps({"cachedUsageUtilization": {
+                    "fetchedAtMs": fetched_ms,
+                    "utilization": {
+                        "five_hour": {"utilization": c_5h, "resets_at": "2026-11-13T18:00:00+00:00"},
+                        "seven_day": {"utilization": c_week, "resets_at": "2026-11-15T05:00:00+00:00"},
+                        "limits": [
+                            {"kind": "weekly_all", "group": "weekly", "percent": c_week,
+                             "resets_at": "2026-11-15T05:00:00+00:00", "scope": None},
+                            {"kind": "weekly_scoped", "group": "weekly", "percent": fable,
+                             "resets_at": "2026-11-15T05:00:00+00:00",
+                             "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
+                            {"kind": "weekly_scoped", "group": "weekly", "percent": 3,
+                             "resets_at": "2026-11-15T05:00:00+00:00",
+                             "scope": {"model": None, "surface": "desk"}},
+                        ],
+                    },
+                }}))
+                usage_file.write_text(json.dumps({"status": "SUCCESS", "command": {"name": "usage", "data": {"groups": [
+                    {"name": "Gemini Models", "buckets": [
+                        {"id": "gemini-weekly", "window": "weekly", "remaining_fraction": g_rem_week,
+                         "reset_time": "2026-11-19T13:00:00Z"},
+                        {"id": "gemini-5h", "window": "5h", "remaining_fraction": g_rem_5h,
+                         "reset_time": "2026-11-13T19:00:00Z"},
+                    ]},
+                    {"name": "Claude and GPT models", "buckets": [
+                        {"id": "3p-weekly", "window": "weekly", "remaining_fraction": 1.0,
+                         "reset_time": "2026-11-20T12:00:00Z"},
+                    ]},
+                ]}}}))
+
+            clock = [1000.0]
+            write_sources(1000_000, 20, 10, 30, 0.80, 0.90)
+            pool1, _ = self.pool(folder, 1, claude_account=account, agy=str(fake_agy), now=lambda: clock[0])
+            self.settle(pool1, lambda: len(self.started(folder)) == 1)
+            state1 = read_state(pids)
+            self.assertEqual(set(state1["meters"]), {"claude-week", "claude-5h", "claude-fable", "gemini-week", "gemini-5h"})
+            self.assertEqual(state1["meters"]["claude-week"]["percent"], 20.0)
+            self.assertEqual(state1["meters"]["claude-5h"]["percent"], 10.0)
+            self.assertEqual(state1["meters"]["claude-fable"]["percent"], 30.0)
+            self.assertAlmostEqual(state1["meters"]["gemini-week"]["percent"], 20.0)
+            self.assertAlmostEqual(state1["meters"]["gemini-5h"]["percent"], 10.0)
+            self.assertIsNone(state1["meters"]["claude-week"]["rate"])
+            self.assertEqual(list(pids.glob(".*.new")), [])
+
+            # Stop supervisor 1 and start a fresh supervisor 2 an hour later: history survives the restart.
+            pool1.on_stop(signal.SIGTERM, None)
+            self.assertFalse(self.settle(pool1, lambda: not pool1.workers))
+
+            clock[0] = 4600.0
+            write_sources(4600_000, 26, 25, 38, 0.75, 0.70)
+            pool2, _ = self.pool(folder, 1, claude_account=account, agy=str(fake_agy), now=lambda: clock[0])
+            self.settle(pool2, lambda: len(self.started(folder)) == 2)
+            state2 = read_state(pids)
+            self.assertAlmostEqual(state2["meters"]["claude-week"]["rate"], 6.0)
+            self.assertAlmostEqual(state2["meters"]["claude-5h"]["rate"], 15.0)
+            self.assertAlmostEqual(state2["meters"]["claude-fable"]["rate"], 8.0)
+            self.assertAlmostEqual(state2["meters"]["gemini-week"]["rate"], 5.0)
+            self.assertAlmostEqual(state2["meters"]["gemini-5h"]["rate"], 20.0)
+
+            # A failed agy /usage on a later sample keeps Gemini's last readings and fitted rates.
+            fail_flag.touch()
+            clock[0] = 8200.0
+            write_sources(8200_000, 32, 40, 46, 0.0, 0.0)
+            pool2.step()
+            state3 = read_state(pids)
+            self.assertEqual(state3["meters"]["claude-week"]["percent"], 32.0)
+            self.assertAlmostEqual(state3["meters"]["claude-week"]["rate"], 6.0)
+            self.assertAlmostEqual(state3["meters"]["gemini-week"]["percent"], 25.0)
+            self.assertEqual(state3["meters"]["gemini-week"]["read"], 4600.0)
+            self.assertAlmostEqual(state3["meters"]["gemini-week"]["rate"], 5.0)
+            self.assertAlmostEqual(state3["meters"]["gemini-5h"]["percent"], 30.0)
+            pool2.on_stop(signal.SIGTERM, None)
+            self.assertFalse(self.settle(pool2, lambda: not pool2.workers))
 
 
 def main():
