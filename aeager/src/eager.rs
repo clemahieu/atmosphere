@@ -314,11 +314,31 @@ impl Spans {
         &&& forall|k: int| j <= k < j + blocks ==> #[trigger] self.used@[k]
     }
 
+    /// Whether the span at `base` holds block `k` of the window.
+    spec fn covers(&self, base: int, k: int) -> bool {
+        &&& self.map@.contains_key(base)
+        &&& self.index@[base] <= k < self.index@[base] + self.map@[base].blocks
+    }
+
+    /// Whether `blocks` blocks from block `first` of the window fit apart from every span in `view`.
+    spec fn fits_at(&self, view: SourceView, first: int, blocks: nat) -> bool {
+        &&& blocks > 0
+        &&& 0 <= first
+        &&& first + blocks <= WINDOW_BLOCKS
+        &&& forall|other: int|
+            #[trigger] view.spans.contains_key(other) ==> view.apart(
+                self.window + first * BLOCK_BYTES,
+                blocks,
+                other,
+            )
+    }
+
     spec fn inv(&self) -> bool {
         &&& self.window > 0
         &&& self.window as int % BLOCK_BYTES as int == 0
         &&& self.window + WINDOW_BYTES <= usize::MAX
         &&& forall|base: int| #[trigger] self.map@.contains_key(base) ==> self.holds(base)
+        &&& forall|k: int| 0 <= k < WINDOW_BLOCKS && #[trigger] self.used@[k] ==> exists|base: int| #[trigger] self.covers(base, k)
     }
 
     /// The first run of `blocks` blocks no span holds, as a new span with nothing backed; or none.
@@ -330,9 +350,18 @@ impl Spans {
             view@.spans == old(self).map@,
         ensures
             final(self).inv(),
+            final(self).window == old(self).window,
             match r {
-                None => final(self).map@ == old(self).map@,
+                None => {
+                    &&& final(self).map@ == old(self).map@
+                    &&& forall|first: int| !#[trigger] old(self).fits_at(view@, first, blocks as nat)
+                },
                 Some(base) => {
+                    let first = (base - old(self).window) / BLOCK_BYTES as int;
+                    &&& base == old(self).window + first * BLOCK_BYTES
+                    &&& old(self).fits_at(view@, first, blocks as nat)
+                    &&& forall|earlier: int|
+                        0 <= earlier < first ==> !#[trigger] old(self).fits_at(view@, earlier, blocks as nat)
                     &&& view@.fits(base as int, blocks as nat)
                     &&& final(self).map@ == old(self).map@.insert(base as int, Span { blocks: blocks as nat, backed: Set::empty() })
                 },
@@ -350,6 +379,8 @@ impl Spans {
                 0 < blocks <= WINDOW_BLOCKS,
                 view@.spans == old(self).map@,
                 first <= WINDOW_BLOCKS,
+                forall|earlier: int|
+                    0 <= earlier < first ==> !#[trigger] old(self).fits_at(view@, earlier, blocks as nat),
             decreases WINDOW_BLOCKS - first,
         {
             let mut t: usize = 0;
@@ -360,10 +391,18 @@ impl Spans {
                     first + blocks <= WINDOW_BLOCKS,
                     t <= blocks,
                     free ==> forall|u: int| first <= u < first + t ==> !#[trigger] self.used@[u],
+                    !free ==> exists|u: int| first <= u < first + t && #[trigger] self.used@[u],
                 decreases blocks - t,
             {
+                let ghost prev_t = t as int;
                 if self.used[first + t] {
+                    assert(self.used@[(first + t) as int]);
                     free = false;
+                } else if !free {
+                    proof {
+                        let u = choose|u: int| first <= u < first + prev_t && #[trigger] self.used@[u];
+                        assert(self.used@[u]);
+                    }
                 }
                 t += 1;
             }
@@ -420,6 +459,12 @@ impl Spans {
                 self.map = Ghost(self.map@.insert(base as int, Span { blocks: blocks as nat, backed: Set::empty() }));
                 self.index = Ghost(self.index@.insert(base as int, first as int));
                 proof {
+                    assert(base - before.window == BLOCK_BYTES * (first as int)) by (nonlinear_arith)
+                        requires
+                            base == before.window + first * BLOCK_BYTES,
+                    ;
+                    lemma_div_multiples_vanish(first as int, BLOCK_BYTES as int);
+                    assert((base - before.window) / BLOCK_BYTES as int == first as int);
                     assert forall|b: int| #[trigger] self.map@.contains_key(b) implies self.holds(b) by {
                         if b != base as int {
                             assert(before.holds(b));
@@ -433,8 +478,41 @@ impl Spans {
                             }
                         }
                     }
+                    assert forall|k: int| 0 <= k < WINDOW_BLOCKS && #[trigger] self.used@[k] implies exists|b: int| #[trigger] self.covers(b, k) by {
+                        if first <= k < first + blocks {
+                            assert(self.covers(base as int, k));
+                        } else {
+                            assert(before.used@[k]);
+                            let b = choose|b: int| #[trigger] before.covers(b, k);
+                            assert(before.holds(b));
+                            if b == base as int {
+                                assert(view.apart(base as int, blocks as nat, b));
+                                lemma_scale(1, blocks as int, BLOCK_BYTES as int);
+                                lemma_scale(1, before.map@[b].blocks as int, BLOCK_BYTES as int);
+                            }
+                            assert(self.covers(b, k));
+                        }
+                    }
                 }
                 return Some(base);
+            }
+            proof {
+                if self.fits_at(view@, first as int, blocks as nat) {
+                    let u = choose|u: int| first <= u < first + blocks && #[trigger] self.used@[u];
+                    assert(self.used@[u]);
+                    let other = choose|other: int| #[trigger] self.covers(other, u);
+                    assert(self.holds(other));
+                    let j = self.index@[other];
+                    let length = self.map@[other].blocks;
+                    assert(view@.spans.contains_key(other));
+                    assert(view@.apart(self.window + first * BLOCK_BYTES, blocks as nat, other));
+                    lemma_scale(first as int + 1, j + length, BLOCK_BYTES as int);
+                    lemma_scale(j, length as int, BLOCK_BYTES as int);
+                    lemma_scale(first as int, 1, BLOCK_BYTES as int);
+                    lemma_scale(j + 1, first as int + blocks, BLOCK_BYTES as int);
+                    lemma_scale(first as int, blocks as int, BLOCK_BYTES as int);
+                    lemma_scale(j, 1, BLOCK_BYTES as int);
+                }
             }
             first += 1;
         }
@@ -456,6 +534,11 @@ impl Spans {
         self.map = map;
         assert forall|b: int| #[trigger] self.map@.contains_key(b) implies self.holds(b) by {
             assert(before.holds(b));
+        }
+        assert forall|k: int| 0 <= k < WINDOW_BLOCKS && #[trigger] self.used@[k] implies exists|b: int| #[trigger] self.covers(b, k) by {
+            assert(before.used@[k]);
+            let b = choose|b: int| #[trigger] before.covers(b, k);
+            assert(self.covers(b, k));
         }
     }
 
@@ -495,6 +578,7 @@ impl Spans {
                 self.map == before.map,
                 self.index == before.index,
                 forall|u: int| 0 <= u < WINDOW_BLOCKS && !(first <= u < first + t) ==> #[trigger] self.used@[u] == before.used@[u],
+                forall|u: int| first <= u < first + t ==> !#[trigger] self.used@[u],
             decreases length - t,
         {
             self.used[first + t] = false;
@@ -522,6 +606,13 @@ impl Spans {
                 assert forall|k: int| i <= k < i + blocks implies #[trigger] self.used@[k] by {
                     assert(before.used@[k]);
                 }
+            }
+            assert forall|k: int| 0 <= k < WINDOW_BLOCKS && #[trigger] self.used@[k] implies exists|b: int| #[trigger] self.covers(b, k) by {
+                assert(before.used@[k]);
+                let b = choose|b: int| #[trigger] before.covers(b, k);
+                assert(before.holds(b));
+                assert(b != span as int);
+                assert(self.covers(b, k));
             }
         }
     }
@@ -1368,6 +1459,30 @@ impl Eager {
         self.record.space
     }
 
+    /// The base address of the window the source hands out spans from.
+    pub closed spec fn window(&self) -> usize {
+        self.spans.window
+    }
+
+    /// Whether the `blocks` blocks of the window from block `first` fit apart from every reserved
+    /// span.
+    pub open spec fn window_fits(&self, first: int, blocks: nat) -> bool {
+        &&& blocks > 0
+        &&& 0 <= first
+        &&& first + blocks <= WINDOW_BLOCKS
+        &&& forall|other: int|
+            #[trigger] self@.spans.contains_key(other) ==> self@.apart(
+                self.window() + first * BLOCK_BYTES,
+                blocks,
+                other,
+            )
+    }
+
+    /// Whether some run of `blocks` blocks in the window fits apart from every reserved span.
+    pub open spec fn can_reserve(&self, blocks: nat) -> bool {
+        exists|first: int| #[trigger] self.window_fits(first, blocks)
+    }
+
     /// Every frame the source retyped and still uses is in the slot it put it in, its block counted by
     /// that capability and, for a page the source maps, the one entry that maps it, at the address the
     /// source maps it at, in the space of the token's process.
@@ -1414,6 +1529,7 @@ impl Eager {
                     &&& source@.refusals == Seq::<Refusal>::empty()
                     &&& source@.provenance == window@.provenance
                     &&& source.space() == space
+                    &&& source.window() == window@.addr
                     &&& forall|token: Caller| #[trigger] source.holds(token)
                 },
                 None => !Self::new_ok(memory, pages, slots, window),
@@ -1504,7 +1620,25 @@ impl SpanSource for Eager {
         &&& self.holds(token)
     }
 
-    fn reserve(&mut self, token: &mut Tracked<Caller>, blocks: usize) -> (r: Option<*mut u8>) {
+    /// Grants the lowest run of `blocks` blocks in the window that fits apart from every reserved
+    /// span, and refuses only when none fits.
+    fn reserve(&mut self, token: &mut Tracked<Caller>, blocks: usize) -> (r: Option<*mut u8>)
+        ensures
+            final(self).space() == old(self).space(),
+            final(self).window() == old(self).window(),
+            match r {
+                Some(base) => {
+                    let first = (base@.addr - old(self).window()) / BLOCK_BYTES as int;
+                    &&& old(self).can_reserve(blocks as nat)
+                    &&& base@.addr == old(self).window() + first * BLOCK_BYTES
+                    &&& old(self).window_fits(first, blocks as nat)
+                    &&& forall|earlier: int|
+                        0 <= earlier < first ==> !#[trigger] old(self).window_fits(earlier, blocks as nat)
+                },
+                None => !old(self).can_reserve(blocks as nat),
+            },
+            old(self).window_fits(0, blocks as nat) ==> r is Some,
+    {
         proof {
             use_type_invariant(&*self);
         }
@@ -1514,6 +1648,10 @@ impl SpanSource for Eager {
                 let ghost r = Refusal { request: Request::Reserve { blocks: blocks as nat }, spans: before.spans };
                 proof {
                     lemma_recorded_wf(before, r);
+                    if old(self).can_reserve(blocks as nat) {
+                        let first = choose|first: int| #[trigger] old(self).window_fits(first, blocks as nat);
+                        assert(old(self).spans.fits_at(before, first, blocks as nat));
+                    }
                 }
                 self.refusals = Ghost(self.refusals@.push(r));
                 None
@@ -1523,7 +1661,16 @@ impl SpanSource for Eager {
                     lemma_reserved_wf(before, base as int, blocks as nat);
                 }
                 self.grants = Ghost(self.grants@.push(Request::Reserve { blocks: blocks as nat }));
-                Some(with_exposed_provenance(base, self.exposed))
+                let ptr: *mut u8 = with_exposed_provenance(base, self.exposed);
+                proof {
+                    let first = (ptr@.addr - old(self).window()) / BLOCK_BYTES as int;
+                    assert(old(self).spans.fits_at(before, first, blocks as nat));
+                    assert(old(self).window_fits(first, blocks as nat));
+                    assert forall|earlier: int| 0 <= earlier < first implies !#[trigger] old(self).window_fits(earlier, blocks as nat) by {
+                        assert(!old(self).spans.fits_at(before, earlier, blocks as nat));
+                    }
+                }
+                Some(ptr)
             },
         }
     }

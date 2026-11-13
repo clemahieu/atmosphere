@@ -8,7 +8,6 @@
 #
 kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again
-aeager/src/eager.rs	Eager::reserve	Some
 aeager/src/eager.rs	Eager::back	Some
 aeager/src/eager.rs	Eager::release	returns
 aeager/src/eager.rs	Eager::release_span	returns
