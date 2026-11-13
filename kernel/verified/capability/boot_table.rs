@@ -505,6 +505,7 @@ impl CapKernel {
                 && tree_of(&self.table_pages, &self.spaces).entry(t, i).perm.ps
                 ==> tree_of(&self.table_pages, &self.spaces).record(t).level == 2,
     {
+        reveal(table_links_wf);
         let tree = tree_of(&self.table_pages, &self.spaces);
         if self.table_pages.maps@.contains_key(t) {
             assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, t));
@@ -537,6 +538,7 @@ impl CapKernel {
                 &&& !self.blocks.pages@[(c / PAGE_SZ) as int].dead
             }),
     {
+        reveal(table_links_wf);
         let tree = tree_of(&self.table_pages, &self.spaces);
         let c = (tree.entry(t, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(table_links_wf(tree));

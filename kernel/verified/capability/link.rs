@@ -98,6 +98,10 @@ pub open spec fn table_addr(t: usize) -> usize {
 /// child's record names a present entry that names it, one level up and in the same space.
 /// A table page with a parent has a space. A table page with a space and no parent has been cut off with
 /// what is below it, which still names that space, and a dead table page can outlast the space it names.
+/// Opaque: its entry clause and its page clause each make the other's trigger, so a proof that sees it
+/// for several trees in scope instantiates it without bound. A proof that needs it whole reveals it; one
+/// that needs an instance calls lemma_table_link or lemma_table_parent.
+#[verifier::opaque]
 pub open spec fn table_links_wf(tree: TableTree) -> bool {
     &&& forall|t: usize, i: usize| #![trigger tree.entry(t, i)]
         tree.names_child(t, i) ==> {
@@ -166,6 +170,7 @@ pub proof fn lemma_links_space_removed(a: TableTree, b: TableTree, s: usize)
     ensures
         table_links_wf(b),
 {
+    reveal(table_links_wf);
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         b.names_child(u, i) implies {
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
@@ -304,6 +309,7 @@ pub proof fn lemma_links_table_removed(a: TableTree, b: TableTree, t: usize)
     ensures
         table_links_wf(b),
 {
+    reveal(table_links_wf);
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         b.names_child(u, i) implies {
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
@@ -415,6 +421,7 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
     ensures
         table_links_wf(post),
 {
+    reveal(table_links_wf);
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
         post.names_child(u, i) implies {
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
@@ -486,6 +493,7 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
     ensures
         table_links_wf(post),
 {
+    reveal(table_links_wf);
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
         post.names_child(u, i) implies {
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
@@ -585,6 +593,7 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
     ensures
         table_links_wf(post),
 {
+    reveal(table_links_wf);
     assert forall|t: usize| #[trigger] post.is_table(t) == pre.is_table(t) by {
         assert(post.maps.contains_key(t) == pre.maps.contains_key(t));
         assert(post.roots.contains_key(t) == pre.roots.contains_key(t));
@@ -697,6 +706,7 @@ pub proof fn lemma_links_detached(pre: TableTree, post: TableTree, parent: usize
     ensures
         table_links_wf(post),
 {
+    reveal(table_links_wf);
     assert forall|t: usize| #[trigger] post.is_table(t) == pre.is_table(t) by {
         assert(post.maps.contains_key(t) == pre.maps.contains_key(t));
         assert(post.roots.contains_key(t) == pre.roots.contains_key(t));
@@ -881,6 +891,7 @@ pub proof fn lemma_root_entry_not_passed(tree: TableTree, base: usize, e: usize,
     ensures
         !passes_through(tree, r, p, base, e),
 {
+    reveal(table_links_wf);
     if tree.names_child(r, p.l4) {
         let t3 = (tree.entry(r, p.l4).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(tree.is_page(t3));
@@ -901,6 +912,7 @@ pub proof fn lemma_root_entry_passed(tree: TableTree, base: usize, e: usize, p: 
     ensures
         passes_through(tree, base, p, base, e) == (p.l4 == e),
 {
+    reveal(table_links_wf);
     if tree.names_child(base, p.l4) {
         let t3 = (tree.entry(base, p.l4).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(tree.is_page(t3));
@@ -2052,6 +2064,7 @@ impl CapKernel {
             self.mapped@.contains(g),
             self.blocks.tracks(g as int),
     {
+        reveal(table_links_wf);
         let tree = tree_of(&self.table_pages, &self.spaces);
         let t3 = step(tree, r, p.l4)->0;
         let t2 = step(tree, t3, p.l3)->0;
@@ -2077,6 +2090,7 @@ impl CapKernel {
         ensures
             tree_of(&self.table_pages, &self.spaces).record(parent).space == Some(r),
     {
+        reveal(table_links_wf);
         let tree = tree_of(&self.table_pages, &self.spaces);
         assert(self.spaces.roots@.contains_key(r));
         assert(space_wf(&self.list, &self.spaces, &self.blocks, r));
@@ -2279,6 +2293,7 @@ impl CapKernel {
         ensures
             post.core_may_hold(c, e),
     {
+        reveal(table_links_wf);
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
         if pre.tlb@[c].contains(e) {
@@ -2539,6 +2554,7 @@ impl CapKernel {
             final(self).wf(),
             Self::detach_done(*old(self), *final(self), t),
     {
+        reveal(table_links_wf);
         let ghost pre = *old(self);
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
         let record = self.table_record(t, false);

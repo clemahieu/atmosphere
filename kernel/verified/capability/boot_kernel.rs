@@ -96,6 +96,7 @@ impl CapKernel {
         ensures
             forall|p: SpacePath| !#[trigger] space_mapping(tree_of(&self.table_pages, &self.spaces), s).contains_key(p),
     {
+        reveal(table_links_wf);
         let tree = tree_of(&self.table_pages, &self.spaces);
         assert forall|p: SpacePath| !#[trigger] space_mapping(tree, s).contains_key(p) by {
             if tree.names_child(s, p.l4) {
@@ -120,6 +121,7 @@ impl CapKernel {
             forall|j: usize| KERNEL_MEM_END_L4INDEX <= j < ENTRIES
                 ==> #[trigger] tree_of(&self.table_pages, &self.spaces).entry(s, j).is_empty(),
     {
+        reveal(table_links_wf);
         let tree = tree_of(&self.table_pages, &self.spaces);
         self.lemma_table_base(s);
         assert forall|j: usize| KERNEL_MEM_END_L4INDEX <= j < ENTRIES implies #[trigger] tree.entry(s, j).is_empty() by {

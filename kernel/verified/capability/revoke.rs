@@ -808,6 +808,7 @@ impl CapKernel {
         ensures
             links_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), post.list),
     {
+        reveal(table_links_wf);
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let k = tree_of(&cut.table_pages, &cut.spaces);
         let m = tree_of(&mid.table_pages, &mid.spaces);
@@ -880,6 +881,7 @@ impl CapKernel {
         ensures
             node_live(post.list, step(tree_of(&self.table_pages, &self.spaces), u, i)->0),
     {
+        reveal(table_links_wf);
         let a = tree_of(&self.table_pages, &self.spaces);
         let c = step(a, u, i)->0;
         assert(a.names_child(u, i));

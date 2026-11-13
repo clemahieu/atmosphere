@@ -182,6 +182,7 @@ pub proof fn lemma_links_status_only(a: TableTree, b: TableTree, t: usize)
     ensures
         table_links_wf(b),
 {
+    reveal(table_links_wf);
     lemma_tree_status_only(a, b, t);
 }
 

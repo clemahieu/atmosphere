@@ -2107,6 +2107,7 @@ impl CapKernel {
             forall|r: int| 0 <= r < NUM_2M ==> #[trigger] final(self).stale_epoch.two@[r] == 0,
             forall|r: int| 0 <= r < NUM_1G ==> #[trigger] final(self).stale_epoch.one@[r] == 0,
     {
+        reveal(table_links_wf);
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
         self.table_pages = TablePages::new();

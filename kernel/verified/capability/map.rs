@@ -406,6 +406,7 @@ pub proof fn lemma_links_entry_written(a: TableTree, b: TableTree, t: usize, e: 
     ensures
         table_links_wf(b),
 {
+    reveal(table_links_wf);
     assert forall|u: usize| #[trigger] b.is_table(u) == a.is_table(u) && b.is_page(u) == a.is_page(u) && b.is_root(u) == a.is_root(u) by {
         assert(b.maps.contains_key(u) == a.maps.contains_key(u));
     }
@@ -767,6 +768,7 @@ pub proof fn lemma_ends_at_unique(a: TableTree, s: usize, p: SpacePath, t: usize
     ensures
         ends_at(a, r, q, t, p.l1) == (r == s && q == p),
 {
+    reveal(table_links_wf);
     assert(large_entry(a, t, p.l1) is None);
     let t3 = step(a, s, p.l4)->0;
     let t2 = step(a, t3, p.l3)->0;
@@ -840,6 +842,7 @@ pub proof fn lemma_reaches_large_unique(a: TableTree, s: usize, p: SpacePath, t:
     ensures
         reaches(a, r, q, t, p.l2) == (r == s && q == p),
 {
+    reveal(table_links_wf);
     let t3 = step(a, s, p.l4)->0;
     assert(step(a, s, p.l4) == Some(t3));
     assert(step(a, t3, p.l3) == Some(t));
@@ -1142,6 +1145,7 @@ impl CapKernel {
                 &&& tree.record(ret->0).level + 1 == tree.record(t).level
             },
     {
+        reveal(table_links_wf);
         if i >= ENTRIES || self.is_kernel_slot(t, is_root, i) {
             return None;
         }
@@ -2037,6 +2041,7 @@ impl CapKernel {
                 Effect::Share { space: pre.tables.node_of(root, slot), from: f },
             ),
     {
+        reveal(table_links_wf);
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
         let s = pre.payload_of(pre.tables.node_of(root, slot)).base;

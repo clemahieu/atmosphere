@@ -142,6 +142,7 @@ pub proof fn lemma_walk_open(tree: TableTree, s: usize, p: SpacePath)
     ensures
         walk_open(tree, s, p),
 {
+    reveal(table_links_wf);
     let _ = tree.entry(s, p.l4);
     if let Some(t3) = step(tree, s, p.l4) {
         let _ = tree.entry(t3, p.l3);
@@ -1617,6 +1618,7 @@ pub proof fn lemma_mapping_extended(a: TableTree, b: TableTree, s: usize)
     ensures
         space_mapping(b, s) =~= space_mapping(a, s),
 {
+    reveal(table_links_wf);
     assert forall|t: usize, i: usize| #![trigger step(a, t, i)] a.is_table(t) && i < ENTRIES implies step(b, t, i) == step(a, t, i)
         && frame_entry(b, t, i) == frame_entry(a, t, i) && (step(a, t, i) is Some ==> a.is_table(step(a, t, i)->0)) by {
         assert(b.entry(t, i) == a.entry(t, i));
@@ -2225,6 +2227,7 @@ pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: 
     ensures
         table_links_wf(b),
 {
+    reveal(table_links_wf);
     assert(!a.names_child(t, e));
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         b.names_child(u, i) implies {

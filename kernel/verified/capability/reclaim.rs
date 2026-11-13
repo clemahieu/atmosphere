@@ -509,6 +509,7 @@ impl CapKernel {
             forall|i: usize| #![trigger self.table_pages.maps@[base].value()[i]]
                 i < ENTRIES ==> self.table_pages.maps@[base].value()[i].is_empty(),
     {
+        reveal(table_links_wf);
         let tree = tree_of(&self.table_pages, &self.spaces);
         assert forall|i: usize| #![trigger self.table_pages.maps@[base].value()[i]]
             i < ENTRIES implies self.table_pages.maps@[base].value()[i].is_empty() by {
@@ -2962,6 +2963,7 @@ impl CapKernel {
         ensures
             self.space_is_spent(base) ==> self.space_is_empty(base),
     {
+        reveal(table_links_wf);
         if self.space_is_spent(base) {
             let tree = tree_of(&self.table_pages, &self.spaces);
             assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
@@ -3784,6 +3786,7 @@ impl CapKernel {
             self.blocks.tracks_addr(child_at(tree_of(&self.table_pages, &self.spaces), t, e)),
             child_at(tree_of(&self.table_pages, &self.spaces), t, e) % TABLE_PAGE_BYTES == 0,
     {
+        reveal(table_links_wf);
         let tree = tree_of(&self.table_pages, &self.spaces);
         let c = child_at(tree, t, e);
         assert(tree.is_page(c));
@@ -3810,6 +3813,7 @@ impl CapKernel {
             child_entries(tree_of(&post.table_pages, &post.spaces), base)
                 == child_entries(tree_of(&mid.table_pages, &mid.spaces), base).remove(e),
     {
+        reveal(table_links_wf);
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let m = tree_of(&mid.table_pages, &mid.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -4611,6 +4615,7 @@ impl CapKernel {
             forall|i: usize| i < ENTRIES && i != e ==> #[trigger] tree_of(&post.table_pages, &post.spaces).entry(base, i) == tree_of(&mid.table_pages, &mid.spaces).entry(base, i),
             tree_of(&post.table_pages, &post.spaces).entry(base, e).is_empty(),
     {
+        reveal(table_links_wf);
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let m = tree_of(&mid.table_pages, &mid.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);

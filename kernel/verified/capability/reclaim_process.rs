@@ -479,6 +479,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).process_space_cut(*final(self), root, from, base),
     {
+        reveal(table_links_wf);
         let ghost pre = *old(self);
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
         proof {

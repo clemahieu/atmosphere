@@ -893,10 +893,8 @@ proof fn lemma_children_gone(pre: Tree, post: Tree, c: usize, kids: Set<usize>)
     vstd::set_lib::lemma_len_subset(b + kids, a);
 }
 
-/// What table_links_wf says of one entry that names a child, for a proof that keeps it hidden: the
-/// child is a table page whose record names the entry, and the entry holds the child's address. The
-/// clause for an entry that names a child and the clause for a child's record each instantiate the
-/// other.
+/// What the opaque table_links_wf says of one entry that names a child: the child is a table page whose
+/// record names the entry, and the entry holds the child's address.
 proof fn lemma_table_link(tree: TableTree, t: usize, i: usize)
     requires
         table_links_wf(tree),
@@ -909,10 +907,11 @@ proof fn lemma_table_link(tree: TableTree, t: usize, i: usize)
             &&& tree.entry(t, i).addr == table_addr(c)
         }),
 {
+    reveal(table_links_wf);
 }
 
-/// What table_links_wf says of one table page with a parent, for a proof that keeps it hidden: the
-/// parent's entry names a child and holds the page's address.
+/// What the opaque table_links_wf says of one table page with a parent: the parent's entry names a child
+/// and holds the page's address.
 proof fn lemma_table_parent(tree: TableTree, c: usize)
     requires
         table_links_wf(tree),
@@ -922,6 +921,7 @@ proof fn lemma_table_parent(tree: TableTree, c: usize)
         tree.names_child(tree.record(c).parent->0.table, tree.record(c).parent->0.entry),
         tree.entry(tree.record(c).parent->0.table, tree.record(c).parent->0.entry).addr == table_addr(c),
 {
+    reveal(table_links_wf);
 }
 
 /// A live node in a leaf's page is listed and not first, since the first node lies outside every leaf:
@@ -9557,7 +9557,6 @@ impl CapKernel {
     {
         hide(CapKernel::wf);
         hide(entries_translatable);
-        hide(table_links_wf);
         let ghost s0 = *self;
         let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
         let ghost first = page_block_payload(bs[0]);
@@ -10061,12 +10060,14 @@ impl CapKernel {
             }
             assert forall|i: usize| !#[trigger] ap.names_child(c1, i) by {
                 if ap.names_child(c1, i) {
+                    lemma_table_link(ap, c1, i);
                     let ch = (ap.entry(c1, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
                     assert(ap.is_page(ch));
                     assert(ap.record(ch).parent == Some(TableParent { table: c1, entry: i }));
                     assert(sp.table_pages.records == sc.table_pages.records);
                     assert(ac.is_page(ch));
                     assert(ac.record(ch).parent == Some(TableParent { table: c1, entry: i }));
+                    lemma_table_parent(ac, ch);
                     assert(ac.names_child(c1, i));
                 }
             }

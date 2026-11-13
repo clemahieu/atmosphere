@@ -2089,6 +2089,13 @@ impl CapKernel {
             lemma_level_pages(level, r);
             assert(same_but_contents(pre.view(), mid.view()));
             assert(level_base(level, r) == base / PAGE_SZ);
+            assert forall|i: usize| !(base / PAGE_SZ <= i < base / PAGE_SZ + pow2(order as nat))
+                implies (#[trigger] pre.frames@.contains_key(i) == mid.frames@.contains_key(i)
+                    && (pre.frames@.contains_key(i) ==> pre.frames@[i] == mid.frames@[i])) by {
+                assert(!(level_base(level, r) <= i < level_base(level, r) + level_pages(level)));
+                assert(mid.frames@.contains_key(i) == pre.frames@.contains_key(i));
+                assert(pre.frames@.contains_key(i) ==> mid.frames@[i] == pre.frames@[i]);
+            }
             assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), mid.view(), o)
                 implies in_pages(base, pow2(order as nat), o) by {
                 lemma_contents_in_pages(pre.frames@, mid.frames@, base, pow2(order as nat), o);
