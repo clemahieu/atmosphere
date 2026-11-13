@@ -9,6 +9,7 @@ pub mod check_current_kept;
 pub mod check_current_moved_off;
 pub mod dead_device_space_freed;
 pub mod dead_frame_freed;
+pub mod dead_large_frame_freed;
 pub mod dead_table_page_freed;
 pub mod destroyed_thread_freed;
 pub mod device_frame_reused_after_iommu_flush;

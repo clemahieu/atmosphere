@@ -925,12 +925,14 @@ impl CapKernel {
             }
         }
         match self.reclaim_large_frame(c, root, from, base, 9, Tracked(&mut *steps)) {
-            ReclaimStep::Refused => {},
-            step => { return step; },
+            FrameReclaimStep::Refused => {},
+            FrameReclaimStep::Again => { return ReclaimStep::Again; },
+            FrameReclaimStep::Freed => { return ReclaimStep::Freed; },
         }
         match self.reclaim_large_frame(c, root, from, base, 18, Tracked(&mut *steps)) {
-            ReclaimStep::Refused => {},
-            step => { return step; },
+            FrameReclaimStep::Refused => {},
+            FrameReclaimStep::Again => { return ReclaimStep::Again; },
+            FrameReclaimStep::Freed => { return ReclaimStep::Freed; },
         }
         let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
@@ -4997,7 +4999,7 @@ impl CapKernel {
     }
 
     /// Reclaims the 2M or 1G block at `base`, as reclaim_frame does a 4K one.
-    pub fn reclaim_large_frame(&mut self, c: usize, root: usize, from: usize, base: usize, order: u8, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
+    pub fn reclaim_large_frame(&mut self, c: usize, root: usize, from: usize, base: usize, order: u8, Tracked(steps): Tracked<&mut Steps>) -> (ret: FrameReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -5009,8 +5011,6 @@ impl CapKernel {
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             !(ret is Freed) ==> *final(self) == *old(self),
-            !(ret is Unlinked),
-            !(ret is Slice),
             !old(self).can_reclaim_large(root, from, base, order) ==> ret is Refused,
             old(self).can_reclaim_large(root, from, base, order) ==> {
                 let level = large_level(order);
@@ -5021,18 +5021,18 @@ impl CapKernel {
         let ghost pre = *old(self);
         let untyped = match self.retype_parent(root, from, base, order) {
             Some(found) => found,
-            None => { return ReclaimStep::Refused; },
+            None => { return FrameReclaimStep::Refused; },
         };
         let (level, r) = match large_region(base, order) {
             Some(found) => found,
-            None => { return ReclaimStep::Refused; },
+            None => { return FrameReclaimStep::Refused; },
         };
         let entry = self.blocks.region(level, r);
         if !entry.typed || entry.refs != 0 {
-            return ReclaimStep::Refused;
+            return FrameReclaimStep::Refused;
         }
         if !self.is_region_acknowledged(level, r, Tracked(steps)) {
-            return ReclaimStep::Again;
+            return FrameReclaimStep::Again;
         }
         proof {
             assert(pre.holders@.contains_key(level_ref(level, r)));
@@ -5067,7 +5067,7 @@ impl CapKernel {
             }
             lemma_contents_only(v, post.view(), root, e);
         }
-        ReclaimStep::Freed
+        FrameReclaimStep::Freed
     }
 
     /// A large frame has nothing to tear down either, so its block frees at once, every page's

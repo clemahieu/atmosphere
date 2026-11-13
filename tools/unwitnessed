@@ -16,10 +16,6 @@ kernel/verified/capability/moving.rs	move_cap	true
 kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some
 kernel/verified/capability/power.rs	power_off	returns
-kernel/verified/capability/reclaim.rs	reclaim_large_frame	Again
-kernel/verified/capability/reclaim.rs	reclaim_large_frame	Freed
-kernel/verified/capability/reclaim.rs	reclaim_large_frame	Unlinked
-kernel/verified/capability/reclaim.rs	reclaim_large_frame	Slice
 kernel/verified/capability/retype.rs	retype_frame	true
 kernel/verified/capability/retype.rs	retype_leaf	true
 kernel/verified/capability/revoke.rs	revoke	Exhausted

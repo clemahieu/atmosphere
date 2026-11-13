@@ -22,7 +22,7 @@ use crate::capability::position::*;
 use crate::capability::probe::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
-use crate::capability::reclaim::{FrameReclaimStep, ReclaimStep};
+use crate::capability::reclaim::FrameReclaimStep;
 use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 #[cfg(verus_keep_ghost)]
@@ -784,6 +784,45 @@ impl CapKernel {
     {
     }
 
+    /// A retype of the free kind naming a dead 2M or 1G frame reaches reclaim_large_frame: refused with
+    /// nothing changed unless can_reclaim_large holds over the frame's arguments; again with nothing
+    /// changed while a core or IOMMU has not acknowledged the region's staleness; ok once every core and
+    /// present IOMMU has, with the region freed by reclaim_large_frame, free and not being zeroed, so the
+    /// next large-frame retype of it can succeed. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_reclaim_large_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Retype),
+            frame.argument(1) == RETYPE_FREE,
+            frame.argument(4) == 9 || frame.argument(4) == 18,
+        ensures
+            ({
+                let from = frame.slot() as usize;
+                let base = frame.argument(2) as usize;
+                let order = frame.argument(4) as u8;
+                let level = crate::capability::zero::large_level(order);
+                let r = base / PAGE_SZ / crate::capability::zero::level_pages(level);
+                &&& !pre.can_reclaim_large(root, from, base, order)
+                    ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_reclaim_large(root, from, base, order) && !pre.region_acknowledged(level, r)
+                    ==> out == status_only(STATUS_AGAIN) && post == pre
+                &&& pre.can_reclaim_large(root, from, base, order) && pre.region_acknowledged(level, r)
+                    ==> out == status_only(STATUS_OK) && post.blocks.large_free(level, r as int) && !post.zeroing.active(level, r)
+                        && exists|c: usize| c < NUM_CPUS && #[trigger] pre.large_frame_freed(post, c, root, from, base, order)
+            }),
+    {
+        if pre.can_reclaim_large(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as u8)
+            && pre.region_acknowledged(
+                crate::capability::zero::large_level(frame.argument(4) as u8),
+                frame.argument(2) as usize / PAGE_SZ / crate::capability::zero::level_pages(crate::capability::zero::large_level(frame.argument(4) as u8)),
+            )
+        {
+            let c = choose|c: usize| c < NUM_CPUS
+                && #[trigger] pre.frame_freed_of(post, c, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize);
+            assert(pre.large_frame_freed(post, c, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as u8));
+        }
+    }
+
     /// A retype of the 2M frame kind reaches retype_large_frame: refused with nothing changed unless
     /// can_retype_large holds over the frame's arguments; when it does, again with the block a step
     /// further zeroed, as large_frame_zeroing says, or ok with the 2M frame retyped into the slot in
@@ -1158,9 +1197,9 @@ impl CapKernel {
                     }
                 }
                 match step {
-                    ReclaimStep::Freed => STATUS_OK,
-                    ReclaimStep::Again => STATUS_AGAIN,
-                    _ => STATUS_REFUSED,
+                    FrameReclaimStep::Freed => STATUS_OK,
+                    FrameReclaimStep::Again => STATUS_AGAIN,
+                    FrameReclaimStep::Refused => STATUS_REFUSED,
                 }
             } else {
                 STATUS_REFUSED
