@@ -442,7 +442,7 @@ const RIGHT_WRITE: u64 = 2;
 /// capability goes in the empty slot `destination`. Whether the kernel accepted. Every frame of `frames`
 /// is mapped and none is in `destination`; each is kept, and the new frame, mapped nowhere, is held under
 /// `key` once the kernel accepted.
-pub fn retype_frame(caller: &mut Tracked<Caller>, untyped: u64, base: u64, destination: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>, key: Ghost<int>) -> (r: bool)
+pub(crate) fn retype_frame(caller: &mut Tracked<Caller>, untyped: u64, base: u64, destination: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>, key: Ghost<int>) -> (r: bool)
     requires
         old(caller)@.wf(),
         frames_held(old(caller)@.kernel(), old(caller)@.root(), frames@),
@@ -477,7 +477,7 @@ pub fn retype_frame(caller: &mut Tracked<Caller>, untyped: u64, base: u64, desti
 /// Retypes the free order-3 block at physical `base`, inside the untyped at `untyped`, as an unlinked
 /// table page of `level`. Whether the kernel accepted.
 /// Every frame of `frames` is kept.
-pub fn retype_table_page(caller: &mut Tracked<Caller>, untyped: u64, base: u64, level: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>) -> bool
+pub(crate) fn retype_table_page(caller: &mut Tracked<Caller>, untyped: u64, base: u64, level: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>) -> bool
     requires
         old(caller)@.wf(),
         frames_held(old(caller)@.kernel(), old(caller)@.root(), frames@),
@@ -503,7 +503,7 @@ pub fn retype_table_page(caller: &mut Tracked<Caller>, untyped: u64, base: u64, 
 /// Links the unlinked table page at physical `table`, inside the untyped at `untyped`, into the entry
 /// at `level` that `address` names in the space at `space`. Whether the kernel accepted.
 /// Every frame of `frames` is kept.
-pub fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, level: u64, untyped: u64, table: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>) -> bool
+pub(crate) fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, level: u64, untyped: u64, table: u64, frames: Ghost<Map<int, (usize, Option<usize>)>>) -> bool
     requires
         old(caller)@.wf(),
         frames_held(old(caller)@.kernel(), old(caller)@.root(), frames@),
@@ -532,7 +532,7 @@ pub fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, level: u64
 /// names, is refused here. The slot at `space` names the caller's own space, the one its thread runs
 /// in. `live` holds every address of the window whose page's permission the caller holds or has handed
 /// out, and `address` is not among them.
-pub fn map_page(
+pub(crate) fn map_page(
     caller: &mut Tracked<Caller>,
     space: u64,
     address: usize,
@@ -714,7 +714,7 @@ fn page_permission(
 /// Unmaps the page at `address` in the space at `space`, the caller's own, taking the permission to its
 /// bytes. Whether the kernel accepted. The frame the source holds under `key` of `frames` is the one
 /// mapped there: once the kernel accepted it is held mapped nowhere, and otherwise it is dropped.
-pub fn unmap_page(
+pub(crate) fn unmap_page(
     caller: &mut Tracked<Caller>,
     space: u64,
     address: usize,

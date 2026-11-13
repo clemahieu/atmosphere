@@ -46,8 +46,3 @@ aeager/src/eager.rs	Eager::back	Some
 aeager/src/eager.rs	Eager::release	returns
 aeager/src/eager.rs	Eager::release_span	returns
 aeager/src/exercise.rs	exercise	returns
-aeager/src/glue.rs	retype_frame	true
-aeager/src/glue.rs	retype_table_page	true
-aeager/src/glue.rs	link	true
-aeager/src/glue.rs	map_page	Some
-aeager/src/glue.rs	unmap_page	true
