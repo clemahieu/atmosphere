@@ -45,8 +45,11 @@ Stopping. SIGINT (Ctrl-C) or SIGTERM, or `tools/loop.py --stop`, lets the agent 
 and ends the loop; a prover or skeptic pass a finished round handed over is not started, and its
 issue is released with a note so the next round picks it up. A second signal, or `--stop --now`
 (SIGUSR1), ends the run in flight too: the session's process group gets SIGTERM, then SIGKILL after
-30 s, and the next round's orient recovers what it left. Each loop writes its pid to
+30 s, and the next round's orient recovers what it left. Each loop keeps the file
 <project root>/logs/loop/<pid> while it runs; `--stop` signals each such pid that is still a loop.
+The file is JSON: `session` is the session the loop runs, as its kind, harness, model and effort
+(each model and effort the flags name, or null for the harness's own default), or null between
+sessions, so another process such as tools/bead-status.py can say what an issue is worked at.
 
 Tuning. Before each session the loop reads <project root>/loop.toml: `[routes.<key>]` configures
 automatic per-task routing, `[profiles.<name>]` configures named single-slice profiles, and top-level
@@ -587,6 +590,14 @@ def claude_alive(pid):
         return False
 
 
+def flag(flags, name):
+    """The value given to --name among the flags, or None."""
+    for at, given in enumerate(flags[:-1]):
+        if given == f"--{name}":
+            return flags[at + 1]
+    return None
+
+
 def fmt_spec(spec):
     """Short human-readable summary of an AgentSpec for --list-profiles and --check."""
     if spec is None:
@@ -619,6 +630,16 @@ class Loop:
         self.retry = None
         self.active_route = None
         self.cooldown = {}
+
+    def record(self, kind=None, spec=None):
+        """Rewrite the loop's pid file to name the session it runs, or none."""
+        session = spec and {"kind": kind, "harness": spec.harness,
+                            "model": flag(spec.flags, "model"), "effort": flag(spec.flags, "effort")}
+        self.pids.mkdir(parents=True, exist_ok=True)
+        path = self.pids / str(os.getpid())
+        scratch = path.with_name(f".{path.name}.new")
+        scratch.write_text(json.dumps({"pid": os.getpid(), "session": session}) + "\n")
+        os.replace(scratch, path)
 
     def say(self, who, text):
         print(f"{time.strftime('%H:%M:%S')} {who:<8} {text}", file=self.out, flush=True)
@@ -749,6 +770,7 @@ class Loop:
         started = self.now()
         self.say(kind, f"start ({spec.harness}): {prompt}")
         self.scratch.mkdir(exist_ok=True)
+        self.record(kind, spec)
         self.child = subprocess.Popen(command, cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                       start_new_session=True)
@@ -763,6 +785,7 @@ class Loop:
             if self.child and self.child.stdout:
                 self.child.stdout.close()
             self.child = None
+            self.record()
         minutes = (self.now() - started) / 60
         usage = f", weekly {100 * run.utilization:.0f}%" if run.utilization is not None else ""
         self.say(kind, f"end: exit {run.exit}, {minutes:.1f} min, {run.turns} turns, "
@@ -1219,9 +1242,8 @@ def main_loop(args):
     if args.profile is not None:
         text = loop.config.read_text() if loop.config.exists() else ""
         parse_profile(text, args.profile)
-    PIDS.mkdir(parents=True, exist_ok=True)
+    loop.record()
     pidfile = PIDS / str(os.getpid())
-    pidfile.write_text(f"{os.getpid()}\n")
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1):
         signal.signal(signum, loop.on_stop)
     signal.signal(signal.SIGHUP, loop.on_reload)
@@ -1373,6 +1395,7 @@ class Tests(unittest.TestCase):
         open(os.path.join(folder, "claude.log"), "a").write(json.dumps(sys.argv[1:] + [os.environ["BEADS_ACTOR"]]) + "\\n")
         temporary = [os.environ.get("TMPDIR"), os.environ.get("CLAUDE_CODE_TMPDIR")]
         open(os.path.join(folder, "temporary.log"), "a").write(json.dumps(temporary + [os.path.isdir(temporary[0] or "")]) + "\\n")
+        open(os.path.join(folder, "pidfile.log"), "a").write(open(os.path.join(folder, str(os.getppid()))).read())
         queue = sorted(name for name in os.listdir(folder) if name.startswith("reply-"))
         reply = open(os.path.join(folder, queue[0])).read()
         os.remove(os.path.join(folder, queue[0]))
@@ -1451,6 +1474,18 @@ class Tests(unittest.TestCase):
             self.assertEqual(loop.drive(), 0)
             scratch = str(folder / "scratch")
             self.assertEqual(self.log(folder, "temporary"), [[scratch, scratch, True]] * 3)
+
+    def test_the_pid_file_names_the_session_in_flight_and_none_between_sessions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "loop.toml").write_text('[round]\nmodel = "fable"\neffort = "high"\nautocompact = "200k"\n')
+            loop, _ = self.driver(folder, "Notify: none\nProver: atmo-1.2\nLoop: continue\n", "Reached 3 verified, 0 errors.",
+                                  "Notify: none\nLoop: stop\n")
+            self.assertEqual(loop.drive(), 0)
+            round_, prover = ({"kind": kind, "harness": "claude", "model": model, "effort": effort}
+                              for kind, model, effort in (("round", "fable", "high"), ("prover", None, None)))
+            self.assertEqual(self.log(folder, "pidfile"), [{"pid": os.getpid(), "session": session} for session in (round_, prover, round_)])
+            self.assertEqual(json.loads((folder / str(os.getpid())).read_text()), {"pid": os.getpid(), "session": None})
 
     def test_a_stop_before_a_hand_off_releases_the_issue_without_running_the_skeptic(self):
         with tempfile.TemporaryDirectory() as folder:
