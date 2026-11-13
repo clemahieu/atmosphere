@@ -117,7 +117,8 @@ The session record. Each session a loop runs, round, prover or skeptic on any ha
 to the table `sessions` of <project root>/logs/loop/sessions.sqlite when it ends, written under
 `logs/loop/.sessions.lock` so the workers of a pool write in turn; the file outlives every loop. Columns:
 `actor` (loop-<pid>), `session` (round, prover or skeptic), `issue` (the issue the prompt names, or null
-for a round that claims its own), `work_kind` (the issue's kind when the loop classified it at claim),
+for a round that claims its own), `work_kind` (the issue's kind classified at claim, or classified the same way when the session names an
+issue this loop has not classified, as a hand-off on an issue the round named does),
 `route` (the route key the offering was chosen by, or null for the unrouted loop's round), `offering`
 (null for the unrouted loop's table), `harness`, `model` and `effort` (null for the
 harness's default), `started` (epoch seconds), `minutes`, `turns`, `weighted` (plan-weighted tokens),
@@ -1180,11 +1181,41 @@ class Loop:
         agents = self.dispatch.agents
         return agents.get(table or kind) or agents.get(kind) or AgentSpec()
 
+    def shown_issue(self, issue_id):
+        """The issue `bd show` gives, or None when it is not there."""
+        shown = self.beads_json("show", issue_id, "--json")
+        if isinstance(shown, list):
+            shown = shown[0] if shown else None
+        return shown if isinstance(shown, dict) and shown.get("id") else None
+
+    def classify_for_record(self, issue_id):
+        """The work kind claim would record for an issue this loop has not classified.
+
+        An explicit kind or review label needs no parent; otherwise the parents are read so the tier
+        is the one claim would see."""
+        issue = self.shown_issue(issue_id)
+        if issue is None:
+            return None
+        by_id = {issue["id"]: issue}
+        labels = set(issue.get("labels") or [])
+        if not any(label.startswith("kind:") or label == "review" for label in labels):
+            cur, seen = issue, set()
+            while cur.get("parent") and cur["parent"] not in seen:
+                seen.add(cur.get("id"))
+                parent = self.shown_issue(cur["parent"])
+                if parent is None:
+                    break
+                by_id[parent["id"]] = parent
+                cur = parent
+        return classify_issue(issue, by_id)
+
     def agent(self, kind, prompt, table=None, spec=None, issue=None, route=None):
         """Run one agent session in the main worktree on the offering chosen for it, or with the flags of its
         kind's table or of the one named; its stream is shown as it comes. The session's row goes to the
         session record, with the issue it was given and the route it was chosen by when the loop knows them."""
         self.tune()
+        if issue and issue not in self.kinds:
+            self.kinds[issue] = self.classify_for_record(issue)
         spec = spec or self.spec_for(kind, table)
         if spec.harness in ("agy", "grok"):
             body = agent_body(self.cwd, kind)
@@ -2093,6 +2124,8 @@ class Tests(unittest.TestCase):
             emit("ready_epics.json")
         elif args[:2] == ["list", "--all"]:
             emit("all.json")
+        elif args[:1] == ["show"] and "--json" in args:
+            emit(f"issue-{args[1]}.json")
         """)
 
     def driver(self, folder, *replies, **given):
@@ -2130,6 +2163,7 @@ class Tests(unittest.TestCase):
                 ("prover", f"Issue atmo-1.2, worktree {folder.parent / 'atmo-1.2'}. Your input is the issue's last Prover input note.", loop.actor),
                 ("round", "Run one round.", loop.actor)])
             self.assertEqual(self.log(folder, "bd"), [
+                ["show", "atmo-1.2", "--json"],
                 ["update", "atmo-1.2", "--append-notes", "Prover report: Reached 3 verified, 0 errors."],
                 ["update", "atmo-1.2", "-s", "open", "--assignee", ""],
                 ["list", "-s", "blocked"]])
@@ -2211,7 +2245,8 @@ class Tests(unittest.TestCase):
             self.assertEqual(loop.drive(), 0)
             self.assertTrue(loop.reloading)
             self.assertEqual([call[2] for call in self.log(folder, "claude")], ["round", "prover"])
-            self.assertEqual(self.log(folder, "bd"), [["update", "atmo-1.2", "--append-notes", "Prover report: proved"],
+            self.assertEqual(self.log(folder, "bd"), [["show", "atmo-1.2", "--json"],
+                                                      ["update", "atmo-1.2", "--append-notes", "Prover report: proved"],
                                                       ["update", "atmo-1.2", "-s", "open", "--assignee", ""]])
 
     def test_wait_pauses_and_failures_back_off_until_the_fourth_ends_the_loop(self):
@@ -2243,6 +2278,7 @@ class Tests(unittest.TestCase):
                 ("prover", [], f"Issue atmo-1.2, worktree {folder.parent / 'atmo-1.2'}. Your input is the issue's last Prover input note."),
                 ("round", plain_flags, "Run one round.")])
             self.assertEqual(self.log(folder, "bd"), [
+                ["show", "atmo-1.2", "--json"],
                 ["update", "atmo-1.2", "--append-notes", "Prover report: proved"],
                 ["update", "atmo-1.2", "-s", "open", "--assignee", ""],
                 ["list", "-s", "blocked"]])
@@ -2938,6 +2974,33 @@ class Tests(unittest.TestCase):
             loop, _ = self.driver(folder, "Notify: none\nLoop: stop\n")
             self.assertEqual(loop.drive(), 0)
             self.assertEqual(read_sessions(folder)[2:], [self.row(loop, model="opus", loop="stop")])
+
+    def test_a_hand_off_records_the_kind_claim_would_for_a_prover_only_issue_a_review_and_a_leaf_a_split_keeps(self):
+        # The round takes a proof leaf, the kind a later split would still have on the row, and hands a prover
+        # to an issue it did not claim and a skeptic to a review. Each row carries the kind claim would give.
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "issue-atmo-1.2.json").write_text(json.dumps([{
+                "id": "atmo-1.2", "title": "Endpoint spec", "issue_type": "task", "labels": ["kind:spec"],
+                "description": "", "acceptance_criteria": ""}]))
+            (folder / "issue-atmo-1.9.json").write_text(json.dumps([{
+                "id": "atmo-1.9", "title": "Review: the epic", "issue_type": "task", "labels": ["review"],
+                "description": "", "acceptance_criteria": ""}]))
+            loop, _ = self.driver(folder, "proved", "the pass",
+                                  agy=self.stub_agy(folder, "Prover: atmo-1.2\nSkeptic: atmo-1.9\nLoop: continue\n"))
+            (folder / "loop.toml").write_text(self.ROUTES)
+            (folder / "ready.json").write_text(json.dumps([
+                {"id": "atmo-1.1", "title": "Prove the slot", "issue_type": "task", "priority": 1, "labels": ["kind:proof"]}]))
+            self.assertEqual(loop.drive(once=True), 0)
+            rows = read_sessions(folder)
+            self.assertEqual(rows, [
+                self.row(loop, issue="atmo-1.1", work_kind="proof", route="proof", offering="carbon", harness="agy",
+                         model="gemini-4-carbon-high", loop="continue", prover="atmo-1.2", skeptic="atmo-1.9"),
+                self.row(loop, session="prover", issue="atmo-1.2", work_kind="spec", route="prover", offering="fable",
+                         model="fable", effort="xhigh"),
+                self.row(loop, session="skeptic", issue="atmo-1.9", work_kind="review", route="skeptic",
+                         offering="opus-xhigh", model="opus", effort="xhigh")])
+            self.assertNotIn("atmo-1.2", [row["issue"] for row in rows if row["session"] == "round"])
 
     def test_a_session_that_hits_a_usage_limit_is_recorded_as_limited(self):
         with tempfile.TemporaryDirectory() as folder:
