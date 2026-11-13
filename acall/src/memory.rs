@@ -30,6 +30,8 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::retype_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), kind, untyped as usize, base as usize, word, level as usize, out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
+        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
@@ -41,6 +43,7 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Retype);
         CapKernel::lemma_retype_contract(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
@@ -56,6 +59,8 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::derive_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), rights, base as usize, order, out),
         !reaches_through(to) ==> (old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root())),
+        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
@@ -67,6 +72,7 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Derive);
         CapKernel::lemma_derive_contract(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
         if !reaches_through(to) {
             CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
         }
@@ -83,6 +89,8 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::inspect_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
+        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
@@ -94,6 +102,7 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Inspect);
         CapKernel::lemma_inspect_contract(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
@@ -110,6 +119,8 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::link_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, child as usize, out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
+        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
@@ -121,6 +132,7 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Link);
         CapKernel::lemma_link_contract(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
@@ -137,6 +149,8 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         CapKernel::map_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, page as usize, out),
         returned_on(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
+        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
@@ -148,6 +162,7 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Map);
         CapKernel::lemma_map_contract(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
@@ -163,6 +178,8 @@ pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (o
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::unmap_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
+        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
@@ -174,6 +191,7 @@ pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (o
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Unmap);
         CapKernel::lemma_unmap_contract(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
     }
     out

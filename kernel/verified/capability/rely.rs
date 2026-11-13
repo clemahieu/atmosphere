@@ -1253,6 +1253,30 @@ impl CapKernel {
     {
     }
 
+    /// The step a thread of the process at root takes keeps root recorded, whatever it invokes: no
+    /// operation frees a process. What a call of acall's step changes in the kernel's own state between
+    /// the call's entry and its return.
+    pub proof fn lemma_own_step_keeps_record(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::invoked(pre, post, root, frame, out),
+        ensures
+            Self::record_kept(pre, post, root),
+    {
+        match spec_operation(frame.operation_number()) {
+            Some(Operation::Retype) => Self::lemma_retype_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Derive) => Self::lemma_derive_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Move) => Self::lemma_move_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Delete) => Self::lemma_delete_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Revoke) => Self::lemma_revoke_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Link) => Self::lemma_link_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Map) => Self::lemma_map_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Unmap) => Self::lemma_unmap_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Probe) => Self::lemma_probe_keeps_record(pre, post, root, frame, out, root),
+            _ => {},
+        }
+    }
+
     /// No table but root's holds a frame capability with a page in the block br: every capability that
     /// holds br is root's, so no other caller can map a page of br or derive from a capability of it.
     pub open spec fn held_by(&self, br: BlockRef, root: usize) -> bool {
