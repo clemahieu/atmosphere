@@ -712,6 +712,7 @@ impl CapKernel {
     }
 
     /// What the step of a large retype that found its block all zero did: the retype was allowed, the
+    /// block was being zeroed before the step, since one step zeroes less than a region, the
     /// frame capability of that order is the untyped's child in the slot at index to, the one entry the
     /// parent map gains and the only node whose kind, liveness or capability changed, no root entry
     /// changed, every page of the block is zero, the block table changed in the block's region entry
@@ -722,6 +723,7 @@ impl CapKernel {
         let child = pre.tables.node_of(root, to);
         let level = large_level(order);
         &&& pre.can_retype_large(root, from, to, base, order)
+        &&& pre.zeroing.active(level, base / PAGE_SZ / level_pages(level))
         &&& pre.blocks.kept_but_region(post.blocks, level, (base / PAGE_SZ / level_pages(level)) as int)
         &&& pre.view().holds_right(root, parent, Right::Retype)
         &&& post.view().holds(root, child)
@@ -903,6 +905,7 @@ impl CapKernel {
                 ==> #[trigger] holds_zero(final(self).frames@, (level_base(level, r) + k) as usize),
             ret is Done ==> forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i)
                 ==> final(self).frames@.contains_key(i),
+            ret is Done ==> old(self).zeroing.active(level, r),
             ret is Done ==> {
                 let br = level_ref(level, r);
                 &&& !final(self).holders@.contains_key(br)
@@ -1010,6 +1013,13 @@ impl CapKernel {
         }
         let ghost mid = *self;
         proof {
+            // A region not being zeroed began this step at cursor 0, and one step zeroes fewer pages
+            // than a region has.
+            if !pre.zeroing.active(level, r) {
+                assert(level_pages(level) > ZERO_CHUNK_PAGES);
+                assert(mid.zeroing.cursor@[base as int] <= ZERO_CHUNK_PAGES);
+                assert(false);
+            }
             assert(zeroing_typed(&mid.zeroing, &mid.blocks));
             mid.lemma_active_block_ready(level, r);
         }
@@ -1055,7 +1065,7 @@ impl CapKernel {
     }
 
     /// A region being zeroed is typed, live and holds one reference, retype's, and has no key.
-    proof fn lemma_active_block_ready(&self, level: Large, r: usize)
+    pub(crate) proof fn lemma_active_block_ready(&self, level: Large, r: usize)
         requires
             self.zeroing.wf(),
             zeroing_typed(&self.zeroing, &self.blocks),

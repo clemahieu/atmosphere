@@ -784,6 +784,35 @@ impl CapKernel {
     {
     }
 
+    /// A retype of the 2M frame kind reaches retype_large_frame: refused with nothing changed unless
+    /// can_retype_large holds over the frame's arguments; when it does, again with the block a step
+    /// further zeroed, as large_frame_zeroing says, or ok with the 2M frame retyped into the slot in
+    /// argument 3, as large_frame_retyped says; and again on the step that begins a block not being
+    /// zeroed, since one step zeroes less than a region. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_retype_large_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Retype),
+            frame.argument(1) == RETYPE_LARGE_FRAME,
+        ensures
+            ({
+                let from = frame.slot() as usize;
+                let to = frame.argument(3) as usize;
+                let base = frame.argument(2) as usize;
+                &&& !pre.can_retype_large(root, from, to, base, 9) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_retype_large(root, from, to, base, 9) ==> {
+                    ||| out == status_only(STATUS_AGAIN) && Self::large_frame_zeroing(pre, post, root, from, to, base, 9)
+                    ||| out == status_only(STATUS_OK) && Self::large_frame_retyped(pre, post, root, from, to, base, 9)
+                }
+                &&& pre.can_retype_large(root, from, to, base, 9) && !pre.zeroing.active(
+                        crate::capability::zero::large_level(9),
+                        base / PAGE_SZ / crate::capability::zero::level_pages(crate::capability::zero::large_level(9)),
+                    )
+                    ==> out == status_only(STATUS_AGAIN) && Self::large_frame_zeroing(pre, post, root, from, to, base, 9)
+            }),
+    {
+    }
+
     /// A link reaches link_at: refused with nothing changed unless can_link_at holds over the frame's
     /// arguments, and ok with the table page linked as table_linked says when it does.
     /// design/witness-per-way-an-operation-succeeds/.
