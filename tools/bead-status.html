@@ -34,7 +34,7 @@ body { margin: 0; padding: 16px 16px 48px; background: var(--plane); color: var(
 main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 main > *, .rail > *, .board > * { grid-column: 1 / -1; }
 .rail, .board { display: contents; }
-#questionsbox, #flightsbox { order: 1; }
+#questionsbox, #metersbox, #flightsbox { order: 1; }
 #waits { order: 2; }
 #readybox, #closedbox { order: 3; }
 #historybox, #epicsbox { order: 4; }
@@ -154,6 +154,12 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
 .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
 .meter > div { height: 100%; background: var(--open); border-radius: 4px; }
 .epic .count { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* A plan meter: its name, how much of it is used, and when it resets. */
+#meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 20px; }
+.gauge .label { display: flex; justify-content: space-between; gap: 8px; color: var(--ink-2); font-size: 13px; }
+.gauge .label b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.gauge .meter { margin: 4px 0 2px; }
+.gauge.full .meter > div { background: var(--serious); }
 /* By the width of the section, not of the window: the rail is narrow in the widest window. */
 @container (max-width: 640px) {
   .row { grid-template-columns: minmax(0, 1fr); }
@@ -171,6 +177,7 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
   <div id="tiles"></div>
   <div class="rail">
     <section id="questionsbox" hidden><div class="head"><h2>Questions for you</h2></div><div class="rows" id="questions"></div></section>
+    <section id="metersbox" hidden><div class="head"><h2>Plan usage</h2><span class="note" id="metersnote"></span></div><div id="meters"></div></section>
     <section id="flightsbox"><div class="head"><h2>In flight</h2><span class="note" id="idle"></span></div><div class="rows" id="flights"></div></section>
     <section id="readybox"><div class="head"><h2>Ready leaves</h2><span class="note" id="readynote"></span></div><div class="rows" id="ready"></div></section>
     <section id="closedbox"><div class="head"><h2>Closed last</h2></div><div class="rows" id="closed"></div></section>
@@ -516,6 +523,19 @@ function drawFlights() {
   $("idle").textContent = data.idle.length ? `holding nothing: ${data.idle.join(", ")}` : "";
 }
 
+/* A meter at FULL percent or more is drawn in the warning colour. */
+const FULL = 90;
+function drawMeters() {
+  $("metersbox").hidden = !data.meters.length;
+  fill("meters", data.meters.map(gauge => h("div", {class: `gauge${gauge.percent >= FULL ? " full" : ""}`, title: `read ${span(data.now - gauge.read)} ago`},
+    h("div", {class: "label"}, h("span", {}, `${gauge.name} · ${gauge.window}`), h("b", {}, `${Math.round(gauge.percent)}%`)),
+    h("div", {class: "meter"}, h("div", {style: `width: ${Math.min(100, Math.max(0, gauge.percent))}%`})),
+    h("div", {class: "meta"}, gauge.resets > data.now ? `resets in ${span(gauge.resets - data.now)}` : "reset since it was read"),
+  )));
+  const oldest = Math.min(...data.meters.map(gauge => gauge.read));
+  $("metersnote").textContent = data.meters.length ? `used of each; oldest read ${span(data.now - oldest)} ago` : "";
+}
+
 function drawLists() {
   // The tile says when no question waits; the section is there only for the ones that do.
   $("questionsbox").hidden = !data.questions.length;
@@ -801,6 +821,7 @@ function tick() {
 
 function draw() {
   drawTiles();
+  drawMeters();
   drawFlights();
   drawLists();
   drawGraph();

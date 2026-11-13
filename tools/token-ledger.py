@@ -313,6 +313,17 @@ def spent(ledger, since=0):
         db.close()
 
 
+def newest(ledger):
+    """The meter's newest reading as a row of `readings`, or None when the ledger holds none."""
+    if not ledger.exists():
+        return None
+    db = connect(ledger)
+    try:
+        return db.execute("select fetched_ms, percent, resets_at, scoped from readings order by fetched_ms desc limit 1").fetchone()
+    finally:
+        db.close()
+
+
 def main(arguments):
     parser = argparse.ArgumentParser(description="Harvest this project's transcripts into the token ledger.")
     root = Path(__file__).resolve().parents[2]
@@ -529,6 +540,14 @@ class Tests(unittest.TestCase):
         # The human spends a reset: the next fetch is lower and the week ends when it did.
         self.meter(2000, 4, 1)
         self.assertEqual([row[:3] for row in self.kept()], [(1000, 60, "2026-11-15T04:59:59+00:00"), (2000, 4, "2026-11-15T04:59:59+00:00")])
+
+    def test_the_newest_reading_is_the_one_fetched_last(self):
+        self.assertIsNone(newest(self.ledger))
+        self.meter(2000, 4, 1)
+        self.kept()
+        self.meter(1000, 60, 20)  # an older fetch harvested later is not the newest
+        self.kept()
+        self.assertEqual(newest(self.ledger)[:2], (2000, 4))
 
     def test_an_account_file_with_no_reading_adds_none_and_fails_nothing(self):
         self.write(self.sessions / "s1.jsonl", [self.call()])

@@ -18,6 +18,12 @@ its own and those of every issue below it; the root epic's are every call's, sin
 no issue the tree has are its own. The page has each of the last HOURLY seconds' hours by who spent
 its tokens, and each day before them.
 
+The page has a gauge for each plan meter the loop draws on, as percent used with the time it
+resets. Claude's are the token ledger's newest reading: every model's week and each scoped model's,
+such as Fable's. Gemini's, which agy's carbon models spend, are what `agy -p /usage` prints, asked
+for every USAGE seconds in a thread of its own; agy's group of Claude and GPT models is left out,
+since the loop reaches Claude through Claude Code. A failed ask keeps the gauges of the last one.
+
 The server follows the tree. The page is read from disk at each request, and the server's own code
 is what the process loaded, so a change landing under a running server would put a new page over
 old data. Every RENEW seconds the server looks at its script and the two it loads, and once a
@@ -29,7 +35,9 @@ usage: tools/bead-status.py [--bind ADDRESS] [--port PORT]   (serve the page)
        tools/bead-status.py --test                            (this script's own tests)
 """
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -58,6 +66,9 @@ RENEW = 2
 # time, so whatever it draws from further back than 31 days is in periods of a day or more.
 HOURLY = 31 * 86400
 LEDGER = Path("logs") / "token-ledger.sqlite"
+USAGE = 300
+AGY_GROUP = "Gemini Models"
+WINDOWS = {"weekly": "week", "5h": "five hours"}
 
 
 def tool(name):
@@ -356,9 +367,29 @@ def progress(issues, spent={}):
     return sorted(rows, key=lambda row: order(row["id"]))
 
 
-def summary(issues, ready, seen, running, root, now, own={}, hours=()):
-    """What the page draws, from every issue, the ready ones in bd's order, the sessions' clocks and the
-    token ledger: each issue's own tokens and each hour's by agent kind."""
+def claude_meters(reading):
+    """The gauges of Claude's plan out of a row of the ledger's `readings`: every model's week, then
+    each scoped limit that names a model; none without a reading."""
+    if reading is None:
+        return []
+    fetched, percent, resets_at, scoped = reading
+    gauge = lambda name, percent, resets_at: {"name": name, "window": "week", "percent": percent, "resets": seconds(resets_at), "read": fetched // 1000}
+    return [gauge("Claude", percent, resets_at)] + [
+        gauge(name, limit["percent"], limit["resets_at"]) for name, limit in sorted(json.loads(scoped).items()) if not name.startswith("{")]
+
+
+def agy_meters(reply, read):
+    """The gauges of agy's Gemini group out of what `agy -p /usage --output-format json` printed, read
+    at that time: each window's bucket as percent used."""
+    return [
+        {"name": "Gemini", "window": WINDOWS.get(bucket["window"], bucket["window"]), "percent": round(100 * (1 - bucket["remaining_fraction"]), 1),
+         "resets": seconds(bucket["reset_time"]), "read": int(read)}
+        for group in json.loads(reply)["command"]["data"]["groups"] if group["name"] == AGY_GROUP for bucket in group["buckets"]]
+
+
+def summary(issues, ready, seen, running, root, now, own={}, hours=(), meters=()):
+    """What the page draws, from every issue, the ready ones in bd's order, the sessions' clocks, the
+    token ledger (each issue's own tokens and each hour's by agent kind) and the plan meters."""
     by_id = {issue["id"]: issue for issue in issues}
     spent = tokens(issues, own)
     roots = [issue["id"] for issue in issues if not issue.get("parent") and issue["id"] in spent]
@@ -381,6 +412,7 @@ def summary(issues, ready, seen, running, root, now, own={}, hours=()):
         "ready": [brief(issue, by_id) for issue in ready if issue["issue_type"] != "epic"],
         "graph": graph(issues, ready),
         "loops": loops(issues),
+        "meters": list(meters),
         "epics": progress(issues, spent),
         "tokens": {"roots": [{**brief(by_id[name], by_id), "tokens": spent[name]} for name in sorted(roots, key=order)], "hours": list(hours)},
         "closed": [
@@ -396,12 +428,15 @@ def summary(issues, ready, seen, running, root, now, own={}, hours=()):
     }
 
 
-def read(root, now):
-    """Every issue of the tree at this project root, each issue's own tokens, and their summary as it is now."""
+def read(root, now, agy=()):
+    """Every issue of the tree at this project root, each issue's own tokens, and their summary as it
+    is now, with agy's gauges as last asked for."""
     bd = lambda *arguments: json.loads(subprocess.run(["bd", *arguments, "--json", "--limit", "0"], cwd=root, check=True, capture_output=True, text=True).stdout)
     issues = bd("list", "--all")
-    own, hours = token_ledger().spent(root / LEDGER, now - HOURLY)
-    return issues, own, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now, own, hours)
+    ledger = token_ledger()
+    own, hours = ledger.spent(root / LEDGER, now - HOURLY)
+    meters = claude_meters(ledger.newest(root / LEDGER)) + list(agy)
+    return issues, own, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now, own, hours, meters)
 
 
 class Beads:
@@ -414,12 +449,13 @@ class Beads:
         self.issues = []
         self.own = {}
         self.held = b""
+        self.agy = []
 
     def fresh(self):
         """Read the tree again when what is held is too old; the caller holds the lock."""
         now = time.time()
         if now - self.read_at > AGE:
-            self.issues, self.own, found = read(self.root, now)
+            self.issues, self.own, found = read(self.root, now, self.agy)
             self.held = json.dumps(found).encode()
             self.read_at = now
 
@@ -488,6 +524,24 @@ def harvesting(root, home):
         time.sleep(HARVEST)
 
 
+def ask_agy(beads, root, agy="agy"):
+    """Ask agy for its quota once, and give the server its gauges."""
+    try:
+        done = subprocess.run([agy, "-p", "/usage", "--output-format", "json"], cwd=root, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=120, check=True)
+        beads.agy = agy_meters(done.stdout, time.time())
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as failure:
+        # agy is another program: one it lacks, or a reply of a shape this does not know, keeps the last gauges.
+        print(f"agy usage: {failure!r}", file=sys.stderr, flush=True)
+
+
+def asking_agy(beads, root):
+    """Ask agy for its quota every USAGE seconds, for as long as the server runs."""
+    while True:
+        ask_agy(beads, root)
+        time.sleep(USAGE)
+
+
 def main(arguments):
     parser = argparse.ArgumentParser(description="Serve the state of the Beads tree as a page.")
     parser.add_argument("--bind", default="127.0.0.1", help="the address to listen on (default: this machine alone)")
@@ -496,6 +550,7 @@ def main(arguments):
     root = Path(__file__).resolve().parents[2]
     serving = server(root, options.bind, options.port)
     threading.Thread(target=harvesting, args=(root, Path.home()), daemon=True).start()
+    threading.Thread(target=asking_agy, args=(serving.beads, root), daemon=True).start()
     # The same command again, in this process: the listening socket closes with the old image.
     threading.Thread(target=renewing, args=(WATCHED, lambda: os.execv(sys.executable, [sys.executable, *sys.argv])), daemon=True).start()
     print(f"bead status: http://{options.bind}:{serving.server_address[1]}/", flush=True)
@@ -743,6 +798,8 @@ class Tests(unittest.TestCase):
         self.assertEqual([row["id"] for row in found["epics"]], ["a.1", "a.2", "a.10"])
         self.assertEqual(found["graph"], graph(issues, [by_id["a.3"], by_id["a.10.1"], by_id["a"]]))
         self.assertEqual(found["tokens"], {"roots": [], "hours": []})
+        self.assertEqual(found["meters"], [])
+        self.assertEqual(summary(issues, [], seen, alive, self.root, 0, meters=agy_meters(self.AGY, 0))["meters"], agy_meters(self.AGY, 0))
         hours = [[seconds("2026-11-10T12:00:00Z"), "round", [1, 10, 100, 5, 1]]]
         spent = summary(issues, [], seen, alive, self.root, 0, {"a.1.2": [1, 10, 100, 5, 1], "a.1.3": [2, 0, 0, 0, 1]}, hours)
         self.assertEqual(spent["tokens"], {"roots": [{**brief(by_id["a"], by_id), "tokens": [3, 10, 100, 5, 2]}], "hours": hours})
@@ -751,6 +808,46 @@ class Tests(unittest.TestCase):
         # What closed last comes first, with the start of its reason.
         self.assertEqual([(row["id"], row["actor"], len(row["reason"])) for row in found["closed"]], [("a.1.3", "claude-12", TEXT_SHOWN), ("a.1.1", None, 4)])
         json.dumps(found)
+
+    AGY = json.dumps({"status": "SUCCESS", "command": {"name": "usage", "data": {"groups": [
+        {"name": "Gemini Models", "buckets": [
+            {"id": "gemini-weekly", "window": "weekly", "remaining_fraction": 0.7372794151306152, "reset_time": "2026-11-19T13:08:11Z"},
+            {"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.767340898513794, "reset_time": "2026-11-13T14:55:29Z"}]},
+        {"name": "Claude and GPT models", "buckets": [
+            {"id": "3p-weekly", "window": "weekly", "remaining_fraction": 1, "reset_time": "2026-11-20T11:56:41Z"}]}]}}})
+
+    def test_agys_gauges_are_its_gemini_buckets_as_percent_used(self):
+        self.assertEqual(agy_meters(self.AGY, 99.5), [
+            {"name": "Gemini", "window": "week", "percent": 26.3, "resets": seconds("2026-11-19T13:08:11Z"), "read": 99},
+            {"name": "Gemini", "window": "five hours", "percent": 23.3, "resets": seconds("2026-11-13T14:55:29Z"), "read": 99}])
+        with self.assertRaises(KeyError):
+            agy_meters('{"status": "SUCCESS"}', 0)
+
+    def test_claudes_gauges_are_the_week_and_each_scoped_model(self):
+        self.assertEqual(claude_meters(None), [])
+        scoped = {"Fable": {"percent": 38, "share": 50, "resets_at": "2026-11-15T05:00:00+00:00"},
+                  '{"model": null, "surface": "desk"}': {"percent": 3, "share": None, "resets_at": "2026-11-15T05:00:00+00:00"}}
+        self.assertEqual(claude_meters((1794562367836, 100, "2026-11-15T04:59:59+00:00", json.dumps(scoped))), [
+            {"name": "Claude", "window": "week", "percent": 100, "resets": seconds("2026-11-15T04:59:59+00:00"), "read": 1794562367},
+            {"name": "Fable", "window": "week", "percent": 38, "resets": seconds("2026-11-15T05:00:00+00:00"), "read": 1794562367}])
+
+    def test_a_server_asks_agy_for_its_gauges_and_keeps_the_last_through_a_failure(self):
+        fake = self.root / "agy"
+        fake.write_text(f"#!/bin/sh\n[ -e {self.root}/fail ] && exit 1\ncat {self.root}/usage.json\n")
+        fake.chmod(0o755)
+        (self.root / "usage.json").write_text(self.AGY)
+        beads = Beads(self.root)
+        (self.root / "fail").touch()
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            ask_agy(beads, self.root, str(fake))
+            self.assertEqual(beads.agy, [])
+            (self.root / "fail").unlink()
+            ask_agy(beads, self.root, str(fake))
+            self.assertEqual([(gauge["window"], gauge["percent"]) for gauge in beads.agy], [("week", 26.3), ("five hours", 23.3)])
+            (self.root / "fail").touch()
+            ask_agy(beads, self.root, str(fake))
+            self.assertEqual(len(beads.agy), 2)
+        self.assertEqual(said.getvalue().count("agy usage: CalledProcessError"), 2)
 
     def test_only_the_closes_shown_are_sent(self):
         issues = [self.issue("a", kind="epic")] + [self.issue(f"a.{number}", "closed", closed_at=f"2026-11-10T11:{number:02}:00Z") for number in range(1, 30)]
@@ -817,11 +914,14 @@ class Tests(unittest.TestCase):
             "usage": {"input_tokens": 1, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 100, "output_tokens": 5}}}
         later = {**call, "requestId": "req_2", "timestamp": datetime.fromtimestamp(hour, timezone.utc).isoformat(), "message": {**call["message"], "content": []}}
         (sessions / "s.jsonl").write_text(json.dumps(call) + "\n" + json.dumps(later) + "\n")
+        (self.root / ".claude.json").write_text(json.dumps({"cachedUsageUtilization": {"fetchedAtMs": 5000, "utilization": {
+            "seven_day": {"utilization": 97, "resets_at": "2026-11-15T04:59:59+00:00"}, "limits": []}}}))
         token_ledger().harvest(self.root / LEDGER, self.root, self.root)
         address = self.serve(f'case "$1" in list) cat {self.root}/list.json;; ready) echo [];; esac')
         with urllib.request.urlopen(f"{address}/data") as reply:
             found = json.load(reply)
         self.assertEqual([(row["id"], row["tokens"]) for row in found["tokens"]["roots"]], [("a", [2, 20, 200, 10, 2])])
+        self.assertEqual(found["meters"], [{"name": "Claude", "window": "week", "percent": 97, "resets": seconds("2026-11-15T04:59:59+00:00"), "read": 5}])
         # An hour older than the page draws by the hour comes as its local day.
         day = int(datetime.fromtimestamp(seconds("2020-01-05T12:00:00Z")).replace(hour=0, minute=0).timestamp())
         self.assertEqual(found["tokens"]["hours"], [[day, "session", [1, 10, 100, 5, 1]], [hour, "session", [1, 10, 100, 5, 1]]])
