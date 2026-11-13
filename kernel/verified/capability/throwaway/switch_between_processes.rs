@@ -11,6 +11,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::boot::*;
 use crate::capability::boot_image::*;

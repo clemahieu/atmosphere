@@ -26,7 +26,8 @@
 //! through the thread's control capability.
 //! Beside those, boot can build the capability kernel from no prior state of `self`, and start the
 //! root: core 0 loads the root's space and enters its thread. Through its console and power
-//! capabilities, the root can print and ask for power-off.
+//! capabilities, the root can print and ask for power-off, and boot can record a device and give the
+//! root its capability.
 //! And an IOMMU's flush leaves the frames, the threads and the view as they were.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
@@ -36,6 +37,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::boot::*;
 use crate::capability::boot_image::*;
@@ -11294,6 +11296,151 @@ impl CapKernel {
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
         self.power_off(process, ROOT_POWER_SLOT, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// of two free ones past those boot's tables took from the first untyped: the root gives itself a
+    /// leaf in root entry 2 of its own table, in the second block, and add_devices takes boot's list of
+    /// one device, `info`, in range, to slot 259, slot 3 of that leaf. add_devices accepts the list: the device is recorded
+    /// unbound, and its capability is in that slot, a child of the list's first node. The use is boot
+    /// recording the devices the firmware tables name. design/witness-per-way-an-operation-succeeds/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_receives_a_device(
+        &mut self,
+        root: usize,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+        info: DeviceInfo,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            info.iommu < NUM_IOMMUS,
+            info.number < IOMMU_DEVICES,
+        ensures
+            ret,
+            ({
+                let n = (base + PROCESS_BYTES + 3) as usize;
+                &&& final(self).wf()
+                &&& final(self).devices.count == 1
+                &&& final(self).devices.records@[0] == crate::capability::device::unbound_record(info)
+                &&& final(self).is_cap(n)
+                &&& final(self).payload_of(n) == device_payload(0)
+                &&& final(self).list.is_child(root, n)
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ghost blocks = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(blocks[0]);
+        let ghost itb = image_tables_bound(image@);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        proof {
+            lemma2_to64();
+            lemma_tables_bound_nonneg(image@);
+            // The root's first untyped and its record.
+            assert(0 < untyped@);
+            assert(s0.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s0.list.nodes@[u as int].depth == 1);
+            assert(s0.tables.is_cap(&s0.list, u));
+            assert(s0.tables.caps_wf(&s0.list)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(cap_wf(first));
+            assert(payload_wf(first));
+            assert(first.kind is Untyped && first.rights == UNTYPED_RIGHTS);
+            assert(UNTYPED_RIGHTS & right_bit(Right::Retype) != 0) by (compute_only);
+            let pn = (leaf@ + 1) as usize;
+            assert(s0.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)));
+            s0.lemma_process_cap(pn);
+            assert(s0.processes.records@.contains_key(process));
+            assert(!s0.processes.records@[process].value().dead);
+            assert(witness_root(s0, process, u, first));
+            // The free block past boot's tables.
+            assert(s0.root_untyped(process) == u);
+            lemma_pow2_pos(first.order as nat);
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((itb + 2) * PROCESS_BYTES <= block_bytes(first.order));
+            assert(first.base + block_bytes(first.order) <= NODE_SPACE);
+            assert(base == first.base + itb * PROCESS_BYTES);
+            assert(base + 2 * PROCESS_BYTES <= NODE_SPACE);
+            assert forall|j: int| 0 <= j < 2 implies #[trigger] witness_block(s0, cursor_block(base, j), first) by {
+                assert(cursor_block(first.base, itb + j) == cursor_block(base, j));
+                assert(s0.root_table_block(process, cursor_block(first.base, itb + j)));
+            }
+        }
+        let b1 = base + PROCESS_BYTES;
+        proof {
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
+            assert(cursor_block(base, 0) == base);
+            assert(witness_block(s0, base, first));
+            assert(base % PROCESS_BYTES == 0);
+            lemma_cursor_block(base, 1);
+            lemma_block_page(b1, 0);
+            assert(witness_block(s0, b1, first));
+            assert(s0.devices.count == 0);
+        }
+
+        // A leaf for the root, in root entry 2 of its own table.
+        let at = Position { through: None, index: 2 };
+        proof {
+            assert(s0.destination_at(process, None) == Some(process));
+            assert(s0.tables.leaf(process, 2) == NO_LEAF);
+            assert(block_within(b1, 1, first));
+            assert(s0.can_retype_under(process, ROOT_UNTYPED_SLOT, b1, 1));
+            assert(s0.blocks.small_free((b1 / PAGE_SZ) as int, 1)) by {
+                assert forall|k: int| 0 <= k < order_pages(1) implies #[trigger] s0.blocks.pages@[b1 / PAGE_SZ + k].kind is Free by {
+                    assert(s0.blocks.pages@[b1 / PAGE_SZ + k].kind is Free);
+                }
+            }
+            assert(s0.blocks.tracks_addr_run(b1, 2));
+            assert(b1 != NO_LEAF);
+            assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at, b1));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at, b1, Tracked(&mut steps));
+        let ghost s1 = *self;
+        proof {
+            assert(ok1);
+            assert(Self::leaf_retyped(s0, s1, process, ROOT_UNTYPED_SLOT, at, b1));
+            assert(s1.tables.leaf(process, 2) == b1);
+            assert(s1.tables.roots@.contains_key(process));
+            assert(index_ok(WITNESS_DEVICE_SLOT) && index_entry(WITNESS_DEVICE_SLOT) == 2);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_DEVICE_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_DEVICE_SLOT) == b1 + 3);
+            assert(!s1.list.nodes@[(b1 + 3) as int].live);
+            assert(s1.list.seq@[0] == root);
+            assert(s1.devices.count == 0);
+        }
+
+        // Boot's list of one device, its capability for slot 3 of the root's new leaf.
+        let devices = Array::<DeviceInfo, MAX_DEVICES>::new(info);
+        proof {
+            assert(devices@[0] == info);
+            assert(s1.can_add_device_at(process, WITNESS_DEVICE_SLOT, devices@, 0));
+            assert(s1.can_add_devices(process, WITNESS_DEVICE_SLOT, devices@, 1));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok2 = self.add_devices(root, process, WITNESS_DEVICE_SLOT, &devices, 1, Tracked(&mut steps));
+        proof {
+            assert(s1.tables.node_of(process, (WITNESS_DEVICE_SLOT + 0) as usize) == b1 + 3);
+            assert(self.devices.records@[0] == crate::capability::device::unbound_record(devices@[0]));
+        }
+        ok2
     }
 
     /// An IOMMU's flush changes nothing a process can see: its frames' bytes, the threads and the

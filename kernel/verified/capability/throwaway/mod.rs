@@ -31,6 +31,7 @@ pub mod root_maps_one_frame_into_two_processes;
 pub mod root_powers_off;
 pub mod root_prints;
 pub mod root_probes_and_unmaps_its_frame;
+pub mod root_receives_a_device;
 pub mod root_retypes_a_freed_2m_frame;
 pub mod root_revokes_a_shared_frame;
 pub mod root_revokes_at_the_epoch_limit;

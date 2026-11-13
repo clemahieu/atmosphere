@@ -6,7 +6,6 @@
 # tools/land.py refuses a landing that adds one unless --approve names it, as path:operation:way.
 # Fields, separated by tabs: path from the repository root, operation, way.
 #
-kernel/verified/capability/device.rs	add_devices	true
 kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again
 aeager/src/eager.rs	Eager::reserve	Some
