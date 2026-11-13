@@ -141,7 +141,7 @@ impl CapKernel {
         &&& post.thread_work(base) < self.thread_work(base)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables).remove(base)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object: base })
     }
 
     /// What freeing the spent thread at `base` did to self: it was on no core with no stop pending, its
@@ -165,7 +165,7 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
         &&& same_but_contents(self.view(), post.view())
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: pow2(THREAD_ORDER as nat) })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: pow2(THREAD_ORDER as nat), object: base })
     }
 
     /// The block test reclaim_thread makes reads as the records do: the block at a thread-aligned base
@@ -997,7 +997,8 @@ impl CapKernel {
             self.unlink_binding(base, Tracked(&mut *steps));
             proof {
                 let post = *self;
-                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0);
+                pre.lemma_retype_covers(root, from, base, THREAD_ORDER);
+                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0, base);
                 assert(post.threads.records@.contains_key(base));
                 assert(post.blocks.pages@[page as int].refs == 0) by {
                     let p = pre.threads.records@[base].value().process->Some_0;
@@ -1034,7 +1035,7 @@ impl CapKernel {
         self.free_spent_thread(base, Tracked(steps));
         proof {
             let post = *self;
-            let e = Effect::Teardown { untyped, object: base, pages: pow2(THREAD_ORDER as nat) };
+            let e = Effect::Teardown { untyped, block: base, pages: pow2(THREAD_ORDER as nat), object: base };
             pre.lemma_retype_covers(root, from, base, THREAD_ORDER);
             lemma2_to64();
             assert(authorized(pre.view(), root, e));

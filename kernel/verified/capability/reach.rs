@@ -236,10 +236,12 @@ pub ghost enum Effect {
     /// the table of the process that `into`, a control capability the caller holds, names: the process
     /// itself, not one of its threads.
     Retype { untyped: NodeId, object: ObjectId, pages: nat, into: Option<NodeId> },
-    /// Unlink a block's hidden node, or a slice of a dead object's teardown, under an untyped held: a
-    /// slice that frees a block of memory frees its `pages` pages from object, all of them within the
-    /// untyped, as a retype's are, and any other slice frees none.
-    Teardown { untyped: NodeId, object: ObjectId, pages: nat },
+    /// Unlink the hidden node of the block whose first page is `block`, or do a slice of the teardown of
+    /// the dead object there, under an untyped held that covers the block. A slice that frees the block
+    /// states its `pages` pages, all of them within the untyped, as a retype's are, and any other slice
+    /// frees none. A slice removes only what descends from a capability that `object` holds in a slot
+    /// of the block: a dead table leaf's slots, held by the process whose table the leaf is in.
+    Teardown { untyped: NodeId, block: ObjectId, pages: nat, object: ObjectId },
     /// Map the frame capability `from`, which the caller holds, into the device space capability
     /// `space` names, which it holds with the write right: a grant to whoever sees the space, whom the
     /// caller does not pick. Otherwise a local step.
@@ -289,12 +291,10 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
                 &&& !s.process_of.contains_key(s.names[into->0])
             }
         },
-        Effect::Teardown { untyped, object, pages } => {
+        Effect::Teardown { untyped, block, pages, .. } => {
             &&& s.holds_right(p, untyped, Right::Retype)
-            &&& pages > 0 ==> {
-                &&& s.covers(untyped, object)
-                &&& object + pages * PAGE_SZ <= s.names[untyped] + s.pages[untyped] * PAGE_SZ
-            }
+            &&& s.covers(untyped, block)
+            &&& block + pages * PAGE_SZ <= s.names[untyped] + s.pages[untyped] * PAGE_SZ
         },
         Effect::Share { space, from } => {
             &&& s.holds_right(p, space, Right::Write)
@@ -309,6 +309,12 @@ pub open spec fn in_pages(first: ObjectId, pages: nat, o: ObjectId) -> bool {
     first <= o < first + pages * PAGE_SZ
 }
 
+/// Capability n is in a slot of the block whose first page is `block`. A node's id is where the list
+/// keeps it, as in capability::list, so a table leaf's slots have ids in the leaf's first page.
+pub open spec fn slot_in(block: ObjectId, n: NodeId) -> bool {
+    block <= n < block + PAGE_SZ
+}
+
 /// e may change what a process can see of o. A retype or a teardown changes the pages of the block it
 /// types or frees, and of no other: see design/theorem-over-reach/.
 pub open spec fn may_change(s: State, e: Effect, o: ObjectId) -> bool {
@@ -319,7 +325,7 @@ pub open spec fn may_change(s: State, e: Effect, o: ObjectId) -> bool {
         Effect::Reply { cap } => o == s.bound[s.names[cap]],
         Effect::Signal { cap, waiter } => o == s.names[cap] || (waiter is Some && o == waiter->0),
         Effect::Retype { object, pages, .. } => in_pages(object, pages, o),
-        Effect::Teardown { object, pages, .. } => s.waiting.contains((object, o)) || in_pages(object, pages, o),
+        Effect::Teardown { block, pages, .. } => s.waiting.contains((block, o)) || in_pages(block, pages, o),
         _ => false,
     }
 }
@@ -331,8 +337,8 @@ pub open spec fn may_remove(s: State, p: ObjectId, e: Effect, n: NodeId) -> bool
         Effect::Deliver { granted, .. } => granted == Some(n),
         Effect::Revoke { cap } => exists|k: nat| k > 0 && #[trigger] s.descends(cap, n, k),
         Effect::Claim { from, .. } | Effect::Place { from, .. } => n == from,
-        Effect::Teardown { object, .. } =>
-            exists|c: NodeId, k: nat| #[trigger] s.descends(c, n, k) && s.holds(object, c),
+        Effect::Teardown { block, object, .. } =>
+            exists|c: NodeId, k: nat| #[trigger] s.descends(c, n, k) && s.holds(object, c) && slot_in(block, c),
         _ => false,
     }
 }
@@ -677,13 +683,13 @@ pub open spec fn unbinds(pre: State, post: State, t: ObjectId, b: NodeId) -> boo
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
 
-/// What a slice of an object's teardown does, apart from who may run it: it changes only what waits on
-/// the object, removes only what descends from a capability the object held, grows no reach, rebinds no
-/// waiter, and gives no capability a right.
-pub open spec fn tears_down(pre: State, post: State, object: ObjectId) -> bool {
-    &&& forall|o: ObjectId| #[trigger] State::changed(pre, post, o) ==> pre.waiting.contains((object, o))
+/// What a slice of the teardown of the object at `block` does, apart from who may run it: it changes
+/// only what waits on the object, removes only what descends from a capability `object` held in a slot
+/// of the block, grows no reach, rebinds no waiter, and gives no capability a right.
+pub open spec fn tears_down(pre: State, post: State, block: ObjectId, object: ObjectId) -> bool {
+    &&& forall|o: ObjectId| #[trigger] State::changed(pre, post, o) ==> pre.waiting.contains((block, o))
     &&& forall|n: NodeId| #[trigger] State::removed(pre, post, n)
-        ==> exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c)
+        ==> exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c) && slot_in(block, c)
     &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) ==> pre.reach(r, o)
     &&& adds_no_waiter(pre, post)
     &&& keeps_waiters(pre, post)
@@ -692,29 +698,30 @@ pub open spec fn tears_down(pre: State, post: State, object: ObjectId) -> bool {
 }
 
 /// A step that changes nothing, by a process the teardown authorizes, discharges it.
-pub proof fn lemma_no_change_discharges_teardown(s: State, p: ObjectId, untyped: NodeId, object: ObjectId, pages: nat)
+pub proof fn lemma_no_change_discharges_teardown(s: State, p: ObjectId, untyped: NodeId, block: ObjectId, pages: nat, object: ObjectId)
     requires
-        authorized(s, p, Effect::Teardown { untyped, object, pages }),
+        authorized(s, p, Effect::Teardown { untyped, block, pages, object }),
     ensures
-        discharges(s, s, p, Effect::Teardown { untyped, object, pages }),
+        discharges(s, s, p, Effect::Teardown { untyped, block, pages, object }),
 {
 }
 
-/// A revoke of a capability the object held is a slice of its teardown: what it removes descends from
-/// that capability.
-pub proof fn lemma_revoke_is_teardown(pre: State, post: State, object: ObjectId, cap: NodeId)
+/// A revoke of a capability the object held in a slot of the block is a slice of its teardown: what it
+/// removes descends from that capability.
+pub proof fn lemma_revoke_is_teardown(pre: State, post: State, block: ObjectId, object: ObjectId, cap: NodeId)
     requires
         discharges(pre, post, object, Effect::Revoke { cap }),
         pre.holds(object, cap),
+        slot_in(block, cap),
         adds_no_waiter(pre, post),
     ensures
-        tears_down(pre, post, object),
+        tears_down(pre, post, block, object),
 {
     assert forall|n: NodeId| #[trigger] State::removed(pre, post, n)
-        implies exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c) by {
+        implies exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c) && slot_in(block, c) by {
         assert(may_remove(pre, object, Effect::Revoke { cap }, n));
         let k = choose|k: nat| k > 0 && #[trigger] pre.descends(cap, n, k);
-        assert(pre.descends(cap, n, k) && pre.holds(object, cap));
+        assert(pre.descends(cap, n, k) && pre.holds(object, cap) && slot_in(block, cap));
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         assert(!may_grow(pre, object, Effect::Revoke { cap }, r, o));
@@ -725,18 +732,19 @@ pub proof fn lemma_revoke_is_teardown(pre: State, post: State, object: ObjectId,
     }
 }
 
-/// Deleting a capability the object held is a slice of its teardown too: the capability descends from
-/// itself.
-pub proof fn lemma_delete_is_teardown(pre: State, post: State, object: ObjectId, cap: NodeId)
+/// Deleting a capability the object held in a slot of the block is a slice of its teardown too: the
+/// capability descends from itself.
+pub proof fn lemma_delete_is_teardown(pre: State, post: State, block: ObjectId, object: ObjectId, cap: NodeId)
     requires
         removes_cap(pre, post, cap),
         pre.holds(object, cap),
+        slot_in(block, cap),
     ensures
-        tears_down(pre, post, object),
+        tears_down(pre, post, block, object),
 {
     lemma_removes_cap_discharges(pre, post, object, cap);
     assert forall|n: NodeId| #[trigger] State::removed(pre, post, n)
-        implies exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c) by {
+        implies exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c) && slot_in(block, c) by {
         assert(n == cap);
         assert(pre.descends(cap, cap, 0));
     }
@@ -745,26 +753,26 @@ pub proof fn lemma_delete_is_teardown(pre: State, post: State, object: ObjectId,
     }
 }
 
-/// A teardown followed by a slice of the same object's teardown is one teardown, under the first's
+/// A teardown followed by a slice of the same block's teardown is one teardown, under the first's
 /// authority, when the list's shape stayed and nothing was added. The second step needs no authority
 /// of its own, since the first may have revoked the untyped itself.
-pub proof fn lemma_teardown_steps_compose(a: State, b: State, c: State, p: ObjectId, untyped: NodeId, object: ObjectId, pages: nat)
+pub proof fn lemma_teardown_steps_compose(a: State, b: State, c: State, p: ObjectId, untyped: NodeId, block: ObjectId, pages: nat, object: ObjectId)
     requires
-        discharges(a, b, p, Effect::Teardown { untyped, object, pages }),
-        tears_down(b, c, object),
+        discharges(a, b, p, Effect::Teardown { untyped, block, pages, object }),
+        tears_down(b, c, block, object),
         a.parent == b.parent,
         a.waiting == b.waiting,
         forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) ==> a.held.contains(h),
     ensures
-        discharges(a, c, p, Effect::Teardown { untyped, object, pages }),
+        discharges(a, c, p, Effect::Teardown { untyped, block, pages, object }),
 {
-    let e = Effect::Teardown { untyped, object, pages };
+    let e = Effect::Teardown { untyped, block, pages, object };
     assert forall|o: ObjectId| #[trigger] State::changed(a, c, o) implies may_change(a, e, o) by {
         if State::changed(a, b, o) {
             assert(may_change(a, e, o));
         } else {
             assert(State::changed(b, c, o));
-            assert(b.waiting.contains((object, o)));
+            assert(b.waiting.contains((block, o)));
         }
     }
     assert forall|n: NodeId| #[trigger] State::removed(a, c, n) implies may_remove(a, p, e, n) by {
@@ -772,10 +780,10 @@ pub proof fn lemma_teardown_steps_compose(a: State, b: State, c: State, p: Objec
             assert(may_remove(a, p, e, n));
         } else {
             assert(State::removed(b, c, n));
-            let (t, k) = choose|t: NodeId, k: nat| #[trigger] b.descends(t, n, k) && b.holds(object, t);
+            let (t, k) = choose|t: NodeId, k: nat| #[trigger] b.descends(t, n, k) && b.holds(object, t) && slot_in(block, t);
             lemma_same_parent_same_descends(b, a, t, n, k);
             assert(b.held.contains((object, t)));
-            assert(a.descends(t, n, k) && a.holds(object, t));
+            assert(a.descends(t, n, k) && a.holds(object, t) && slot_in(block, t));
         }
     }
     assert forall|x: NodeId, r: Right| #[trigger] c.rights.contains((x, r)) && c.names.contains_key(x)
@@ -2898,17 +2906,17 @@ pub proof fn lemma_sheds_shares_discharges_local(pre: State, post: State, p: Obj
 }
 
 /// So is it a slice of a teardown, by a process the teardown authorizes.
-pub proof fn lemma_sheds_shares_discharges_teardown(pre: State, post: State, p: ObjectId, untyped: NodeId, object: ObjectId, pages: nat)
+pub proof fn lemma_sheds_shares_discharges_teardown(pre: State, post: State, p: ObjectId, untyped: NodeId, block: ObjectId, pages: nat, object: ObjectId)
     requires
         sheds_shares(pre, post),
-        authorized(pre, p, Effect::Teardown { untyped, object, pages }),
+        authorized(pre, p, Effect::Teardown { untyped, block, pages, object }),
     ensures
-        discharges(pre, post, p, Effect::Teardown { untyped, object, pages }),
+        discharges(pre, post, p, Effect::Teardown { untyped, block, pages, object }),
 {
     let live = |x: NodeId| true;
     let f = |x: NodeId| x;
     assert(simulates(post, pre, live, f));
-    lemma_no_change_discharges_teardown(pre, p, untyped, object, pages);
+    lemma_no_change_discharges_teardown(pre, p, untyped, block, pages, object);
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         lemma_simulates_reach(post, pre, live, f, r, o);
     }
@@ -3441,10 +3449,10 @@ pub proof fn lemma_retype_of_an_uncovered_page_does_not_discharge()
 /// A teardown that frees a page and writes it, under the untyped that covers that page, discharges.
 pub proof fn lemma_teardown_of_a_covered_page_discharges()
     ensures
-        discharges(retype_example(), retyped_at(EXAMPLE_BASE), 1, Effect::Teardown { untyped: 10, object: EXAMPLE_BASE, pages: 1 }),
+        discharges(retype_example(), retyped_at(EXAMPLE_BASE), 1, Effect::Teardown { untyped: 10, block: EXAMPLE_BASE, pages: 1, object: EXAMPLE_BASE }),
 {
     let (pre, post) = (retype_example(), retyped_at(EXAMPLE_BASE));
-    let e = Effect::Teardown { untyped: 10, object: EXAMPLE_BASE, pages: 1 };
+    let e = Effect::Teardown { untyped: 10, block: EXAMPLE_BASE, pages: 1, object: EXAMPLE_BASE };
     assert(pre.holds_right(1, 10, Right::Retype));
     assert(pre.covers(10, EXAMPLE_BASE));
     assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
@@ -3461,10 +3469,45 @@ pub proof fn lemma_teardown_of_a_covered_page_discharges()
 /// though the freer holds an untyped with the retype right: process 2 would see its page change.
 pub proof fn lemma_teardown_of_an_uncovered_page_does_not_discharge()
     ensures
-        !discharges(retype_example(), retyped_at(EXAMPLE_PAST), 1, Effect::Teardown { untyped: 10, object: EXAMPLE_PAST, pages: 1 }),
+        !discharges(retype_example(), retyped_at(EXAMPLE_PAST), 1, Effect::Teardown { untyped: 10, block: EXAMPLE_PAST, pages: 1, object: EXAMPLE_PAST }),
 {
     let pre = retype_example();
     assert(!pre.covers(10, EXAMPLE_PAST));
+}
+
+/// retype_example after a step that removed capability 20, which process 2 holds and which names
+/// EXAMPLE_PAST, outside untyped 10.
+pub open spec fn stripped_example() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize)),
+        names: IMap::new(|n: NodeId| n == 10, |n: NodeId| EXAMPLE_BASE),
+        pages: IMap::new(|n: NodeId| n == 10, |n: NodeId| PAGES_PER_2M as nat),
+        ..retype_example()
+    }
+}
+
+/// No teardown by process 1 strips process 2 of capability 20, whatever untyped, block and process it
+/// names, though process 1 holds an untyped with the retype right: a slice removes only what descends
+/// from a capability held in a slot of the block, which its untyped covers, and capability 20 is in no
+/// slot of untyped 10's block.
+pub proof fn lemma_teardown_strips_only_the_block(untyped: NodeId, block: ObjectId, pages: nat, object: ObjectId)
+    ensures
+        !discharges(retype_example(), stripped_example(), 1, Effect::Teardown { untyped, block, pages, object }),
+{
+    let (pre, post) = (retype_example(), stripped_example());
+    let e = Effect::Teardown { untyped, block, pages, object };
+    if discharges(pre, post, 1, e) {
+        assert(pre.held.contains((1usize, untyped)));
+        assert(untyped == 10);
+        assert(pre.covers(10, block));
+        assert(State::removed(pre, post, 20));
+        assert(may_remove(pre, 1, e, 20));
+        let (c, k) = choose|c: NodeId, k: nat| #[trigger] pre.descends(c, 20, k) && pre.holds(object, c) && slot_in(block, c);
+        if k > 0 {
+            assert(!pre.parent.contains_key(20));
+        }
+        assert(c == 20);
+    }
 }
 
 /// A thread object, at page 5, outside the example block.
@@ -3949,8 +3992,8 @@ pub proof fn lemma_contents_then(a: State, b: State, c: State, p: ObjectId, e: E
         assert(State::removed(b, c, n));
         assert(may_remove(b, p, e, n));
         match e {
-            Effect::Teardown { object, .. } => {
-                let (t, k) = choose|t: NodeId, k: nat| #[trigger] b.descends(t, n, k) && b.holds(object, t);
+            Effect::Teardown { block, object, .. } => {
+                let (t, k) = choose|t: NodeId, k: nat| #[trigger] b.descends(t, n, k) && b.holds(object, t) && slot_in(block, t);
                 lemma_same_parent_same_descends(b, a, t, n, k);
             },
             _ => {},

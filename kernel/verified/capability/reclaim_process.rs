@@ -519,7 +519,8 @@ impl CapKernel {
             if cut != 0 {
                 Self::lemma_cuts_shed(pre, post, base);
                 Self::lemma_cuts_same_view(pre, post, base);
-                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0);
+                pre.lemma_retype_covers(root, from, base, PROCESS_ORDER);
+                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0, base);
                 assert forall|i: usize| #![trigger b.entry(base, i)] i < KERNEL_MEM_END_L4INDEX implies b.entry(base, i) == a.entry(base, i) by {
                     assert(!a.child_slot(base, i));
                 }
@@ -581,7 +582,7 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: pow2(PROCESS_ORDER as nat), object: base })
     }
 
     /// One step of a spent dead process going: its block frees, and its table root, record, spare pages
@@ -1227,7 +1228,8 @@ impl CapKernel {
         }
         self.free_spent_process(base, Tracked(steps));
         proof {
-            lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0);
+            pre.lemma_retype_covers(root, from, base, PROCESS_ORDER);
+            lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, pow2(PROCESS_ORDER as nat), base);
             let post = *self;
             assert(Self::step_ok(pre, post, c as int));
         }
