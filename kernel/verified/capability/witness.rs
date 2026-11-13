@@ -2704,6 +2704,66 @@ impl CapKernel {
         (ok1, read)
     }
 
+    /// From the state boot leaves, as the root at `process`: inspect the root's first untyped in its
+    /// own table, its thread capability through its process capability, and a slot of an unallocated
+    /// root entry. The first two return `Some` with the payloads boot placed there, the third returns
+    /// `None`, and the kernel is unchanged. See design/syscall-abi-in-registers/ and
+    /// design/process-holds-capabilities/.
+    #[verifier::spinoff_prover]
+    pub fn witness_inspect(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+    ) -> (ret: (Option<Payload>, Option<Payload>, Option<Payload>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret.0 is Some,
+            ret.0 == Some(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            ret.1 is Some,
+            ret.1 == Some(thread_of(t@)),
+            ret.2 is None,
+            *final(self) == *old(self),
+            final(self).wf(),
+    {
+        let ghost s0 = *self;
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let at_own = Position { through: None, index: ROOT_UNTYPED_SLOT };
+        let at_through = Position { through: Some(ROOT_PROCESS_SLOT), index: ROOT_THREAD_SLOT };
+        let at_absent = Position { through: None, index: WITNESS_PROCESS_SLOT };
+        proof {
+            assert(0 < untyped@);
+            assert(s0.tables.roots@.contains_key(process));
+            assert(s0.slot_holds(process, ROOT_UNTYPED_SLOT, (leaf@ + ROOT_UNTYPED_SLOT) as usize, first));
+            assert(s0.cap_at(process, at_own) == Some((leaf@ + ROOT_UNTYPED_SLOT) as usize));
+            assert(s0.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(s0.table_at(process, Some(ROOT_PROCESS_SLOT)) == Some(process));
+            assert(s0.slot_holds(process, ROOT_THREAD_SLOT, (leaf@ + 2) as usize, thread_of(t@)));
+            assert(s0.cap_at(process, at_through) == Some((leaf@ + 2) as usize));
+            assert(index_ok(WITNESS_PROCESS_SLOT) && index_entry(WITNESS_PROCESS_SLOT) == 2);
+            assert(s0.tables.leaf(process, 2) == NO_LEAF);
+            assert(!s0.tables.has_slot(&s0.list, process, WITNESS_PROCESS_SLOT));
+            assert(s0.cap_at(process, at_absent) is None);
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let own = self.inspect(process, at_own, Tracked(&mut steps));
+        let supervised = self.inspect(process, at_through, Tracked(&mut steps));
+        let absent = self.inspect(process, at_absent, Tracked(&mut steps));
+        (own, supervised, absent)
+    }
+
     /// From the end of the spawn witness, as the root: destroy the process through its capability in
     /// slot 257, delete the thread's capability, retype the thread's block, which unbinds the thread,
     /// delete the process's capability, retype the leaf in the process's table three times, which

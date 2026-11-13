@@ -11,6 +11,9 @@ use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
+use crate::capability::inspect::inspected;
+use crate::capability::inspect::inspect_outcome;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::tree_of;
@@ -958,6 +961,24 @@ impl CapKernel {
     {
     }
 
+    /// An inspect reaches inspect: the kernel is unchanged; refused unless the slot's word names a
+    /// position holding a capability; ok when it does, with that capability's payload in the results as
+    /// inspected packs it. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_inspect(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Inspect),
+        ensures
+            post == pre,
+            ({
+                let at = spec_position(frame.slot());
+                &&& !(at is Some && pre.cap_at(root, at->0) is Some) ==> out == status_only(STATUS_REFUSED)
+                &&& at is Some && pre.cap_at(root, at->0) is Some
+                    ==> out.status == STATUS_OK && out == inspected(pre.payload_of(pre.cap_at(root, at->0)->0))
+            }),
+    {
+    }
+
     /// An unmap, allowed or refused, leaves the tables, the list's parents and the bound threads as they
     /// were, and changes the kind or the liveness of no node but a mapping node, so no capability.
     pub proof fn lemma_unmapped_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
@@ -1087,10 +1108,13 @@ impl CapKernel {
                 self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(&mut steps)),
             )),
             Some(Operation::PowerOff) => Some(status_only_outcome(self.power_off(root, frame.slot() as usize, Tracked(&mut steps)))),
-            Some(Operation::Inspect) => match position(frame.slot()) {
-                Some(at) => Some(self.inspect(root, at, Tracked(&mut steps))),
-                None => Some(status_only_outcome(STATUS_REFUSED)),
-            },
+            Some(Operation::Inspect) => Some(match position(frame.slot()) {
+                Some(at) => match self.inspect(root, at, Tracked(&mut steps)) {
+                    Some(payload) => inspect_outcome(payload),
+                    None => status_only_outcome(STATUS_REFUSED),
+                },
+                None => status_only_outcome(STATUS_REFUSED),
+            }),
             Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
             None => Some(status_only_outcome(STATUS_UNKNOWN)),
         }

@@ -71,12 +71,27 @@ pub fn kind_number(kind: CapKind) -> (ret: u64)
     }
 }
 
-/// What inspect returns for a capability that says payload: ok, with its kind in result 1, base in
-/// result 2, order in result 3 and rights in result 4.
+/// What inspect returns in the frame for a capability that says payload: ok, with its kind in result 1,
+/// base in result 2, order in result 3 and rights in result 4.
 pub open spec fn inspected(payload: Payload) -> Outcome {
     Outcome {
         status: STATUS_OK,
         result_1: spec_kind_number(payload.kind),
+        result_2: payload.base as u64,
+        result_3: payload.order as u64,
+        result_4: payload.rights as u64,
+    }
+}
+
+/// The outcome of an inspect of a capability that says payload: ok, with its kind in result 1, base in
+/// result 2, order in result 3 and rights in result 4.
+pub fn inspect_outcome(payload: Payload) -> (ret: Outcome)
+    ensures
+        ret == inspected(payload),
+{
+    Outcome {
+        status: STATUS_OK,
+        result_1: kind_number(payload.kind),
         result_2: payload.base as u64,
         result_3: payload.order as u64,
         result_4: payload.rights as u64,
@@ -122,8 +137,8 @@ impl CapKernel {
         Some(payload.kind)
     }
 
-    /// What inspect returns for a position: the payload of the capability there, and refused when the
-    /// position names none.
+    /// What inspect returns in the frame for a position: the payload of the capability there, and refused
+    /// when the position names none.
     pub open spec fn spec_inspect_at(&self, root: usize, at: Position) -> Outcome {
         match self.cap_at(root, at) {
             Some(n) => inspected(self.payload_of(n)),
@@ -133,33 +148,29 @@ impl CapKernel {
 
     /// Inspects the capability at a position: an index of the caller's table, at root, or of the table
     /// of a process the caller controls, live or dead. The position comes from user space, so it can
-    /// name no capability, and then inspect is refused. Commanding the capability is the whole
+    /// name no capability, and then inspect returns None. Commanding the capability is the whole
     /// authority, holding it or controlling the process that does: inspect asks for no right of the
     /// capability itself. Either way the kernel is unchanged.
-    pub fn inspect(&self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
+    pub fn inspect(&self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Payload>)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
             self.root_live(root),
         ensures
             final(steps).count <= old(steps).count + INSPECT_STEPS,
-            ret == self.spec_inspect_at(root, at),
-            self.cap_at(root, at) is Some ==> self.view().commands(root, self.cap_at(root, at)->0),
+            ret is Some == self.cap_at(root, at) is Some,
+            ret is Some ==> {
+                &&& ret->0 == self.payload_of(self.cap_at(root, at)->0)
+                &&& self.view().commands(root, self.cap_at(root, at)->0)
+            },
             discharges(self.view(), self.view(), root, Effect::Local),
     {
         proof {
             self.lemma_no_op_discharges(root);
         }
-        let payload = match self.find_cap(root, at) {
-            Some(found) => found.1,
-            None => { return status_only_outcome(STATUS_REFUSED); },
-        };
-        Outcome {
-            status: STATUS_OK,
-            result_1: kind_number(payload.kind),
-            result_2: payload.base as u64,
-            result_3: payload.order as u64,
-            result_4: payload.rights as u64,
+        match self.find_cap(root, at) {
+            Some(found) => Some(found.1),
+            None => None,
         }
     }
 }
