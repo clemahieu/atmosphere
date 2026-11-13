@@ -1,0 +1,51 @@
+---
+title: "Loops select ready work in Python by work kind and stage, configured per profile in loop.toml"
+date: 2026-11-13
+status: active
+tags: [process, tools, tracker]
+one_line: "One driver, tools/loop.py, runs any number of loop profiles across harnesses (claude and agy) from [profiles.<name>] in loop.toml; before spawning an LLM session, a profiled loop inspects Beads in Python at zero token cost, claiming queued stage hand-offs (needs-prover, needs-skeptic, escalated, needs-land), ready leaves matching intrinsic work kinds (tool, sys, proof, spec, arch, review), or eligible epic rounds, and delegates specialist passes through stage:* labels."
+revisit_if: "One provider and one model become cheap enough to carry every round, proof search and skeptic pass within a single subscription window, so routing across harnesses and models buys nothing; or the heuristic that classifies unlabeled leaves misroutes enough leaves that requiring an explicit kind:* label on every task becomes cheaper."
+confidence: "Measured over five days of token-ledger history (774M weighted tokens across 631 leaves and 77 reviews) and meter readings: Fable 5.2 costs 0.57 weekly points per million weighted tokens against Opus 5.5 at 0.12, while round sessions account for 77% of weighted tokens and 62% of leaves touch no Verus specification. How much of that base load a second provider's subscription carries before its own window saturates is settled by running the profiles side by side."
+---
+
+## Decision
+
+One driver script, `tools/loop.py`, runs both the default unprofiled loop and any number of named profiles (`tools/loop.py --profile <name>`) configured under `[profiles.<name>]` in `loop.toml` at the project root. Each profile names its harness (`claude` or `agy`), per-agent flags (`round`, `retry`, `prover`, `skeptic`), the work kinds and stage hand-offs it takes, whether it takes epic close or split rounds (`epics = "none" | "close" | "all"`), and which specialist hand-offs it delegates (`prover`, `skeptic`, `retry`).
+
+Tasks are classified by what the work is and what stage it has reached, never by a model's name:
+
+- **Work kinds** (`kind:<name>` on new leaves, with `--no-inherit-labels`, or inferred deterministically for unlabeled leaves): `tool` (tier-3 scripts, hooks, UI and docs), `sys` (unverified Rust, platform and boot glue), `proof` (proving an existing tier-1 specification, lemma, witness or `external_body` removal), `spec` (a new tier-1 specification or operation), `arch` (`design/` records and spikes), and `review` (epic skeptic-review leaves, `design/review-is-a-leaf-of-its-epic/`).
+- **Stage hand-offs** (`stage:<name>`): `stage:needs-prover` (a round wrote `Prover input:` and its profile delegated `prover`), `stage:needs-skeptic` (a round matched a review's evidence, wrote `Skeptic input`, and delegated `skeptic`), `stage:escalated` (a leaf's first attempt reached its ten-run bound on a profile that delegated `retry`), and `stage:needs-land` (a specialist prover finished in the leaf's worktree, leaving triage, the gate and closing).
+
+Before spawning `claude -p` or `agy -p`, a profiled loop inspects Beads in Python at zero token cost: it recovers abandoned `in_progress` issues from dead loops, claims a queued `stage:needs-prover` or `stage:needs-skeptic` issue and invokes that specialist agent directly without a wrapper round, claims a matching `stage:escalated`, `stage:needs-land` or `kind:*` leaf and pins the round prompt to that issue (`Issue <id> is yours`), or starts an epic-only round when `tools/reviews.py` lists finished epics. When nothing in Beads matches the profile, no LLM session is started: the loop waits while another loop or actor is active, and exits cleanly otherwise.
+
+For `harness = "agy"`, `tools/loop.py` strips the YAML frontmatter from `.claude/agents/<kind>.md` and passes the procedure body with the prompt to `agy -p`, keeping `.claude/agents/` the single source of truth across harnesses.
+
+## Context
+
+Running every round, retry, proof search and skeptic pass on one Anthropic subscription saturated the weekly meter before the week ended, leaving ready leaves unworked while a Google AI Ultra subscription (`agy` with Gemini 4 Carbon) sat idle. Meanwhile, inside the Anthropic allowance itself, Fable 5.2 cost 4.75 times as much per weighted token as Opus 5.5, so spending Fable on mechanical rounds, gating, or routine tool leaves starved the hard proof searches and escalations where Fable pays for itself.
+
+An earlier experiment routed tier-3 issues to a separate model by adding a dedicated driver script, a duplicate procedure file, and a model-named tracker label (`grok`). It was removed a day later when that model proved unreliable on unsupervised rounds: the duplicate script and procedure had already drifted from `tools/loop.py` and `.claude/agents/round.md`, and the model-named label coupled tracker state to one vendor's product name.
+
+## Reasoning
+
+Measured on 2026-11-13 from `logs/token-ledger.sqlite` (`tools/token-ledger.py` and `tools/leaf-cost.py`) and one `bd list --all --json`:
+
+- Across 774.2M weighted tokens recorded in the ledger, `round` accounted for 596.9M (77.1%), `skeptic` for 116.5M (15.0%), `prover` for 17.8M (2.3%), and interactive sessions for the remainder.
+- Meter fittings in `tools/leaf-cost.py` put Opus 5.5 at 0.12 weekly points per million weighted tokens and Fable 5.2 at 0.57. A single Fable round of 2.5M weighted tokens costs 1.4 weekly points; reserving Fable for `stage:needs-prover`, `stage:escalated`, and open-oracle `spec` work preserves that budget for proof search while moving mechanical rounds off it.
+- Across 631 closed leaves with ledger rows, 62% were tier-3 tooling, unverified platform glue, or closed-oracle tier-1 proofs that never invoked `prover`. Even within a tier-1 leaf that does invoke `prover`, reading, editing, running `tools/land.py` across the gate, and closing are distinct stages from the 25-run Verus search itself, which `stage:needs-prover` and `stage:needs-land` separate cleanly across loops.
+- Checking Beads in Python before spawning a headless CLI session costs zero tokens when a specialist profile (`fable` or `opus`) has no matching stage or leaf ready, instead of paying ~90K cached input tokens per idle `Loop: wait` check.
+
+Keeping one `tools/loop.py` binary preserves `loop_alive(pid)` (`/proc/<pid>/cmdline` ending in `tools/loop.py`), which `--stop`, `--reload`, peer-loop detection, and `.claude/agents/round.md` orient recovery all rely on.
+
+## Alternatives rejected
+
+- **One script per loop flavor (`tools/loop-carbon.py`, `tools/loop-fable.py`).** Duplicates signal handling, PID tracking, stream parsing, backoff and tests across files, and breaks `loop_alive(pid)` unless every recovery check learns every script name.
+- **Model-named labels on issues (`carbon`, `fable`, `opus`).** Couples the issue tracker to today's model names and subscription tiers; every model release or quota shift requires relabeling open issues instead of editing `loop.toml`.
+- **A second copy of `round.md` for `agy`.** Tried for the earlier Grok loop and drifted within a day. Passing the body of `.claude/agents/<kind>.md` directly to `agy -p` keeps one procedure.
+- **Letting the LLM check whether matching work exists.** Each idle wake-up loads rules and procedures into context only to emit `Loop: wait`. Querying `bd` in Python before starting a session makes idle specialist loops free.
+
+## What this does not settle
+
+- Whether Gemini 4 Carbon writes open-oracle tier-1 specifications (`kind:spec`) that survive the Opus skeptic at the same rate as Opus 5.5; `loop.toml` can keep `spec` on `fable` or `opus` until replayed leaves measure that rate.
+- Harvesting `agy` transcripts into `logs/token-ledger.sqlite`: `tools/loop.py` logs each `agy` session's turns and weighted tokens from `stream-json`, while `tools/token-ledger.py` currently harvests `~/.claude/projects` alone.

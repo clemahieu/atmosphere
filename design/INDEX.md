@@ -2,7 +2,7 @@
 
 # Design decisions
 
-42 records: 42 active, 0 superseded.
+43 records: 43 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -61,6 +61,9 @@ in `revisit if` what would make it worth reopening.
 - **[license-stated-in-every-source-file](./license-stated-in-every-source-file/DECISION.md)** (2026-11-11): Each Rust, Python, shell, C and assembly file, and any file starting with #!, carries an SPDX-License-Identifier comment as its first line, or its second under the #! line; the gate holds the expression to tools/license-allowlist, and every other file is under LICENSE.
   - *confidence:* A judgement about cost against a risk that has not yet occurred: no file under a second license is in the tree today. That the check holds is tested.
   - *revisit if:* The tree is distributed in pieces whose recipients need each file's copyright holder from the file alone, or a scanner or a downstream packager asks for REUSE compliance; then the copyright tag, the LICENSES directory and the manifest are added.
+- **[loops-select-by-work-kind-and-stage](./loops-select-by-work-kind-and-stage/DECISION.md)** (2026-11-13): One driver, tools/loop.py, runs any number of loop profiles across harnesses (claude and agy) from [profiles.<name>] in loop.toml; before spawning an LLM session, a profiled loop inspects Beads in Python at zero token cost, claiming queued stage hand-offs (needs-prover, needs-skeptic, escalated, needs-land), ready leaves matching intrinsic work kinds (tool, sys, proof, spec, arch, review), or eligible epic rounds, and delegates specialist passes through stage:* labels.
+  - *confidence:* Measured over five days of token-ledger history (774M weighted tokens across 631 leaves and 77 reviews) and meter readings: Fable 5.2 costs 0.57 weekly points per million weighted tokens against Opus 5.5 at 0.12, while round sessions account for 77% of weighted tokens and 62% of leaves touch no Verus specification. How much of that base load a second provider's subscription carries before its own window saturates is settled by running the profiles side by side.
+  - *revisit if:* One provider and one model become cheap enough to carry every round, proof search and skeptic pass within a single subscription window, so routing across harnesses and models buys nothing; or the heuristic that classifies unlabeled leaves misroutes enough leaves that requiring an explicit kind:* label on every task becomes cheaper.
 - **[machine-glue-below-the-kernel](./machine-glue-below-the-kernel/DECISION.md)** (2026-11-10): Boot discovery, the console, the interrupt controller and timer, secondary-core start, shutdown and the IOMMU driver live in one crate per machine (machine/pc for the x86_64 PC, machine/virt for aarch64 on QEMU virt), each exporting the same free functions and constants, and machine/virt one more that names the interrupt an IRQ carries, which the x86_64 IDT gives by the vector taken; the kernel depends on the crate its target selects and re-exports it as crate::machine; the crate depends on nothing in kernel/ or kernel/verified, takes cpu indices as arguments, owns the interrupt vectors and its own per-core state, and issues its own MSR and port instructions.
   - *confidence:* A judgement from a survey of kernel/src at 569f164: the item list and signatures follow today's callers. machine/virt tests that the same list fits QEMU virt: its PL011, PSCI power-off, PSCI core start, GICv3 and generic timer items are written to these signatures and run under KVM with two cores, and the list needed one item more, the acknowledgement. The Cargo constraint that rules out one renamed dependency per target was checked with cargo.
   - *revisit if:* Two machines must be supported on one architecture (bare Apple silicon beside QEMU virt), when target_arch no longer selects the crate and a cargo feature or a second build target must; or a machine needs a kernel service at interrupt or boot time that cannot be passed as an argument, which would make the dependency two-way.
@@ -164,7 +167,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
-- `process`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human, thread-bound-at-retype
+- `process`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, loops-select-by-work-kind-and-stage, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, region-map-owns-the-address-space, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
 - `purity`: untyped-memory
 - `reach`: device-binding-under-the-space-capability
@@ -177,8 +180,8 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
-- `tools`: witness-per-way-an-operation-succeeds
-- `tracker`: review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
+- `tools`: loops-select-by-work-kind-and-stage, witness-per-way-an-operation-succeeds
+- `tracker`: loops-select-by-work-kind-and-stage, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `trusted-base`: region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
 - `verified`: arch-module, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, witness-per-way-an-operation-succeeds
