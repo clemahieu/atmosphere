@@ -504,6 +504,9 @@ function drawTiles() {
   );
 }
 
+/* The session a loop runs: its kind, then the model and effort its flags give, or the harness's own default. */
+const running = ({kind, harness, model, effort}) => [kind, model ?? `${harness}'s default model`, effort && `${effort} effort`].filter(Boolean).join(" · ");
+
 function drawFlights() {
   fill("flights", data.flights.length ? data.flights.map(row => {
     const ended = row.alive === false;
@@ -516,6 +519,7 @@ function drawFlights() {
         issue(row),
         line(trail(row)),
         h("div", {class: "meta"}, `P${row.priority} · `, h("span", ended ? {class: "warn"} : {}, ended ? `${row.actor} ended` : row.actor || "no holder"), " · held ", h("span", {"data-held": row.started}), row.tokens ? ` · ${spent(row.tokens)}` : null),
+        row.session ? h("div", {class: "meta"}, running(row.session)) : null,
         ["gate", "fix", "close"].includes(row.stage) && row.gate ? h("div", {class: "meta one", title: row.gate}, row.gate) : null,
       ),
     );

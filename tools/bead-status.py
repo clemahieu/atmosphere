@@ -10,7 +10,8 @@ The server reads Beads only while a page asks. A request for /data runs bd when 
 holds is older than AGE seconds, and the page (tools/bead-status.html) asks only while its tab is
 visible. The history is each issue's creation and close time out of one `bd list --all`, so nothing
 is recorded between runs; an issue reopened counts as open from its creation. A session's stage and
-clock are the ones its status line wrote (tools/round-status.py), read from the same files.
+clock are the ones its status line wrote (tools/round-status.py), read from the same files. An
+issue a loop holds is worked at the harness, model and effort its pid file names (tools/loop.py).
 
 The tokens are the token ledger's (tools/token-ledger.py), which the server harvests every
 HARVEST seconds in a thread of its own, so a page never waits on a harvest. An issue's tokens are
@@ -318,6 +319,20 @@ def gate_line(log):
     return steps[-1][:TEXT_SHOWN] if steps else None
 
 
+def session(root, actor):
+    """The session the loop loop-<pid> runs, as its pid file names it; None for any other holder, or a
+    loop between sessions or whose file says none."""
+    kind, _, pid = (actor or "").partition("-")
+    if kind != "loop" or not pid.isdigit():
+        return None
+    try:
+        found = json.loads((root / "logs" / "loop" / pid).read_text())
+    except (OSError, ValueError):
+        return None  # the loop ended, or is replacing the file
+    # The file is another process's: a loop started before its pid file named its session holds its pid alone.
+    return found.get("session") if isinstance(found, dict) else None
+
+
 def flights(issues, by_id, seen, running, root, spent={}):
     """The issues in progress, the one held longest first, each with its holder and the stage its holder's status line names for it."""
     rows = []
@@ -334,6 +349,7 @@ def flights(issues, by_id, seen, running, root, spent={}):
             "started": seconds(issue["started_at"]),
             "gate": gate_line(root / "logs" / f"{issue['id']}-gate.log"),
             "tokens": spent.get(issue["id"]),
+            "session": session(root, actor),
         })
     return rows
 
@@ -677,11 +693,28 @@ class Tests(unittest.TestCase):
         self.assertEqual(rows[1], {
             "id": "a.1.2", "title": "Title of a.1.2", "priority": 1, "type": "task", "trail": ["Title of a.1"],
             "actor": "claude-11", "alive": True, "stage": "gate", "since": 100.5, "started": seconds("2026-11-10T10:30:00Z"),
-            "gate": "gate verify: ok in 58.7 s: 0 errors, allowance 0", "tokens": None,
+            "gate": "gate verify: ok in 58.7 s: 0 errors, allowance 0", "tokens": None, "session": None,
         })
         # A clock that names another issue says nothing of this one.
         self.assertEqual((rows[0]["actor"], rows[0]["alive"], rows[0]["stage"], rows[0]["since"], rows[0]["gate"]), ("claude-12", False, None, None, None))
         self.assertEqual((rows[2]["actor"], rows[2]["stage"]), (None, None))
+
+    def test_a_flight_a_loop_holds_names_the_session_its_pid_file_names(self):
+        issues = self.tree()
+        issues[[issue["id"] for issue in issues].index("a.1.2")]["assignee"] = "loop-77"
+        by_id = {issue["id"]: issue for issue in issues}
+        pids = self.root / "logs" / "loop"
+        pids.mkdir()
+        held = lambda: flights(issues, by_id, {}, alive, self.root)[0]["session"]
+        self.assertIsNone(held())  # no pid file
+        (pids / "77").write_text("77\n")
+        self.assertIsNone(held())  # a loop that names no session
+        (pids / "77").write_text(json.dumps({"pid": 77, "session": None}))
+        self.assertIsNone(held())
+        running = {"kind": "prover", "harness": "claude", "model": "fable", "effort": "xhigh"}
+        (pids / "77").write_text(json.dumps({"pid": 77, "session": running}))
+        self.assertEqual(held(), running)
+        self.assertIsNone(session(self.root, "claude-77"))
 
     def test_an_epic_under_the_root_counts_every_issue_below_it(self):
         issues = self.tree() + [self.issue("a.1.2.1", "closed"), self.issue("b", kind="epic"), self.issue("b.1", kind="epic"), self.issue("b.1.1")]
