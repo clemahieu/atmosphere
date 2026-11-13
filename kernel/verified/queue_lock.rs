@@ -701,4 +701,27 @@ impl QueueLock {
     }
 }
 
+/// The witness: constructs a free lock, takes `cpu`'s core token from its map, acquires the lock
+/// and releases it, leaving the core token idle for the lock again. Built into no image.
+#[cfg(verus_keep_ghost)]
+pub fn witness_queue_lock(cpu: usize) -> (r: (QueueLock, Tracked<Core>))
+    requires
+        cpu < NUM_CPUS,
+    ensures
+        r.0.wf(),
+        r.1@.idle(),
+        r.1@.cpu == cpu,
+        r.1@.for_lock(r.0),
+{
+    let (new_lock, Tracked(mut cores)) = QueueLock::new();
+    let lock: QueueLock = new_lock;
+    proof {
+        assert(cores.dom().contains(cpu as int));
+    }
+    let tracked mut core = cores.tracked_remove(cpu as int);
+    lock.acquire(cpu, Tracked(&mut core));
+    lock.release(cpu, Tracked(&mut core));
+    (lock, Tracked(core))
+}
+
 } // verus!
