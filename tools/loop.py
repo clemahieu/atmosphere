@@ -68,9 +68,11 @@ before it chooses. Two workers choosing at the same instant may both take a mete
 
 Shared meter and cooldown state. The pool and its workers share `<project root>/logs/loop/state.json`,
 updated under `<project root>/logs/loop/.state.lock` and replaced atomically so readers never see half a
-file and the readings history survives a supervisor restart. The pool samples Claude's meters from
-`~/.claude.json` (`cachedUsageUtilization`: `claude-week`, `claude-5h` when the plan has a five-hour
-window, and each scoped model limit `claude-<model>` such as `claude-fable`) and Gemini's buckets from
+file and the readings history survives a supervisor restart. The pool samples Claude's meters every
+five minutes from `tools/claude-usage.py` (`claude-week`, `claude-5h` when the plan has a five-hour
+window, and each scoped model limit `claude-<model>` such as `claude-fable`), which reads them from
+Claude's usage endpoint, because the copy in `~/.claude.json` stays at the interactive app's last fetch
+while only headless sessions run, and Gemini's buckets from
 `agy -p /usage --output-format json` (`Gemini Models`: `gemini-week` and `gemini-5h`) and Grok's week from
 `tools/grok-usage.py` (`grok-week`), which reads it off Grok's own /usage window, keeping a harness's
 last readings when its ask fails; workers also record `rate_limit_event` readings streamed by Claude
@@ -207,6 +209,9 @@ AGY_USAGE_TIMEOUT = 30
 GROK_USAGE = Path(__file__).resolve().parent / "grok-usage.py"
 GROK_USAGE_INTERVAL = 900
 GROK_USAGE_TIMEOUT = 120
+CLAUDE_USAGE = Path(__file__).resolve().parent / "claude-usage.py"
+CLAUDE_USAGE_INTERVAL = 300
+CLAUDE_USAGE_TIMEOUT = 30
 RATE_WINDOW = 12 * 3600
 HISTORY_MAX_AGE = 24 * 3600
 MAX_HISTORY = 500
@@ -916,19 +921,20 @@ def stream_meter(limit_type):
     return None
 
 
-def claude_readings(account):
-    """(meter, percent, resets_at, read) for each Claude meter in ~/.claude.json's cachedUsageUtilization:
-    the week, the five-hour window when the plan has one, and each scoped limit that names a model."""
-    cached = json.loads(Path(account).read_text())["cachedUsageUtilization"]
-    meter, read = cached["utilization"], cached["fetchedAtMs"] / 1000
-    readings = [("claude-week", meter["seven_day"]["utilization"], epoch(meter["seven_day"]["resets_at"]), read)]
-    if meter.get("five_hour"):
-        readings.append(("claude-5h", meter["five_hour"]["utilization"], epoch(meter["five_hour"]["resets_at"]), read))
-    for limit in meter.get("limits") or []:
-        model = (limit.get("scope") or {}).get("model") if limit["kind"] == "weekly_scoped" else None
-        if model and model.get("display_name"):
-            readings.append((f"claude-{model['display_name'].lower()}", limit["percent"], epoch(limit["resets_at"]), read))
-    return readings
+def claude_usage_readings(text, read):
+    """(meter, percent, resets_at, read) for each Claude meter tools/claude-usage.py printed: the week,
+    the five-hour window when the plan has one, and each scoped model. The time is the one the tool
+    stamps, or `read` when it stamps none, and it moves on every ask, so a reading is kept again even
+    when the percent has not."""
+    found = json.loads(text)
+    when = float(found["read"]) if found.get("read") is not None else float(read)
+    rows = []
+    for row in found["meters"]:
+        resets = row.get("resets_at")
+        rows.append((row["meter"], float(row["percent"]), None if resets is None else float(resets), when))
+    if not rows:
+        raise ValueError("no Claude meter")
+    return rows
 
 
 def agy_readings(text, read):
@@ -1666,11 +1672,10 @@ class Pool:
     """
 
     def __init__(self, worker, pids=PIDS, config=CONFIG, tick=TICK, sleep=time.sleep, out=sys.stdout,
-                 execute=os.execv, argv=None, claude_account=Path.home() / ".claude.json", agy="agy",
+                 execute=os.execv, argv=None, claude_usage=CLAUDE_USAGE, agy="agy",
                  grok_usage=GROK_USAGE, now=time.time):
         self.worker = list(worker)
-        self.claude_account, self.agy, self.grok_usage, self.now = Path(claude_account), agy, str(grok_usage), now
-        self.claude_failure = None
+        self.claude_usage, self.agy, self.grok_usage, self.now = str(claude_usage), agy, str(grok_usage), now
         self.asked = {}
         self.pids, self.config, self.tick = Path(pids), Path(config), tick
         self.sleep, self.out, self.execute = sleep, out, execute
@@ -1741,20 +1746,10 @@ class Pool:
         self.admitted = admitted
 
     def sample(self):
-        """Keep Claude's meters as Claude Code last fetched them, when it fetched them since, every
+        """Every CLAUDE_USAGE_INTERVAL ask tools/claude-usage.py for Claude's meters, every
         AGY_USAGE_INTERVAL ask agy for Gemini's and every GROK_USAGE_INTERVAL ask tools/grok-usage.py for
         Grok's; a reading that fails keeps the last ones."""
-        try:
-            readings = claude_readings(self.claude_account)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as failure:
-            # ~/.claude.json is Claude Code's own file: one it has not written, or of a shape this does not know, keeps the last readings.
-            readings = []
-            if self.claude_account.exists() and repr(failure) != self.claude_failure:
-                self.say(f"claude usage: {failure!r}; keeping the last readings")
-            self.claude_failure = repr(failure)
-        held = read_state(self.pids)["meters"]
-        if any(held.get(meter, {}).get("read") != read for meter, _, _, read in readings):
-            self.keep(readings, "claude")
+        self.ask("claude", [self.claude_usage], CLAUDE_USAGE_INTERVAL, CLAUDE_USAGE_TIMEOUT, claude_usage_readings)
         self.ask("agy", [self.agy, "-p", "/usage", "--output-format", "json"], AGY_USAGE_INTERVAL, AGY_USAGE_TIMEOUT, agy_readings)
         self.ask("grok", [self.grok_usage], GROK_USAGE_INTERVAL, GROK_USAGE_TIMEOUT, grok_readings)
 
@@ -1768,7 +1763,7 @@ class Pool:
             done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, check=True)
             self.keep(readings(done.stdout, asked), harness)
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as failure:
-            # agy and grok are other programs: one missing, or a reply of a shape this does not know, keeps the last readings.
+            # The usage command is another program: one missing, or a reply of a shape this does not know, keeps the last readings.
             self.say(f"{harness} usage: {failure!r}; keeping the last readings")
 
     # The tick.
@@ -3073,7 +3068,7 @@ class Tests(unittest.TestCase):
         """)
 
     def pool(self, folder, jobs, **given):
-        given.setdefault("claude_account", folder / "no-claude.json")
+        given.setdefault("claude_usage", folder / "no-claude-usage")
         given.setdefault("agy", str(folder / "no-agy"))
         given.setdefault("grok_usage", folder / "no-grok-usage")
         (folder / "tools").mkdir(exist_ok=True)
@@ -3377,13 +3372,69 @@ class Tests(unittest.TestCase):
             self.assertEqual(worker2.drive(once=True), 0)
             self.assertEqual(len(self.log(folder, "claude")), 2)
 
+    def test_the_pool_asks_claude_usage_on_its_interval_and_a_second_reading_fits_a_rate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            source, calls = folder / "claude-usage.json", folder / "calls"
+            fake = folder / "claude-usage"
+            fake.write_text(f"#!/bin/sh\necho x >> {calls}\ncat {source}\n")
+            fake.chmod(0o755)
+            week = epoch("2026-11-15T05:00:00+00:00")
+
+            def write(read, percent):
+                source.write_text(json.dumps({"read": read, "meters": [
+                    {"meter": "claude-week", "percent": percent, "resets_at": week},
+                    {"meter": "claude-5h", "percent": percent / 2, "resets_at": week},
+                    {"meter": "claude-fable", "percent": percent + 1, "resets_at": week},
+                ]}))
+
+            clock = [1000.0]
+            write(1000.0, 20)
+            pool, _ = self.pool(folder, 1, claude_usage=str(fake), now=lambda: clock[0])
+            self.settle(pool, lambda: len(self.started(folder)) == 1)
+            state = read_state(folder / "pids")
+            self.assertEqual((state["meters"]["claude-week"]["percent"], state["meters"]["claude-5h"]["percent"],
+                              state["meters"]["claude-fable"]["percent"]), (20.0, 10.0, 21.0))
+            self.assertIsNone(state["meters"]["claude-week"]["rate"])
+            self.assertEqual(calls.read_text().count("x"), 1)
+
+            # Inside the interval the source is not asked, so a changed file is not a new reading.
+            clock[0] = 1000.0 + CLAUDE_USAGE_INTERVAL - 1
+            write(clock[0], 50)
+            pool.step()
+            self.assertEqual(calls.read_text().count("x"), 1)
+            self.assertEqual(read_state(folder / "pids")["meters"]["claude-week"]["percent"], 20.0)
+
+            # The next interval takes the new reading, and two readings fit a rate.
+            clock[0] = 1000.0 + CLAUDE_USAGE_INTERVAL
+            write(clock[0], 26)
+            pool.step()
+            self.assertEqual(calls.read_text().count("x"), 2)
+            held = read_state(folder / "pids")["meters"]["claude-week"]
+            self.assertEqual((held["percent"], len(held["history"])), (26.0, 2))
+            self.assertAlmostEqual(held["rate"], 72.0)  # 6 points over the 300 s interval
+
+            # A failed ask keeps the last reading and its rate.
+            clock[0] = 1000.0 + 2 * CLAUDE_USAGE_INTERVAL
+            fake.write_text("#!/bin/sh\nexit 1\n")
+            fake.chmod(0o755)
+            pool.step()
+            kept = read_state(folder / "pids")["meters"]["claude-week"]
+            self.assertEqual(kept["percent"], 26.0)
+            self.assertAlmostEqual(kept["rate"], 72.0)
+            pool.on_stop(signal.SIGTERM, None)
+            self.assertFalse(self.settle(pool, lambda: not pool.workers))
+
     def test_pool_samples_meters_survives_restart_and_keeps_last_readings_on_failed_agy_and_grok_usage(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             pids = folder / "pids"
-            account = folder / "claude.json"
+            claude_file = folder / "claude.json"
             usage_file = folder / "usage.json"
             fail_flag = folder / "fail-agy"
+            fake_claude = folder / "claude-usage"
+            fake_claude.write_text(f"#!/bin/sh\ncat {claude_file}\n")
+            fake_claude.chmod(0o755)
             fake_agy = folder / "agy"
             fake_agy.write_text(
                 f"#!/bin/sh\n[ -e {fail_flag} ] && exit 1\ncat {usage_file}\n"
@@ -3393,27 +3444,16 @@ class Tests(unittest.TestCase):
             fake_grok = folder / "grok-usage"
             fake_grok.write_text(f"#!/bin/sh\n[ -e {fail_flag} ] && exit 1\ncat {grok_file}\n")
             fake_grok.chmod(0o755)
+            week, five = epoch("2026-11-15T05:00:00+00:00"), epoch("2026-11-13T18:00:00+00:00")
 
             def write_sources(fetched_ms, c_week, c_5h, fable, g_rem_week, g_rem_5h, grok=0.0):
                 grok_file.write_text(json.dumps({"plan": "SuperGrok Heavy", "percent": grok,
                                                  "resets_at": 1795136760.0, "read": fetched_ms / 1000 - 1}))
-                account.write_text(json.dumps({"cachedUsageUtilization": {
-                    "fetchedAtMs": fetched_ms,
-                    "utilization": {
-                        "five_hour": {"utilization": c_5h, "resets_at": "2026-11-13T18:00:00+00:00"},
-                        "seven_day": {"utilization": c_week, "resets_at": "2026-11-15T05:00:00+00:00"},
-                        "limits": [
-                            {"kind": "weekly_all", "group": "weekly", "percent": c_week,
-                             "resets_at": "2026-11-15T05:00:00+00:00", "scope": None},
-                            {"kind": "weekly_scoped", "group": "weekly", "percent": fable,
-                             "resets_at": "2026-11-15T05:00:00+00:00",
-                             "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
-                            {"kind": "weekly_scoped", "group": "weekly", "percent": 3,
-                             "resets_at": "2026-11-15T05:00:00+00:00",
-                             "scope": {"model": None, "surface": "desk"}},
-                        ],
-                    },
-                }}))
+                claude_file.write_text(json.dumps({"read": fetched_ms / 1000, "meters": [
+                    {"meter": "claude-week", "percent": c_week, "resets_at": week},
+                    {"meter": "claude-5h", "percent": c_5h, "resets_at": five},
+                    {"meter": "claude-fable", "percent": fable, "resets_at": week},
+                ]}))
                 usage_file.write_text(json.dumps({"status": "SUCCESS", "command": {"name": "usage", "data": {"groups": [
                     {"name": "Gemini Models", "buckets": [
                         {"id": "gemini-weekly", "window": "weekly", "remaining_fraction": g_rem_week,
@@ -3429,7 +3469,7 @@ class Tests(unittest.TestCase):
 
             clock = [1000.0]
             write_sources(1000_000, 20, 10, 30, 0.80, 0.90, grok=5)
-            pool1, _ = self.pool(folder, 1, claude_account=account, agy=str(fake_agy), grok_usage=fake_grok, now=lambda: clock[0])
+            pool1, _ = self.pool(folder, 1, claude_usage=str(fake_claude), agy=str(fake_agy), grok_usage=fake_grok, now=lambda: clock[0])
             self.settle(pool1, lambda: len(self.started(folder)) == 1)
             state1 = read_state(pids)
             self.assertEqual(set(state1["meters"]), {"claude-week", "claude-5h", "claude-fable", "gemini-week", "gemini-5h", "grok-week"})
@@ -3450,7 +3490,7 @@ class Tests(unittest.TestCase):
 
             clock[0] = 4600.0
             write_sources(4600_000, 26, 25, 38, 0.75, 0.70, grok=8)
-            pool2, _ = self.pool(folder, 1, claude_account=account, agy=str(fake_agy), grok_usage=fake_grok, now=lambda: clock[0])
+            pool2, _ = self.pool(folder, 1, claude_usage=str(fake_claude), agy=str(fake_agy), grok_usage=fake_grok, now=lambda: clock[0])
             self.settle(pool2, lambda: len(self.started(folder)) == 2)
             state2 = read_state(pids)
             self.assertAlmostEqual(state2["meters"]["claude-week"]["rate"], 6.0)
