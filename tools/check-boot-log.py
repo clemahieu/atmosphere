@@ -51,8 +51,11 @@ ROOT_HOLDS = "root holds "
 # What the kernel logs for each fixed slot of the root's table, followed by the slot and its kind.
 ROOT_SLOT = "root slot "
 
-# The first untyped and frame slots of the root's table, design/root-process-at-boot/.
-ROOT_UNTYPED_SLOT = 5
+# The first core, untyped and frame slots of the root's table, and how many cores boot hands the root,
+# design/root-process-at-boot/.
+ROOT_CORE_SLOT = 5
+ROOT_CORES = 32
+ROOT_UNTYPED_SLOT = 37
 ROOT_FRAME_SLOT = 129
 
 # What the kernel logs once CPU 1 has taken a flush IPI and acknowledged it.
@@ -95,8 +98,8 @@ def after(line, marker):
 
 def fixed_slots_printed(serial):
     """The root's untyped and frame counts when the log prints, in order, one line per fixed slot with its
-    kind: process at 1, thread at 2, console at 3, power at 4, the untyped from 5 and the frames from 129,
-    as many as the kernel says the root holds, at least one of each."""
+    kind: process at 1, thread at 2, console at 3, power at 4, the 32 cores from 5, the untyped from 37 and
+    the frames from 129, as many as the kernel says the root holds, at least one of each."""
     holds = next((rest for rest in (after(line, ROOT_HOLDS) for line in lines(serial)) if rest is not None), None)
     if holds is None:
         raise Refused("the serial log does not say what the root holds")
@@ -107,6 +110,7 @@ def fixed_slots_printed(serial):
     if not untyped or not frames:
         raise Refused(f"the root holds no untyped or no frames: {holds}")
     expected = [(1, "process"), (2, "thread"), (3, "console"), (4, "power")]
+    expected += [(ROOT_CORE_SLOT + c, "core") for c in range(ROOT_CORES)]
     expected += [(ROOT_UNTYPED_SLOT + k, "untyped") for k in range(untyped)]
     expected += [(ROOT_FRAME_SLOT + k, "frame") for k in range(frames)]
     printed = []
@@ -202,8 +206,10 @@ def slot_lines(frame_kind):
     return (" INFO root holds 2 untyped and 1 frames\x1b[0m\n INFO root slot 1: process base 0x8000\n"
             " INFO root slot 2: thread\n INFO root slot 3: console\n"
             " INFO root slot 4: power base 0x2000000001000 order 0 rights 0x0\n"
-            " INFO root slot 5: untyped base 0x40000000 order 18 rights 0x8\n"
-            "\x1b[34m INFO root slot 6: untyped\x1b[0m\n"
+            + "".join(f" INFO root slot {5 + c}: core base {0x2000000002000 + c * 0x1000:#x} order 0 rights 0x0\n"
+                      for c in range(32))
+            + " INFO root slot 37: untyped base 0x40000000 order 18 rights 0x8\n"
+            "\x1b[34m INFO root slot 38: untyped\x1b[0m\n"
             f" INFO root slot 129: {frame_kind} order 0\n")
 
 
@@ -291,18 +297,18 @@ class Tests(unittest.TestCase):
         # Another kind, another base, another order, and a base or an order this one is a prefix of.
         for other in [
             " INFO root slot 129: frame base 0x40000000 order 18 rights 0x8\n",
-            " INFO root slot 5: untyped base 0x0 order 18 rights 0x8\n",
-            " INFO root slot 5: untyped base 0x40000000 order 9 rights 0x8\n",
-            " INFO root slot 5: untyped base 0x400000000 order 18 rights 0x8\n",
-            " INFO root slot 5: untyped base 0x40000000 order 180 rights 0x8\n",
+            " INFO root slot 37: untyped base 0x0 order 18 rights 0x8\n",
+            " INFO root slot 37: untyped base 0x40000000 order 9 rights 0x8\n",
+            " INFO root slot 37: untyped base 0x400000000 order 18 rights 0x8\n",
+            " INFO root slot 37: untyped base 0x40000000 order 180 rights 0x8\n",
             " INFO root holds 2 untyped and 1 frames\n",
         ]:
             self.assertFalse(gigabyte_untyped_printed(other, pc), other)
         # The kernel's line for QEMU virt's block, where RAM starts at 1 GiB.
         virt = FREE_GIGABYTE["aarch64"]
         self.assertEqual(virt, 0x8000_0000)
-        self.assertTrue(gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x80000000 order 18 rights 0x8\n", virt))
-        self.assertFalse(gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x80000000 order 16 rights 0x8\n", virt))
+        self.assertTrue(gigabyte_untyped_printed(" INFO root slot 37: untyped base 0x80000000 order 18 rights 0x8\n", virt))
+        self.assertFalse(gigabyte_untyped_printed(" INFO root slot 37: untyped base 0x80000000 order 16 rights 0x8\n", virt))
         self.assertFalse(gigabyte_untyped_printed(slot_lines("frame"), virt))
 
     def test_a_log_missing_the_exit_marker_does_not_pass(self):

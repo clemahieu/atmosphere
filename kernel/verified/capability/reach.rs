@@ -33,6 +33,23 @@ pub const CONSOLE_OBJECT: usize = 0x2_0000_0000_0000; // not a page size: twice 
 /// Power, the authority to end the machine's run, is an object too: the page after the console's.
 pub const POWER_OBJECT: usize = CONSOLE_OBJECT + PAGE_SZ;
 
+/// Each core is an object too, CPU time on it: core c is the page CORE_OBJECTS + c * PAGE_SZ, past
+/// power's. See design/cpu-time-as-capability/.
+pub const CORE_OBJECTS: usize = POWER_OBJECT + PAGE_SZ;
+
+pub open spec fn core_object(c: int) -> ObjectId {
+    (CORE_OBJECTS + c * PAGE_SZ) as usize
+}
+
+/// o is the object of one of the NUM_CPUS cores.
+pub open spec fn is_core_object(o: ObjectId) -> bool {
+    &&& CORE_OBJECTS <= o < CORE_OBJECTS + NUM_CPUS * PAGE_SZ
+    &&& o % PAGE_SZ == 0
+}
+
+/// The highest priority a thread can run at, which boot gives each core capability it hands the root.
+pub const MAX_PRIORITY: usize = 255;
+
 /// A list node's id, as in capability::list.
 pub type NodeId = usize;
 

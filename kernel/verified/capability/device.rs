@@ -93,7 +93,7 @@ pub open spec fn bound_record(r: DeviceRecord, s: usize) -> DeviceRecord {
 
 /// What device d's capability says.
 pub open spec fn device_payload(d: int) -> Payload {
-    Payload { kind: CapKind::Device, order: 0, rights: DEVICE_RIGHTS, base: device_object(d), badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Device, order: 0, rights: DEVICE_RIGHTS, base: device_object(d), badge: 0, priority: 0 }
 }
 
 /// Device d's object names device d.
@@ -897,7 +897,7 @@ impl CapKernel {
             self.list.lemma_valid_bound(child);
             lemma_device_object(d as int);
         }
-        let payload = Payload { kind: CapKind::Device, order: 0, rights: DEVICE_RIGHTS, base: DEVICE_OBJECTS + d * PAGE_SZ, badge: 0, reserved: 0 };
+        let payload = Payload { kind: CapKind::Device, order: 0, rights: DEVICE_RIGHTS, base: DEVICE_OBJECTS + d * PAGE_SZ, badge: 0, priority: 0 };
         self.list.derive(first, child, NodeKind::Capability);
         proof {
             pre.tables.lemma_wf_same_pages(&pre.list, &self.list);

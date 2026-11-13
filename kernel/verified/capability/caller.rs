@@ -55,6 +55,8 @@ pub ghost struct SlotView {
     pub base: usize,
     pub order: u8,
     pub rights: u32,
+    /// A core capability's maximum priority, as its payload's.
+    pub priority: usize,
     pub parent: usize,
 }
 
@@ -91,7 +93,7 @@ pub open spec fn view_retypes(v: SlotView, base: usize, order: u8) -> bool {
 /// What a slot says that holds the frame capability a retype makes of the block of the order at base,
 /// under the capability at node parent.
 pub open spec fn frame_view(base: usize, order: u8, parent: usize) -> SlotView {
-    SlotView { kind: CapKind::Frame, base, order, rights: FRAME_RIGHTS, parent }
+    SlotView { kind: CapKind::Frame, base, order, rights: FRAME_RIGHTS, priority: 0, parent }
 }
 
 /// The page at this offset of the block a slot's frame capability names, as frame_of reads it.
@@ -101,29 +103,36 @@ pub open spec fn view_frame(v: SlotView, page: usize) -> usize {
 
 /// A child with these rights and this block narrows a slot's capability, as narrows reads it within one
 /// view: rights no wider and a block within its own, and a block narrower than its own only of an
-/// untyped or a frame, without control.
+/// untyped or a frame, without control. A core capability's child is one page, and the order is its
+/// maximum priority, no higher than the slot's.
 pub open spec fn view_narrows(v: SlotView, rights: u32, base: usize, order: u8) -> bool {
+    let child = derived_view(v, rights, base, order, 0);
     &&& rights & !v.rights == 0
-    &&& order <= v.order
+    &&& child.order <= v.order
     &&& v.base <= base
-    &&& base as int % block_bytes(order) == 0
-    &&& base as int + block_bytes(order) <= v.base as int + block_bytes(v.order)
-    &&& (base != v.base || order != v.order) ==> {
+    &&& base as int % block_bytes(child.order) == 0
+    &&& base as int + block_bytes(child.order) <= v.base as int + block_bytes(v.order)
+    &&& (base != v.base || child.order != v.order) ==> {
         &&& v.kind is Untyped || v.kind is Frame
         &&& rights & right_bit(Right::Control) == 0
     }
+    &&& v.kind is Core ==> child.priority <= v.priority
 }
 
 /// What a slot says that holds the child a derive makes of the capability a slot's view v says, with
 /// these rights and this block, under the capability at node parent.
 pub open spec fn derived_view(v: SlotView, rights: u32, base: usize, order: u8, parent: usize) -> SlotView {
-    SlotView { kind: v.kind, base, order, rights, parent }
+    if v.kind is Core {
+        SlotView { kind: v.kind, base, order: 0, rights, priority: order as usize, parent }
+    } else {
+        SlotView { kind: v.kind, base, order, rights, priority: 0, parent }
+    }
 }
 
 /// What a slot says after a move of the capability at node i to node n: a capability derived from the
 /// one moved names n as its parent.
 pub open spec fn moved_view(v: SlotView, i: usize, n: usize) -> SlotView {
-    SlotView { kind: v.kind, base: v.base, order: v.order, rights: v.rights, parent: rename(v.parent, i, n) }
+    SlotView { kind: v.kind, base: v.base, order: v.order, rights: v.rights, priority: v.priority, parent: rename(v.parent, i, n) }
 }
 
 impl CapKernel {
@@ -136,7 +145,7 @@ impl CapKernel {
     pub open spec fn slot_view(&self, root: usize, i: usize) -> SlotView {
         let n = self.tables.node_of(root, i);
         let p = self.payload_of(n);
-        SlotView { kind: p.kind, base: p.base, order: p.order, rights: p.rights, parent: self.list.parent@[n] }
+        SlotView { kind: p.kind, base: p.base, order: p.order, rights: p.rights, priority: p.priority, parent: self.list.parent@[n] }
     }
 
     /// The table at root as its process reads it: each index that is a slot holding a capability, and

@@ -171,6 +171,7 @@ The kinds in result 1:
 | device | 8 |
 | console | 9 |
 | power | 10 |
+| core | 11 |
 
 ## Reasoning
 

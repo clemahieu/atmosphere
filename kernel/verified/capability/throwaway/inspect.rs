@@ -18,6 +18,7 @@ use crate::capability::boot_image::*;
 use crate::capability::boot_kernel::*;
 use crate::capability::boot_memory::*;
 use crate::capability::boot_table::*;
+use crate::capability::cpu::*;
 use crate::capability::decompose::*;
 use crate::capability::delete::*;
 use crate::capability::derive::*;

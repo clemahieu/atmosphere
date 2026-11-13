@@ -219,8 +219,10 @@ def boot_log():
     return (" INFO root holds 2 untyped and 1 frames\x1b[0m\n INFO root slot 1: process base 0x8000\n"
             " INFO root slot 2: thread\n INFO root slot 3: console\n"
             " INFO root slot 4: power base 0x2000000001000 order 0 rights 0x0\n"
-            " INFO root slot 5: untyped base 0x40000000 order 18 rights 0x8\n"
-            "\x1b[34m INFO root slot 6: untyped\x1b[0m\n"
+            + "".join(f" INFO root slot {5 + c}: core base {0x2000000002000 + c * 0x1000:#x} order 0 rights 0x0\n"
+                      for c in range(32))
+            + " INFO root slot 37: untyped base 0x40000000 order 18 rights 0x8\n"
+            "\x1b[34m INFO root slot 38: untyped\x1b[0m\n"
             " INFO root slot 129: frame order 0\n"
             "dom0 freed frame retyped\n"
             "dom0 eager backed 40\n"

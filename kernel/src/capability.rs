@@ -13,7 +13,7 @@ use core::mem::size_of;
 use astd::boot::{BootInfo, MAPPED_RUNS, PAGE_BYTES};
 use verified::array::Array;
 use verified::capability::boot::{
-    ROOT_CONSOLE_SLOT, ROOT_FRAME_SLOT, ROOT_POWER_SLOT, ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_UNTYPED_SLOT,
+    ROOT_CONSOLE_SLOT, ROOT_CORE_SLOT, ROOT_FRAME_SLOT, ROOT_POWER_SLOT, ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_UNTYPED_SLOT,
 };
 use verified::capability::boot_image::ImageRun;
 use verified::capability::boot_memory::ROOT_UNTYPED_SLOTS;
@@ -23,7 +23,7 @@ use verified::capability::operation::{Outcome, OPERATION_POWER_OFF, STATUS_OK};
 use verified::capability::space::SPACE_ROOT_PAGE;
 use verified::capability::table::{CapKind, MAX_ORDER};
 use verified::arch::{Registers, MEM_MASK};
-use verified::define::{KERNEL_MEM_END_L4INDEX, NUM_IOMMUS};
+use verified::define::{KERNEL_MEM_END_L4INDEX, NUM_CPUS, NUM_IOMMUS};
 use vstd::prelude::Tracked;
 
 use crate::boot::free_ranges::{free_page_ranges, ByteRange, PageRun, PAGE_SLOTS};
@@ -212,6 +212,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     log::info!("root holds {} untyped and {} frames", untyped, frames);
     let fixed = [ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_CONSOLE_SLOT, ROOT_POWER_SLOT]
         .into_iter()
+        .chain(ROOT_CORE_SLOT..ROOT_CORE_SLOT + NUM_CPUS)
         .chain(ROOT_UNTYPED_SLOT..ROOT_UNTYPED_SLOT + untyped)
         .chain(ROOT_FRAME_SLOT..ROOT_FRAME_SLOT + frames);
     for index in fixed {
@@ -300,5 +301,6 @@ fn kind_name(kind: CapKind) -> &'static str {
         CapKind::Device => "device",
         CapKind::Console => "console",
         CapKind::Power => "power",
+        CapKind::Core => "core",
     }
 }

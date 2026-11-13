@@ -29,6 +29,7 @@ pub const CAP_KIND_SPACE: u64 = 7;
 pub const CAP_KIND_DEVICE: u64 = 8;
 pub const CAP_KIND_CONSOLE: u64 = 9;
 pub const CAP_KIND_POWER: u64 = 10;
+pub const CAP_KIND_CORE: u64 = 11;
 
 /// inspect's bound in the step counter: none, since it runs no loop and calls nothing counted. See
 /// design/one-lock-bounded-steps/.
@@ -48,6 +49,7 @@ pub open spec fn spec_kind_number(kind: CapKind) -> u64 {
         CapKind::Device => CAP_KIND_DEVICE,
         CapKind::Console => CAP_KIND_CONSOLE,
         CapKind::Power => CAP_KIND_POWER,
+        CapKind::Core => CAP_KIND_CORE,
     }
 }
 
@@ -68,6 +70,7 @@ pub fn kind_number(kind: CapKind) -> (ret: u64)
         CapKind::Device => CAP_KIND_DEVICE,
         CapKind::Console => CAP_KIND_CONSOLE,
         CapKind::Power => CAP_KIND_POWER,
+        CapKind::Core => CAP_KIND_CORE,
     }
 }
 

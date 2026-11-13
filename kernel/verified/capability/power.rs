@@ -22,7 +22,7 @@ pub const POWER_OFF_STEPS: usize = 0;
 
 /// The power capability, naming power's object.
 pub open spec fn power_payload() -> Payload {
-    Payload { kind: CapKind::Power, order: 0, rights: POWER_RIGHTS, base: POWER_OBJECT, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Power, order: 0, rights: POWER_RIGHTS, base: POWER_OBJECT, badge: 0, priority: 0 }
 }
 
 impl CapKernel {

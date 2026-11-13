@@ -243,7 +243,7 @@ pub fn new_thread_record() -> (ret: ThreadRecord)
 
 /// A thread capability's payload.
 pub open spec fn thread_of(base: usize) -> Payload {
-    Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base, badge: 0, priority: 0 }
 }
 
 /// Each thread's record by its block's address, and the capabilities holding its block.
@@ -1942,7 +1942,7 @@ impl CapKernel {
             &self.list,
             root,
             to,
-            Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base, badge: 0, reserved: 0 },
+            Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base, badge: 0, priority: 0 },
         );
         self.threads.holders = Ghost(pre.threads.holders@.insert(base, set![child]));
         proof {

@@ -110,6 +110,7 @@ pub const KIND_SPACE: u64 = 7;
 pub const KIND_DEVICE: u64 = 8;
 pub const KIND_CONSOLE: u64 = 9;
 pub const KIND_POWER: u64 = 10;
+pub const KIND_CORE: u64 = 11;
 
 /// The indices a capability table has: 512 root entries of 128 positions. Every slot is below this.
 pub const TABLE_INDICES: u64 = 65536;
@@ -146,9 +147,15 @@ pub const ROOT_CONSOLE_SLOT: u64 = 3;
 /// it.
 pub const ROOT_POWER_SLOT: u64 = 4;
 
+/// The root's first slot holding a core capability, as boot leaves it: one per core the kernel can run
+/// on, core 0 first, at consecutive slots from here, each allowing the core's top priority. See
+/// design/cpu-time-as-capability/.
+pub const ROOT_CORE_SLOT: u64 = 5;
+
 /// The root's first slot holding an untyped capability, as boot leaves it: one per maximal aligned
-/// block of free memory, at consecutive slots from here to the end of the table's first leaf.
-pub const ROOT_UNTYPED_SLOT: u64 = 5;
+/// block of free memory, at consecutive slots from here, past the core capabilities, toward the end of
+/// the table's first leaf.
+pub const ROOT_UNTYPED_SLOT: u64 = 37;
 
 /// The root's first slot holding a frame capability for dom0's image, as boot leaves it: one per
 /// aligned block of at most 512 pages of each run the loader mapped, with the run's rights, at

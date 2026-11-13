@@ -11,6 +11,7 @@ pub mod boot_memory;
 pub mod boot_space;
 pub mod boot_table;
 pub mod console;
+pub mod cpu;
 pub mod decompose;
 pub mod delete;
 pub mod derive;

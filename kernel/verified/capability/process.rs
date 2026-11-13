@@ -65,7 +65,7 @@ pub struct ProcessRecord {
 
 /// A process capability's payload.
 pub open spec fn process_of(base: usize) -> Payload {
-    Payload { kind: CapKind::Process, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, base, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Process, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, base, badge: 0, priority: 0 }
 }
 
 /// Each process's record by its block's address, the pages of its block it keeps for later, and the
@@ -1365,7 +1365,7 @@ impl CapKernel {
             &self.list,
             root,
             to,
-            Payload { kind: CapKind::Process, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, base, badge: 0, reserved: 0 },
+            Payload { kind: CapKind::Process, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, base, badge: 0, priority: 0 },
         );
         self.processes.holders = Ghost(pre.processes.holders@.insert(base, set![child]));
         self.processes.bound = Ghost(pre.processes.bound@.insert(base, Set::<usize>::empty()));

@@ -173,7 +173,7 @@ pub const SPACE_RIGHTS: u32 = 2;
 
 /// A space capability's payload.
 pub open spec fn space_of(base: usize) -> Payload {
-    Payload { kind: CapKind::Space, order: 3, rights: SPACE_RIGHTS, base, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Space, order: 3, rights: SPACE_RIGHTS, base, badge: 0, priority: 0 }
 }
 
 /// Each space's permissions by its block's address, and the capabilities holding its block.
@@ -3550,7 +3550,7 @@ impl CapKernel {
             &self.list,
             root,
             to,
-            Payload { kind: CapKind::Space, order: 3, rights: SPACE_RIGHTS, base, badge: 0, reserved: 0 },
+            Payload { kind: CapKind::Space, order: 3, rights: SPACE_RIGHTS, base, badge: 0, priority: 0 },
         );
         self.spaces.holders = Ghost(pre.spaces.holders@.insert(base, set![child]));
         self.spaces.bound = Ghost(pre.spaces.bound@.insert(base, Set::<usize>::empty()));

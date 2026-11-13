@@ -27,7 +27,7 @@ use crate::capability::view::*;
 use crate::define::*;
 
 /// How many untyped capabilities the root's first leaf holds, from ROOT_UNTYPED_SLOT to its last slot.
-pub const ROOT_UNTYPED_SLOTS: usize = 123;
+pub const ROOT_UNTYPED_SLOTS: usize = 91;
 
 /// The blocks of order at most cap the runs decompose into, run by run, each as its first page and its
 /// order.
@@ -529,7 +529,8 @@ impl CapKernel {
                 ==> final(self).root_untyped_at(root, process, leaf, t, runs_blocks(runs@, MAX_ORDER as nat)[t]),
             forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE
                 && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + runs_blocks(runs@, MAX_ORDER as nat).len())
-                ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live,
+                ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live
+                && final(self).list.nodes@[j].depth == old(self).list.nodes@[j].depth,
             forall|x: usize| #![trigger old(self).is_cap(x)]
                 !(leaf + ROOT_UNTYPED_SLOT <= x < leaf + ROOT_UNTYPED_SLOT + runs_blocks(runs@, MAX_ORDER as nat).len())
                 && old(self).is_cap(x) ==> final(self).is_cap(x) && final(self).payload_of(x) == old(self).payload_of(x),
@@ -590,7 +591,8 @@ impl CapKernel {
                 self.list.pages@.dom() == pre.list.pages@.dom(),
                 forall|j: int| #![trigger self.list.nodes@[j]] 0 <= j < NODE_SPACE
                     && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + k)
-                    ==> self.list.nodes@[j].live == pre.list.nodes@[j].live,
+                    ==> self.list.nodes@[j].live == pre.list.nodes@[j].live
+                    && self.list.nodes@[j].depth == pre.list.nodes@[j].depth,
                 forall|x: usize| #![trigger pre.is_cap(x)] !(leaf + ROOT_UNTYPED_SLOT <= x < leaf + ROOT_UNTYPED_SLOT + k) && pre.is_cap(x)
                     ==> self.is_cap(x) && self.payload_of(x) == pre.payload_of(x),
                 self.table_pages == pre.table_pages,
@@ -648,7 +650,8 @@ impl CapKernel {
                     self.list.pages@.dom() == pre.list.pages@.dom(),
                     forall|j: int| #![trigger self.list.nodes@[j]] 0 <= j < NODE_SPACE
                         && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + k)
-                        ==> self.list.nodes@[j].live == pre.list.nodes@[j].live,
+                        ==> self.list.nodes@[j].live == pre.list.nodes@[j].live
+                        && self.list.nodes@[j].depth == pre.list.nodes@[j].depth,
                     forall|x: usize| #![trigger pre.is_cap(x)] !(leaf + ROOT_UNTYPED_SLOT <= x < leaf + ROOT_UNTYPED_SLOT + k) && pre.is_cap(x)
                         ==> self.is_cap(x) && self.payload_of(x) == pre.payload_of(x),
                     self.table_pages == pre.table_pages,
@@ -718,7 +721,8 @@ impl CapKernel {
             cur.list.seq@[0] == root,
             forall|j: int| #![trigger cur.list.nodes@[j]] 0 <= j < NODE_SPACE
                 && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + k)
-                ==> cur.list.nodes@[j].live == pre.list.nodes@[j].live,
+                ==> cur.list.nodes@[j].live == pre.list.nodes@[j].live
+                && cur.list.nodes@[j].depth == pre.list.nodes@[j].depth,
             forall|x: usize| #![trigger pre.is_cap(x)] !(leaf + ROOT_UNTYPED_SLOT <= x < leaf + ROOT_UNTYPED_SLOT + k) && pre.is_cap(x)
                 ==> cur.is_cap(x) && cur.payload_of(x) == pre.payload_of(x),
             forall|j: int| leaf + ROOT_UNTYPED_SLOT + k <= j < leaf + NODES_PER_PAGE ==> !#[trigger] cur.list.nodes@[j].live,
@@ -747,7 +751,8 @@ impl CapKernel {
         ensures
             forall|j: int| #![trigger post.list.nodes@[j]] 0 <= j < NODE_SPACE
                 && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + k + 1)
-                ==> post.list.nodes@[j].live == pre.list.nodes@[j].live,
+                ==> post.list.nodes@[j].live == pre.list.nodes@[j].live
+                && post.list.nodes@[j].depth == pre.list.nodes@[j].depth,
             forall|x: usize| #![trigger pre.is_cap(x)] !(leaf + ROOT_UNTYPED_SLOT <= x < leaf + ROOT_UNTYPED_SLOT + k + 1) && pre.is_cap(x)
                 ==> post.is_cap(x) && post.payload_of(x) == pre.payload_of(x),
             forall|j: int| leaf + ROOT_UNTYPED_SLOT + k + 1 <= j < leaf + NODES_PER_PAGE ==> !#[trigger] post.list.nodes@[j].live,
@@ -785,8 +790,10 @@ impl CapKernel {
         }
         assert forall|j: int| #![trigger post.list.nodes@[j]] 0 <= j < NODE_SPACE
             && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + k + 1)
-            implies post.list.nodes@[j].live == pre.list.nodes@[j].live by {
+            implies post.list.nodes@[j].live == pre.list.nodes@[j].live
+            && post.list.nodes@[j].depth == pre.list.nodes@[j].depth by {
             assert(cur.list.nodes@[j].live == pre.list.nodes@[j].live);
+            assert(cur.list.nodes@[j].depth == pre.list.nodes@[j].depth);
         }
         assert forall|j: int| leaf + ROOT_UNTYPED_SLOT + k + 1 <= j < leaf + NODES_PER_PAGE
             implies !#[trigger] post.list.nodes@[j].live by {
@@ -881,6 +888,7 @@ impl CapKernel {
                 &&& forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE
                     && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + count)
                     ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live
+                    && final(self).list.nodes@[j].depth == old(self).list.nodes@[j].depth
                 &&& forall|x: usize| #![trigger old(self).is_cap(x)]
                     !(leaf + ROOT_UNTYPED_SLOT <= x < leaf + ROOT_UNTYPED_SLOT + count) && old(self).is_cap(x)
                     ==> final(self).is_cap(x) && final(self).payload_of(x) == old(self).payload_of(x)

@@ -26,8 +26,8 @@
 //! through the thread's control capability.
 //! Beside those, boot can build the capability kernel from no prior state of `self`, and start the
 //! root: core 0 loads the root's space and enters its thread. Through its console and power
-//! capabilities, the root can print and ask for power-off, and boot can record a device and give the
-//! root its capability.
+//! capabilities, the root can print and ask for power-off; through a core's capability it can hand on
+//! that core at a lower priority; and boot can record a device and give the root its capability.
 //! And an IOMMU's flush leaves the frames, the threads and the view as they were.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
@@ -44,6 +44,7 @@ use crate::capability::boot_image::*;
 use crate::capability::boot_kernel::*;
 use crate::capability::boot_memory::*;
 use crate::capability::boot_table::*;
+use crate::capability::cpu::*;
 use crate::capability::decompose::*;
 use crate::capability::delete::*;
 use crate::capability::derive::*;
@@ -890,6 +891,37 @@ proof fn lemma_children_gone(pre: Tree, post: Tree, c: usize, kids: Set<usize>)
     vstd::set_lib::lemma_set_disjoint_lens(b, kids);
     assert((b + kids).subset_of(a));
     vstd::set_lib::lemma_len_subset(b + kids, a);
+}
+
+/// What table_links_wf says of one entry that names a child, for a proof that keeps it hidden: the
+/// child is a table page whose record names the entry, and the entry holds the child's address. The
+/// clause for an entry that names a child and the clause for a child's record each instantiate the
+/// other.
+proof fn lemma_table_link(tree: TableTree, t: usize, i: usize)
+    requires
+        table_links_wf(tree),
+        tree.names_child(t, i),
+    ensures
+        ({
+            let c = (tree.entry(t, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
+            &&& tree.is_page(c)
+            &&& tree.record(c).parent == Some(TableParent { table: t, entry: i })
+            &&& tree.entry(t, i).addr == table_addr(c)
+        }),
+{
+}
+
+/// What table_links_wf says of one table page with a parent, for a proof that keeps it hidden: the
+/// parent's entry names a child and holds the page's address.
+proof fn lemma_table_parent(tree: TableTree, c: usize)
+    requires
+        table_links_wf(tree),
+        tree.is_page(c),
+        tree.record(c).parent is Some,
+    ensures
+        tree.names_child(tree.record(c).parent->0.table, tree.record(c).parent->0.entry),
+        tree.entry(tree.record(c).parent->0.table, tree.record(c).parent->0.entry).addr == table_addr(c),
+{
 }
 
 /// A live node in a leaf's page is listed and not first, since the first node lies outside every leaf:
@@ -1748,12 +1780,13 @@ impl CapKernel {
             final(self).loaded(0, base),
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].current_thread is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.cores@[0].next_pcid == 1);
+            assert(s0.cores@[0].space is None && s0.cores@[0].current_thread is None && s0.cores@[0].generation == 1
+                && s0.cores@[0].next_pcid == 1) by {
+                reveal(CapKernel::booted);
+            }
         }
         let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
         let ghost s1 = *self;
@@ -2615,10 +2648,10 @@ impl CapKernel {
             r0.lemma_slot(process, ROOT_UNTYPED_SLOT);
             r0.lemma_slot(process, WITNESS_THREAD_SLOT);
             r0.lemma_slot(base, WITNESS_CHILD_SLOT);
-            assert(index_slot(ROOT_UNTYPED_SLOT) == 5);
+            assert(index_slot(ROOT_UNTYPED_SLOT) == 37);
             assert(index_slot(WITNESS_THREAD_SLOT) == 2 && index_slot(WITNESS_CHILD_SLOT) == 1);
             assert(index_entry(WITNESS_CHILD_SLOT) == 0);
-            assert(u % PAGE_SZ == 5 && nt % PAGE_SZ == 2 && child % PAGE_SZ == 1);
+            assert(u % PAGE_SZ == 37 && nt % PAGE_SZ == 2 && child % PAGE_SZ == 1);
             r0.lemma_slot_bound(u);
             r0.lemma_slot_bound(nt);
             r0.lemma_slot_bound(child);
@@ -3134,10 +3167,10 @@ impl CapKernel {
             r0.lemma_slot(process, WITNESS_PROCESS_SLOT);
             r0.lemma_slot(process, WITNESS_THREAD_SLOT);
             r0.lemma_slot(base, WITNESS_CHILD_SLOT);
-            assert(index_slot(ROOT_UNTYPED_SLOT) == 5 && index_slot(WITNESS_PROCESS_SLOT) == 1);
+            assert(index_slot(ROOT_UNTYPED_SLOT) == 37 && index_slot(WITNESS_PROCESS_SLOT) == 1);
             assert(index_slot(WITNESS_THREAD_SLOT) == 2 && index_slot(WITNESS_CHILD_SLOT) == 1);
             assert(index_entry(WITNESS_CHILD_SLOT) == 0);
-            assert(u % PAGE_SZ == 5 && np % PAGE_SZ == 1 && nt % PAGE_SZ == 2 && child % PAGE_SZ == 1);
+            assert(u % PAGE_SZ == 37 && np % PAGE_SZ == 1 && nt % PAGE_SZ == 2 && child % PAGE_SZ == 1);
             r0.lemma_slot_bound(u);
             r0.lemma_slot_bound(np);
             r0.lemma_slot_bound(nt);
@@ -3839,10 +3872,10 @@ impl CapKernel {
             r0.lemma_slot(process, WITNESS_PROCESS_SLOT);
             r0.lemma_slot(process, WITNESS_THREAD_SLOT);
             r0.lemma_slot(base, WITNESS_CHILD_SLOT);
-            assert(index_slot(ROOT_UNTYPED_SLOT) == 5 && index_slot(WITNESS_PROCESS_SLOT) == 1);
+            assert(index_slot(ROOT_UNTYPED_SLOT) == 37 && index_slot(WITNESS_PROCESS_SLOT) == 1);
             assert(index_slot(WITNESS_THREAD_SLOT) == 2 && index_slot(WITNESS_CHILD_SLOT) == 1);
             assert(index_entry(WITNESS_CHILD_SLOT) == 0);
-            assert(u % PAGE_SZ == 5 && np % PAGE_SZ == 1 && nt % PAGE_SZ == 2 && child % PAGE_SZ == 1);
+            assert(u % PAGE_SZ == 37 && np % PAGE_SZ == 1 && nt % PAGE_SZ == 2 && child % PAGE_SZ == 1);
             r0.lemma_slot_bound(u);
             r0.lemma_slot_bound(np);
             r0.lemma_slot_bound(nt);
@@ -9524,6 +9557,7 @@ impl CapKernel {
     {
         hide(CapKernel::wf);
         hide(entries_translatable);
+        hide(table_links_wf);
         let ghost s0 = *self;
         let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
         let ghost first = page_block_payload(bs[0]);
@@ -9744,7 +9778,10 @@ impl CapKernel {
             assert(table_links_wf(a3)) by {
                 reveal(CapKernel::wf);
             }
+            lemma_table_link(a3, process, l4);
+            assert(a3.is_page(c0));
             assert(a3.names_child(c0, 0));
+            lemma_table_link(a3, c0, 0);
             assert(a3.entry(c0, 0).addr - TABLE_NODE_PAGES * PAGE_SZ == c1);
             assert(a3.is_page(c1));
             assert(s3.table_pages.records@[c1].value().parent is Some);
@@ -9779,9 +9816,14 @@ impl CapKernel {
             assert(a3.names_child(c1, 0));
             assert(a4.entry(c1, 0) == a3.entry(c1, 0));
             assert(a4.is_page(c1) && a4.record(c1).level == a3.record(c1).level);
+            // Each of the two tables has the parent it had, whose entry names it still.
+            lemma_table_link(a3, c1, 0);
+            assert(a4.is_page(c2) && a4.record(c2).parent == Some(TableParent { table: c1, entry: 0 }));
+            lemma_table_parent(a4, c2);
             assert(a4.names_child(c1, 0));
-            assert(a4.names_child(c0, 0));
             assert(a4.record(c1).parent == Some(TableParent { table: c0, entry: 0 }));
+            lemma_table_parent(a4, c1);
+            assert(a4.names_child(c0, 0));
             // The page is live, the root's untyped is where it was.
             assert(table_page_wf(&s4.list, &s4.table_pages, &s4.blocks, c1)) by {
                 reveal(CapKernel::wf);
@@ -11410,6 +11452,164 @@ impl CapKernel {
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
         self.power_off(process, ROOT_POWER_SLOT, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// of two free ones past those boot's tables took from the first untyped: the root gives itself a
+    /// leaf in root entry 2 of its own table, in the second block, and derives from its capability for
+    /// core 0, at the top priority, a capability for the same core at priority 7 into slot 259, slot 3
+    /// of that leaf. derive accepts it: the child names core 0 at priority 7, one depth below the
+    /// root's core capability, as its child. The use is a holder of a core handing on time there at a
+    /// priority below its own. design/witness-per-way-an-operation-succeeds/,
+    /// design/cpu-time-as-capability/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_derives_a_core(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret,
+            ({
+                let parent = (leaf@ + ROOT_CORE_SLOT) as usize;
+                let n = (base + PROCESS_BYTES + 3) as usize;
+                &&& final(self).wf()
+                &&& final(self).is_cap(n)
+                &&& final(self).payload_of(n) == core_payload(0, 7)
+                &&& final(self).list.is_child(parent, n)
+                &&& final(self).list.nodes@[n as int].depth == 2
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ghost blocks = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(blocks[0]);
+        let ghost itb = image_tables_bound(image@);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        proof {
+            lemma2_to64();
+            lemma_tables_bound_nonneg(image@);
+            // The root's first untyped and its record.
+            assert(0 < untyped@);
+            assert(s0.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s0.list.nodes@[u as int].depth == 1);
+            assert(s0.tables.is_cap(&s0.list, u));
+            assert(s0.tables.caps_wf(&s0.list)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(cap_wf(first));
+            assert(payload_wf(first));
+            assert(first.kind is Untyped && first.rights == UNTYPED_RIGHTS);
+            assert(UNTYPED_RIGHTS & right_bit(Right::Retype) != 0) by (compute_only);
+            let pn = (leaf@ + 1) as usize;
+            assert(s0.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)));
+            s0.lemma_process_cap(pn);
+            assert(s0.processes.records@.contains_key(process));
+            assert(!s0.processes.records@[process].value().dead);
+            assert(witness_root(s0, process, u, first));
+            // The free block past boot's tables.
+            assert(s0.root_untyped(process) == u);
+            lemma_pow2_pos(first.order as nat);
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((itb + 2) * PROCESS_BYTES <= block_bytes(first.order));
+            assert(first.base + block_bytes(first.order) <= NODE_SPACE);
+            assert(base == first.base + itb * PROCESS_BYTES);
+            assert(base + 2 * PROCESS_BYTES <= NODE_SPACE);
+            assert forall|j: int| 0 <= j < 2 implies #[trigger] witness_block(s0, cursor_block(base, j), first) by {
+                assert(cursor_block(first.base, itb + j) == cursor_block(base, j));
+                assert(s0.root_table_block(process, cursor_block(first.base, itb + j)));
+            }
+        }
+        let b1 = base + PROCESS_BYTES;
+        proof {
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
+            assert(cursor_block(base, 0) == base);
+            assert(witness_block(s0, base, first));
+            assert(base % PROCESS_BYTES == 0);
+            lemma_cursor_block(base, 1);
+            lemma_block_page(b1, 0);
+            assert(witness_block(s0, b1, first));
+        }
+
+        // A leaf for the root, in root entry 2 of its own table.
+        let at = Position { through: None, index: 2 };
+        proof {
+            assert(s0.destination_at(process, None) == Some(process));
+            assert(s0.tables.leaf(process, 2) == NO_LEAF);
+            assert(block_within(b1, 1, first));
+            assert(s0.can_retype_under(process, ROOT_UNTYPED_SLOT, b1, 1));
+            assert(s0.blocks.small_free((b1 / PAGE_SZ) as int, 1)) by {
+                assert forall|k: int| 0 <= k < order_pages(1) implies #[trigger] s0.blocks.pages@[b1 / PAGE_SZ + k].kind is Free by {
+                    assert(s0.blocks.pages@[b1 / PAGE_SZ + k].kind is Free);
+                }
+            }
+            assert(s0.blocks.tracks_addr_run(b1, 2));
+            assert(b1 != NO_LEAF);
+            assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at, b1));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at, b1, Tracked(&mut steps));
+        let ghost s1 = *self;
+        let ghost parent = (leaf@ + ROOT_CORE_SLOT) as usize;
+        let ghost n = (b1 + 3) as usize;
+        proof {
+            assert(ok1);
+            assert(Self::leaf_retyped(s0, s1, process, ROOT_UNTYPED_SLOT, at, b1));
+            assert(s1.tables.leaf(process, 2) == b1);
+            assert(s1.tables.roots@.contains_key(process));
+            assert(s1.root_live(process));
+            assert(index_ok(WITNESS_DEVICE_SLOT) && index_entry(WITNESS_DEVICE_SLOT) == 2);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_DEVICE_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_DEVICE_SLOT) == n);
+            assert(!s1.list.nodes@[n as int].live);
+            // The root's capability for core 0, as boot left it.
+            assert(s0.slot_holds(process, ROOT_CORE_SLOT, parent, core_payload(0, MAX_PRIORITY)));
+            assert(s0.list.nodes@[parent as int].depth == 1);
+            assert(s0.tables.has_slot(&s0.list, process, ROOT_CORE_SLOT));
+            assert(s0.is_cap(parent));
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT));
+            assert(s1.tables.node_of(process, ROOT_CORE_SLOT) == parent);
+            assert(s1.is_cap(parent));
+            assert(s1.payload_of(parent) == core_payload(0, MAX_PRIORITY));
+            assert(s1.list.nodes@[parent as int].depth == 1);
+            assert(CORE_RIGHTS & !CORE_RIGHTS == 0) by (compute_only);
+            s1.lemma_console_power_derive(process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7);
+            assert(core_object(0) == CORE_OBJECTS);
+            assert(s1.can_derive_between(process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7));
+        }
+        let to = Position { through: None, index: WITNESS_DEVICE_SLOT };
+        proof {
+            assert(s1.table_at(process, None) == Some(process));
+            assert(s1.can_derive_at(process, ROOT_CORE_SLOT, to, CORE_RIGHTS, CORE_OBJECTS, 7));
+        }
+        let ok2 = self.derive(process, ROOT_CORE_SLOT, to, CORE_RIGHTS, CORE_OBJECTS, 7);
+        proof {
+            let s2 = *self;
+            assert(ok2);
+            assert(Self::cap_derived_between(s1, s2, process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7));
+            assert(s2.payload_of(n) == child_of(core_payload(0, MAX_PRIORITY), CORE_RIGHTS, CORE_OBJECTS, 7));
+            assert(s2.payload_of(n) == core_payload(0, 7));
+            assert(s2.list.nodes@[n as int].depth == 2);
+            assert(s2.view().holds(process, n));
+        }
+        ok2
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

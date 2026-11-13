@@ -12,6 +12,9 @@ verus! {
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::console::*;
+use crate::capability::cpu::CORE_RIGHTS;
+#[cfg(verus_keep_ghost)]
+use crate::capability::cpu::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -23,6 +26,7 @@ use crate::capability::mapping::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::power::*;
 use crate::capability::process::*;
+use crate::capability::reach::{CORE_OBJECTS, MAX_PRIORITY};
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 #[cfg(verus_keep_ghost)]
@@ -57,19 +61,24 @@ pub const ROOT_CONSOLE_SLOT: usize = 3;
 /// The index of the root's power capability: slot 4 of entry 0.
 pub const ROOT_POWER_SLOT: usize = 4;
 
-/// The index of the root's first untyped capability: slot 5 of entry 0. Boot puts one per block of free
-/// memory at consecutive slots from here to the leaf's last, boot_root_memory.
-pub const ROOT_UNTYPED_SLOT: usize = 5;
+/// The index of the root's capability to core 0: slot 5 of entry 0. Core c's is at ROOT_CORE_SLOT + c,
+/// for each of the NUM_CPUS cores, each allowing MAX_PRIORITY.
+pub const ROOT_CORE_SLOT: usize = 5;
+
+/// The index of the root's first untyped capability: slot 37 of entry 0, past the cores'. Boot puts one
+/// per block of free memory at consecutive slots from here to the leaf's last, boot_root_memory.
+pub const ROOT_UNTYPED_SLOT: usize = 37;
 
 /// The index of the first slot of the root's second leaf, at entry 1, which boot makes for the frames
 /// dom0's image is loaded in: its slots run from here to the leaf's last, 2 * NODES_PER_PAGE - 1.
 pub const ROOT_FRAME_SLOT: usize = 129;
 
-/// What boot hands the root that is no memory, each at its fixed slot: the console capability and the
-/// power capability.
+/// What boot hands the root that is no memory, each at its fixed slot: the console capability, the
+/// power capability and each core's capability at its top priority.
 pub open spec fn root_object(i: usize, p: Payload) -> bool {
     ||| i == ROOT_CONSOLE_SLOT && p == console_payload()
     ||| i == ROOT_POWER_SLOT && p == power_payload()
+    ||| ROOT_CORE_SLOT <= i < ROOT_CORE_SLOT + NUM_CPUS && p == core_payload(i - ROOT_CORE_SLOT, MAX_PRIORITY)
 }
 
 /// The rights of an untyped capability boot hands the root: retype alone. Control is no right over
@@ -78,7 +87,7 @@ pub const UNTYPED_RIGHTS: u32 = 8;
 
 /// The untyped capability boot hands the root for the block of order pages at base.
 pub open spec fn untyped_payload(base: usize, order: u8) -> Payload {
-    Payload { kind: CapKind::Untyped, order, rights: UNTYPED_RIGHTS, base, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Untyped, order, rights: UNTYPED_RIGHTS, base, badge: 0, priority: 0 }
 }
 
 /// o is one of the pages of the block of order pages at base, as reach names pages.
@@ -364,7 +373,7 @@ impl CapKernel {
             &self.list,
             base,
             ROOT_PROCESS_SLOT,
-            Payload { kind: CapKind::Process, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, base, badge: 0, reserved: 0 },
+            Payload { kind: CapKind::Process, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, base, badge: 0, priority: 0 },
         );
         self.processes.holders = Ghost(pre.processes.holders@.insert(base, set![cap]));
         self.processes.bound = Ghost(pre.processes.bound@.insert(base, Set::<usize>::empty()));
@@ -592,7 +601,7 @@ impl CapKernel {
             &self.list,
             process,
             ROOT_THREAD_SLOT,
-            Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base: t, badge: 0, reserved: 0 },
+            Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base: t, badge: 0, priority: 0 },
         );
         self.threads.holders = Ghost(freed.threads.holders@.insert(t, set![cap]));
         proof {
@@ -1180,9 +1189,9 @@ impl CapKernel {
         }
     }
 
-    /// A step after boot_root, once for the console and once for power: the root's capability to an
-    /// object that is no memory, at its fixed slot i, below the list's synthetic root as its process and
-    /// thread capabilities are. Such a capability names no block and carries no control, so the root's
+    /// A step after boot_root, once for the console, once for power and once per core: the root's
+    /// capability to an object that is no memory, at its fixed slot i, below the list's synthetic root
+    /// as its process and thread capabilities are. Such a capability names no block and carries no control, so the root's
     /// reach grows by the object alone, and nobody else's by anything else. See
     /// design/root-process-at-boot/.
     pub(crate) fn boot_root_object(&mut self, root: usize, process: usize, leaf: usize, i: usize, payload: Payload)
@@ -1258,6 +1267,9 @@ impl CapKernel {
             assert(0u32 & 128u32 == 0) by (bit_vector);
             assert(CONSOLE_OBJECT % PAGE_SZ == 0) by (compute_only);
             assert(POWER_OBJECT % PAGE_SZ == 0) by (compute_only);
+            if ROOT_CORE_SLOT <= i < ROOT_CORE_SLOT + NUM_CPUS {
+                lemma_core_object(i - ROOT_CORE_SLOT);
+            }
             Self::lemma_derive_caps_wf(pre, post, child);
             Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
@@ -1284,6 +1296,179 @@ impl CapKernel {
             assert forall|r: usize, o: usize| #[trigger] post.view().reach(r, o) && !pre.view().reach(r, o)
                 implies o == payload.base by {
                 assert(post.view().covers(child, o) == (o == payload.base));
+            }
+        }
+    }
+
+    /// The steps after power's, boot_root_object once per core: the root's capability to core c, at
+    /// MAX_PRIORITY, at slot ROOT_CORE_SLOT + c. The root's reach grows by the cores' objects, and
+    /// nobody else's by anything else. See design/cpu-time-as-capability/.
+    pub(crate) fn boot_root_cores(&mut self, root: usize, process: usize, leaf: usize)
+        requires
+            old(self).wf(),
+            root == old(self).list.seq@[0],
+            old(self).tables.has_slot(&old(self).list, process, ROOT_PROCESS_SLOT),
+            old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+            forall|j: int| leaf + ROOT_CORE_SLOT <= j < leaf + ROOT_CORE_SLOT + NUM_CPUS ==> !#[trigger] old(self).list.nodes@[j].live,
+            no_device_space(&old(self).spaces),
+        ensures
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
+            final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
+            final(self).wf(),
+            final(self).list.seq@[0] == root,
+            final(self).tables.roots == old(self).tables.roots,
+            final(self).tables.owner == old(self).tables.owner,
+            final(self).tables.has_slot(&final(self).list, process, ROOT_PROCESS_SLOT),
+            final(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+            forall|c: int| 0 <= c < NUM_CPUS ==> {
+                &&& final(self).slot_holds(
+                    process,
+                    (ROOT_CORE_SLOT + c) as usize,
+                    (leaf + ROOT_CORE_SLOT + c) as usize,
+                    #[trigger] core_payload(c, MAX_PRIORITY),
+                )
+                &&& final(self).list.nodes@[leaf + ROOT_CORE_SLOT + c].depth == 1
+            },
+            forall|x: usize| #![trigger final(self).is_cap(x)] #![trigger old(self).is_cap(x)]
+                !(leaf + ROOT_CORE_SLOT <= x < leaf + ROOT_CORE_SLOT + NUM_CPUS)
+                ==> final(self).is_cap(x) == old(self).is_cap(x),
+            forall|x: usize| !(leaf + ROOT_CORE_SLOT <= x < leaf + ROOT_CORE_SLOT + NUM_CPUS) && #[trigger] old(self).is_cap(x)
+                ==> final(self).payload_of(x) == old(self).payload_of(x),
+            forall|j: int| #![trigger final(self).list.nodes@[j]]
+                0 <= j < NODE_SPACE && !(leaf + ROOT_CORE_SLOT <= j < leaf + ROOT_CORE_SLOT + NUM_CPUS)
+                ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live
+                && final(self).list.nodes@[j].depth == old(self).list.nodes@[j].depth,
+            forall|j: int| #![trigger final(self).list.nodes@[j]]
+                leaf + ROOT_CORE_SLOT <= j < leaf + ROOT_CORE_SLOT + NUM_CPUS ==> final(self).list.nodes@[j].live,
+            final(self).table_pages == old(self).table_pages,
+            final(self).blocks == old(self).blocks,
+            final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
+            final(self).spaces == old(self).spaces,
+            final(self).list.pages@.dom() == old(self).list.pages@.dom(),
+            forall|o: usize| #[trigger] final(self).view().reach(process, o)
+                <==> (old(self).view().reach(process, o) || is_core_object(o)),
+            forall|r: usize, o: usize| #[trigger] final(self).view().reach(r, o) && !old(self).view().reach(r, o)
+                ==> is_core_object(o),
+    {
+        let ghost pre = *old(self);
+        let mut c: usize = 0;
+        while c < NUM_CPUS
+            invariant
+                c <= NUM_CPUS,
+                self.wf(),
+                root == self.list.seq@[0],
+                self.tables.has_slot(&self.list, process, ROOT_PROCESS_SLOT),
+                self.tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+                no_device_space(&self.spaces),
+                pre.wf(),
+                pre.tables.has_slot(&pre.list, process, ROOT_PROCESS_SLOT),
+                pre.tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+                forall|j: int| leaf + ROOT_CORE_SLOT + c <= j < leaf + ROOT_CORE_SLOT + NUM_CPUS ==> !#[trigger] self.list.nodes@[j].live,
+                self.stale_epoch == pre.stale_epoch,
+                self.flush_epoch == pre.flush_epoch,
+                self.cores == pre.cores,
+                self.devices == pre.devices,
+                self.iommus.present == pre.iommus.present,
+                self.tables.roots == pre.tables.roots,
+                self.tables.owner == pre.tables.owner,
+                self.table_pages == pre.table_pages,
+                self.blocks == pre.blocks,
+                self.threads == pre.threads,
+                self.processes == pre.processes,
+                self.spaces == pre.spaces,
+                self.list.pages@.dom() == pre.list.pages@.dom(),
+                forall|k: int| 0 <= k < c ==> {
+                    &&& self.slot_holds(
+                        process,
+                        (ROOT_CORE_SLOT + k) as usize,
+                        (leaf + ROOT_CORE_SLOT + k) as usize,
+                        #[trigger] core_payload(k, MAX_PRIORITY),
+                    )
+                    &&& self.list.nodes@[leaf + ROOT_CORE_SLOT + k].depth == 1
+                },
+                forall|x: usize| #![trigger self.is_cap(x)] #![trigger pre.is_cap(x)]
+                    !(leaf + ROOT_CORE_SLOT <= x < leaf + ROOT_CORE_SLOT + c) ==> self.is_cap(x) == pre.is_cap(x),
+                forall|x: usize| !(leaf + ROOT_CORE_SLOT <= x < leaf + ROOT_CORE_SLOT + c) && #[trigger] pre.is_cap(x)
+                    ==> self.payload_of(x) == pre.payload_of(x),
+                forall|j: int| #![trigger self.list.nodes@[j]]
+                    0 <= j < NODE_SPACE && !(leaf + ROOT_CORE_SLOT <= j < leaf + ROOT_CORE_SLOT + c)
+                    ==> self.list.nodes@[j].live == pre.list.nodes@[j].live
+                    && self.list.nodes@[j].depth == pre.list.nodes@[j].depth,
+                forall|j: int| #![trigger self.list.nodes@[j]]
+                    leaf + ROOT_CORE_SLOT <= j < leaf + ROOT_CORE_SLOT + c ==> self.list.nodes@[j].live,
+                forall|o: usize| #[trigger] self.view().reach(process, o)
+                    <==> (pre.view().reach(process, o) || core_below(o, c as int)),
+                forall|r: usize, o: usize| #[trigger] self.view().reach(r, o) && !pre.view().reach(r, o)
+                    ==> core_below(o, c as int),
+            decreases NUM_CPUS - c,
+        {
+            let ghost before = *self;
+            proof {
+                lemma_core_object(c as int);
+                assert(!before.list.nodes@[leaf + ROOT_CORE_SLOT + c].live);
+            }
+            self.boot_root_object(
+                root,
+                process,
+                leaf,
+                ROOT_CORE_SLOT + c,
+                Payload { kind: CapKind::Core, order: 0, rights: CORE_RIGHTS, base: CORE_OBJECTS + c * PAGE_SZ, badge: 0, priority: MAX_PRIORITY },
+            );
+            proof {
+                let after = *self;
+                let child = (leaf + ROOT_CORE_SLOT + c) as usize;
+                assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] before.list.nodes@[j].live implies after.list.nodes@[j].live by {
+                    if j != child {
+                        assert(after.list.nodes@[j].live == before.list.nodes@[j].live);
+                    }
+                }
+                assert forall|k: int| 0 <= k < c + 1 implies {
+                    &&& after.slot_holds(
+                        process,
+                        (ROOT_CORE_SLOT + k) as usize,
+                        (leaf + ROOT_CORE_SLOT + k) as usize,
+                        #[trigger] core_payload(k, MAX_PRIORITY),
+                    )
+                    &&& after.list.nodes@[leaf + ROOT_CORE_SLOT + k].depth == 1
+                } by {
+                    if k < c {
+                        let x = (leaf + ROOT_CORE_SLOT + k) as usize;
+                        Self::lemma_slot_stays(before, after, process, (ROOT_CORE_SLOT + k) as usize);
+                        assert(before.slot_holds(process, (ROOT_CORE_SLOT + k) as usize, x, core_payload(k, MAX_PRIORITY)));
+                        assert(before.is_cap(x));
+                        assert(after.is_cap(x) == before.is_cap(x));
+                        assert(after.payload_of(x) == before.payload_of(x));
+                        assert(after.list.nodes@[x as int].depth == before.list.nodes@[x as int].depth);
+                    }
+                }
+                assert forall|o: usize| #[trigger] after.view().reach(process, o)
+                    <==> (pre.view().reach(process, o) || core_below(o, c + 1)) by {
+                    lemma_core_below_step(o, c as int);
+                    assert(after.view().reach(process, o) <==> (before.view().reach(process, o) || o == core_object(c as int)));
+                }
+                assert forall|r: usize, o: usize| #[trigger] after.view().reach(r, o) && !pre.view().reach(r, o)
+                    implies core_below(o, c + 1) by {
+                    lemma_core_below_step(o, c as int);
+                    if !before.view().reach(r, o) {
+                        assert(o == core_object(c as int));
+                    }
+                }
+            }
+            c = c + 1;
+        }
+        proof {
+            let post = *self;
+            assert forall|o: usize| #[trigger] post.view().reach(process, o)
+                <==> (pre.view().reach(process, o) || is_core_object(o)) by {
+                assert(core_below(o, NUM_CPUS as int) == is_core_object(o));
+            }
+            assert forall|r: usize, o: usize| #[trigger] post.view().reach(r, o) && !pre.view().reach(r, o)
+                implies is_core_object(o) by {
+                assert(core_below(o, NUM_CPUS as int) == is_core_object(o));
             }
         }
     }
@@ -1460,7 +1645,7 @@ impl CapKernel {
             &self.list,
             process,
             i,
-            Payload { kind: CapKind::Untyped, order, rights: UNTYPED_RIGHTS, base, badge: 0, reserved: 0 },
+            Payload { kind: CapKind::Untyped, order, rights: UNTYPED_RIGHTS, base, badge: 0, priority: 0 },
         );
         proof {
             let post = *self;

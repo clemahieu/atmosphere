@@ -57,7 +57,7 @@ pub const RETYPE_LEAF_STEPS: usize = PLACE_LEAF_STEPS;
 /// A 4K frame capability's payload. It has every right a frame can have, whatever the untyped's, since
 /// the untyped's holder already reaches the page.
 pub open spec fn frame_of(base: usize) -> Payload {
-    Payload { kind: CapKind::Frame, order: 0, rights: FRAME_RIGHTS, base, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Frame, order: 0, rights: FRAME_RIGHTS, base, badge: 0, priority: 0 }
 }
 
 /// What a retype of a large frame did.
@@ -139,7 +139,7 @@ pub fn large_region(base: usize, order: u8) -> (ret: Option<(Large, usize)>)
 
 /// A frame capability's payload.
 pub open spec fn large_frame_of(base: usize, order: u8) -> Payload {
-    Payload { kind: CapKind::Frame, order, rights: FRAME_RIGHTS, base, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Frame, order, rights: FRAME_RIGHTS, base, badge: 0, priority: 0 }
 }
 
 /// Types a region at either level. What follows says the same of both, so a caller need not split.
@@ -513,7 +513,7 @@ impl CapKernel {
             &self.list,
             root,
             to,
-            Payload { kind: CapKind::Frame, order, rights: FRAME_RIGHTS, base, badge: 0, reserved: 0 },
+            Payload { kind: CapKind::Frame, order, rights: FRAME_RIGHTS, base, badge: 0, priority: 0 },
         );
         self.holders = Ghost(pre.holders@.insert(block_ref(&pre.blocks, base / PAGE_SZ), set![child]));
         proof {

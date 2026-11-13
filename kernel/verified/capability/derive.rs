@@ -29,9 +29,14 @@ use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::define::*;
 
-/// The child a derive from `parent` makes.
+/// The child a derive from `parent` makes. A core capability's names one page, so its order is 0, and
+/// the derive's order is the child's maximum priority instead. See design/cpu-time-as-capability/.
 pub open spec fn child_of(parent: Payload, rights: u32, base: usize, order: u8) -> Payload {
-    Payload { kind: parent.kind, order, rights, base, badge: parent.badge, reserved: 0 }
+    if parent.kind is Core {
+        Payload { kind: parent.kind, order: 0, rights, base, badge: parent.badge, priority: order as usize }
+    } else {
+        Payload { kind: parent.kind, order, rights, base, badge: parent.badge, priority: 0 }
+    }
 }
 
 /// A block of this order at this base is a whole block lying within the parent's.
@@ -44,7 +49,7 @@ pub open spec fn block_within(base: usize, order: u8, parent: Payload) -> bool {
 
 /// The child's rights and block lie within the parent's. Only a block of memory can be narrowed: any
 /// other object is its block's base. And control reads a capability's name alone, so a child that
-/// keeps control keeps the parent's block.
+/// keeps control keeps the parent's block. A core capability's child allows no higher a priority.
 pub open spec fn narrows(child: Payload, parent: Payload) -> bool {
     &&& child.rights & !parent.rights == 0
     &&& block_within(child.base, child.order, parent)
@@ -52,6 +57,7 @@ pub open spec fn narrows(child: Payload, parent: Payload) -> bool {
         &&& parent.kind is Untyped || parent.kind is Frame
         &&& child.rights & right_bit(Right::Control) == 0
     }
+    &&& parent.kind is Core ==> child.priority <= parent.priority
 }
 
 /// A block of this order, in bytes, in constant time.
@@ -125,6 +131,7 @@ proof fn lemma_object_within(parent: Payload, base: usize, order: u8)
 fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: bool)
     requires
         payload_wf(parent),
+        !(parent.kind is Core),
     ensures
         ret <==> narrows(child_of(parent, rights, base, order), parent),
         ret ==> payload_wf(child_of(parent, rights, base, order)),
@@ -148,7 +155,8 @@ impl CapKernel {
     /// The refusals of a derive from index from of the table at src into index to of the table at dst:
     /// an index that names no slot, a parent that is no capability, a device's, a dead process's or
     /// thread's, or at the deepest depth, a child's slot in use, or a child that does not narrow its
-    /// parent. A console's or power's child names its parent's object, with rights no wider.
+    /// parent. A console's or power's child names its parent's object, with rights no wider, and so does
+    /// a core capability's, with a maximum priority, the order, no higher.
     pub open spec fn can_derive_between(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(src, from);
         let child = self.tables.node_of(dst, to);
@@ -214,8 +222,9 @@ impl CapKernel {
     }
 
     /// A console or power capability derives a child naming its object, with rights no wider, so its
-    /// holder can pass it on and keep its own; a device's derives nothing, since a device is bound to one
-    /// space at a time.
+    /// holder can pass it on and keep its own, and a core capability one naming its core, with a
+    /// maximum priority, the order, no higher than its own; a device's derives nothing, since a device
+    /// is bound to one space at a time.
     pub proof fn lemma_console_power_derive(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8)
         requires
             self.wf(),
@@ -234,6 +243,17 @@ impl CapKernel {
                     &&& order == 0
                 })
             }),
+            ({
+                let parent = self.tables.node_of(src, from);
+                let p = self.payload_of(parent);
+                p.kind is Core ==> (self.can_derive_between(src, from, dst, to, rights, base, order) <==> {
+                    &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
+                    &&& !self.list.nodes@[self.tables.node_of(dst, to) as int].live
+                    &&& rights & !p.rights == 0
+                    &&& base == p.base
+                    &&& order as usize <= p.priority
+                })
+            }),
             self.payload_of(self.tables.node_of(src, from)).kind is Device
                 ==> !self.can_derive_between(src, from, dst, to, rights, base, order),
     {
@@ -241,6 +261,10 @@ impl CapKernel {
         if p.kind is Console || p.kind is Power {
             assert(cap_wf(p));
             lemma_object_within(p, base, order);
+        }
+        if p.kind is Core {
+            assert(cap_wf(p));
+            lemma_object_within(p, base, 0);
         }
     }
 
@@ -405,11 +429,13 @@ impl CapKernel {
             return false;
         }
         // A device is bound to one space at a time, so its capability has no children: it moves instead.
-        // The console's and power's name a page past memory, so a child names that page as its parent
-        // does.
+        // The console's, power's and a core's name a page past memory, so a child names that page as its
+        // parent does. A core capability's child takes the order as its maximum priority, which it may
+        // lower and not raise.
         let allowed = match payload.kind {
             CapKind::Device => false,
             CapKind::Console | CapKind::Power => rights & !payload.rights == 0 && base == payload.base && order == payload.order,
+            CapKind::Core => rights & !payload.rights == 0 && base == payload.base && order as usize <= payload.priority,
             _ => may_derive(payload, rights, base, order),
         };
         if !allowed {
@@ -419,7 +445,14 @@ impl CapKernel {
             if payload.kind is Console || payload.kind is Power {
                 lemma_object_within(payload, base, order);
             }
+            if payload.kind is Core {
+                lemma_object_within(payload, base, 0);
+            }
         }
+        let (child_order, child_priority) = match payload.kind {
+            CapKind::Core => (0u8, order as usize),
+            _ => (order, 0usize),
+        };
         let counted = match payload.kind {
             CapKind::Frame | CapKind::Space | CapKind::Thread | CapKind::Process => true,
             _ => false,
@@ -454,7 +487,7 @@ impl CapKernel {
             &self.list,
             dst,
             to,
-            Payload { kind: payload.kind, order, rights, base, badge: payload.badge, reserved: 0 },
+            Payload { kind: payload.kind, order: child_order, rights, base, badge: payload.badge, priority: child_priority },
         );
         match block {
             Some(br) => {

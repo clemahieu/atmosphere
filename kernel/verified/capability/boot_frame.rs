@@ -39,7 +39,7 @@ use crate::define::*;
 
 /// The frame capability boot hands the root for the block of order pages at base.
 pub open spec fn boot_frame_payload(base: usize, order: u8, rights: u32) -> Payload {
-    Payload { kind: CapKind::Frame, order, rights, base, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Frame, order, rights, base, badge: 0, priority: 0 }
 }
 
 /// The 2M region the block at base lies in.
@@ -694,7 +694,7 @@ impl CapKernel {
             &self.list,
             process,
             i,
-            Payload { kind: CapKind::Frame, order, rights, base, badge: 0, reserved: 0 },
+            Payload { kind: CapKind::Frame, order, rights, base, badge: 0, priority: 0 },
         );
         self.holders = Ghost(if typed {
             mid.holders@.insert(BlockRef::Two(r), mid.holders@[BlockRef::Two(r)].insert(child))

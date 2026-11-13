@@ -727,8 +727,9 @@ impl CapKernel {
     {
     }
 
-    /// The console's capability covers the console's page alone and a power capability power's page
-    /// alone, each past memory and every device object, and no other capability covers either page.
+    /// The console's capability covers the console's page alone, a power capability power's page alone
+    /// and a core capability its core's page alone, each past memory and every device object, and no
+    /// other capability covers any of them.
     pub proof fn lemma_covers_console_or_power(&self, n: usize, o: ObjectId)
         requires
             self.wf(),
@@ -742,6 +743,11 @@ impl CapKernel {
                 ==> forall|d: int| 0 <= d < MAX_DEVICES ==> o != #[trigger] device_object(d),
             !(self.payload_of(n).kind is Console) ==> o != CONSOLE_OBJECT,
             !(self.payload_of(n).kind is Power) ==> o != POWER_OBJECT,
+            self.payload_of(n).kind is Core ==> o == self.payload_of(n).base && is_core_object(o),
+            self.payload_of(n).kind is Core ==> DEVICE_OBJECTS <= o,
+            self.payload_of(n).kind is Core
+                ==> forall|d: int| 0 <= d < MAX_DEVICES ==> o != #[trigger] device_object(d),
+            !(self.payload_of(n).kind is Core) ==> !is_core_object(o),
     {
         let p = self.payload_of(n);
         if p.kind is Device {
@@ -753,7 +759,7 @@ impl CapKernel {
             assert(x < MAX_DEVICES * PAGE_SZ) by (nonlinear_arith)
                 requires x / (PAGE_SZ as int) < MAX_DEVICES, x >= 0;
             assert(pow2(0) == 1) by { lemma2_to64(); }
-        } else if p.kind is Console || p.kind is Power {
+        } else if p.kind is Console || p.kind is Power || p.kind is Core {
             assert(pow2(0) == 1) by { lemma2_to64(); }
         }
     }

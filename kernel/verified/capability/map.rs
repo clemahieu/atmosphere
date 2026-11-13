@@ -2345,7 +2345,7 @@ impl CapKernel {
         assert(frame_in_block(block_ref(&self.blocks, cap.base / PAGE_SZ), cap));
         lemma2_to64();
         assert(block_bytes(0) == PAGE_SZ);
-        let child = Payload { kind: cap.kind, order: 0, rights: cap.rights, base: (fr * PAGE_SZ) as usize, badge: cap.badge, reserved: cap.reserved };
+        let child = Payload { kind: cap.kind, order: 0, rights: cap.rights, base: (fr * PAGE_SZ) as usize, badge: cap.badge, priority: cap.priority };
         lemma_mod_multiples_basic(fr, (PAGE_SZ as int));
         lemma_child_same_block(&self.blocks, cap, child);
         lemma_div_multiples_vanish(fr, (PAGE_SZ as int));
@@ -2397,7 +2397,7 @@ impl CapKernel {
         assert(frame_in_block(block_ref(&self.blocks, cap.base / PAGE_SZ), cap));
         lemma2_to64();
         assert(block_bytes(9) == PAGES_PER_2M * PAGE_SZ);
-        let child = Payload { kind: cap.kind, order: 9, rights: cap.rights, base: (fr * PAGE_SZ) as usize, badge: cap.badge, reserved: cap.reserved };
+        let child = Payload { kind: cap.kind, order: 9, rights: cap.rights, base: (fr * PAGE_SZ) as usize, badge: cap.badge, priority: cap.priority };
         lemma_fundamental_div_mod(fr, (PAGES_PER_2M as int));
         let q2 = fr / (PAGES_PER_2M as int);
         assert(fr == PAGES_PER_2M * q2);

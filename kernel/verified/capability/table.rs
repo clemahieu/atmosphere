@@ -48,6 +48,7 @@ pub enum CapKind {
     Device,
     Console,
     Power,
+    Core,
 }
 
 /// What a capability says, beyond its place in the list. 32 bytes.
@@ -58,7 +59,9 @@ pub struct Payload {
     pub rights: u32,
     pub base: usize,
     pub badge: usize,
-    pub reserved: usize,
+    /// A core capability's maximum priority, the highest a thread placed through it may run at; 0 for
+    /// every other kind. See design/cpu-time-as-capability/.
+    pub priority: usize,
 }
 
 pub struct PayloadPage {
@@ -85,11 +88,11 @@ pub open spec fn payload_wf(p: Payload) -> bool {
     &&& p.base as int + block_bytes(p.order) <= NODE_SPACE as int
 }
 
-/// A capability of this kind names a block of memory. A device's, the console's and power's name
-/// objects above the 48-bit space instead: a device's its device, devices_wf, the console's
-/// CONSOLE_OBJECT and power's POWER_OBJECT.
+/// A capability of this kind names a block of memory. A device's, the console's, power's and a core's
+/// name objects above the 48-bit space instead: a device's its device, devices_wf, the console's
+/// CONSOLE_OBJECT, power's POWER_OBJECT and core c's core_object(c).
 pub open spec fn names_block(k: CapKind) -> bool {
-    !(k is Device) && !(k is Console) && !(k is Power)
+    !(k is Device) && !(k is Console) && !(k is Power) && !(k is Core)
 }
 
 /// A capability of this kind is a holder some record counts: a frame's in its block's holders, and a
@@ -100,11 +103,13 @@ pub open spec fn tracked_kind(k: CapKind) -> bool {
 }
 
 /// What a capability says is well formed: a block for a memory capability, the console's one page for
-/// a console's, and power's one page for a power capability's.
+/// a console's, power's one page for a power capability's, and a core's one page, with a maximum
+/// priority no higher than MAX_PRIORITY, for a core capability's.
 pub open spec fn cap_wf(p: Payload) -> bool {
     &&& names_block(p.kind) ==> payload_wf(p)
     &&& p.kind is Console ==> p.base == CONSOLE_OBJECT && p.order == 0
     &&& p.kind is Power ==> p.base == POWER_OBJECT && p.order == 0
+    &&& p.kind is Core ==> is_core_object(p.base) && p.order == 0 && p.priority <= MAX_PRIORITY
 }
 
 /// The bit of a capability's rights word that grants control.
@@ -155,7 +160,7 @@ proof fn lemma_payload_page_aligned(leaf: usize)
 /// has no slot. It names the root entry that points at the leaf, which the leaf's free clears at run
 /// time, knowing only the leaf.
 pub open spec fn parent_record(root: usize, r: usize) -> Payload {
-    Payload { kind: CapKind::Untyped, order: 0, rights: 1, base: root, badge: r, reserved: 0 }
+    Payload { kind: CapKind::Untyped, order: 0, rights: 1, base: root, badge: r, priority: 0 }
 }
 
 /// Where a slot's node lies in its leaf. On its own, like the next, for the modulus.
@@ -183,7 +188,7 @@ fn new_payload_page(addr: usize, root: usize, r: usize, Tracked(page): Tracked<P
         ret@.value().entries.wf(),
         ret@.value().entries@[0] == parent_record(root, r),
 {
-    let mut entries = Array::<Payload, NODES_PER_PAGE>::new(Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, reserved: 0 });
+    let mut entries = Array::<Payload, NODES_PER_PAGE>::new(Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, priority: 0 });
     let mut k = 0;
     let ghost start = steps.count;
     while k != NODES_PER_PAGE
@@ -193,13 +198,13 @@ fn new_payload_page(addr: usize, root: usize, r: usize, Tracked(page): Tracked<P
             entries.wf(),
         decreases NODES_PER_PAGE - k,
     {
-        entries.set(k, Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, reserved: 0 });
+        entries.set(k, Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, priority: 0 });
         k = k + 1;
         proof {
             steps.step();
         }
     }
-    entries.set(0, Payload { kind: CapKind::Untyped, order: 0, rights: 1, base: root, badge: r, reserved: 0 });
+    entries.set(0, Payload { kind: CapKind::Untyped, order: 0, rights: 1, base: root, badge: r, priority: 0 });
     let tracked mut typed;
     proof {
         let tracked mut page = page;

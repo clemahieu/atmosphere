@@ -61,7 +61,7 @@ pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Trac
 
 /// The console capability, naming the console's object.
 pub open spec fn console_payload() -> Payload {
-    Payload { kind: CapKind::Console, order: 0, rights: CONSOLE_RIGHTS, base: CONSOLE_OBJECT, badge: 0, reserved: 0 }
+    Payload { kind: CapKind::Console, order: 0, rights: CONSOLE_RIGHTS, base: CONSOLE_OBJECT, badge: 0, priority: 0 }
 }
 
 impl CapKernel {
