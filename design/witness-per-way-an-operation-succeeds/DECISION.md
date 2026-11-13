@@ -1,9 +1,9 @@
 ---
 title: "Every way an operation succeeds is listed, and a witness's ensures claims it"
-date: 2026-11-12
+date: 2026-11-13
 status: active
 tags: [verified, witness, gate, tools]
-one_line: "The inventory's unit is an operation and one value of its result type that is not a refusal. Operations are found from the source, by what the entry calls and by visibility, not from a list. A witness is of the model's operation and claims an outcome in its ensures, over a returned value every binding of which is a call of that operation; the entry is covered by one witness and one proof per wired operation. A throwaway is a function in the tree behind a cfg, calling the witness and claiming false, one module each, and a gate step expects each to fail. What has no witness is a list in the tree that the gate holds equal to the inventory and that only the human lengthens."
+one_line: "The inventory's unit is an operation and one value of its result type that is not a refusal. Operations are found from the source, by what the entry calls and by visibility, and the verified crates from their Cargo.toml marker, not from a list. A witness is of the model's operation and claims an outcome in its ensures, over a returned value every binding of which is a call of that operation; the entry is covered by one witness and one proof per wired operation. A throwaway is a function in the tree behind a cfg, calling the witness and claiming false, one module each, and a gate step expects each to fail. What has no witness is a list in the tree that the gate holds equal to the inventory and that only the human lengthens."
 revisit_if: "The linkage the tool reads from text lets a witness count that reaches nothing, found by a skeptic or by accident; or the throwaway step costs more than the verify step it runs beside; or an operation's success cannot be told from a value it returns."
 confidence: "The throwaway's cost is measured, below. That a claim in an ensures is checked is Verus's. The rule that ties a claim to a call is read from text by a tool, and holds against accident, not against intent: design/committer-is-not-the-adversary/. The split between a witness of the model and a proof of the entry is a judgement about cost."
 ---
@@ -31,7 +31,18 @@ The last row is for a type that cannot say a refusal, `()` above all. An operati
 - every exec function that `dispatch`, or an `invoke_` function it calls, calls on `self`: the wired operations;
 - every other `pub fn` of `impl CapKernel` that takes `&mut self`: what the glue calls (`kernel_init`, `enter`, `acknowledge`, `load_space`, `switch_space`, `enter_boot_thread`) and each model operation not wired yet (`start`, `suspend`, `bind_device` and the rest).
 
-A step of an operation that is not one itself is `pub(crate)` or private, which rustc holds: the glue is another crate and cannot call it. For a verified user crate (aheap, aeager, adivider) the operations are its `pub fn` exec items, by the same rule. Witness and throwaway modules hold no operation. An acall wrapper is not a second operation: it is the entry seen from user space, verified over `step`. It is listed on one line with the call number it passes and the kernel operations that number's arm calls, and counts as unwitnessed only when the arm calls none.
+A step of an operation that is not one itself is `pub(crate)` or private, which rustc holds: the glue is another crate and cannot call it.
+
+The verified user crates are found the same way: every workspace member whose `Cargo.toml` says `[package.metadata.atmosphere] verified = true`, other than `kernel/verified` and acall, read from the directory of its library root. Today that is adivider, aeager, afanin, aheap, amailbox, aring and pager-policy. A user crate's operations are its `pub fn` exec items, and the exec functions of a trait it implements for a type it declares, by the same rule. pager-policy holds only the specifications and proofs of the S3-FIFO policy the pager library implements, so it has no operation and yields no line. Witness and throwaway modules hold no operation.
+
+The rest of `kernel/verified`, outside `capability`:
+
+- `queue_lock.rs` is read by the user-crate rule, as a component of its own: `CapKernel` does not call it, and the kernel's lock glue conjures its core tokens, so no witness of the capability component reaches it.
+- `define.rs`, `layouts.rs` and `util/` hold constants, layouts, specifications and proofs, and no exec function: nothing to list.
+- `array.rs`, `pptr.rs` (held to upstream vstd's `simple_pptr`) and `pagetable/` are data-structure libraries internal to the kernel. None of their functions refuses: each is exact under its requires, and `CapKernel`'s operations call them where its witnesses reach. They are steps of the capability component, not a component.
+- `arch/` holds the leaf hardware guarantees outside `verus!`, vouched for by the manual passages they cite and checked by the boots, and the per-ISA encodings and token wrappers `CapKernel`'s operations call. design/arch-module/ and design/who-vouches-for-an-unproven-claim/ say who vouches for each; no witness can reach past an assumed specification.
+
+A new module of `kernel/verified` outside `capability` is one of these, or a component this list gains in the change that adds it. An acall wrapper is not a second operation: it is the entry seen from user space, verified over `step`. It is listed on one line with the call number it passes and the kernel operations that number's arm calls, and counts as unwitnessed only when the arm calls none.
 
 **3. A witness is of the model's operation.** It calls `retype_large_frame`, not the entry with a frame that encodes the call. Two things cover the entry:
 

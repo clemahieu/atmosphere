@@ -9,10 +9,14 @@ by hand. design/witness-per-way-an-operation-succeeds/, points 1 to 4.
 
 The operations. Of kernel/verified/capability: every exec function that `dispatch` of
 `impl CapKernel`, or an `invoke_` function it calls, calls on `self`, the wired operations; and
-every other exec `pub fn` of `impl CapKernel` that takes `&mut self`. Of aheap, aeager and adivider:
-every exec `pub fn`, and every exec function of a trait the crate implements for a struct or enum it
-declares, which another crate can call as it can a `pub fn`. A `pub(crate)` or private function is a
-step and is not listed. A file named `witness.rs`, a `witness` or `throwaway` directory and a
+every other exec `pub fn` of `impl CapKernel` that takes `&mut self`. Of each verified user crate,
+a workspace member whose Cargo.toml says `[package.metadata.atmosphere] verified = true` other than
+kernel/verified and acall, read from the directory of its library root, and of
+kernel/verified/queue_lock.rs, which CapKernel does not call: every exec `pub fn`, and every exec
+function of a trait the component implements for a struct or enum it declares, which another crate
+can call as it can a `pub fn`. A `pub(crate)` or private function is a step and is not listed. The
+rest of kernel/verified outside capability holds no component, for the reasons
+design/witness-per-way-an-operation-succeeds/ point 2 gives, and is not read. A file named `witness.rs`, a `witness` or `throwaway` directory and a
 function named `witness_` hold no operation.
 
 The ways, from the operation's result type:
@@ -61,6 +65,8 @@ usage: tools/witness-inventory.py           the listing
 import importlib.util
 import re
 import sys
+import tempfile
+import tomllib
 import unittest
 from collections import namedtuple
 from pathlib import Path
@@ -74,8 +80,9 @@ KERNEL = "kernel/verified/capability"
 KERNEL_TYPE = "CapKernel"
 ENTRY = "dispatch"
 ENTRY_PROOF = "lemma_entry_reaches_"
-USERS = ("aheap/src", "aeager/src", "adivider/src")
-CALLS = "acall/src"
+QUEUE_LOCK = "kernel/verified/queue_lock.rs"
+CALLS_CRATE = "acall"
+CALLS = CALLS_CRATE + "/src"
 RETURNS = "returns"
 
 TOKEN = re.compile(r"[A-Za-z_]\w*|\d\w*|<==>|==>|&&&|\|\|\||&&|\|\||==|!=|<=|>=|->|=>|::|[-+*/%^&|]=|\S")
@@ -717,12 +724,13 @@ def kernel_rows(texts, declared=None):
     return rows_of(comp, operations, roots, False, wired, lambda fn: fn.name)
 
 
-def user_rows(texts):
-    """A line per way of each operation of a user crate, whose files are {path: text}."""
+def user_rows(texts, declared=None):
+    """A line per way of each operation of a user crate, whose files are {path: text}. `declared` is
+    the structs and enums of its whole crate, when that is more than these files."""
     comp = Component(texts)
     operations = [fn for fn in comp.fns if fn.mode == "exec" and not hidden(fn)
                   and (fn.owner in comp.declared if fn.trait else fn.vis == "pub")]
-    roots = root_witnesses(comp, texts, declared_in(texts))
+    roots = root_witnesses(comp, texts, declared_in(texts) if declared is None else declared)
     return rows_of(comp, operations, roots, True, (), lambda fn: f"{fn.owner}::{fn.name}" if fn.owner else fn.name)
 
 
@@ -767,11 +775,30 @@ def read(root, directory):
             if throwaways.THROWAWAY not in path.relative_to(base).parts}
 
 
+def marked_users(root):
+    """The source directory of each verified user crate, in the order the workspace lists them: each
+    member whose Cargo.toml says `[package.metadata.atmosphere] verified = true`, other than the
+    kernel's crate and acall, as the directory of its library root."""
+    with open(root / "Cargo.toml", "rb") as manifest:
+        members = tomllib.load(manifest)["workspace"]["members"]
+    found = []
+    for member in members:
+        if member in (KERNEL_CRATE, CALLS_CRATE):
+            continue
+        with open(root / member / "Cargo.toml", "rb") as manifest:
+            crate = tomllib.load(manifest)
+        if crate.get("package", {}).get("metadata", {}).get("atmosphere", {}).get("verified", False):
+            found.append(str(Path(member) / Path(crate.get("lib", {}).get("path", "src/lib.rs")).parent))
+    return found
+
+
 def tree_rows(root):
     """Every line of the tree's inventory."""
     kernel_texts = read(root, KERNEL)
-    rows = kernel_rows(kernel_texts, declared_in(read(root, KERNEL_CRATE)))
-    for directory in USERS:
+    declared = declared_in(read(root, KERNEL_CRATE))
+    rows = kernel_rows(kernel_texts, declared)
+    rows += user_rows({QUEUE_LOCK: (root / QUEUE_LOCK).read_text(encoding="utf-8")}, declared)
+    for directory in marked_users(root):
         rows += user_rows(read(root, directory))
     return rows + wrapper_rows(kernel_texts, read(root, CALLS))
 
@@ -1389,6 +1416,99 @@ class Wrappers(unittest.TestCase):
             [Row("acall/src/capability.rs", "move_cap", "OPERATION_MOVE=3", "move_cap", ""),
              Row("acall/src/capability.rs", "nap", "OPERATION_NAP=9", None, ""),
              Row("acall/src/capability.rs", "dream", "OPERATION_DREAM=?", None, "")])
+
+
+QUEUE = """
+verus! {
+pub struct QueueLock { tail: usize }
+pub struct Core { cpu: usize }
+impl QueueLock {
+    pub const fn new() -> (r: (Self, Tracked<Map<int, Core>>)) { (QueueLock { tail: 0 }, Tracked(Map::tracked_empty())) }
+    pub fn acquire(&self, cpu: usize, Tracked(core): Tracked<&mut Core>) { }
+    pub fn release(&self, cpu: usize, Tracked(core): Tracked<&mut Core>) { }
+    fn spin(&self) { }
+}
+pub fn witness_queue_lock(cpu: usize) -> (r: (QueueLock, Tracked<Core>))
+    requires
+        cpu < 4,
+    ensures
+        r.0.wf(),
+{
+    let (new_lock, Tracked(mut cores)) = QueueLock::new();
+    let lock: QueueLock = new_lock;
+    let tracked mut core = cores.tracked_remove(cpu as int);
+    lock.acquire(cpu, Tracked(&mut core));
+    lock.release(cpu, Tracked(&mut core));
+    (lock, Tracked(core))
+}
+}
+"""
+
+MARKED = "[package.metadata.atmosphere]\nverified = true\n"
+
+
+def crate(name, marked=True, lib=None):
+    """A member's Cargo.toml."""
+    return (f'[package]\nname = "{name}"\n' + (MARKED if marked else "")
+            + (f'\n[lib]\npath = "{lib}"\n' if lib else ""))
+
+
+class Tree(unittest.TestCase):
+    def make(self, files):
+        """A tree holding the files {path: text}, removed after the test."""
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for path, text in files.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text(text)
+        return root
+
+    def workspace(self, members):
+        return 'members = [' + ", ".join(f'"{member}"' for member in members) + ']\n'
+
+    def test_the_user_crates_are_the_marked_members_but_the_kernel_s_and_acall(self):
+        root = self.make({
+            "Cargo.toml": "[workspace]\n" + self.workspace(
+                ["kernel/verified", "acall", "aplain", "atwo", "lib/aone"]),
+            "kernel/verified/Cargo.toml": crate("verified", lib="lib.rs"),
+            "acall/Cargo.toml": crate("acall"),
+            "aplain/Cargo.toml": crate("aplain", marked=False),
+            "atwo/Cargo.toml": crate("atwo", lib="lib.rs"),
+            "lib/aone/Cargo.toml": crate("aone"),
+        })
+        self.assertEqual(marked_users(root), ["atwo", "lib/aone/src"])
+
+    def test_the_tree_reads_queue_lock_and_each_marked_crate_and_a_spec_only_one_yields_nothing(self):
+        files = {
+            "Cargo.toml": "[workspace]\n" + self.workspace(["kernel/verified", "acall", "aplain", "aone", "aspec"]),
+            "kernel/verified/Cargo.toml": crate("verified", lib="lib.rs"),
+            "kernel/verified/queue_lock.rs": QUEUE,
+            "acall/Cargo.toml": crate("acall"),
+            "acall/src/lib.rs": "verus! {\n}\n",
+            "aplain/Cargo.toml": crate("aplain", marked=False),
+            "aplain/src/lib.rs": "pub fn plain() -> bool { true }\n",
+            "aone/Cargo.toml": crate("aone"),
+            "aone/src/lib.rs": "verus! {\npub fn fits(size: usize) -> (r: bool) { size < 10 }\n}\n",
+            "aspec/Cargo.toml": crate("aspec"),
+            "aspec/src/lib.rs": "verus! {\npub open spec fn hit(a: int) -> bool { a > 0 }\n"
+                                "pub proof fn lemma_hit(a: int) requires a > 1, ensures hit(a), { }\n}\n",
+        }
+        files.update(kernel())
+        rows = tree_rows(self.make(files))
+        self.assertEqual(rows[:len(kernel_rows(kernel()))], kernel_rows(kernel()))
+        self.assertEqual([tuple(row[:4]) for row in rows[len(kernel_rows(kernel())):]], [
+            ("kernel/verified/queue_lock.rs", "QueueLock::new", "returns", "witness_queue_lock"),
+            ("kernel/verified/queue_lock.rs", "QueueLock::acquire", "returns", "witness_queue_lock"),
+            ("kernel/verified/queue_lock.rs", "QueueLock::release", "returns", "witness_queue_lock"),
+            ("aone/src/lib.rs", "fits", "true", None)])
+
+    def test_queue_lock_s_witness_is_no_root_when_it_takes_a_type_the_kernel_s_crate_declares(self):
+        taking = QUEUE.replace("witness_queue_lock(cpu: usize)", "witness_queue_lock(cpu: usize, o: Outcome)")
+        declared = declared_in(kernel()) | declared_in({QUEUE_LOCK: taking})
+        found = lines(user_rows({QUEUE_LOCK: taking}, declared))
+        self.assertEqual(found, {("QueueLock::new", "returns"): None, ("QueueLock::acquire", "returns"): None,
+                                 ("QueueLock::release", "returns"): None})
+        self.assertEqual(lines(user_rows({QUEUE_LOCK: taking}))[("QueueLock::new", "returns")],
+                         "witness_queue_lock")
 
 
 class Reading(unittest.TestCase):
