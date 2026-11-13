@@ -598,10 +598,10 @@ impl CapKernel {
 
     /// A revoke in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, when allows_revoke fails; refused with the flush epoch at
-    /// its limit, which a revoke reaches only from an epoch within REVOKE_BUDGET of it, after the steps
-    /// it took on the run of the capability at the position the slot's word names; again with a step of
-    /// that run taken and some of it left; or ok with the run empty. Whatever steps it took raised no
-    /// block's count. See design/revoke-by-depth-first-list/.
+    /// its limit, which a revoke reaches only from an epoch within REVOKE_BUDGET of it, raised by no more
+    /// than the nodes it took of the run of the capability at the position the slot's word names; again
+    /// with exactly REVOKE_BUDGET nodes of that run taken and some of it left; or ok with the run empty.
+    /// Whatever steps it took raised no block's count. See design/revoke-by-depth-first-list/.
     pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
         ||| !pre.allows_revoke(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
@@ -610,6 +610,7 @@ impl CapKernel {
             &&& at is Some
             &&& pre.flush_epoch + REVOKE_BUDGET >= usize::MAX
             &&& post.flush_epoch == usize::MAX
+            &&& pre.flush_epoch + (pre.list.seq@.len() - post.list.seq@.len()) >= usize::MAX
             &&& Self::cap_revoking_at(pre, post, root, at->0)
             &&& Self::counts_lowered(pre, post)
         }
@@ -617,6 +618,7 @@ impl CapKernel {
             &&& out == status_only(STATUS_AGAIN)
             &&& at is Some
             &&& !post.list.childless(pre.cap_at(root, at->0)->0)
+            &&& pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET
             &&& Self::cap_revoking_at(pre, post, root, at->0)
             &&& Self::counts_lowered(pre, post)
         }
@@ -966,8 +968,10 @@ impl CapKernel {
     /// A revoke reaches revoke: refused with nothing changed unless the slot's word names a position
     /// holding a capability; otherwise revoke's Done, ok with the capability's run empty; its Again,
     /// again with some of the run left; or its Exhausted, refused with the flush epoch at its limit, and
-    /// only from an epoch within REVOKE_BUDGET of it, so from any other epoch Done or Again. Each of the
-    /// three took steps of the capability's run alone, at most REVOKE_BUDGET of them.
+    /// only from an epoch within REVOKE_BUDGET of it, raised to the limit by no more than the nodes it
+    /// took, so from any other epoch Done or Again. Each of the three took steps of the capability's run
+    /// alone, at most REVOKE_BUDGET of them, and Again exactly REVOKE_BUDGET, so a caller repeating on
+    /// again shortens the run each time.
     /// design/witness-per-way-an-operation-succeeds/.
     pub proof fn lemma_entry_reaches_revoke(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
@@ -981,12 +985,15 @@ impl CapKernel {
                 &&& pre.allows_revoke(root, frame) ==> {
                     ||| out == status_only(STATUS_OK) && Self::cap_revoked_at(pre, post, root, at)
                     ||| out == status_only(STATUS_AGAIN) && !post.list.childless(c) && Self::cap_revoking_at(pre, post, root, at)
+                        && pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET
                     ||| out == status_only(STATUS_REFUSED) && pre.flush_epoch + REVOKE_BUDGET >= usize::MAX
                         && post.flush_epoch == usize::MAX && Self::cap_revoking_at(pre, post, root, at)
+                        && pre.flush_epoch + (pre.list.seq@.len() - post.list.seq@.len()) >= usize::MAX
                 }
                 &&& pre.allows_revoke(root, frame) && pre.flush_epoch + REVOKE_BUDGET < usize::MAX ==> {
                     ||| out == status_only(STATUS_OK) && Self::cap_revoked_at(pre, post, root, at)
                     ||| out == status_only(STATUS_AGAIN) && !post.list.childless(c) && Self::cap_revoking_at(pre, post, root, at)
+                        && pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET
                 }
             }),
     {
