@@ -41,8 +41,9 @@ run GROK_SESSION_ID=abc; check "grok session exits 0" $?
 run GROK_SESSION_ID=abc CLAUDE_PID=4242 CLAUDE_ENV_FILE="$dir/grok.sh"
 [ ! -e "$dir/grok.sh" ]; check "grok session writes nothing" $?
 
-# agy SessionStart hook injects root CLAUDE.md when present beside the worktree and {} otherwise,
-# and AGENTS.md + .agents/hooks.json wire shared rules and hooks for agy.
+# agy SessionStart hook injects root CLAUDE.md when present beside the worktree, injects the Gemini
+# commit attribution trailer (omitting it for explicit non-Gemini models), and AGENTS.md + .agents/hooks.json
+# wire shared rules and hooks for agy.
 hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$hooks_dir/../.." && pwd)"
 agy_start="$hooks_dir/agy-session-start.sh"
@@ -53,18 +54,45 @@ cat > "$dir/with-rules/CLAUDE.md" <<'EOF'
 Line with "quotes" and $variables.
 EOF
 
-out=$(printf '{}' | ATMO_SESSION_START_ROOT="$dir/with-rules" "$agy_start" 2>/dev/null); rc=$?
+out=$(printf '{"modelName":"gemini-4-carbon-high"}' | ATMO_SESSION_START_ROOT="$dir/with-rules" "$agy_start" 2>/dev/null); rc=$?
 [ "$rc" = 0 ]; check "agy session-start with CLAUDE.md exits 0" $?
 got=$(printf '%s' "$out" | jq -r '.injectSteps[0].systemMessage.systemMessage' 2>/dev/null || printf 'INVALID')
 [ "$got" = "$(cat "$dir/with-rules/CLAUDE.md")" ]; check "agy session-start injects CLAUDE.md" $?
 printf '%s' "$out" | jq -e --rawfile want "$dir/with-rules/CLAUDE.md" '.injectSteps[0].systemMessage.systemMessage == $want' >/dev/null 2>&1
 check "agy session-start preserves exact bytes" $?
+printf '%s' "$out" | jq -e '(.injectSteps | length) == 2 and (.injectSteps[1].systemMessage.systemMessage | contains("Co-Authored-By: Gemini 4 Carbon <noreply@google.com>"))' >/dev/null 2>&1
+check "agy session-start appends Carbon trailer after CLAUDE.md" $?
 
-out_absent=$(printf '{}' | ATMO_SESSION_START_ROOT="$dir/without-rules" "$agy_start" 2>/dev/null); rc=$?
-[ "$rc" = 0 ] && [ "$out_absent" = "{}" ]; check "agy session-start without CLAUDE.md emits {}" $?
+out_slug=$(printf '{"modelName":"gemini-4-carbon-high"}' | ATMO_SESSION_START_ROOT="$dir/without-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out_slug" | jq -e '(.injectSteps | length) == 1 and (.injectSteps[0].systemMessage.systemMessage | (contains("Co-Authored-By: Gemini 4 Carbon <noreply@google.com>") and (contains("(High)") | not)))' >/dev/null 2>&1
+check "agy session-start formats Gemini slug without effort suffix" $?
 
-out_empty=$(printf '{}' | ATMO_SESSION_START_ROOT="" "$agy_start" 2>/dev/null); rc=$?
-[ "$rc" = 0 ] && [ "$out_empty" = "{}" ]; check "agy session-start empty root emits {}" $?
+out_display=$(printf '{"modelName":"Gemini 4 Carbon (Medium)"}' | ATMO_SESSION_START_ROOT="$dir/without-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out_display" | jq -e '(.injectSteps | length) == 1 and (.injectSteps[0].systemMessage.systemMessage | (contains("Co-Authored-By: Gemini 4 Carbon <noreply@google.com>") and (contains("(Medium)") | not)))' >/dev/null 2>&1
+check "agy session-start strips effort from Gemini display name" $?
+
+out_flash=$(printf '{"modelName":"gemini-3.8-flash-high"}' | ATMO_SESSION_START_ROOT="$dir/without-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out_flash" | jq -e '(.injectSteps | length) == 1 and (.injectSteps[0].systemMessage.systemMessage | contains("Co-Authored-By: Gemini 3.8 Flash <noreply@google.com>"))' >/dev/null 2>&1
+check "agy session-start preserves dotted version in Gemini slug" $?
+
+out_orch=$(printf '{"modelName":"gemini-pro-orchestrator"}' | ATMO_SESSION_START_ROOT="$dir/without-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out_orch" | jq -e '(.injectSteps | length) == 1 and (.injectSteps[0].systemMessage.systemMessage | contains("Co-Authored-By: Gemini 4 Carbon <noreply@google.com>"))' >/dev/null 2>&1
+check "agy session-start maps orchestrator to underlying Gemini model" $?
+
+out_unset=$(printf '{}' | ATMO_SESSION_START_ROOT="$dir/without-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out_unset" | jq -e '(.injectSteps | length) == 1 and (.injectSteps[0].systemMessage.systemMessage | contains("Co-Authored-By: <model> <noreply@google.com>"))' >/dev/null 2>&1
+check "agy session-start unset modelName injects generic Gemini trailer" $?
+
+out_empty=$(printf '{"modelName":"auto"}' | ATMO_SESSION_START_ROOT="" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out_empty" | jq -e '(.injectSteps | length) == 1 and (.injectSteps[0].systemMessage.systemMessage | contains("Co-Authored-By: <model> <noreply@google.com>"))' >/dev/null 2>&1
+check "agy session-start empty root with auto modelName injects trailer" $?
+
+out_non_gemini=$(printf '{"modelName":"claude-opus-5-5-high"}' | ATMO_SESSION_START_ROOT="$dir/without-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out_non_gemini" = "{}" ]; check "agy session-start non-Gemini without CLAUDE.md emits {}" $?
+
+out_non_gemini_rules=$(printf '{"modelName":"claude-opus-5-5-high"}' | ATMO_SESSION_START_ROOT="$dir/with-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out_non_gemini_rules" | jq -e --rawfile want "$dir/with-rules/CLAUDE.md" '(.injectSteps | length) == 1 and .injectSteps[0].systemMessage.systemMessage == $want' >/dev/null 2>&1
+check "agy session-start non-Gemini with CLAUDE.md injects rules only" $?
 
 [ -L "$repo/AGENTS.md" ] && [ "$(readlink "$repo/AGENTS.md")" = "CLAUDE.md" ]
 check "AGENTS.md symlinks to CLAUDE.md" $?
@@ -81,8 +109,8 @@ start_cmd=$(jq -r '.["root-rules"].SessionStart[0].command' "$repo/.agents/hooks
 out_pre=$(cd "$repo/.agents" && printf '{"hookEventName":"PreToolUse","toolCall":{"id":"t1","name":"read_file","args":{"Path":"CLAUDE.md"}}}' | sh -c "$pre_cmd" 2>/dev/null); rc=$?
 [ "$rc" = 0 ] && [ "$(printf '%s' "$out_pre" | jq -r '.decision')" = "allow" ]
 check ".agents/hooks.json PreToolUse command resolves from .agents/" $?
-out_start=$(cd "$repo/.agents" && printf '{}' | ATMO_SESSION_START_ROOT="$dir/without-rules" sh -c "$start_cmd" 2>/dev/null); rc=$?
-[ "$rc" = 0 ] && [ "$out_start" = "{}" ]
+out_start=$(cd "$repo/.agents" && printf '{"modelName":"gemini-4-carbon-high"}' | ATMO_SESSION_START_ROOT="$dir/without-rules" sh -c "$start_cmd" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out_start" | jq -e '.injectSteps[0].systemMessage.systemMessage | contains("Co-Authored-By: Gemini 4 Carbon <noreply@google.com>")' >/dev/null 2>&1
 check ".agents/hooks.json SessionStart command resolves from .agents/" $?
 
 exit $fail
