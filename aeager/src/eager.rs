@@ -1381,6 +1381,20 @@ impl Eager {
         self.record.parks(addr)
     }
 
+    /// Whether `new` accepts `memory`, `pages`, `slots` and `window`: at most `MAX_PAGES` pages fitting
+    /// in physical addresses from `memory`, `slots` a slot with every frame slot of the `pages` pages in
+    /// the table, and `window` a non-null region-aligned address with room for the window after it.
+    pub open spec fn new_ok(memory: u64, pages: usize, slots: u64, window: *mut u8) -> bool {
+        &&& pages <= MAX_PAGES
+        &&& slots < TABLE_INDICES
+        &&& slots as int % LEAF_INDICES as int != 0
+        &&& pages > 0 ==> frame_slot(slots as int, pages - 1) < TABLE_INDICES
+        &&& memory + pages * PAGE_BYTES <= u64::MAX
+        &&& window@.addr != 0
+        &&& window@.addr as int % REGION_BYTES as int == 0
+        &&& window@.addr + WINDOW_BYTES <= usize::MAX
+    }
+
     /// The source that backs runs in the space at `space` with frames and table pages retyped from the
     /// untyped at `untyped`, whose `pages` pages from physical `memory` it alone retypes, putting the
     /// capability of the frame for page i in the empty slot `frame_slot(slots, i)`, which runs on past a
@@ -1393,16 +1407,19 @@ impl Eager {
         ensures
             match r {
                 Some(source) => {
+                    &&& Self::new_ok(memory, pages, slots, window)
                     &&& source@.wf()
                     &&& source@.spans.is_empty()
+                    &&& source@.grants == Seq::<Request>::empty()
+                    &&& source@.refusals == Seq::<Refusal>::empty()
                     &&& source@.provenance == window@.provenance
                     &&& source.space() == space
                     &&& forall|token: Caller| #[trigger] source.holds(token)
                 },
-                None => true,
+                None => !Self::new_ok(memory, pages, slots, window),
             },
     {
-        let addr = window as usize;
+        let addr = window.addr();
         if pages > MAX_PAGES || slots >= TABLE_INDICES as u64 || slots % LEAF_INDICES as u64 == 0 {
             return None;
         }
@@ -1423,9 +1440,17 @@ impl Eager {
             ) by {
                 lemma_frame_slot(slots as int, i, j);
             }
-        }
-        proof {
             lemma_scale(pages as int, MAX_PAGES as int, PAGE_BYTES as int);
+            if addr as int % REGION_BYTES as int == 0 {
+                let q = addr as int / REGION_BYTES as int;
+                lemma_fundamental_div_mod(addr as int, REGION_BYTES as int);
+                assert(addr as int == (q * BLOCK_PAGES as int) * BLOCK_BYTES as int) by (nonlinear_arith)
+                    requires
+                        addr as int == REGION_BYTES as int * q,
+                        REGION_BYTES == BLOCK_BYTES * BLOCK_PAGES,
+                ;
+                lemma_mod_multiples_basic(q * BLOCK_PAGES as int, BLOCK_BYTES as int);
+            }
         }
         if memory > u64::MAX - pages as u64 * PAGE_BYTES as u64 || addr == 0 || addr % BLOCK_BYTES != 0 || addr % REGION_BYTES != 0
             || addr > usize::MAX - WINDOW_BYTES {
