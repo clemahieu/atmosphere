@@ -891,6 +891,7 @@ impl CapKernel {
             final(self).list.nodes@[leaf as int].live,
             final(self).list.nodes@[leaf as int].kind is Hidden,
             final(self).list.is_child(root, leaf),
+            final(self).tables.leaf(process, 0) == leaf,
             final(self).tables.leaf(process, 1) == frames,
             forall|e: int| 2 <= e < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(process, e) == NO_LEAF,
             forall|i: usize| ROOT_FRAME_SLOT <= i < 2 * NODES_PER_PAGE ==> {

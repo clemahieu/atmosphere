@@ -186,7 +186,9 @@ impl CapKernel {
 
     /// The state boot's composed step leaves when it succeeds, having returned `untyped` and `frame`:
     /// what kernel_init ensures, and so what a proof about the root's first operations starts from.
-    /// The free runs are well formed, so each untyped block lies in the tracked pages. Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
+    /// The free runs are well formed, so each untyped block lies in the tracked pages. The root's
+    /// first leaf is at entry 0 of its table and inside the node address space, each fixed slot of the
+    /// root's table holds its kind, and each untyped is at depth 1, so a
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
     /// stale, and so is every 2M and 1G region; the root's thread is its process's and inactive, so a
@@ -226,6 +228,8 @@ impl CapKernel {
         &&& self.wf()
         &&& self.list.seq@[0] == root
         &&& self.tables.roots@.dom() == set![process]
+        &&& leaf + LEAF_BYTES <= NODE_SPACE
+        &&& self.tables.leaf(process, 0) == leaf
         &&& self.slot_holds(process, ROOT_PROCESS_SLOT, (leaf + 1) as usize, process_of(process))
         &&& self.slot_holds(process, ROOT_THREAD_SLOT, (leaf + 2) as usize, thread_of(t))
         &&& self.slot_holds(process, ROOT_CONSOLE_SLOT, (leaf + 3) as usize, console_payload())
@@ -237,7 +241,7 @@ impl CapKernel {
                 (leaf + ROOT_CORE_SLOT + c) as usize,
                 #[trigger] core_payload(c, MAX_PRIORITY),
             )
-            &&& self.list.nodes@[(leaf + ROOT_CORE_SLOT + c) as usize as int].depth == 1
+            &&& self.list.nodes@[leaf + ROOT_CORE_SLOT + c].depth == 1
         }
         &&& forall|k: int| 0 <= k < untyped ==> {
             &&& self.slot_holds(
@@ -246,7 +250,7 @@ impl CapKernel {
                 (leaf + ROOT_UNTYPED_SLOT + k) as usize,
                 page_block_payload(#[trigger] bs[k]),
             )
-            &&& self.list.nodes@[(leaf + ROOT_UNTYPED_SLOT + k) as usize as int].depth == 1
+            &&& self.list.nodes@[leaf + ROOT_UNTYPED_SLOT + k].depth == 1
         }
         &&& forall|k: int, j: nat| 0 <= k < untyped && #[trigger] in_page_block(bs[k], j) ==> self.acknowledged(j as usize)
         &&& forall|r: usize| r < NUM_2M ==> #[trigger] self.region_acknowledged(Large::Two, r)
@@ -670,6 +674,14 @@ impl CapKernel {
             assert(s4.is_cap((leaf + 2) as usize) && s4.payload_of((leaf + 2) as usize) == thread_of(t));
             assert(s4.is_cap((leaf + 3) as usize) && s4.payload_of((leaf + 3) as usize) == console_payload());
             assert(s4.is_cap((leaf + 4) as usize) && s4.payload_of((leaf + 4) as usize) == power_payload());
+            let lb = leaf / PAGE_SZ;
+            assert(lb * PAGE_SZ == leaf) by (nonlinear_arith)
+                requires
+                    leaf % LEAF_BYTES == 0,
+                    lb == leaf / PAGE_SZ,
+            ;
+            assert(leaf + LEAF_BYTES <= NODE_SPACE);
+            assert(s4.tables.leaf(process, 0) == leaf);
             // The core slots.
             assert forall|c: int| 0 <= c < NUM_CPUS implies {
                 &&& s4.slot_holds(
@@ -678,7 +690,7 @@ impl CapKernel {
                     (leaf + ROOT_CORE_SLOT + c) as usize,
                     #[trigger] core_payload(c, MAX_PRIORITY),
                 )
-                &&& s4.list.nodes@[(leaf + ROOT_CORE_SLOT + c) as usize as int].depth == 1
+                &&& s4.list.nodes@[leaf + ROOT_CORE_SLOT + c].depth == 1
             } by {
                 let x = (leaf + ROOT_CORE_SLOT + c) as usize;
                 assert(sk.slot_holds(process, (ROOT_CORE_SLOT + c) as usize, x, core_payload(c, MAX_PRIORITY)));
@@ -699,7 +711,7 @@ impl CapKernel {
                     (leaf + ROOT_UNTYPED_SLOT + k) as usize,
                     page_block_payload(#[trigger] bs[k]),
                 )
-                &&& s4.list.nodes@[(leaf + ROOT_UNTYPED_SLOT + k) as usize as int].depth == 1
+                &&& s4.list.nodes@[leaf + ROOT_UNTYPED_SLOT + k].depth == 1
             } by {
                 let x = (leaf + ROOT_UNTYPED_SLOT + k) as usize;
                 assert(s3.root_untyped_at(root, process, leaf, k, bs[k]));

@@ -7068,14 +7068,12 @@ impl CapKernel {
             }
             assert(s5.tables == s4.tables);
             s4.lemma_slot(process, WITNESS_FRAME_SLOT);
-            s4.lemma_slot(process, ROOT_UNTYPED_SLOT);
             s4.lemma_slot(process, WITNESS_SPACE_SLOT);
             assert(m % PAGE_SZ != 0);
             lemma_slot_kept_two(s4, s5, process, WITNESS_FRAME_SLOT, m, m);
             lemma_slot_kept_two(s4, s5, process, ROOT_UNTYPED_SLOT, m, m);
             assert(s5.is_cap(nf) && s5.payload_of(nf) == cap);
             // The untyped was live before the map, and the mapping's node was not.
-            s4.lemma_slot_bound(u);
             assert(s4.list.nodes@[u as int].live);
             assert(!s4.list.nodes@[m as int].live);
             assert(u != m);
@@ -7235,9 +7233,8 @@ impl CapKernel {
             assert(s7.processes == s6.processes);
             assert(s7.root_live(process));
             assert(s7.tables.roots@.contains_key(process));
-            // The root's untyped is still its slot 5, and shallower than the deepest: the leaf's hidden
+            // The root's untyped is still its slot, and shallower than the deepest: the leaf's hidden
             // node is its child.
-            s6.lemma_slot(process, ROOT_UNTYPED_SLOT);
             lemma_slot_kept_but(s6, s7, process, ROOT_UNTYPED_SLOT, nf);
             Self::lemma_caps_frame(s6, s7, nf, nf, u);
             assert(s7.is_cap(u) && s7.payload_of(u) == first);
@@ -10517,8 +10514,6 @@ impl CapKernel {
             assert(s3.list.wf() && s2.list.wf()) by {
                 reveal(CapKernel::wf);
             }
-            s2.lemma_slot(process, ROOT_UNTYPED_SLOT);
-            s2.lemma_slot_bound(u);
             assert(u != nf);
             lemma_added_children(s2.list, s3.list, nf, u);
             assert(s3.list.nodes@[lb as int].live);
@@ -10567,12 +10562,10 @@ impl CapKernel {
             }
             assert(s4.tables == s3.tables);
             s3.lemma_slot(process, WITNESS_FRAME_SLOT);
-            s3.lemma_slot(process, ROOT_UNTYPED_SLOT);
             assert(m % PAGE_SZ != 0);
             lemma_slot_kept_two(s3, s4, process, WITNESS_FRAME_SLOT, m, m);
             lemma_slot_kept_two(s3, s4, process, ROOT_UNTYPED_SLOT, m, m);
             assert(s4.is_cap(nf) && s4.payload_of(nf) == cap);
-            s3.lemma_slot_bound(u);
             assert(s3.list.nodes@[u as int].live);
             assert(!s3.list.nodes@[m as int].live);
             assert(u != m);
@@ -10743,7 +10736,6 @@ impl CapKernel {
             assert(s7.tables == s6.tables);
             assert(s7.root_live(process));
             assert(s7.tables.roots@.contains_key(process));
-            s6.lemma_slot(process, ROOT_UNTYPED_SLOT);
             lemma_slot_kept_but(s6, s7, process, ROOT_UNTYPED_SLOT, nf);
             Self::lemma_caps_frame(s6, s7, nf, nf, u);
             assert(s7.is_cap(u) && s7.payload_of(u) == first);
@@ -11581,6 +11573,8 @@ impl CapKernel {
             assert(s1.tables.node_of(process, WITNESS_DEVICE_SLOT) == n);
             assert(!s1.list.nodes@[n as int].live);
             // The root's capability for core 0, as boot left it.
+            assert(s0.tables.leaf(process, 0) == leaf@);
+            assert(parent as int == leaf@ + ROOT_CORE_SLOT);
             assert(s0.slot_holds(process, ROOT_CORE_SLOT, parent, core_payload(0, MAX_PRIORITY)));
             assert(s0.list.nodes@[parent as int].depth == 1);
             assert(s0.tables.has_slot(&s0.list, process, ROOT_CORE_SLOT));
