@@ -62,4 +62,3 @@ aeager/src/glue.rs	retype_table_page	true
 aeager/src/glue.rs	link	true
 aeager/src/glue.rs	map_page	Some
 aeager/src/glue.rs	unmap_page	true
-adivider/src/lib.rs	check	true

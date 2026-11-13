@@ -25,7 +25,8 @@
 //!
 //! `overlap(rows, i, j)` is the declared overlap D(i, j): the pairs of rows of tenants i and j whose
 //! blocks intersect. `lemma_overlap_declared` says what `layout_ok` gives of it. The examples at the
-//! end are proven to pass or fail as a reader would expect, and the tests run `check` on them.
+//! end are proven to pass or fail as a reader would expect, `witness` holds a verified call of `check`
+//! on a constructed layout, built into no image, and the tests run `check` on the examples.
 #![cfg_attr(not(test), no_std)]
 
 #[cfg(verus_keep_ghost)]
@@ -36,6 +37,10 @@ use vstd::prelude::*;
 
 mod define;
 pub use define::*;
+#[cfg(throwaway)]
+mod throwaway;
+#[cfg(verus_keep_ghost)]
+mod witness;
 
 verus! {
 
