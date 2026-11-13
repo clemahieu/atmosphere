@@ -1012,6 +1012,70 @@ impl CapKernel {
     {
     }
 
+    /// A derive reaches derive: refused with nothing changed unless the rights in argument 2 fit 32 bits,
+    /// the order in argument 4 fits 8, the slot's word names a position of the caller's own table,
+    /// argument 1 names a position, and can_derive_at holds over them and the base in argument 3; ok when
+    /// they do, with the capability derived at argument 1's position as cap_derived_at says.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_derive(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Derive),
+        ensures
+            ({
+                let from = spec_position(frame.slot());
+                let to = spec_position(frame.argument(1));
+                let rights = frame.argument(2);
+                let base = frame.argument(3) as usize;
+                let order = frame.argument(4);
+                let succeeds = rights <= u32::MAX as u64 && order <= u8::MAX as u64 && from is Some
+                    && from->0.through is None && to is Some
+                    && pre.can_derive_at(root, from->0.index, to->0, rights as u32, base, order as u8);
+                &&& !succeeds ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& succeeds ==> out == status_only(STATUS_OK)
+                    && Self::cap_derived_at(pre, post, root, from->0.index, to->0, rights as u32, base, order as u8)
+            }),
+    {
+    }
+
+    /// A move reaches move_cap: refused with nothing changed unless the slot's word and argument 1 each
+    /// name a position and can_move_at holds between them; ok when they do, with the capability moved
+    /// as cap_moved_at says. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_move_cap(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Move),
+        ensures
+            ({
+                let from = spec_position(frame.slot());
+                let to = spec_position(frame.argument(1));
+                let succeeds = from is Some && to is Some && pre.can_move_at(root, from->0, to->0);
+                &&& !succeeds ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& succeeds ==> out == status_only(STATUS_OK) && Self::cap_moved_at(pre, post, root, from->0, to->0)
+            }),
+    {
+    }
+
+    /// A delete reaches delete: refused with nothing changed unless the slot's word names a position and
+    /// can_delete_at holds there; ok when it does, with the capability there deleted as cap_deleted_at
+    /// says and the reference it held dropped as object_dropped says. delete's Some is the payload it
+    /// took out, which the entry does not return: the status is the whole answer.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_delete(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Delete),
+        ensures
+            ({
+                let at = spec_position(frame.slot());
+                let succeeds = at is Some && pre.can_delete_at(root, at->0);
+                &&& !succeeds ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& succeeds ==> out == status_only(STATUS_OK) && Self::cap_deleted_at(pre, post, root, at->0)
+                    && Self::object_dropped(pre, post, pre.cap_at(root, at->0)->0)
+            }),
+    {
+    }
+
     /// An unmap, allowed or refused, leaves the tables, the list's parents and the bound threads as they
     /// were, and changes the kind or the liveness of no node but a mapping node, so no capability.
     pub proof fn lemma_unmapped_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
