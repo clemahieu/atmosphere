@@ -24,6 +24,8 @@ resets. Claude's are the token ledger's newest reading: every model's week and e
 such as Fable's. Gemini's, which agy's carbon models spend, are what `agy -p /usage` prints, asked
 for every USAGE seconds in a thread of its own; agy's group of Claude and GPT models is left out,
 since the loop reaches Claude through Claude Code. A failed ask keeps the gauges of the last one.
+Grok's week is the loop's latest reading of it in logs/loop/state.json (tools/loop.py, which asks
+tools/grok-usage.py), and there is none while no loop has read it.
 
 The server follows the tree. The page is read from disk at each request, and the server's own code
 is what the process loaded, so a change landing under a running server would put a new page over
@@ -67,6 +69,7 @@ RENEW = 2
 # time, so whatever it draws from further back than 31 days is in periods of a day or more.
 HOURLY = 31 * 86400
 LEDGER = Path("logs") / "token-ledger.sqlite"
+LOOP_STATE = Path("logs") / "loop" / "state.json"
 USAGE = 300
 AGY_GROUP = "Gemini Models"
 WINDOWS = {"weekly": "week", "5h": "five hours"}
@@ -403,6 +406,16 @@ def agy_meters(reply, read):
         for group in json.loads(reply)["command"]["data"]["groups"] if group["name"] == AGY_GROUP for bucket in group["buckets"]]
 
 
+def grok_meters(state):
+    """The gauge of Grok's week out of the loop's state file at `state`; none without a reading."""
+    if not state.exists():
+        return []
+    held = json.loads(state.read_text())["meters"].get("grok-week")
+    if not held or held.get("percent") is None:
+        return []
+    return [{"name": "Grok", "window": "week", "percent": round(held["percent"], 1), "resets": int(held["resets_at"]), "read": int(held["read"])}]
+
+
 def summary(issues, ready, seen, running, root, now, own={}, hours=(), meters=()):
     """What the page draws, from every issue, the ready ones in bd's order, the sessions' clocks, the
     token ledger (each issue's own tokens and each hour's by agent kind) and the plan meters."""
@@ -451,7 +464,7 @@ def read(root, now, agy=()):
     issues = bd("list", "--all")
     ledger = token_ledger()
     own, hours = ledger.spent(root / LEDGER, now - HOURLY)
-    meters = claude_meters(ledger.newest(root / LEDGER)) + list(agy)
+    meters = claude_meters(ledger.newest(root / LEDGER)) + list(agy) + grok_meters(root / LOOP_STATE)
     return issues, own, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now, own, hours, meters)
 
 
@@ -864,6 +877,14 @@ class Tests(unittest.TestCase):
             {"name": "Claude", "window": "week", "percent": 100, "resets": seconds("2026-11-15T04:59:59+00:00"), "read": 1794562367},
             {"name": "Fable", "window": "week", "percent": 38, "resets": seconds("2026-11-15T05:00:00+00:00"), "read": 1794562367}])
 
+    def test_groks_gauge_is_the_loops_latest_reading_of_its_week(self):
+        state = self.root / "state.json"
+        self.assertEqual(grok_meters(state), [])
+        state.write_text(json.dumps({"meters": {"claude-week": {"harness": "claude", "percent": 9, "resets_at": 1, "read": 2}}, "cooldown": {}}))
+        self.assertEqual(grok_meters(state), [])
+        state.write_text(json.dumps({"meters": {"grok-week": {"harness": "grok", "percent": 5.04, "resets_at": 1795136760.0, "read": 1794603906.5, "history": []}}, "cooldown": {}}))
+        self.assertEqual(grok_meters(state), [{"name": "Grok", "window": "week", "percent": 5.0, "resets": 1795136760, "read": 1794603906}])
+
     def test_a_server_asks_agy_for_its_gauges_and_keeps_the_last_through_a_failure(self):
         fake = self.root / "agy"
         fake.write_text(f"#!/bin/sh\n[ -e {self.root}/fail ] && exit 1\ncat {self.root}/usage.json\n")
@@ -950,11 +971,14 @@ class Tests(unittest.TestCase):
         (self.root / ".claude.json").write_text(json.dumps({"cachedUsageUtilization": {"fetchedAtMs": 5000, "utilization": {
             "seven_day": {"utilization": 97, "resets_at": "2026-11-15T04:59:59+00:00"}, "limits": []}}}))
         token_ledger().harvest(self.root / LEDGER, self.root, self.root)
+        (self.root / LOOP_STATE).parent.mkdir(parents=True)
+        (self.root / LOOP_STATE).write_text(json.dumps({"meters": {"grok-week": {"harness": "grok", "percent": 5, "resets_at": 1795136760, "read": 6}}, "cooldown": {}}))
         address = self.serve(f'case "$1" in list) cat {self.root}/list.json;; ready) echo [];; esac')
         with urllib.request.urlopen(f"{address}/data") as reply:
             found = json.load(reply)
         self.assertEqual([(row["id"], row["tokens"]) for row in found["tokens"]["roots"]], [("a", [2, 20, 200, 10, 2])])
-        self.assertEqual(found["meters"], [{"name": "Claude", "window": "week", "percent": 97, "resets": seconds("2026-11-15T04:59:59+00:00"), "read": 5}])
+        self.assertEqual(found["meters"], [{"name": "Claude", "window": "week", "percent": 97, "resets": seconds("2026-11-15T04:59:59+00:00"), "read": 5},
+                                           {"name": "Grok", "window": "week", "percent": 5, "resets": 1795136760, "read": 6}])
         # An hour older than the page draws by the hour comes as its local day.
         day = int(datetime.fromtimestamp(seconds("2020-01-05T12:00:00Z")).replace(hour=0, minute=0).timestamp())
         self.assertEqual(found["tokens"]["hours"], [[day, "session", [1, 10, 100, 5, 1]], [hour, "session", [1, 10, 100, 5, 1]]])
