@@ -7515,19 +7515,34 @@ impl CapKernel {
             assert(s3.flush_epoch == s0.flush_epoch);
         }
 
-        // The device, recorded as boot records one, its capability in slot 3 of the root's leaf.
+        // The device, recorded as boot records the devices it found, its capability in slot 3 of
+        // the root's leaf.
+        let devices = crate::array::Array::<DeviceInfo, MAX_DEVICES>::new(info);
+        let ghost nd = (b1 + 3) as usize;
         proof {
             assert(s3.devices.count == 0);
             assert(s3.devices.fresh(info));
             assert(s3.can_add_device(process, WITNESS_DEVICE_SLOT, info));
+            assert(devices@[0] == info);
+            assert((WITNESS_DEVICE_SLOT + 0) as usize == WITNESS_DEVICE_SLOT);
+            assert(s3.can_add_device_at(process, WITNESS_DEVICE_SLOT, devices@, 0));
+            assert(s3.can_add_devices(process, WITNESS_DEVICE_SLOT, devices@, 1));
         }
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let ok4 = self.add_device(root, process, WITNESS_DEVICE_SLOT, info, Tracked(&mut steps));
+        let ok4 = self.add_devices(root, process, WITNESS_DEVICE_SLOT, &devices, 1, Tracked(&mut steps));
         let ghost s4 = *self;
-        let ghost nd = (b1 + 3) as usize;
         proof {
             assert(ok4);
+            // One device's node is nd, and every other node is apart from it.
+            assert(s3.tables.node_of(process, (WITNESS_DEVICE_SLOT + 0) as usize) == nd);
+            assert forall|x: int| x != nd as int implies #[trigger] s3.apart_from_devices(process, WITNESS_DEVICE_SLOT, 1, x) by {
+                assert forall|k: int| 0 <= k < 1 implies x != #[trigger] s3.tables.node_of(process, (WITNESS_DEVICE_SLOT + k) as usize) as int by {
+                    assert(k == 0);
+                }
+            }
+            assert(s4.devices.records@[0] == crate::capability::device::unbound_record(devices@[0]));
+            assert(s4.slot_holds(process, WITNESS_DEVICE_SLOT, nd, device_payload(0)));
             assert(Self::adds_cap(s3, s4, nd));
             assert(s4.is_cap(nd));
             assert(s4.payload_of(nd) == device_payload(0));

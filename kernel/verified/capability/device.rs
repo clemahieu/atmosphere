@@ -829,6 +829,12 @@ impl CapKernel {
         forall|k: int| 0 <= k < count ==> #[trigger] self.can_add_device_at(root, slot, devices, k)
     }
 
+    /// Node x is none of the first count devices' nodes, device k's at index slot + k of the table
+    /// at root.
+    pub open spec fn apart_from_devices(&self, root: usize, slot: usize, count: int, x: int) -> bool {
+        forall|k: int| 0 <= k < count ==> x != #[trigger] self.tables.node_of(root, (slot + k) as usize) as int
+    }
+
     /// Records a device boot found and puts its capability at index `slot` of the table at root, a
     /// child of the list's first node. A refusal changes nothing.
     pub(crate) fn add_device(&mut self, first: usize, root: usize, slot: usize, info: DeviceInfo, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
@@ -998,6 +1004,85 @@ impl CapKernel {
         }
     }
 
+    /// The frame of add_devices once device k's node n is added, a child of p: what is apart from the
+    /// first k + 1 devices' nodes is as it was before the first.
+    proof fn lemma_add_devices_frame(pre: Self, before: Self, post: Self, root: usize, slot: usize, k: int, n: usize, p: usize)
+        requires
+            0 <= k,
+            n == pre.tables.node_of(root, (slot + k) as usize),
+            forall|i: int| #![trigger before.list.nodes@[i]]
+                0 <= i < NODE_SPACE && pre.apart_from_devices(root, slot, k, i) ==> {
+                &&& before.list.nodes@[i].live == pre.list.nodes@[i].live
+                &&& before.list.nodes@[i].kind == pre.list.nodes@[i].kind
+                &&& before.list.nodes@[i].depth == pre.list.nodes@[i].depth
+            },
+            forall|x: usize| #![trigger before.list.parent@.contains_key(x)]
+                pre.apart_from_devices(root, slot, k, x as int) ==> {
+                &&& before.list.parent@.contains_key(x) == pre.list.parent@.contains_key(x)
+                &&& pre.list.parent@.contains_key(x) ==> before.list.parent@[x] == pre.list.parent@[x]
+            },
+            forall|x: usize| #![trigger before.is_cap(x)] #![trigger pre.is_cap(x)]
+                pre.apart_from_devices(root, slot, k, x as int) ==> {
+                &&& before.is_cap(x) == pre.is_cap(x)
+                &&& pre.is_cap(x) ==> before.payload_of(x) == pre.payload_of(x)
+            },
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != n ==> {
+                &&& post.list.nodes@[i].live == before.list.nodes@[i].live
+                &&& post.list.nodes@[i].kind == before.list.nodes@[i].kind
+                &&& post.list.nodes@[i].depth == before.list.nodes@[i].depth
+            },
+            post.list.parent@ == before.list.parent@.insert(n, p),
+            Self::adds_cap(before, post, n),
+        ensures
+            forall|i: int| #![trigger post.list.nodes@[i]]
+                0 <= i < NODE_SPACE && pre.apart_from_devices(root, slot, k + 1, i) ==> {
+                &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+                &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+                &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
+            },
+            forall|x: usize| #![trigger post.list.parent@.contains_key(x)]
+                pre.apart_from_devices(root, slot, k + 1, x as int) ==> {
+                &&& post.list.parent@.contains_key(x) == pre.list.parent@.contains_key(x)
+                &&& pre.list.parent@.contains_key(x) ==> post.list.parent@[x] == pre.list.parent@[x]
+            },
+            forall|x: usize| #![trigger post.is_cap(x)] #![trigger pre.is_cap(x)]
+                pre.apart_from_devices(root, slot, k + 1, x as int) ==> {
+                &&& post.is_cap(x) == pre.is_cap(x)
+                &&& pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)
+            },
+    {
+        assert forall|x: int| #[trigger] pre.apart_from_devices(root, slot, k + 1, x)
+            implies pre.apart_from_devices(root, slot, k, x) && x != n as int by {
+            assert(pre.tables.node_of(root, (slot + k) as usize) == n);
+            assert forall|j: int| 0 <= j < k implies x != #[trigger] pre.tables.node_of(root, (slot + j) as usize) as int by {
+                assert(0 <= j < k + 1);
+            }
+        }
+        assert forall|i: int| #![trigger post.list.nodes@[i]]
+            0 <= i < NODE_SPACE && pre.apart_from_devices(root, slot, k + 1, i) implies {
+            &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+            &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
+        } by {
+            assert(before.list.nodes@[i] == before.list.nodes@[i]);
+        }
+        assert forall|x: usize| #![trigger post.list.parent@.contains_key(x)]
+            pre.apart_from_devices(root, slot, k + 1, x as int) implies {
+            &&& post.list.parent@.contains_key(x) == pre.list.parent@.contains_key(x)
+            &&& pre.list.parent@.contains_key(x) ==> post.list.parent@[x] == pre.list.parent@[x]
+        } by {
+            assert(before.list.parent@.contains_key(x) == pre.list.parent@.contains_key(x));
+        }
+        assert forall|x: usize| #![trigger post.is_cap(x)] #![trigger pre.is_cap(x)]
+            pre.apart_from_devices(root, slot, k + 1, x as int) implies {
+            &&& post.is_cap(x) == pre.is_cap(x)
+            &&& pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)
+        } by {
+            assert(before.is_cap(x) == pre.is_cap(x));
+            assert(post.is_cap(x) == before.is_cap(x));
+        }
+    }
+
     /// Gives each device boot found a record and a capability under the list's first node, device k
     /// at index slot + k of the table at root. Boot fills the table once, and it stops at the first
     /// device refused, so false means boot fails, and what the devices before it were given stays.
@@ -1021,14 +1106,35 @@ impl CapKernel {
             final(self).iommus == old(self).iommus,
             final(self).processes == old(self).processes,
             final(self).spaces == old(self).spaces,
+            final(self).flush_epoch == old(self).flush_epoch,
             ret ==> {
                 &&& final(self).devices.count == count
                 &&& forall|k: int| 0 <= k < count ==> {
                     let n = old(self).tables.node_of(root, (slot + k) as usize);
                     &&& #[trigger] final(self).devices.records@[k] == unbound_record(devices@[k])
-                    &&& final(self).is_cap(n)
-                    &&& final(self).payload_of(n) == device_payload(k)
+                    &&& final(self).slot_holds(root, (slot + k) as usize, n, device_payload(k))
                     &&& final(self).list.is_child(first, n)
+                }
+                &&& final(self).devices.records@.len() == old(self).devices.records@.len()
+                &&& forall|k: int| count <= k < old(self).devices.records@.len()
+                    ==> #[trigger] final(self).devices.records@[k] == old(self).devices.records@[k]
+                // Every node but the devices' keeps its liveness, kind, depth and parent, and every
+                // capability but theirs stays, saying the same.
+                &&& forall|i: int| #![trigger final(self).list.nodes@[i]]
+                    0 <= i < NODE_SPACE && old(self).apart_from_devices(root, slot, count as int, i) ==> {
+                    &&& final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
+                    &&& final(self).list.nodes@[i].kind == old(self).list.nodes@[i].kind
+                    &&& final(self).list.nodes@[i].depth == old(self).list.nodes@[i].depth
+                }
+                &&& forall|x: usize| #![trigger final(self).list.parent@.contains_key(x)]
+                    old(self).apart_from_devices(root, slot, count as int, x as int) ==> {
+                    &&& final(self).list.parent@.contains_key(x) == old(self).list.parent@.contains_key(x)
+                    &&& old(self).list.parent@.contains_key(x) ==> final(self).list.parent@[x] == old(self).list.parent@[x]
+                }
+                &&& forall|x: usize| #![trigger final(self).is_cap(x)] #![trigger old(self).is_cap(x)]
+                    old(self).apart_from_devices(root, slot, count as int, x as int) ==> {
+                    &&& final(self).is_cap(x) == old(self).is_cap(x)
+                    &&& old(self).is_cap(x) ==> final(self).payload_of(x) == old(self).payload_of(x)
                 }
             },
     {
@@ -1063,7 +1169,26 @@ impl CapKernel {
                 self.iommus == pre.iommus,
                 self.processes == pre.processes,
                 self.spaces == pre.spaces,
+                self.flush_epoch == pre.flush_epoch,
                 forall|j: int| 0 <= j < k ==> #[trigger] pre.can_add_device_at(root, slot, devices@, j),
+                self.devices.records@.len() == pre.devices.records@.len(),
+                forall|j: int| k <= j < pre.devices.records@.len() ==> #[trigger] self.devices.records@[j] == pre.devices.records@[j],
+                forall|i: int| #![trigger self.list.nodes@[i]]
+                    0 <= i < NODE_SPACE && pre.apart_from_devices(root, slot, k as int, i) ==> {
+                    &&& self.list.nodes@[i].live == pre.list.nodes@[i].live
+                    &&& self.list.nodes@[i].kind == pre.list.nodes@[i].kind
+                    &&& self.list.nodes@[i].depth == pre.list.nodes@[i].depth
+                },
+                forall|x: usize| #![trigger self.list.parent@.contains_key(x)]
+                    pre.apart_from_devices(root, slot, k as int, x as int) ==> {
+                    &&& self.list.parent@.contains_key(x) == pre.list.parent@.contains_key(x)
+                    &&& pre.list.parent@.contains_key(x) ==> self.list.parent@[x] == pre.list.parent@[x]
+                },
+                forall|x: usize| #![trigger self.is_cap(x)] #![trigger pre.is_cap(x)]
+                    pre.apart_from_devices(root, slot, k as int, x as int) ==> {
+                    &&& self.is_cap(x) == pre.is_cap(x)
+                    &&& pre.is_cap(x) ==> self.payload_of(x) == pre.payload_of(x)
+                },
                 // Only the devices' nodes came to life, none at the start of a page, and none of a
                 // later device's slot.
                 forall|i: int| #![trigger self.list.nodes@[i]] 0 <= i < NODE_SPACE && pre.list.nodes@[i].live ==> self.list.nodes@[i].live,
@@ -1165,6 +1290,7 @@ impl CapKernel {
                         assert(self.list.is_child(first, m));
                     }
                 }
+                Self::lemma_add_devices_frame(pre, before, *self, root, slot, k as int, n, first);
             }
             k = k + 1;
         }
@@ -1173,6 +1299,13 @@ impl CapKernel {
                 requires
                     k <= MAX_DEVICES,
             ;
+            // Each device's slot is still a slot of the same node.
+            assert forall|j: int| 0 <= j < count implies
+                #[trigger] self.tables.has_slot(&self.list, root, (slot + j) as usize)
+                && self.tables.node_of(root, (slot + j) as usize) == pre.tables.node_of(root, (slot + j) as usize) by {
+                assert(pre.can_add_device_at(root, slot, devices@, j));
+                Self::lemma_slot_stays(pre, *self, root, (slot + j) as usize);
+            }
         }
         true
     }
