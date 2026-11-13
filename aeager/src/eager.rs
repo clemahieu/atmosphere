@@ -4734,9 +4734,25 @@ impl SpanSource for Eager {
         release_fields(&mut self.spans, &mut self.record, span, start, pages, perm, Ghost(before));
     }
 
+    /// Gives up the span with no system call: the token, the configuration, the linked tables, the
+    /// parked and free frames and the `acall` steps made so far stay as they were.
     fn release_span(&mut self, token: &mut Tracked<Caller>, span: usize)
         ensures
+            final(token)@ == old(token)@,
+            final(self).space() == old(self).space(),
+            final(self).untyped() == old(self).untyped(),
+            final(self).memory() == old(self).memory(),
+            final(self).pages() == old(self).pages(),
+            final(self).slots() == old(self).slots(),
             final(self).window() == old(self).window(),
+            final(self).free_capacity() == old(self).free_capacity(),
+            final(self).free_frames() == old(self).free_frames(),
+            final(self).free_table_blocks() == old(self).free_table_blocks(),
+            final(self).top_linked() == old(self).top_linked(),
+            final(self).middle_linked() == old(self).middle_linked(),
+            forall|b: int| 0 <= b < WINDOW_BLOCKS ==> #[trigger] final(self).block_tabled(b) == old(self).block_tabled(b),
+            forall|a: int| #[trigger] final(self).parks(a) == old(self).parks(a),
+            final(self).acall_trace() == old(self).acall_trace(),
     {
         proof {
             use_type_invariant(&*self);
