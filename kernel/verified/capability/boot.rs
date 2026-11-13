@@ -128,7 +128,7 @@ impl CapKernel {
     /// refused, and both hang below the list's synthetic root: the capability, and the leaf's hidden
     /// node, which every live leaf has. Boot hands over every page's permission.
     #[verifier::spinoff_prover]
-    pub fn boot_root_process(&mut self, root: usize, base: usize, leaf: usize, Tracked(pages): Tracked<Map<usize, PagePerm4k>>)
+    pub(crate) fn boot_root_process(&mut self, root: usize, base: usize, leaf: usize, Tracked(pages): Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
             old(self).boot_empty(),
@@ -403,7 +403,7 @@ impl CapKernel {
     /// ROOT_THREAD_SLOT below the list's synthetic root. The block is typed as a retype types it, so a
     /// retype naming it is refused. Boot hands over both pages' permissions.
     #[verifier::spinoff_prover]
-    pub fn boot_root_thread(&mut self, root: usize, process: usize, leaf: usize, t: usize, Tracked(pages): Tracked<Map<usize, PagePerm4k>>)
+    pub(crate) fn boot_root_thread(&mut self, root: usize, process: usize, leaf: usize, t: usize, Tracked(pages): Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
             root == old(self).list.seq@[0],
@@ -811,7 +811,7 @@ impl CapKernel {
     /// both with control, and nothing else, so what it reaches is exactly the pages of those two blocks.
     /// It holds no Space capability: it writes its own space through its process capability. See
     /// design/root-process-at-boot/ and design/process-holds-capabilities/.
-    pub fn boot_root(
+    pub(crate) fn boot_root(
         &mut self,
         root: usize,
         process: usize,
@@ -1179,7 +1179,7 @@ impl CapKernel {
     /// thread capabilities are. Such a capability names no block and carries no control, so the root's
     /// reach grows by the object alone, and nobody else's by anything else. See
     /// design/root-process-at-boot/.
-    pub fn boot_root_object(&mut self, root: usize, process: usize, leaf: usize, i: usize, payload: Payload)
+    pub(crate) fn boot_root_object(&mut self, root: usize, process: usize, leaf: usize, i: usize, payload: Payload)
         requires
             old(self).wf(),
             root == old(self).list.seq@[0],
@@ -1382,7 +1382,7 @@ impl CapKernel {
     /// below the list's synthetic root as the root's other capabilities are. It carries the retype
     /// right and no control, so the root's reach grows by the block's pages and nobody else's by
     /// anything outside them. See design/root-process-at-boot/ and design/untyped-memory/.
-    pub fn boot_root_untyped(&mut self, root: usize, process: usize, leaf: usize, i: usize, base: usize, order: u8)
+    pub(crate) fn boot_root_untyped(&mut self, root: usize, process: usize, leaf: usize, i: usize, base: usize, order: u8)
         requires
             old(self).wf(),
             root == old(self).list.seq@[0],

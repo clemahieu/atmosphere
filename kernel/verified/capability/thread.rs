@@ -1205,7 +1205,7 @@ impl CapKernel {
 
     /// Undoes thread t's binding to its process, node t, before revoke unlinks the node. A thread
     /// Running on a core gets a pending stop and that core an IPI, and is left to that core.
-    pub fn unbind(&mut self, t: usize)
+    pub(crate) fn unbind(&mut self, t: usize)
         requires
             old(self).wf(),
             t < NODE_SPACE,
@@ -2424,7 +2424,7 @@ impl CapKernel {
     /// scheduler's choice, and loading its frame is the caller's. The caller loads t's process's space
     /// first, so a core runs a thread only in the space of the process it is bound to: current_wf,
     /// design/teardown-driven-by-retype/.
-    pub fn switch_in(&mut self, c: usize, t: usize)
+    pub(crate) fn switch_in(&mut self, c: usize, t: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -2580,7 +2580,7 @@ impl CapKernel {
 
     /// Core c saves its current thread's frame and leaves it Runnable on c, running nothing until it
     /// switches in again. A thread that must leave is moved off instead, by check_current.
-    pub fn switch_out(&mut self, c: usize, frame: Registers)
+    pub(crate) fn switch_out(&mut self, c: usize, frame: Registers)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -3265,7 +3265,7 @@ impl CapKernel {
 
     /// Destroys thread t from core c, in one bounded step: see thread_destroyed. Its references,
     /// capabilities, binding nodes and process stay as they were.
-    pub fn destroy_thread(&mut self, c: usize, t: usize)
+    pub(crate) fn destroy_thread(&mut self, c: usize, t: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -3953,7 +3953,7 @@ impl CapKernel {
     /// thread's node page, becomes a binding below n, holding a reference on the process's block. Only
     /// retype_thread and the boot step that makes the root thread call it, on the thread just typed.
     /// See design/thread-bound-at-retype/.
-    pub fn bind_thread(&mut self, n: usize, t: usize)
+    pub(crate) fn bind_thread(&mut self, n: usize, t: usize)
         requires
             old(self).wf(),
             old(self).is_cap(n),

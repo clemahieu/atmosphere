@@ -1743,7 +1743,7 @@ impl CapKernel {
     /// the capability at index `slot` of the table at `root`, on the authority of the untyped at index
     /// `from` over the child's block. All of these come from user space, and a refusal changes nothing.
     /// The entry and both records change in one step.
-    pub fn link(&mut self, root: usize, slot: usize, parent: usize, entry: usize, from: usize, child: usize) -> (ret: bool)
+    pub(crate) fn link(&mut self, root: usize, slot: usize, parent: usize, entry: usize, from: usize, child: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -2452,7 +2452,7 @@ impl CapKernel {
     }
 
     /// Cuts node n's table page, if n is a table page's hidden node, so that node can go.
-    pub fn cut_hidden_table(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub(crate) fn cut_hidden_table(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -2495,7 +2495,7 @@ impl CapKernel {
 
     /// Cuts table page t from the entry that names it and records what that leaves stale, so the walks
     /// through it end and whatever a core or an IOMMU got from them is one a flush must take out.
-    pub fn detach_stale(&mut self, t: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub(crate) fn detach_stale(&mut self, t: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).table_pages.maps@.contains_key(t),
@@ -2530,7 +2530,7 @@ impl CapKernel {
     /// Cuts table page t from the entry that names it, the entry and t's parent in one step, so the walks
     /// through it end. t keeps its space, as what is below it does, and a table with no parent writes
     /// nothing. detach_stale records what the cut leaves stale.
-    pub fn detach_table(&mut self, t: usize)
+    pub(crate) fn detach_table(&mut self, t: usize)
         requires
             old(self).wf(),
             old(self).table_pages.maps@.contains_key(t),

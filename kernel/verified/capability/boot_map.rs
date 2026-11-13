@@ -734,7 +734,7 @@ impl CapKernel {
     /// prove, so nothing is refused. The root's space gains exactly the runs' pages, each with its run's
     /// rights; each mapping is a child of its block's frame capability; nothing else changes in any
     /// space, and nobody's reach.
-    pub fn boot_root_maps(&mut self, Ghost(root): Ghost<usize>, process: usize, Ghost(leaf2): Ghost<usize>, runs: &[ImageRun])
+    pub(crate) fn boot_root_maps(&mut self, Ghost(root): Ghost<usize>, process: usize, Ghost(leaf2): Ghost<usize>, runs: &[ImageRun])
         requires
             old(self).maps_ready(root, process, leaf2, runs@),
         ensures

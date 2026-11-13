@@ -738,7 +738,7 @@ impl CapKernel {
     /// physical pages, and nobody else's by anything outside them. It returns how many blocks there
     /// are, and refuses, leaving the state as it was, when they do not fit in the second leaf.
     #[verifier::spinoff_prover]
-    pub fn boot_root_image(
+    pub(crate) fn boot_root_image(
         &mut self,
         root: usize,
         process: usize,

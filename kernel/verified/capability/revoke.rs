@@ -79,7 +79,7 @@ impl CapKernel {
     /// process, leaves the thread with no process and drops its reference on the process's block. A
     /// device binding node leaves its device bound to nothing and drops its reference on the space's
     /// block, recording the space's root stale at a new epoch.
-    pub fn unlink_arm(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
+    pub(crate) fn unlink_arm(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -630,7 +630,7 @@ impl CapKernel {
     }
 
     /// One step of revoking capability c, which root's table holds. Returns whether c's run was empty.
-    pub fn revoke_step(&mut self, Ghost(root): Ghost<usize>, c: usize, Tracked(steps): Tracked<&mut Steps>) -> (done: bool)
+    pub(crate) fn revoke_step(&mut self, Ghost(root): Ghost<usize>, c: usize, Tracked(steps): Tracked<&mut Steps>) -> (done: bool)
         requires
             old(self).wf(),
             c < NODE_SPACE,

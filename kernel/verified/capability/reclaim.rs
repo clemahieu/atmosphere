@@ -1076,7 +1076,7 @@ impl CapKernel {
     /// whether it ran, and if not nothing changed. Dead slots stay dead while the leaf's hidden node is,
     /// since lookup refuses such a leaf, so a
     /// slice can walk them once and the next starts again from the first.
-    pub fn slice_leaf(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn slice_leaf(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -1544,7 +1544,7 @@ impl CapKernel {
     /// Frees the leaf at `base`, under the untyped at index `from` of the table at `root`, once its block
     /// is at zero references and no node in its page is live. All of these come from user space, and
     /// anything but a free changes nothing.
-    pub fn free_leaf(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
+    pub(crate) fn free_leaf(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -1624,7 +1624,7 @@ impl CapKernel {
     // In a solver of its own: in the module's shared solver, the queries before it leave too little of
     // its budget.
     #[verifier::spinoff_prover]
-    pub fn free_table(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
+    pub(crate) fn free_table(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -2834,7 +2834,7 @@ impl CapKernel {
 
     /// The block of the empty table page at `base` goes back to the block table: its node pages off the
     /// list, and its table, record and spare page turned back into page permissions.
-    pub fn free_empty_table(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub(crate) fn free_empty_table(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).table_is_empty(base),
@@ -3139,7 +3139,7 @@ impl CapKernel {
 
     /// The block of the empty space at `base` goes back to the block table: its node pages off the list,
     /// and its root, record and list of cores turned back into page permissions.
-    pub fn free_empty_space(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub(crate) fn free_empty_space(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).space_is_empty(base),
@@ -3251,7 +3251,7 @@ impl CapKernel {
     /// block's last unmap. It refuses a block that is anything else, a process space included.
     // In a solver of its own: beside the rest of this module it runs past its budget.
     #[verifier::spinoff_prover]
-    pub fn free_space(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
+    pub(crate) fn free_space(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -3320,7 +3320,7 @@ impl CapKernel {
     /// Unlinks the hidden node of the leaf at `base`, by the same undo as revoke's hidden arm, and
     /// nothing more. Refused, with nothing changed, unless an untyped held covers the block and the
     /// block holds a leaf with its hidden node still live.
-    pub fn unlink_leaf(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn unlink_leaf(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -3457,7 +3457,7 @@ impl CapKernel {
     /// that leaves stale, and drops its reference, and nothing more. Refused, with nothing changed, unless
     /// an untyped held covers the block and the block holds a table page with its hidden node still live,
     /// and the epoch can still rise. A process's root is a space block, so it is refused.
-    pub fn unlink_table(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn unlink_table(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -4049,7 +4049,7 @@ impl CapKernel {
     /// entry stays empty, since can_link refuses a dead parent and no walk reaches a table with no parent,
     /// so the next slice can start again from the first entry. Returns whether it ran, and if not nothing
     /// changed.
-    pub fn cut_table_children(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn cut_table_children(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -4112,7 +4112,7 @@ impl CapKernel {
     /// parent, each from the entry naming it, with what that leaves stale, and returns how many. A kernel
     /// slot names no child, so it stays, as does every entry that named none. A slice starts again from
     /// the first entry, since a cut entry stays empty.
-    pub fn cut_children(&mut self, base: usize, is_root: bool, Tracked(steps): Tracked<&mut Steps>) -> (cut: usize)
+    pub(crate) fn cut_children(&mut self, base: usize, is_root: bool, Tracked(steps): Tracked<&mut Steps>) -> (cut: usize)
         requires
             old(self).wf(),
             old(self).flush_epoch < usize::MAX,
@@ -4284,7 +4284,7 @@ impl CapKernel {
     /// Cuts up to a budget of the child tables of the dead device space at `base`, under the untyped at index
     /// `from` of the table at `root`, each from the entry naming it, with what that leaves stale. Returns
     /// whether it ran, and if not nothing changed.
-    pub fn cut_space_children(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn cut_space_children(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -4490,7 +4490,7 @@ impl CapKernel {
 
     /// Unlinks mapping node n with its entry and its frame's reference, and records the unmap. Returns the
     /// entry's word as read in the step that cleared it.
-    pub fn unlink_mapping_node(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
+    pub(crate) fn unlink_mapping_node(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -4662,7 +4662,7 @@ impl CapKernel {
     /// unmap. A mapping node is always a leaf of its capability's run, so nothing else need consent. A
     /// cleared entry stays empty, since nothing maps into a dead table, so the next slice can start again
     /// from the first entry. Returns whether it ran, and if not nothing changed.
-    pub fn unlink_table_mappings(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn unlink_table_mappings(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -4823,7 +4823,7 @@ impl CapKernel {
     /// Takes a slice of the dead table page at `base`, under the untyped at index `from` of the table at
     /// `root`: the entries naming child tables go first, then the entries mapping frames. Returns whether
     /// it ran, and if not nothing changed.
-    pub fn slice_table(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn slice_table(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),

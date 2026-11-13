@@ -214,7 +214,7 @@ impl CapKernel {
 
     /// Unmaps entry `l1` of the level 1 table the path reaches in the space named at index `slot`. The
     /// index and the path come from user space, so either can be refused, and a refusal changes nothing.
-    pub fn unmap(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Unmapped>)
+    pub(crate) fn unmap(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Unmapped>)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -236,7 +236,7 @@ impl CapKernel {
 
     /// unmap, in a space that must be of this kind.
     #[verifier::spinoff_prover]
-    pub fn unmap_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Unmapped>)
+    pub(crate) fn unmap_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Unmapped>)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),

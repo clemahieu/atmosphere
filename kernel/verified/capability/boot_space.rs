@@ -169,7 +169,7 @@ impl CapKernel {
     /// come from its own untyped, of whose order-3 blocks every one past those the tables can take is
     /// free as it was.
     #[verifier::spinoff_prover]
-    pub fn boot_root_space(
+    pub(crate) fn boot_root_space(
         &mut self,
         root: usize,
         process: usize,

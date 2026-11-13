@@ -712,7 +712,7 @@ impl CapKernel {
     }
 
     /// Unbinds the device whose binding node n is, before n is unlinked.
-    pub fn unbind_device(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub(crate) fn unbind_device(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -831,7 +831,7 @@ impl CapKernel {
 
     /// Records a device boot found and puts its capability at index `slot` of the table at root, a
     /// child of the list's first node. A refusal changes nothing.
-    pub fn add_device(&mut self, first: usize, root: usize, slot: usize, info: DeviceInfo, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn add_device(&mut self, first: usize, root: usize, slot: usize, info: DeviceInfo, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),

@@ -874,7 +874,7 @@ impl CapKernel {
     /// to its process and the next frees its block. A thread Running on a core, which is also the only
     /// kind with a stop pending, is refused until that core moves it off. All of these come from user
     /// space, and anything but an unlink or a free changes nothing.
-    pub fn reclaim_thread(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
+    pub(crate) fn reclaim_thread(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,

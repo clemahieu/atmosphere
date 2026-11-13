@@ -1668,7 +1668,7 @@ impl CapKernel {
 
     /// Undoes mapping node n: its entry and its reference go in one step, and nothing else. The node's
     /// own page says where its entry is. Returns the entry's word as read in the step that cleared it.
-    pub fn clear_mapping(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
+    pub(crate) fn clear_mapping(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,

@@ -391,7 +391,7 @@ impl CapKernel {
     /// `root`: raises the flush epoch, records it as the space's retire epoch and sends a flush IPI to
     /// each core on the space's list. Refused unless it is not yet retired, a core depends on it and no
     /// core's base register names it. Returns whether it ran, and if not nothing changed.
-    pub fn retire_process(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn retire_process(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -466,7 +466,7 @@ impl CapKernel {
     /// untyped at index `from` of the table at `root`, each from the entry naming it, with what that
     /// leaves stale, and leaves the kernel slots. Refused while a core depends on the space. Returns
     /// whether it ran, and if not nothing changed.
-    pub fn cut_process_space(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn cut_process_space(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -1031,7 +1031,7 @@ impl CapKernel {
     /// The block of the spent dead process at `base` goes back to the block table: its table root, its
     /// record, its spare pages and its space's root, record and list of cores turned back into page
     /// permissions.
-    pub fn free_spent_process(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub(crate) fn free_spent_process(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).process_is_spent(base),
@@ -1156,7 +1156,7 @@ impl CapKernel {
     /// space, a leaf in its table root or an entry in its space root.
     // In a solver of its own, as free_space is.
     #[verifier::spinoff_prover]
-    pub fn free_process(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
+    pub(crate) fn free_process(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,

@@ -997,7 +997,7 @@ impl CapKernel {
     /// Maps the page at offset `page` of the frame capability at index `from` into entry `l1` of the
     /// level 1 table the path reaches in the space named at index `slot`. All of the indices and the
     /// offset come from user space, so any of them can be refused, and a refusal changes nothing.
-    pub fn map(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize, from: usize, page: usize) -> (ret: bool)
+    pub(crate) fn map(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize, from: usize, page: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -1226,7 +1226,7 @@ impl CapKernel {
     }
 
     /// map, in a space that must be of this kind.
-    pub fn map_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize, from: usize, page: usize) -> (ret: bool)
+    pub(crate) fn map_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize, from: usize, page: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -1368,7 +1368,7 @@ impl CapKernel {
     /// Maps the 2M page at offset `page` of the frame capability at index `from` into entry `l2` of the
     /// level 2 table the path reaches in the space named at index `slot`. All of the indices and the
     /// offset come from user space, so any of them can be refused, and a refusal changes nothing.
-    pub fn map_large(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, from: usize, page: usize) -> (ret: bool)
+    pub(crate) fn map_large(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, from: usize, page: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -1389,7 +1389,7 @@ impl CapKernel {
     }
 
     /// map_large, in a space that must be of this kind.
-    pub fn map_large_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, from: usize, page: usize) -> (ret: bool)
+    pub(crate) fn map_large_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, from: usize, page: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),

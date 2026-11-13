@@ -1264,7 +1264,7 @@ impl CapKernel {
     /// Types the two pages at `base` as a table leaf in entry r of the table at root, its hidden node a
     /// child of parent: an untyped's capability when a retype makes it, the list's synthetic root when
     /// boot does. The block table refuses pages that are not free, and a refusal changes nothing.
-    pub fn place_leaf(&mut self, parent: usize, root: usize, r: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub(crate) fn place_leaf(&mut self, parent: usize, root: usize, r: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),

@@ -2060,7 +2060,7 @@ impl CapKernel {
     /// KERNEL_TAG, `tlb` is the cores' TLB model as boot makes it, each core's sets empty, and `iotlb` the
     /// IOMMUs', each IOMMU's set empty. In place,
     /// since the block table is too large to move by value.
-    pub fn init(
+    pub(crate) fn init(
         &mut self,
         root: usize,
         Tracked(perm): Tracked<PointsTo<NodePage>>,

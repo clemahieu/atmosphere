@@ -699,7 +699,7 @@ impl CapKernel {
     /// and whether it is the cursor's new table. The entry holds no large frame, and the cursor's block
     /// is free in the root's untyped, so it never refuses.
     #[verifier::spinoff_prover]
-    pub fn boot_root_table(&mut self, process: usize, s: usize, t: usize, is_root: bool, i: usize, level: usize, cursor: usize)
+    pub(crate) fn boot_root_table(&mut self, process: usize, s: usize, t: usize, is_root: bool, i: usize, level: usize, cursor: usize)
         -> (ret: (usize, bool))
         requires
             old(self).wf(),
@@ -863,7 +863,7 @@ impl CapKernel {
     /// kernel slots and maps no large frame, and the cursor's next three blocks are free in the root's
     /// untyped, so it never refuses; the caller checks that once for every path.
     #[verifier::spinoff_prover]
-    pub fn boot_root_path(&mut self, process: usize, s: usize, l4: usize, l3: usize, l2: usize, cursor: usize) -> (ret: usize)
+    pub(crate) fn boot_root_path(&mut self, process: usize, s: usize, l4: usize, l3: usize, l2: usize, cursor: usize) -> (ret: usize)
         requires
             old(self).wf(),
             old(self).root_tables_ready(process),
@@ -1215,7 +1215,7 @@ impl CapKernel {
     /// every run walks to a level 1 table of the root's space whose entry for it is empty, and every
     /// order-3 block of the untyped past the ones the check counted is free as it was.
     #[verifier::spinoff_prover]
-    pub fn boot_root_tables(&mut self, process: usize, runs: &[ImageRun]) -> (ret: bool)
+    pub(crate) fn boot_root_tables(&mut self, process: usize, runs: &[ImageRun]) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).root_tables_ready(process),

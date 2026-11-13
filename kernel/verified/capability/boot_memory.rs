@@ -829,7 +829,7 @@ impl CapKernel {
     /// outside them. It returns how many blocks there are, and refuses, leaving the state as it was,
     /// when they do not fit in the root's first leaf.
     #[verifier::spinoff_prover]
-    pub fn boot_root_memory(
+    pub(crate) fn boot_root_memory(
         &mut self,
         root: usize,
         process: usize,

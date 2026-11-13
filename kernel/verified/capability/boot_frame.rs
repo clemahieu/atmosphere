@@ -537,7 +537,7 @@ impl CapKernel {
     /// frame's; a later block in r finds it typed. Either way the capability takes one reference on r
     /// and joins its holders. It carries no control, so the root's reach grows by the block's pages and
     /// nobody else's by anything outside them. See design/root-process-at-boot/.
-    pub fn boot_root_frame(
+    pub(crate) fn boot_root_frame(
         &mut self,
         root: usize,
         process: usize,
