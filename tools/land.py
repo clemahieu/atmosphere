@@ -10,8 +10,8 @@ fast-forward that main moved under and a merge while main's index is taken, so b
 from the rebase. A rebase that is clean lands without a second gate: what landed beside it is gated
 with whatever change is gated on top of it next (design/land-without-regating/).
 
-A change that touches only what no gate step reads, UNREAD below, and leaves no source file there,
-lands without a gate: the gate would say of it what it says of the base
+A change that touches only what no gate step reads, UNREAD below, and leaves no source there that
+fails to state an allowed license, lands without a gate: the gate would say of it what it says of the base
 (design/no-gate-for-what-no-step-reads/). Its tree joins
 the ledger with the base's verdict when the base has one.
 
@@ -82,8 +82,21 @@ PUSH_TRIES = 3
 # How far back a broken base's suspects are listed when no tree before them passed.
 SUSPECT_LIMIT = 50
 # What no gate step reads, so a change to these alone cannot move the gate's result: a file, or with
-# a closing slash everything under a directory (design/no-gate-for-what-no-step-reads/).
-UNREAD = (".claude/agents/", ".claude/skills/", "CLAUDE.md")
+# a closing slash everything under a directory (design/no-gate-for-what-no-step-reads/). The tools
+# here are run by people and by loops, and import only one another.
+UNREAD = (
+    ".claude/agents/",
+    ".claude/skills/",
+    "CLAUDE.md",
+    "tools/bead-status.html",
+    "tools/bead-status.py",
+    "tools/leaf-cost.py",
+    "tools/loop.py",
+    "tools/review-evidence.py",
+    "tools/reviews.py",
+    "tools/round-status.py",
+    "tools/token-ledger.py",
+)
 # The gate's limit on a file's size, which it holds every path to, as it holds every source file to
 # stating its license; tools/check-spdx.py says which files are sources.
 MAX_FILE_BYTES = 1 << 20
@@ -197,20 +210,27 @@ def unread(path):
     return any(path == entry or (entry.endswith("/") and path.startswith(entry)) for entry in UNREAD)
 
 
-def held_everywhere(path):
-    """Whether a file the change leaves is one the gate judges whatever its path: over the size limit,
-    or a source, which must state its license."""
-    if path.lstat().st_size > MAX_FILE_BYTES:
+def held_everywhere(worktree, path):
+    """Whether a file the change leaves fails a check the gate makes of every path: over the size
+    limit, or a source that does not state a license the allowlist passes."""
+    if (worktree / path).lstat().st_size > MAX_FILE_BYTES:
         return True
-    return not path.is_symlink() and check_spdx.is_source(path.name, path.read_bytes())
+    if (worktree / path).is_symlink() or not check_spdx.is_source(path, (worktree / path).read_bytes()):
+        return False
+    allowlist = (worktree / check_spdx.check_licenses.ALLOWLIST_PATH).read_text(encoding="utf-8")
+    try:
+        _, _, found = check_spdx.scan(worktree, [path], check_spdx.check_licenses.Allowlist(allowlist))
+    except check_spdx.check_licenses.Unreadable:
+        return True
+    return bool(found)
 
 
 def needs_no_gate(worktree, base):
     """Whether the change since the base touches only what no gate step reads and leaves no file the
     gate judges whatever its path."""
     changed = git(worktree, "diff", "--name-only", "--no-renames", base, "HEAD").splitlines()
-    kept = [worktree / path for path in changed if (worktree / path).is_symlink() or (worktree / path).exists()]
-    return bool(changed) and all(map(unread, changed)) and not any(map(held_everywhere, kept))
+    kept = [path for path in changed if (worktree / path).is_symlink() or (worktree / path).exists()]
+    return bool(changed) and all(map(unread, changed)) and not any(held_everywhere(worktree, path) for path in kept)
 
 
 def listed(worktree, commit, path):
@@ -507,8 +527,19 @@ class Tests(unittest.TestCase):
         self.assertNotEqual(result.returncode, LANDED, result.stdout)
         self.assertEqual(self.gates(), 1)
 
-    def test_a_source_file_is_gated_whatever_its_path(self):
-        for name, text in ((".claude/skills/round/run.sh", "echo\n"), (".claude/agents/run", "#!/bin/sh\necho\n")):
+    def test_a_tool_no_gate_step_runs_lands_without_a_gate_when_it_states_its_license(self):
+        self.commit(self.main, "tools/license-allowlist", "license MIT\n")
+        self.commit(self.task, "tools/bead-status.html")
+        self.commit(self.task, "tools/bead-status.py", "# SPDX-License-Identifier: MIT\n")
+        result = self.land("false")
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertFalse((self.root / "gates").exists())
+        self.assertIn(f"land: {self.git(self.main, 'rev-parse', 'main')} landed without a gate", result.stdout)
+
+    def test_a_source_that_does_not_state_an_allowed_license_is_gated_whatever_its_path(self):
+        self.commit(self.main, "tools/license-allowlist", "license MIT\n")
+        for name, text in ((".claude/skills/round/run.sh", "echo\n"), (".claude/agents/run", "#!/bin/sh\necho\n"),
+                           ("tools/loop.py", "# SPDX-License-Identifier: GPL-2.0-only\n")):
             with self.subTest(name=name):
                 before = self.gates() if (self.root / "gates").exists() else 0
                 self.commit(self.task, name, text)
