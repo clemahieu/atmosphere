@@ -12,10 +12,16 @@ use crate::arch::*;
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::mem_valid;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::link::*;
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;
 
@@ -119,6 +125,16 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
             final(self).threads.records@.dom() == old(self).threads.records@.dom(),
+            final(self).threads.holders == old(self).threads.holders,
+            forall|x: usize| #[trigger] final(self).threads.records@.contains_key(x)
+                && old(self).cores@[c as int].current_thread != Some(x) && next != Some(x)
+                ==> final(self).threads.records@[x] == old(self).threads.records@[x],
+            // What a process sees changes only in the leaving thread's saved registers, which its own
+            // user-mode execution wrote: design/theorem-over-reach/.
+            match old(self).cores@[c as int].current_thread {
+                Some(o) => saves_own_frame(old(self).view(), final(self).view(), o),
+                None => final(self).view() == old(self).view(),
+            },
             match old(self).cores@[c as int].current_thread {
                 Some(o) => {
                     &&& final(self).threads.records@[o].value().state == (ThreadState::Runnable { core: c })
@@ -178,6 +194,9 @@ impl CapKernel {
         }
         let ghost s1 = *self;
         proof {
+            if let Some(o) = leaving {
+                assert(saved_registers(&s1.threads) =~= saved_registers(&s0.threads).insert(o, frame));
+            }
             assert(s1.cores@[c as int].current_thread is None);
             assert(s1.spaces == s0.spaces);
             assert(s1.tlb == s0.tlb);
@@ -199,6 +218,7 @@ impl CapKernel {
                     assert forall|d: int, r: usize| 0 <= d < NUM_CPUS implies #[trigger] s5.loaded(d, r) == s0.loaded(d, r) by {
                         assert(s1.loaded(d, r) == s0.loaded(d, r));
                     }
+                    assert(s5.threads == s1.threads);
                 }
             },
             Some(t) => {
@@ -252,8 +272,26 @@ impl CapKernel {
                         assert(s3.loaded(d, r) == s2.loaded(d, r));
                         assert(s4.loaded(d, r) == s3.loaded(d, r));
                     }
+                    assert(saved_registers(&s5.threads) =~= saved_registers(&s1.threads));
                 }
             },
+        }
+        proof {
+            let s5 = *self;
+            assert(s5.threads.holders == s1.threads.holders);
+            assert(saved_registers(&s5.threads) == saved_registers(&s1.threads));
+            assert(tree_of(&s5.table_pages, &s5.spaces) == tree_of(&s0.table_pages, &s0.spaces));
+            match leaving {
+                Some(o) => {
+                    assert(same_but_contents(s0.view(), s5.view()));
+                    assert forall|x: ObjectId| #[trigger] State::changed(s0.view(), s5.view(), x) implies x == o by {
+                        assert(saved_registers(&s5.threads).contains_key(x) == saved_registers(&s0.threads).contains_key(x));
+                    }
+                },
+                None => {
+                    assert(s5.view() == s0.view());
+                },
+            }
         }
     }
 }
