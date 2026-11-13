@@ -33,7 +33,6 @@ kernel/verified/capability/revoke.rs	revoke	Exhausted
 kernel/verified/capability/space.rs	retype_table_page	true
 kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again
-kernel/verified/capability/thread.rs	check_current	true
 kernel/verified/capability/unmap.rs	unmap_at	Some
 aeager/src/eager.rs	Eager::reserve	Some
 aeager/src/eager.rs	Eager::back	Some

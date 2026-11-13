@@ -115,6 +115,15 @@ pub enum SuspendStep {
     Again,
 }
 
+/// What check_current did. Both variants are ways the check succeeds: keeping a live current thread
+/// vs moving off one that must leave user mode. See design/witness-per-way-an-operation-succeeds/.
+pub enum CurrentStep {
+    /// Core `c`'s current thread, if any, may stay: nothing changed.
+    Kept,
+    /// Core `c`'s current thread had to leave and was moved off, with its frame saved.
+    MovedOff,
+}
+
 /// A thread's record when it is typed: inactive, with zeroed registers and no stop pending.
 pub open spec fn fresh_thread() -> ThreadRecord {
     ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, dying: false, process: None, placement: None }
@@ -3416,25 +3425,26 @@ impl CapKernel {
     /// with no stop pending, and runs nothing. So a thread that destroys itself or its own process does
     /// not return to user mode. Only core c moves its current thread off: see
     /// design/one-lock-bounded-steps/.
-    pub fn check_current(&mut self, c: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+    pub fn check_current(&mut self, c: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: CurrentStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
         ensures
             final(steps).count <= old(steps).count + CHECK_CURRENT_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
-            ret == old(self).must_leave(c as int),
-            !ret ==> *final(self) == *old(self),
+            ret is MovedOff == old(self).must_leave(c as int),
+            ret is Kept == !old(self).must_leave(c as int),
+            ret is Kept ==> *final(self) == *old(self),
             final(self).current_live(c as int),
-            !ret ==> final(self).view() == old(self).view(),
+            ret is Kept ==> final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret ==> Self::moved_off(*old(self), *final(self), c as int, frame),
+            ret is MovedOff ==> Self::moved_off(*old(self), *final(self), c as int, frame),
     {
         let ghost pre = *self;
         let state = *self.cores.get(c);
         let t = match state.current_thread {
             Some(t) => t,
-            None => { return false; },
+            None => { return CurrentStep::Kept; },
         };
         proof {
             reveal(current_wf);
@@ -3461,7 +3471,7 @@ impl CapKernel {
             }
         };
         if !leave {
-            return false;
+            return CurrentStep::Kept;
         }
         self.cores.set(c, CoreState {
             current_thread: None,
@@ -3522,7 +3532,7 @@ impl CapKernel {
                 assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
             }
         }
-        true
+        CurrentStep::MovedOff
     }
 }
 

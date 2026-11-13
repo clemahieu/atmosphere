@@ -1183,6 +1183,151 @@ impl CapKernel {
         self.suspend(0, process, ROOT_THREAD_SLOT)
     }
 
+    /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
+    /// enters it, then check_current runs on core 0. The root process and its thread are live with no
+    /// stop pending, so check_current returns CurrentStep::Kept and leaves core 0 running the root's
+    /// thread.
+    pub fn witness_check_current_kept(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        registers: Registers,
+    ) -> (ret: CurrentStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret is Kept,
+            final(self).wf(),
+            final(self).current_live(0),
+            final(self).cores@[0].current_thread == Some(t),
+            final(self).threads.records@[t].value().state == (ThreadState::Running { core: 0 }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            reveal(current_wf);
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&s0.spaces, &s0.processes));
+            assert(s0.spaces.roots@.contains_key(process));
+            assert(s0.spaces.records@[process].value().kind is Process);
+            assert(!s0.threads.records@[t].value().pending_stop);
+        }
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s0.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.processes == s0.processes);
+            assert(!s3.threads.records@[t].value().pending_stop);
+            assert(!s3.threads.records@[t].value().dying);
+            assert(s3.threads.records@[t].value().process == Some(process));
+            assert(!s3.processes.records@[process].value().dead);
+            assert(!s3.must_leave(0));
+        }
+        self.check_current(0, registers, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
+    /// enters it, destroys its own process through ROOT_PROCESS_SLOT, and then check_current runs on
+    /// core 0. Because its process is dead, the thread must leave user mode: check_current returns
+    /// CurrentStep::MovedOff, leaves core 0 running nothing, and saves the frame into the Inactive
+    /// thread record.
+    pub fn witness_check_current_moved_off(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        registers: Registers,
+    ) -> (ret: CurrentStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret is MovedOff,
+            final(self).wf(),
+            final(self).current_live(0),
+            final(self).cores@[0].current_thread is None,
+            final(self).processes.records@[process].value().dead,
+            final(self).threads.records@[t].value().state is Inactive,
+            final(self).threads.records@[t].value().frame == registers,
+            !final(self).threads.records@[t].value().pending_stop,
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&s0.spaces, &s0.processes));
+            assert(s0.spaces.roots@.contains_key(process));
+            assert(s0.spaces.records@[process].value().kind is Process);
+        }
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s0.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.threads.records@[t].value().state == (ThreadState::Running { core: 0 }));
+            assert(s3.list == s0.list);
+            assert(s3.tables == s0.tables);
+            assert(s3.processes == s0.processes);
+            assert(s3.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            s3.lemma_slot(process, ROOT_PROCESS_SLOT);
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(!s3.processes.records@[process].value().dead);
+            assert(!s3.cap_dead((leaf@ + 1) as usize));
+            assert(s3.root_live(process));
+            assert(s3.can_destroy(process, ROOT_PROCESS_SLOT));
+            assert(s3.destroys_own(0, process, ROOT_PROCESS_SLOT));
+        }
+        let destroyed = self.destroy(0, process, ROOT_PROCESS_SLOT, Tracked(&mut steps));
+        let ghost s4 = *self;
+        proof {
+            assert(destroyed);
+            assert(s4.must_leave(0));
+            assert(Self::process_destroyed(s3, s4, process));
+            assert(s4.threads == s3.threads);
+            assert(!s4.threads.records@[t].value().dying);
+        }
+        self.check_current(0, registers, Tracked(&mut steps))
+    }
+
     /// From the state boot leaves, with a second process built at `base` as
     /// witness_process_holds_capability builds it: core 0 loads the root's space and points its base
     /// register at it, then loads the second process's space while the register still names the root's,

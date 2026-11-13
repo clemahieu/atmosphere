@@ -828,6 +828,36 @@ impl CapKernel {
         })
     }
 
+    /// dispatch begins with check_current on core c: when pre.must_leave(c), check_current's MovedOff
+    /// arm moves the current thread off and dispatch returns None without reaching invoked; when
+    /// !pre.must_leave(c), check_current's Kept arm keeps pre, returning None with post == pre when
+    /// core c runs no thread and proceeding to invoked with ret is Some for core c's live current
+    /// thread otherwise.
+    pub proof fn lemma_entry_reaches_check_current(pre: Self, post: Self, c: int, frame: Registers, ret: Option<Outcome>)
+        requires
+            pre.wf(),
+            0 <= c < NUM_CPUS,
+            Self::dispatched(pre, post, c, frame, ret),
+        ensures
+            pre.must_leave(c) ==> ret is None && Self::moved_off(pre, post, c, frame),
+            !pre.must_leave(c) ==> pre.current_live(c),
+            !pre.must_leave(c) && pre.cores@[c].current_thread is None ==> ret is None && post == pre,
+            (!pre.must_leave(c) && pre.cores@[c].current_thread is Some) <==> ret is Some,
+            !pre.must_leave(c) && pre.cores@[c].current_thread is Some ==> ({
+                let t = pre.cores@[c].current_thread->Some_0;
+                let root = pre.threads.records@[t].value().process->Some_0;
+                &&& ret is Some
+                &&& pre.root_live(root)
+                &&& Self::invoked(pre, post, root, frame, ret->0)
+            }),
+    {
+        reveal(current_wf);
+        if let Some(t) = pre.cores@[c].current_thread {
+            assert(runs(pre.cores@, c, t));
+            assert(pre.threads.records@.contains_key(t));
+        }
+    }
+
     /// Core c's step for the invocation its current thread entered the kernel with, in frame. The
     /// caller is core c's current thread and the table is its process's, never a name from user
     /// space, and check_current runs first: design/one-lock-bounded-steps/. Returns None when core c
@@ -843,8 +873,9 @@ impl CapKernel {
     {
         // The one counter of this entry, on a path that holds the kernel's lock: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        if self.check_current(c, frame, Tracked(&mut steps)) {
-            return None;
+        match self.check_current(c, frame, Tracked(&mut steps)) {
+            CurrentStep::MovedOff => { return None; },
+            CurrentStep::Kept => {},
         }
         let t = match self.cores.get(c).current_thread {
             Some(t) => t,
