@@ -71,8 +71,9 @@ updated under `<project root>/logs/loop/.state.lock` and replaced atomically so 
 file and the readings history survives a supervisor restart. The pool samples Claude's meters from
 `~/.claude.json` (`cachedUsageUtilization`: `claude-week`, `claude-5h` when the plan has a five-hour
 window, and each scoped model limit `claude-<model>` such as `claude-fable`) and Gemini's buckets from
-`agy -p /usage --output-format json` (`Gemini Models`: `gemini-week` and `gemini-5h`, keeping the last
-readings when `/usage` fails); workers also record `rate_limit_event` readings streamed by Claude
+`agy -p /usage --output-format json` (`Gemini Models`: `gemini-week` and `gemini-5h`) and Grok's week from
+`tools/grok-usage.py` (`grok-week`), which reads it off Grok's own /usage window, keeping a harness's
+last readings when its ask fails; workers also record `rate_limit_event` readings streamed by Claude
 sessions and write a usage-limit cooldown immediately. A limit cools the meter its stream names, or,
 when it names none, every meter the offering draws on; when the meter that refused is not one the
 offering declares, the harness as a whole is cooled too, since the declaration missed it. The unrouted
@@ -109,9 +110,8 @@ A Grok session. `grok -p` takes the agent's body and the prompt, as agy does, an
 `--always-approve`; `--trust`, without which Grok loads none of the worktree's hooks, the license guard
 among them; `--background-wait-timeout`, since a headless Grok stops a background command 600 s after its
 last turn and a landing's gate runs longer; `--rules` with <project root>/CLAUDE.md when it is there,
-which Grok does not look for above the repository; and the offering's `model` and `effort`. Grok's plan
-meter cannot be read from outside its own interface, so a grok meter has no readings: `[meters]` holds it
-to its `max`, and a session whose result names a limit cools the offering's meters for an hour.
+which Grok does not look for above the repository; and the offering's `model` and `effort`. A session
+whose result names a limit names no meter or reset, so it cools the offering's meters for an hour.
 
 The session record. Each session a loop runs, round, prover or skeptic on any harness, appends one row
 to the table `sessions` of <project root>/logs/loop/sessions.sqlite when it ends, written under
@@ -203,6 +203,9 @@ SESSION_COLUMNS = (("actor", "TEXT"), ("session", "TEXT"), ("issue", "TEXT"), ("
 AGY_GROUP = "Gemini Models"
 AGY_USAGE_INTERVAL = 300
 AGY_USAGE_TIMEOUT = 30
+GROK_USAGE = Path(__file__).resolve().parent / "grok-usage.py"
+GROK_USAGE_INTERVAL = 900
+GROK_USAGE_TIMEOUT = 120
 RATE_WINDOW = 12 * 3600
 HISTORY_MAX_AGE = 24 * 3600
 MAX_HISTORY = 500
@@ -937,6 +940,13 @@ def agy_readings(text, read):
             for bucket in group["buckets"] if bucket["window"] in names]
 
 
+def grok_readings(text, read):
+    """(meter, percent, resets_at, read) for Grok's week out of what tools/grok-usage.py printed, read
+    when the tool read it."""
+    found = json.loads(text)
+    return [("grok-week", float(found["percent"]), float(found["resets_at"]), float(found["read"]))]
+
+
 def flag(flags, name):
     """The value given to --name among the flags, or None."""
     for at, given in enumerate(flags[:-1]):
@@ -1625,10 +1635,12 @@ class Pool:
     """
 
     def __init__(self, worker, pids=PIDS, config=CONFIG, tick=TICK, sleep=time.sleep, out=sys.stdout,
-                 execute=os.execv, argv=None, claude_account=Path.home() / ".claude.json", agy="agy", now=time.time):
+                 execute=os.execv, argv=None, claude_account=Path.home() / ".claude.json", agy="agy",
+                 grok_usage=GROK_USAGE, now=time.time):
         self.worker = list(worker)
-        self.claude_account, self.agy, self.now = Path(claude_account), agy, now
-        self.asked_agy = self.claude_failure = None
+        self.claude_account, self.agy, self.grok_usage, self.now = Path(claude_account), agy, str(grok_usage), now
+        self.claude_failure = None
+        self.asked = {}
         self.pids, self.config, self.tick = Path(pids), Path(config), tick
         self.sleep, self.out, self.execute = sleep, out, execute
         self.argv = argv or [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
@@ -1698,8 +1710,9 @@ class Pool:
         self.admitted = admitted
 
     def sample(self):
-        """Keep Claude's meters as Claude Code last fetched them, when it fetched them since, and every
-        AGY_USAGE_INTERVAL ask agy for Gemini's; a reading that fails keeps the last ones."""
+        """Keep Claude's meters as Claude Code last fetched them, when it fetched them since, every
+        AGY_USAGE_INTERVAL ask agy for Gemini's and every GROK_USAGE_INTERVAL ask tools/grok-usage.py for
+        Grok's; a reading that fails keeps the last ones."""
         try:
             readings = claude_readings(self.claude_account)
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as failure:
@@ -1711,16 +1724,21 @@ class Pool:
         held = read_state(self.pids)["meters"]
         if any(held.get(meter, {}).get("read") != read for meter, _, _, read in readings):
             self.keep(readings, "claude")
-        if self.asked_agy is not None and self.now() - self.asked_agy < AGY_USAGE_INTERVAL:
+        self.ask("agy", [self.agy, "-p", "/usage", "--output-format", "json"], AGY_USAGE_INTERVAL, AGY_USAGE_TIMEOUT, agy_readings)
+        self.ask("grok", [self.grok_usage], GROK_USAGE_INTERVAL, GROK_USAGE_TIMEOUT, grok_readings)
+
+    def ask(self, harness, command, interval, timeout, readings):
+        """Once every `interval` seconds run `command` and keep what `readings` makes of what it printed as
+        `harness`'s meters; a failure keeps the last ones."""
+        if self.asked.get(harness) is not None and self.now() - self.asked[harness] < interval:
             return
-        self.asked_agy = self.now()
+        asked = self.asked[harness] = self.now()
         try:
-            done = subprocess.run([self.agy, "-p", "/usage", "--output-format", "json"], stdin=subprocess.DEVNULL,
-                                  capture_output=True, text=True, timeout=AGY_USAGE_TIMEOUT, check=True)
-            self.keep(agy_readings(done.stdout, self.asked_agy), "agy")
+            done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, check=True)
+            self.keep(readings(done.stdout, asked), harness)
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as failure:
-            # agy is another program: one it lacks, or a reply of a shape this does not know, keeps the last readings.
-            self.say(f"agy usage: {failure!r}; keeping the last readings")
+            # agy and grok are other programs: one missing, or a reply of a shape this does not know, keeps the last readings.
+            self.say(f"{harness} usage: {failure!r}; keeping the last readings")
 
     # The tick.
 
@@ -2994,6 +3012,7 @@ class Tests(unittest.TestCase):
     def pool(self, folder, jobs, **given):
         given.setdefault("claude_account", folder / "no-claude.json")
         given.setdefault("agy", str(folder / "no-agy"))
+        given.setdefault("grok_usage", folder / "no-grok-usage")
         (folder / "tools").mkdir(exist_ok=True)
         (folder / "tools" / "loop.py").write_text(self.FAKE_WORKER)
         (folder / "loop.toml").write_text(f"[pool]\njobs = {jobs}\n")
@@ -3295,7 +3314,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(worker2.drive(once=True), 0)
             self.assertEqual(len(self.log(folder, "claude")), 2)
 
-    def test_pool_samples_meters_survives_restart_and_keeps_last_readings_on_failed_agy_usage(self):
+    def test_pool_samples_meters_survives_restart_and_keeps_last_readings_on_failed_agy_and_grok_usage(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             pids = folder / "pids"
@@ -3307,8 +3326,14 @@ class Tests(unittest.TestCase):
                 f"#!/bin/sh\n[ -e {fail_flag} ] && exit 1\ncat {usage_file}\n"
             )
             fake_agy.chmod(0o755)
+            grok_file = folder / "grok.json"
+            fake_grok = folder / "grok-usage"
+            fake_grok.write_text(f"#!/bin/sh\n[ -e {fail_flag} ] && exit 1\ncat {grok_file}\n")
+            fake_grok.chmod(0o755)
 
-            def write_sources(fetched_ms, c_week, c_5h, fable, g_rem_week, g_rem_5h):
+            def write_sources(fetched_ms, c_week, c_5h, fable, g_rem_week, g_rem_5h, grok=0.0):
+                grok_file.write_text(json.dumps({"plan": "SuperGrok Heavy", "percent": grok,
+                                                 "resets_at": 1795136760.0, "read": fetched_ms / 1000 - 1}))
                 account.write_text(json.dumps({"cachedUsageUtilization": {
                     "fetchedAtMs": fetched_ms,
                     "utilization": {
@@ -3340,11 +3365,14 @@ class Tests(unittest.TestCase):
                 ]}}}))
 
             clock = [1000.0]
-            write_sources(1000_000, 20, 10, 30, 0.80, 0.90)
-            pool1, _ = self.pool(folder, 1, claude_account=account, agy=str(fake_agy), now=lambda: clock[0])
+            write_sources(1000_000, 20, 10, 30, 0.80, 0.90, grok=5)
+            pool1, _ = self.pool(folder, 1, claude_account=account, agy=str(fake_agy), grok_usage=fake_grok, now=lambda: clock[0])
             self.settle(pool1, lambda: len(self.started(folder)) == 1)
             state1 = read_state(pids)
-            self.assertEqual(set(state1["meters"]), {"claude-week", "claude-5h", "claude-fable", "gemini-week", "gemini-5h"})
+            self.assertEqual(set(state1["meters"]), {"claude-week", "claude-5h", "claude-fable", "gemini-week", "gemini-5h", "grok-week"})
+            self.assertEqual((state1["meters"]["grok-week"]["harness"], state1["meters"]["grok-week"]["percent"],
+                              state1["meters"]["grok-week"]["resets_at"], state1["meters"]["grok-week"]["read"]),
+                             ("grok", 5.0, 1795136760.0, 999.0))
             self.assertEqual(state1["meters"]["claude-week"]["percent"], 20.0)
             self.assertEqual(state1["meters"]["claude-5h"]["percent"], 10.0)
             self.assertEqual(state1["meters"]["claude-fable"]["percent"], 30.0)
@@ -3358,8 +3386,8 @@ class Tests(unittest.TestCase):
             self.assertFalse(self.settle(pool1, lambda: not pool1.workers))
 
             clock[0] = 4600.0
-            write_sources(4600_000, 26, 25, 38, 0.75, 0.70)
-            pool2, _ = self.pool(folder, 1, claude_account=account, agy=str(fake_agy), now=lambda: clock[0])
+            write_sources(4600_000, 26, 25, 38, 0.75, 0.70, grok=8)
+            pool2, _ = self.pool(folder, 1, claude_account=account, agy=str(fake_agy), grok_usage=fake_grok, now=lambda: clock[0])
             self.settle(pool2, lambda: len(self.started(folder)) == 2)
             state2 = read_state(pids)
             self.assertAlmostEqual(state2["meters"]["claude-week"]["rate"], 6.0)
@@ -3367,11 +3395,12 @@ class Tests(unittest.TestCase):
             self.assertAlmostEqual(state2["meters"]["claude-fable"]["rate"], 8.0)
             self.assertAlmostEqual(state2["meters"]["gemini-week"]["rate"], 5.0)
             self.assertAlmostEqual(state2["meters"]["gemini-5h"]["rate"], 20.0)
+            self.assertAlmostEqual(state2["meters"]["grok-week"]["rate"], 3.0)
 
-            # A failed agy /usage on a later sample keeps Gemini's last readings and fitted rates.
+            # A failed agy /usage and grok-usage on a later sample keep their last readings and fitted rates.
             fail_flag.touch()
             clock[0] = 8200.0
-            write_sources(8200_000, 32, 40, 46, 0.0, 0.0)
+            write_sources(8200_000, 32, 40, 46, 0.0, 0.0, grok=90)
             pool2.step()
             state3 = read_state(pids)
             self.assertEqual(state3["meters"]["claude-week"]["percent"], 32.0)
@@ -3380,6 +3409,8 @@ class Tests(unittest.TestCase):
             self.assertEqual(state3["meters"]["gemini-week"]["read"], 4600.0)
             self.assertAlmostEqual(state3["meters"]["gemini-week"]["rate"], 5.0)
             self.assertAlmostEqual(state3["meters"]["gemini-5h"]["percent"], 30.0)
+            self.assertEqual(state3["meters"]["grok-week"]["percent"], 8.0)
+            self.assertAlmostEqual(state3["meters"]["grok-week"]["rate"], 3.0)
             pool2.on_stop(signal.SIGTERM, None)
             self.assertFalse(self.settle(pool2, lambda: not pool2.workers))
 
