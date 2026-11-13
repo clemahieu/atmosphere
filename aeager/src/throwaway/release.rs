@@ -15,7 +15,10 @@ use verified::capability::operation::STATUS_REFUSED;
 use verified::capability::table::TABLE_INDICES;
 use crate::eager::*;
 use crate::exercise::*;
-use crate::glue::{AcallStep, acall_ok, acall_steps, names_own_space, own_process};
+use crate::glue::{
+    AcallStep, acall_ok, acall_steps, lemma_acall_ok_append, lemma_acall_refused_after_ok,
+    lemma_acall_steps_append, names_own_space, own_process,
+};
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
 verus! {
