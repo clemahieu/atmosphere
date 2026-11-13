@@ -2921,9 +2921,18 @@ impl SpanSource for Eager {
         }
     }
 
-    /// Each page of the run is parked.
+    /// Each page of the run is parked, with no system call: the token, the configuration and the
+    /// `acall` steps made so far stay as they were.
     fn release(&mut self, token: &mut Tracked<Caller>, span: Ghost<int>, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
         ensures
+            final(token)@ == old(token)@,
+            final(self).space() == old(self).space(),
+            final(self).untyped() == old(self).untyped(),
+            final(self).memory() == old(self).memory(),
+            final(self).pages() == old(self).pages(),
+            final(self).slots() == old(self).slots(),
+            final(self).window() == old(self).window(),
+            final(self).acall_trace() == old(self).acall_trace(),
             forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).parks(a),
     {
         proof {
@@ -2945,40 +2954,6 @@ impl SpanSource for Eager {
         }
         self.spans.release(span, Ghost(self@));
     }
-}
-
-/// The witness that a released page backs its address again, built into no image: from any
-/// well-formed eager source holding a span in which the page at `x` is unbacked, back that page,
-/// release it and back it again. When the first back is granted the second is, and the source ends
-/// with the spans it started with. Whether the first back was granted is the kernel's to say.
-#[cfg(verus_keep_ghost)]
-pub fn witness_back_again(src: &mut Eager, token: &mut Tracked<Caller>, span: Ghost<int>, x: usize) -> (granted: bool)
-    requires
-        old(src)@.wf(),
-        old(src)@.runs_in(span@, x as int, 1),
-        old(src)@.unbacked(span@, x as int, 1),
-        old(src).serves(old(token)@),
-    ensures
-        final(src)@.wf(),
-        final(src).serves(final(token)@),
-        final(src)@.spans == old(src)@.spans,
-{
-    let ghost start = src@;
-    let first = match src.back(token, span, x, 1) {
-        None => return false,
-        Some(perm) => perm,
-    };
-    src.release(token, span, x, 1, first);
-    assert(src@.spans[span@].backed =~= start.spans[span@].backed);
-    assert(src@.spans =~= start.spans);
-    let second = src.back(token, span, x, 1);
-    assert(second is Some);
-    if let Some(perm) = second {
-        src.release(token, span, x, 1, perm);
-    }
-    assert(src@.spans[span@].backed =~= start.spans[span@].backed);
-    assert(src@.spans =~= start.spans);
-    true
 }
 
 } // verus!

@@ -8,4 +8,3 @@
 #
 kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again
-aeager/src/eager.rs	Eager::release	returns

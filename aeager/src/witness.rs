@@ -181,4 +181,71 @@ pub fn witness_back(
     (got, Ghost(steps))
 }
 
+/// Reserves a one-block span from a fresh eager source over a region-aligned window, backs its first
+/// page, releases it and backs it again: the release parks the page with no system call, so when
+/// `acall` accepts every step of the first back, the second is granted the same page with none.
+pub fn witness_release(
+    space: u64,
+    untyped: u64,
+    window: *mut u8,
+    token: &mut Tracked<Caller>,
+) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
+    requires
+        window@.addr != 0,
+        window@.addr as int % REGION_BYTES as int == 0,
+        window@.addr + WINDOW_BYTES <= usize::MAX,
+        old(token)@.wf(),
+        own_process(old(token)@),
+        names_own_space(old(token)@, space),
+    ensures
+        final(token)@.wf(),
+        acall_steps(old(token)@, final(token)@, r.1@),
+        acall_ok(r.1@) ==> r.0 is Some,
+        r.0 is Some ==> r.0->0@.is_range(window@.addr as int, PAGE_BYTES as int),
+{
+    proof {
+        assert(1int % LEAF_INDICES as int != 0) by (compute);
+        assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        assert(MAX_PAGES as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
+    }
+    let mut src: Eager = Eager::new(space, untyped, 0, MAX_PAGES, 1, window).unwrap();
+    proof {
+        assert(src.window_fits(0, 1));
+    }
+    let span = src.reserve(token, 1).unwrap();
+    let addr = span.addr();
+    proof {
+        assert(addr == window@.addr);
+        let q = addr as int / BLOCK_BYTES as int;
+        lemma_fundamental_div_mod(addr as int, BLOCK_BYTES as int);
+        assert(addr as int == (q * BLOCK_PAGES as int) * PAGE_BYTES as int) by (nonlinear_arith)
+            requires
+                addr as int == BLOCK_BYTES as int * q,
+                BLOCK_BYTES == PAGE_BYTES * BLOCK_PAGES,
+        ;
+        lemma_mod_multiples_basic(q * BLOCK_PAGES as int, PAGE_BYTES as int);
+        assert(1 * PAGE_BYTES <= span_bytes(1)) by (compute);
+        assert(src@.runs_in(addr as int, addr as int, 1));
+        assert(src@.unbacked(addr as int, addr as int, 1));
+        assert(src.acall_trace() == Seq::<AcallStep>::empty());
+    }
+    let ghost reserved = src@;
+    let got = src.back(token, Ghost(addr as int), addr, 1);
+    let ghost steps = src.acall_trace();
+    proof {
+        assert(src.acall_trace().skip(0) =~= steps);
+    }
+    if got.is_none() {
+        return (got, Ghost(steps));
+    }
+    let perm = got.unwrap();
+    src.release(token, Ghost(addr as int), addr, 1, perm);
+    proof {
+        assert(src@.spans[addr as int].backed =~= reserved.spans[addr as int].backed);
+        assert(src@.spans =~= reserved.spans);
+    }
+    let again = src.back(token, Ghost(addr as int), addr, 1);
+    (again, Ghost(steps))
+}
+
 } // verus!
