@@ -12,8 +12,6 @@ kernel/verified/capability/derive.rs	derive	true
 kernel/verified/capability/device.rs	add_devices	true
 kernel/verified/capability/inspect.rs	inspect	STATUS_OK
 kernel/verified/capability/inspect.rs	inspect	STATUS_AGAIN
-kernel/verified/capability/map.rs	link_at	true
-kernel/verified/capability/map.rs	map_at	true
 kernel/verified/capability/moving.rs	move_cap	true
 kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some

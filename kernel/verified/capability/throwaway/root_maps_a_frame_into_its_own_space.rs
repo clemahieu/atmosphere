@@ -71,7 +71,7 @@ impl CapKernel {
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
-            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES / 2,
             !image_l4(image@, l4),
         ensures
             false,

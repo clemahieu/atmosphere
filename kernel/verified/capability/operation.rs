@@ -784,6 +784,48 @@ impl CapKernel {
     {
     }
 
+    /// A link reaches link_at: refused with nothing changed unless can_link_at holds over the frame's
+    /// arguments, and ok with the table page linked as table_linked says when it does.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_link_at(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Link),
+        ensures
+            ({
+                let slot = frame.slot() as usize;
+                let va = frame.argument(1);
+                let level = frame.argument(2);
+                let from = frame.argument(3) as usize;
+                let child = frame.argument(4) as usize;
+                &&& !pre.can_link_at(root, slot, va, level, from, child) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_link_at(root, slot, va, level, from, child)
+                    ==> out == status_only(STATUS_OK) && Self::table_linked(pre, post, root, slot, va, level, from, child)
+            }),
+    {
+    }
+
+    /// A map reaches map_at: refused with nothing changed unless can_map_at holds over the frame's
+    /// arguments, and ok with the page mapped as page_mapped says when it does.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_map_at(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Map),
+        ensures
+            ({
+                let slot = frame.slot() as usize;
+                let va = frame.argument(1);
+                let level = frame.argument(2);
+                let from = frame.argument(3) as usize;
+                let page = frame.argument(4) as usize;
+                &&& !pre.can_map_at(root, slot, va, level, from, page) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_map_at(root, slot, va, level, from, page)
+                    ==> out == status_only(STATUS_OK) && Self::page_mapped(pre, post, root, slot, va, level, from, page)
+            }),
+    {
+    }
+
     /// An unmap, allowed or refused, leaves the tables, the list's parents and the bound threads as they
     /// were, and changes the kind or the liveness of no node but a mapping node, so no capability.
     pub proof fn lemma_unmapped_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
