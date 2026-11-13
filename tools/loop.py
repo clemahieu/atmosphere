@@ -45,12 +45,24 @@ Automatic routing and zero-token pre-filtering (`design/loops-select-by-work-kin
 each ready stage, leaf, or epic round by its route `[routes.<key>]` (`default`, `tool`, `sys`, `proof`,
 `spec`, `arch`, `review`, `epic-close`, `epic-split`, `needs-land`, `prover`, `skeptic`, `retry`), which
 holds `candidates`, the offerings capable of that work, cheapest first, or `disabled = true`. At claim,
-and for each hand-off, the work goes to the first candidate none of whose meters, nor its harness as a
-whole, is cooled down; when every candidate is, the work waits for the earliest reset and `--check`
-names each cooldown it waits on. A key left out takes `default`'s candidates, or none when `default` is
+and for each hand-off, the work goes to the first candidate free to take it: none of its meters, nor its
+harness as a whole, is cooled down, and each of its meters that `[meters.<name>]` paces admits one more
+session than the loops have in flight on it, counted from the pid files. When no candidate is free, the
+work waits, for the earliest reset when only cooldowns keep it and at most PACE_WAIT s when a pace does,
+and `--check` names each cooldown or pace it waits on. A key left out takes `default`'s candidates, or none when `default` is
 left out too. A candidate that is not under `[offerings]` is an error. When nothing matches, no LLM
 session is started: the loop waits if another loop or actor is active, and stops otherwise. Without
 `[routes]`, the loop runs plain rounds on Claude with the top-level tables' flags.
+
+Pacing (`[meters.<name>]`, with `target` and `max`). A meter at p percent, its reset h hours away, with
+r its fitted rate a session in flight, admits floor((target - p) / (h * r)) sessions at once, clamped to
+[0, max]: the use those sessions project to the reset stays under the target. A meter at or past its
+target admits none; one with no readings, no rate yet, or a window that has reset since the last
+reading admits max; a meter no table names is not paced. r is the meter's fitted rate over the mean
+number of the loops' sessions in flight on it at the readings it was fitted over, a mean under one
+counting as one, so use from outside the loops is charged to the sessions. The pool recomputes every
+paced meter's admission each tick and logs each change with p, h and r; each worker recomputes it
+before it chooses. Two workers choosing at the same instant may both take a meter's last place.
 
 Shared meter and cooldown state. The pool and its workers share `<project root>/logs/loop/state.json`,
 updated under `<project root>/logs/loop/.state.lock` and replaced atomically so readers never see half a
@@ -77,7 +89,9 @@ continues ready work on the candidates still free. Schema of `logs/loop/state.js
         "resets_at": <float epoch seconds | null>,
         "read": <float epoch seconds>,
         "rate": <float percent per hour fitted reset-aware over recent readings | null>,
-        "history": [{"read": <float>, "percent": <float>, "resets_at": <float | null>}, ...]
+        "session_rate": <float percent per hour a session in flight adds | null>,
+        "history": [{"read": <float>, "percent": <float>, "resets_at": <float | null>,
+                     "sessions": <int loops' sessions in flight on the meter when read | null>}, ...]
       }
     },
     "cooldown": {
@@ -109,11 +123,12 @@ loop and not a worker of a live pool, and with pids signals those. The file is J
 worker's pool pid, `workers` and `leaving` are a pool's workers and those it is stopping, and `session`
 is the session a worker runs, as its kind, the offering it runs on (null for the unrouted loop's
 tables), harness, model and effort
-(each model and effort the flags name, or null for the harness's own default), or null between
-sessions, so another process such as tools/bead-status.py can say what an issue is worked at.
+(each model and effort the flags name, or null for the harness's own default) and the meters it draws
+on, or null between sessions, so another process such as tools/bead-status.py can say what an issue is
+worked at and every worker can count the sessions in flight on each meter.
 
-Tuning. Before each session the loop reads <project root>/loop.toml: `[offerings.<name>]` and
-`[routes.<key>]` configure automatic per-task routing, and top-level
+Tuning. Before each session the loop reads <project root>/loop.toml: `[offerings.<name>]`,
+`[routes.<key>]` and `[meters.<name>]` configure automatic per-task routing and pacing, and top-level
 tables (`round`, `prover`, `skeptic`, `retry`) configure the unrouted default Claude loop. An edit takes
 effect at the next session, and `[pool] jobs` within 5 s. A file that does not parse or names invalid
 keys, or a route naming an offering that is not there, is reported, and the loop keeps the last
@@ -182,6 +197,7 @@ HISTORY_MAX_AGE = 24 * 3600
 MAX_HISTORY = 500
 MIN_RATE_SPAN = 60
 RESET_JITTER = 300
+PACE_WAIT = 60
 CONFIG = ROOT / "loop.toml"
 SCRATCH = ROOT / "scratch"
 KINDS = ("round", "prover", "skeptic")
@@ -243,6 +259,7 @@ class Dispatch:
     agents: dict = field(default_factory=dict)
     routes: dict = field(default_factory=dict)
     routed: bool = False
+    paces: dict = field(default_factory=dict)
 
 
 def plain(line):
@@ -486,6 +503,28 @@ def parse_offerings(raw):
     return offerings
 
 
+def parse_paces(raw):
+    """[meters.<name>]: each meter's target, the percent its projected use at reset stays under, and max,
+    the most sessions it admits at once."""
+    if not isinstance(raw, dict):
+        raise ValueError("meters: not a table")
+    paces = {}
+    for name, table in raw.items():
+        where = f"meters.{name}"
+        if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name) or not isinstance(table, dict):
+            raise ValueError(f"{where}: not a table of a meter's target and max")
+        for key in table:
+            if key not in ("target", "max"):
+                raise ValueError(f"{where}.{key}: a meter takes target and max")
+        target, most = table.get("target"), table.get("max")
+        if not isinstance(target, (int, float)) or isinstance(target, bool) or not 0 < target <= 100:
+            raise ValueError(f"{where}.target: {target!r} is not a percent above 0 and at most 100")
+        if not isinstance(most, int) or isinstance(most, bool) or most < 0:
+            raise ValueError(f"{where}.max: {most!r} is not a whole number of sessions")
+        paces[name] = {"target": float(target), "max": most}
+    return paces
+
+
 def parse_route(table, where, offerings):
     """One [routes.<key>]: its candidate offerings in order, or None when disabled."""
     for key in table:
@@ -506,12 +545,14 @@ def parse_route(table, where, offerings):
 
 
 def parse_all(text):
-    """Validate the whole loop.toml and return (top_flags_dict, offerings_dict, routes_dict). A route maps
-    to its tuple of candidate offerings, or None when disabled or left out with no [routes.default]."""
+    """Validate the whole loop.toml and return (top_flags_dict, offerings_dict, routes_dict, paces_dict). A
+    route maps to its tuple of candidate offerings, or None when disabled or left out with no
+    [routes.default]; a paced meter to its target and max."""
     raw = load_toml(text)
     top_flags = {}
     raw_routes = None
     offerings = {}
+    paces = {}
     for key, table in raw.items():
         if key == "routes":
             if not isinstance(table, dict):
@@ -524,8 +565,11 @@ def parse_all(text):
         if key == "pool":
             check_pool(table)
             continue
+        if key == "meters":
+            paces = parse_paces(table)
+            continue
         if key not in TABLES or not isinstance(table, dict):
-            raise ValueError(f"{key}: not a table of {', '.join((*TABLES, 'pool', 'offerings', 'routes'))}")
+            raise ValueError(f"{key}: not a table of {', '.join((*TABLES, 'pool', 'offerings', 'routes', 'meters'))}")
         if "harness" in table or "mode" in table:
             raise ValueError(f"{key}: top-level tables take model, autocompact, effort or fallback-model")
         top_flags[key] = build_agent_spec(table, key).flags
@@ -539,20 +583,20 @@ def parse_all(text):
         parsed = {rkey: parse_route(rtable, f"routes.{rkey}", offerings) for rkey, rtable in raw_routes.items()}
         for rkey in ROUTE_KEYS:
             routes[rkey] = parsed[rkey] if rkey in parsed else parsed.get("default")
-    return top_flags, offerings, routes
+    return top_flags, offerings, routes, paces
 
 
 def options(text):
     """The claude -p flags loop.toml gives each top-level table."""
-    top_flags, _, _ = parse_all(text)
+    top_flags, _, _, _ = parse_all(text)
     return top_flags
 
 
 def parse_dispatch(text):
     """The loop's dispatch from loop.toml: routed when [routes] is there, else the top-level tables alone."""
-    top_flags, _, routes = parse_all(text)
+    top_flags, _, routes, paces = parse_all(text)
     agents = {kind: AgentSpec(harness="claude", flags=list(flags)) for kind, flags in top_flags.items()}
-    return Dispatch(agents=agents, routes=routes, routed=bool(routes))
+    return Dispatch(agents=agents, routes=routes, routed=bool(routes), paces=paces)
 
 
 def nearest_tier(issue, by_id):
@@ -770,18 +814,74 @@ def fit_rate(history):
     return None
 
 
-def add_reading(state, meter, harness, percent, resets_at, read):
-    """Keep one reading of a meter: its history, pruned by age and count, and the meter's latest reading
-    and fitted rate. A reading at a time already kept is the same reading and is not kept twice."""
+def session_rate(history, rate):
+    """Percent per hour a session in flight adds: the fitted rate over the mean number of the loops'
+    sessions in flight on the meter at the readings it was fitted over. A mean below one, or none counted,
+    is reckoned as one, so use from outside the loops is charged to the sessions rather than taken as
+    room."""
+    if rate is None:
+        return None
+    newest = max(r["read"] for r in history)
+    counted = [r["sessions"] for r in history if r["read"] >= newest - RATE_WINDOW and r.get("sessions") is not None]
+    return rate / max(sum(counted) / len(counted) if counted else 1.0, 1.0)
+
+
+def add_reading(state, meter, harness, percent, resets_at, read, sessions=None):
+    """Keep one reading of a meter, with the number of the loops' sessions in flight on it when read when
+    that is known: its history, pruned by age and count, and the meter's latest reading, fitted rate and
+    rate a session. A reading at a time already kept is the same reading and is not kept twice."""
     held = state["meters"].setdefault(meter, {"harness": harness, "history": []})
     history = [r for r in held.get("history", []) if r["read"] != read]
     history.append({"read": float(read), "percent": float(percent),
-                    "resets_at": None if resets_at is None else float(resets_at)})
+                    "resets_at": None if resets_at is None else float(resets_at), "sessions": sessions})
     history.sort(key=lambda r: r["read"])
     newest = history[-1]["read"]
     history = [r for r in history if r["read"] >= newest - HISTORY_MAX_AGE][-MAX_HISTORY:]
+    rate = fit_rate(history)
     held.update(harness=harness, history=history, percent=history[-1]["percent"],
-                resets_at=history[-1]["resets_at"], read=history[-1]["read"], rate=fit_rate(history))
+                resets_at=history[-1]["resets_at"], read=history[-1]["read"], rate=rate,
+                session_rate=session_rate(history, rate))
+
+
+def admission(held, pace, now):
+    """(sessions the meter admits at once, percent, hours to reset, rate a session) for a meter's state
+    `held` (None when it has no readings) under its pace from [meters]: floor((target - percent) / (hours
+    * rate)), so the use the admitted sessions project to the reset stays under the target, clamped to
+    [0, max]. At or past the target none; with no readings, no window running, a window that has reset
+    since the reading, or no rate a session, the max."""
+    if held is None:
+        return pace["max"], None, None, None
+    percent, resets_at, rate = held["percent"], held.get("resets_at"), held.get("session_rate")
+    hours = None if resets_at is None else (resets_at - now) / 3600
+    if hours is not None and hours <= 0:
+        return pace["max"], percent, hours, rate
+    if percent >= pace["target"]:
+        return 0, percent, hours, rate
+    if hours is None or rate is None or rate <= 0:
+        return pace["max"], percent, hours, rate
+    return min(int((pace["target"] - percent) / (hours * rate)), pace["max"]), percent, hours, rate
+
+
+def in_flight(folder, alive=loop_alive):
+    """The loops' sessions in flight on each meter, from the pid files in `folder` of the loops still alive."""
+    counts = {}
+    for path in Path(folder).glob("*"):
+        if not path.name.isdigit() or not alive(int(path.name)):
+            continue
+        session = read_pid_file(folder, path.name).get("session") or {}
+        for meter in session.get("meters") or ():
+            counts[meter] = counts.get(meter, 0) + 1
+    return counts
+
+
+def fmt_admission(meter, admits, percent, hours, rate, pace):
+    """One meter's admission with what it was computed from, for the pool's log."""
+    if percent is None:
+        why = "no readings"
+    else:
+        why = f"{percent:.1f}% used, " + ("no reset known" if hours is None else f"{hours:.1f} h to reset") + ", " + (
+            "no rate yet" if rate is None else f"{rate:.2f}%/h a session")
+    return f"{meter}: {why}: admits {admits} (target {pace['target']:g}, max {pace['max']})"
 
 
 def stream_meter(limit_type):
@@ -851,10 +951,13 @@ def fmt_offering(spec):
 
 
 def fmt_waits(waits):
-    """Why a route waits: each candidate with the cooldowns that keep it, and when they end."""
+    """Why a route waits: each candidate with the cooldowns that keep it, and when they end, or the meters
+    whose pace has no room for it."""
     return "; ".join(f"{fmt_spec(spec)} cooled on " + ", ".join(
         f"{key} until {time.strftime('%a %H:%M', time.localtime(until))}" for key, until in cooled)
-        for spec, cooled in waits)
+        if cooled else f"{fmt_spec(spec)} paced on " + ", ".join(
+        f"{meter} (admits {admits}, {flying} in flight)" for meter, admits, flying in paced)
+        for spec, cooled, paced in waits)
 
 
 def limit_keys(run, spec):
@@ -893,11 +996,14 @@ class Loop:
         self.child = None
         self.retry = None
         self.kinds = {}
+        self.paced = False
+        self.alive = loop_alive
 
     def record(self, kind=None, spec=None):
         """Rewrite the loop's pid file to name the session it runs, or none."""
         session = spec and {"kind": kind, "offering": spec.name, "harness": spec.harness,
-                            "model": flag(spec.flags, "model"), "effort": flag(spec.flags, "effort")}
+                            "model": flag(spec.flags, "model"), "effort": flag(spec.flags, "effort"),
+                            "meters": list(spec.meters)}
         held = {"pid": os.getpid(), "session": session}
         if self.pool is not None:
             held["pool"] = self.pool
@@ -963,14 +1069,32 @@ class Loop:
         self.say("loop", f"{harness} usage limit on {', '.join(keys)}: cooling down what draws on it "
                          f"for every loop for {wait_s:.0f} s")
 
+    def paced_out(self, spec):
+        """The meters `spec` draws on whose pace in [meters] has no room for one more session, as (meter,
+        sessions it admits, sessions in flight on it)."""
+        paces = self.dispatch.paces
+        if not any(meter in paces for meter in spec.meters):
+            return []
+        meters, flying = read_state(self.pids)["meters"], in_flight(self.pids, self.alive)
+        found = []
+        for meter in spec.meters:
+            if meter in paces:
+                admits = admission(meters.get(meter), paces[meter], self.now())[0]
+                if admits <= flying.get(meter, 0):
+                    found.append((meter, admits, flying.get(meter, 0)))
+        return found
+
     def keep_readings(self, run, spec):
-        """Write what the session told of its meters, and any usage limit it hit, to the state file."""
+        """Write what the session told of its meters, and any usage limit it hit, to the state file. The
+        session itself counts as in flight on the meters it drew on."""
         if run.readings:
             read = self.now()
+            flying = in_flight(self.pids, self.alive)
 
             def keep(state):
                 for meter, (percent, resets_at) in run.readings.items():
-                    add_reading(state, meter, spec.harness, percent, resets_at, read)
+                    add_reading(state, meter, spec.harness, percent, resets_at, read,
+                                sessions=flying.get(meter, 0) + (meter in spec.meters))
             update_state(self.pids, keep)
         if run.limited:
             self.mark_cooldown(limit_keys(run, spec), spec.harness, run.reset)
@@ -1005,8 +1129,10 @@ class Loop:
         return (self.spec_for("round", RETRY if route_key == RETRY else None),)
 
     def choose(self, route_key):
-        """(the first candidate no cooldown keeps, None) for a session; (None, [(candidate, its cooldowns)])
-        when every candidate is cooled down, so the work waits; (None, None) when the route is disabled."""
+        """(the first candidate free to take a session, None): no cooldown keeps it and every meter it draws
+        on admits one more session than it has in flight. (None, [(candidate, its cooldowns, its meters
+        with no room)]) when no candidate is free, so the work waits; (None, None) when the route is
+        disabled."""
         self.tune()
         candidates = self.candidates(route_key)
         if candidates is None:
@@ -1014,9 +1140,11 @@ class Loop:
         waits = []
         for spec in candidates:
             cooled = self.cooled(spec)
-            if not cooled:
+            paced = [] if cooled else self.paced_out(spec)
+            if not cooled and not paced:
                 return spec, None
-            waits.append((spec, cooled))
+            waits.append((spec, cooled, paced))
+        self.paced = self.paced or any(paced for _, _, paced in waits)
         return None, waits
 
     def spec_for(self, kind, table=None):
@@ -1269,7 +1397,7 @@ class Loop:
         spec, waits = self.choose(kind)
         if spec is None:
             stage = STAGE_FOR_HAND_OFF[kind]
-            why = f"every candidate is cooled down ({fmt_waits(waits)})" if waits else "route disabled"
+            why = f"no candidate is free ({fmt_waits(waits)})" if waits else "route disabled"
             self.say(kind, f"{why}: queueing {issue} on stage:{stage}")
             self.beads("update", issue, "--add-label", f"stage:{stage}", "-s", "open", "--assignee", "")
             return
@@ -1341,7 +1469,7 @@ class Loop:
             if spec is None and waits is None:
                 self.escalate(report.retry, "route disabled")
             elif spec is None and self.dispatch.routed:
-                self.escalate(report.retry, f"every candidate is cooled down ({fmt_waits(waits)})")
+                self.escalate(report.retry, f"no candidate is free ({fmt_waits(waits)})")
             else:
                 self.retry = report.retry
         return report.loop, run
@@ -1349,6 +1477,7 @@ class Loop:
     def round(self):
         """One round (or specialist stage pass) and its hand-off. The report's Loop word, or None when it failed."""
         self.tune()
+        self.paced = False
         issue, self.retry = self.retry, None
         if issue:
             spec, waits = self.choose(RETRY)
@@ -1438,7 +1567,10 @@ class Loop:
                     return 0
                 active = self.cooldowns()
                 until = max(min(min(active) - self.now(), self.wait), 1.0) if active else self.wait
-                self.pause(until, "cooldown on rate-limited harness")
+                if self.paced:
+                    self.pause(min(until, PACE_WAIT), "every candidate cooled down or paced out")
+                else:
+                    self.pause(until, "cooldown on rate-limited harness")
                 continue
             if once or self.stopping or self.reloading:
                 break
@@ -1482,6 +1614,8 @@ class Pool:
         self.leaving = set()
         self.failed = 0
         self.jobs = 1
+        self.paces = {}
+        self.admitted = {}
         self.read = None
         self.stopping = self.halting = self.reloading = False
         self.status = 0
@@ -1521,10 +1655,24 @@ class Pool:
     # The meters.
 
     def keep(self, readings, harness):
+        flying = in_flight(self.pids)
+
         def change(state):
             for meter, percent, resets_at, read in readings:
-                add_reading(state, meter, harness, percent, resets_at, read)
+                add_reading(state, meter, harness, percent, resets_at, read, sessions=flying.get(meter, 0))
         update_state(self.pids, change)
+
+    def pace(self):
+        """Recompute how many sessions each meter of [meters] admits, as every worker does before it
+        chooses an offering, and log each change with what it was computed from."""
+        meters = read_state(self.pids)["meters"]
+        admitted = {}
+        for meter, pace in self.paces.items():
+            admits, percent, hours, rate = admission(meters.get(meter), pace, self.now())
+            admitted[meter] = admits
+            if self.admitted.get(meter) != admits:
+                self.say(fmt_admission(meter, admits, percent, hours, rate, pace))
+        self.admitted = admitted
 
     def sample(self):
         """Keep Claude's meters as Claude Code last fetched them, when it fetched them since, and every
@@ -1562,6 +1710,7 @@ class Pool:
         self.read = text
         try:
             jobs = pool_jobs(text)
+            self.paces = parse_all(text)[3]
         except ValueError as error:
             self.say(f"{self.config.name}: {error}; keeping {self.jobs} jobs")
             return
@@ -1624,6 +1773,7 @@ class Pool:
         """One tick. False once the pool is over."""
         self.tune()
         self.sample()
+        self.pace()
         self.reap()
         if self.reloading and not self.stopping:
             self.say("re-executing; each worker re-executes after its run in flight")
@@ -1657,11 +1807,13 @@ class Pool:
 def list_offerings(config=CONFIG, out=sys.stdout):
     """The offerings and the routes loop.toml defines, each route with its candidates in order."""
     text = Path(config).read_text() if Path(config).exists() else ""
-    _, offerings, routes = parse_all(text)
+    _, offerings, routes, paces = parse_all(text)
     for spec in offerings.values():
         print(f"offering {fmt_offering(spec)}", file=out)
     for key, candidates in routes.items():
         print(f"route {key}: {fmt_candidates(candidates)}", file=out)
+    for meter, pace in paces.items():
+        print(f"meter {meter}: target {pace['target']:g}, max {pace['max']}", file=out)
     if not routes:
         print(f"no [routes] in {Path(config).name}: the loop runs plain rounds on its top-level tables", file=out)
     return 0
@@ -1683,7 +1835,11 @@ def check(config=CONFIG, out=sys.stdout, loop=None):
           + ("; ".join(summary["finished_epics"]) or "none"), file=out)
     print(f"splittable epics ({len(summary['split_epics'])}{split_tag}): "
           + (", ".join(summary["split_epics"]) or "none"), file=out)
-    print(f"waiting on cooldowns ({len(summary['cooled'])})" + ("".join(
+    meters, flying = read_state(loop.pids)["meters"], in_flight(loop.pids, loop.alive)
+    for meter, pace in loop.dispatch.paces.items():
+        admits, percent, hours, rate = admission(meters.get(meter), pace, loop.now())
+        print(f"meter {fmt_admission(meter, admits, percent, hours, rate, pace)}, {flying.get(meter, 0)} in flight", file=out)
+    print(f"waiting on cooldowns or pace ({len(summary['cooled'])})" + ("".join(
         f"\n  {what} [{key}]: {fmt_waits(waits)}" for key, what, waits in summary["cooled"]) or ": none"), file=out)
     return 0
 
@@ -1953,7 +2109,8 @@ class Tests(unittest.TestCase):
             loop, _ = self.driver(folder, "Notify: none\nProver: atmo-1.2\nLoop: continue\n", "Reached 3 verified, 0 errors.",
                                   "Notify: none\nLoop: stop\n")
             self.assertEqual(loop.drive(), 0)
-            round_, prover = ({"kind": kind, "offering": None, "harness": "claude", "model": model, "effort": effort}
+            round_, prover = ({"kind": kind, "offering": None, "harness": "claude", "model": model, "effort": effort,
+                               "meters": []}
                               for kind, model, effort in (("round", "fable", "high"), ("prover", None, None)))
             self.assertEqual(self.log(folder, "pidfile"), [{"pid": os.getpid(), "session": session} for session in (round_, prover, round_)])
             self.assertEqual(json.loads((folder / str(os.getpid())).read_text()), {"pid": os.getpid(), "session": None})
@@ -2094,7 +2251,7 @@ class Tests(unittest.TestCase):
             config.write_text('[round]\nmodel = "fable"\n\n[offerings.carbon]\nharness = "agy"\nmodel = "gemini-4-carbon-high"\n'
                               'meters = ["gemini-week"]\n\n[offerings.opus]\nmodel = "opus"\nmeters = ["claude-week"]\n\n'
                               '[routes.default]\ncandidates = ["opus"]\n\n[routes.tool]\ncandidates = ["carbon", "opus"]\n\n'
-                              '[routes.skeptic]\ndisabled = true\n')
+                              '[routes.skeptic]\ndisabled = true\n\n[meters.claude-week]\ntarget = 95\nmax = 4\n')
             shown = io.StringIO()
             self.assertEqual(list_offerings(config, shown), 0)
             lines = shown.getvalue().splitlines()
@@ -2103,7 +2260,8 @@ class Tests(unittest.TestCase):
             self.assertIn("route tool: carbon > opus", lines)
             self.assertIn("route spec: opus", lines)
             self.assertIn("route skeptic: disabled", lines)
-            self.assertEqual(len(lines), 2 + len(ROUTE_KEYS))
+            self.assertEqual(lines[-1], "meter claude-week: target 95, max 4")
+            self.assertEqual(len(lines), 3 + len(ROUTE_KEYS))
             config.write_text('[round]\nmodel = "fable"\n')
             shown = io.StringIO()
             list_offerings(config, shown)
@@ -2445,7 +2603,8 @@ class Tests(unittest.TestCase):
             [call] = self.log(folder, "claude")
             self.assertEqual((call[2], call[8:-2]), ("round", ["--model", "sonnet", "--effort", "high"]))
             self.assertEqual(self.log(folder, "pidfile")[-1]["session"],
-                             {"kind": "round", "offering": "sonnet", "harness": "claude", "model": "sonnet", "effort": "high"})
+                             {"kind": "round", "offering": "sonnet", "harness": "claude", "model": "sonnet", "effort": "high",
+                              "meters": ["claude-week"]})
 
             # Fable's own limit leaves the Claude week free: a spec leaf goes from fable to opus.
             (folder / "ready.json").write_text(json.dumps([
@@ -2474,7 +2633,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(action, "cooldown_wait")
             self.assertNotIn(["update", "atmo-1.1", "--claim"], self.log(folder, "bd"))
             [(key, issue, waits)] = summary["cooled"]
-            self.assertEqual((key, issue, [(spec.name, cooled) for spec, cooled in waits]),
+            self.assertEqual((key, issue, [(spec.name, cooled) for spec, cooled, _ in waits]),
                              ("tool", "atmo-1.1", [("carbon", [("gemini-5h", 5000.0)]), ("sonnet", [("claude-week", 5000.0)]),
                                                    ("opus", [("claude-week", 5000.0)])]))
             self.assertEqual(loop.drive(once=True), 0)
@@ -2490,7 +2649,7 @@ class Tests(unittest.TestCase):
                     pass
             check(config=folder / "loop.toml", out=Lines(), loop=loop)
             text = "".join(shown)
-            self.assertIn("waiting on cooldowns (1)", text)
+            self.assertIn("waiting on cooldowns or pace (1)", text)
             self.assertIn("atmo-1.1 [tool]: carbon cooled on gemini-5h until", text)
             self.assertIn("; sonnet cooled on claude-week until", text)
 
@@ -3118,6 +3277,232 @@ class Tests(unittest.TestCase):
             pool2.on_stop(signal.SIGTERM, None)
             self.assertFalse(self.settle(pool2, lambda: not pool2.workers))
 
+    PACED = textwrap.dedent("""\
+        [offerings.carbon]
+        harness = "agy"
+        model = "gemini-4-carbon-high"
+        meters = ["gemini-week", "gemini-5h"]
+
+        [offerings.opus]
+        model = "opus"
+        effort = "high"
+        meters = ["claude-week", "claude-5h"]
+
+        [offerings.sonnet]
+        model = "sonnet"
+        effort = "high"
+        meters = ["claude-week"]
+
+        [routes.default]
+        candidates = ["opus", "carbon"]
+
+        [meters.claude-week]
+        target = 95
+        max = 4
+
+        [meters.claude-5h]
+        target = 95
+        max = 3
+
+        [meters.gemini-week]
+        target = 90
+        max = 2
+        """)
+
+    def meter(self, percent, resets_at, read=0.0, rate=None, session_rate=None):
+        return {"harness": "claude", "percent": percent, "resets_at": resets_at, "read": read, "rate": rate,
+                "session_rate": session_rate, "history": []}
+
+    def test_a_meter_admits_what_its_headroom_over_its_projected_use_at_reset_allows_up_to_its_max(self):
+        pace = {"target": 95.0, "max": 4}
+        hour = 3600.0
+        # Behind pace: 10% used, 50 h to reset, 0.5%/h a session: (95 - 10) / (50 * 0.5) = 3.4, so 3.
+        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.5), pace, 0.0)[0], 3)
+        # Further behind, the max clamps it.
+        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.1), pace, 0.0)[0], 4)
+        # Ahead of pace: 80% used, 50 h to go at 0.5%/h a session projects past the target with one more.
+        self.assertEqual(admission(self.meter(80.0, 50 * hour, session_rate=0.5), pace, 0.0)[0], 0)
+        # The same meter near its reset has headroom for more: (95 - 80) / (2 * 0.5) = 15, clamped to 4.
+        self.assertEqual(admission(self.meter(80.0, 2 * hour, session_rate=0.5), pace, 0.0)[0], 4)
+        self.assertEqual(admission(self.meter(80.0, 10 * hour, session_rate=0.5), pace, 0.0)[0], 3)
+        # At or past the target nothing is admitted, whatever the rate.
+        self.assertEqual(admission(self.meter(95.0, 2 * hour), pace, 0.0)[0], 0)
+        # No fitted rate yet, or a meter that is not moving: up to the max.
+        self.assertEqual(admission(self.meter(50.0, 50 * hour), pace, 0.0)[0], 4)
+        self.assertEqual(admission(self.meter(50.0, 50 * hour, session_rate=0.0), pace, 0.0)[0], 4)
+        # A reading whose window has since reset says nothing of the new window: up to the max.
+        self.assertEqual(admission(self.meter(94.0, 100.0, session_rate=5.0), pace, 200.0)[0], 4)
+        # A meter with no readings: up to the max; the reasons are given for the log.
+        self.assertEqual(admission(None, pace, 0.0), (4, None, None, None))
+        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.5), pace, 0.0), (3, 10.0, 50.0, 0.5))
+
+    def test_the_rate_a_session_is_the_meters_rate_over_the_sessions_in_flight_when_read(self):
+        state = empty_state()
+        for read, percent, sessions in ((0.0, 10.0, 2), (1800.0, 15.0, 2), (3600.0, 20.0, 2)):
+            add_reading(state, "claude-week", "claude", percent, 50000.0, read, sessions=sessions)
+        held = state["meters"]["claude-week"]
+        self.assertAlmostEqual(held["rate"], 10.0)
+        self.assertAlmostEqual(held["session_rate"], 5.0)
+        # Readings taken with no session in flight, or with none counted, are reckoned as one session's,
+        # so a meter moved by use outside the pool is not taken as free.
+        state = empty_state()
+        for read, percent in ((0.0, 10.0), (3600.0, 20.0)):
+            add_reading(state, "claude-week", "claude", percent, 50000.0, read)
+        self.assertAlmostEqual(state["meters"]["claude-week"]["session_rate"], 10.0)
+        state = empty_state()
+        for read, percent in ((0.0, 10.0), (3600.0, 20.0)):
+            add_reading(state, "claude-week", "claude", percent, 50000.0, read, sessions=0)
+        self.assertAlmostEqual(state["meters"]["claude-week"]["session_rate"], 10.0)
+        add_reading(state, "claude-week", "claude", 20.0, 50000.0, 3600.0, sessions=0)
+        self.assertEqual(state["meters"]["claude-week"]["history"][-1]["sessions"], 0)
+
+    def test_meters_tables_take_a_target_and_a_max(self):
+        self.assertEqual(parse_dispatch(self.PACED).paces["claude-5h"], {"target": 95.0, "max": 3})
+        for bad in ('[meters.claude-week]\nmax = 4\n', '[meters.claude-week]\ntarget = 95\n',
+                    '[meters.claude-week]\ntarget = 0\nmax = 4\n', '[meters.claude-week]\ntarget = 101\nmax = 4\n',
+                    '[meters.claude-week]\ntarget = 95\nmax = -1\n', '[meters.claude-week]\ntarget = 95\nmax = 1.5\n',
+                    '[meters.claude-week]\ntarget = 95\nmax = 4\nfloor = 1\n', '[meters.Claude]\ntarget = 95\nmax = 4\n',
+                    '[meters]\nclaude-week = 95\n'):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_dispatch(bad)
+
+    def test_a_worker_takes_an_offering_only_while_every_meter_it_draws_on_has_room(self):
+        hour = 3600.0
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, clock = self.driver(folder, "Loop: continue\n", agy=self.stub_agy(folder))
+            loop.alive = lambda pid: True
+            (folder / "loop.toml").write_text(self.PACED)
+            (folder / "ready.json").write_text(json.dumps([
+                {"id": "atmo-1.1", "title": "Tool fix", "issue_type": "task", "priority": 1, "labels": ["kind:tool"]}]))
+
+            def readings(week, five_hour, sessions=1):
+                state = empty_state()
+                for meter, (percent, rate, resets_at) in (("claude-week", week), ("claude-5h", five_hour)):
+                    add_reading(state, meter, "claude", percent - rate, resets_at, 0.0, sessions=sessions)
+                    add_reading(state, meter, "claude", percent, resets_at, hour, sessions=sessions)
+                update_state(folder, lambda held: held.update(meters=state["meters"]))
+                clock[0] = hour
+
+            def in_flight(*offerings):
+                for path in folder.glob("[0-9]*"):
+                    path.unlink()
+                for pid, name in enumerate(offerings, start=900001):
+                    meters = {"opus": ["claude-week", "claude-5h"], "sonnet": ["claude-week"]}[name]
+                    write_pid_file(folder, {"pid": pid, "pool": 1, "session": {
+                        "kind": "round", "offering": name, "meters": meters}})
+
+            def choice():
+                spec, waits = loop.choose("tool")
+                return spec.name if spec else [(s.name, paced) for s, _, paced in waits]
+
+            # Week behind pace (10% at 1%/h a session, 50 h out: 1 admitted), five-hour fine: opus takes the leaf.
+            readings((10.0, 1.0, 51 * hour), (10.0, 1.0, 5 * hour))
+            in_flight()
+            self.assertEqual(choice(), "opus")
+            # One session already draws on the week, which admits one: the leaf goes to the next candidate.
+            in_flight("sonnet")
+            self.assertEqual(choice(), "carbon")
+            # The week has room, the five-hour window is ahead of pace: the five-hour window binds.
+            readings((10.0, 0.5, 51 * hour), (90.0, 2.0, 5 * hour))
+            in_flight("sonnet")
+            self.assertEqual(choice(), "carbon")
+            # The week admits two and the five-hour window three: opus again, with one in flight on each.
+            readings((10.0, 0.8, 51 * hour), (10.0, 2.0, 5 * hour))
+            in_flight("opus")
+            self.assertEqual(choice(), "opus")
+            # Every candidate held: Gemini's week at its target admits none; the leaf waits and is not claimed.
+            update_state(folder, lambda held: add_reading(held, "gemini-week", "agy", 90.0, 100 * hour, hour))
+            in_flight("opus", "opus")
+            self.assertEqual(choice(), [("opus", [("claude-week", 2, 2)]), ("carbon", [("gemini-week", 0, 0)])])
+            action, _, summary = loop.inspect_work(claim=True)
+            self.assertEqual(action, "cooldown_wait")
+            self.assertNotIn(["update", "atmo-1.1", "--claim"], self.log(folder, "bd"))
+            shown = []
+
+            class Lines:
+                def write(self, text):
+                    shown.append(text)
+
+                def flush(self):
+                    pass
+            check(config=folder / "loop.toml", out=Lines(), loop=loop)
+            self.assertIn("meter claude-week: 10.0% used, 50.0 h to reset, 0.80%/h a session: admits 2 (target 95, max 4), "
+                          "2 in flight", "".join(shown))
+            self.assertIn("opus paced on claude-week (admits 2, 2 in flight); carbon paced on gemini-week (admits 0, 0 in flight)", "".join(shown))
+
+            # A held route rechecks after PACE_WAIT, not after the full wait: a session ending frees a place.
+            pauses = []
+            loop.sleep = lambda seconds: (pauses.append(seconds), clock.__setitem__(0, clock[0] + seconds),
+                                          in_flight("opus"))
+            self.assertEqual(loop.drive(once=True), 0)
+            loop.wait = 900
+            loop.stopping = False
+            # drive() without once: the first pause is the pacing recheck, after which the session runs.
+            original = loop.round
+            rounds = []
+
+            def round_then_stop():
+                rounds.append(1)
+                result = original()
+                if len(rounds) >= 2:
+                    loop.stopping = True
+                return result
+            loop.round = round_then_stop
+            in_flight("opus", "opus")
+            self.assertEqual(loop.drive(), 0)
+            self.assertEqual(sum(pauses), PACE_WAIT)
+            self.assertEqual([call[call.index("--model") + 1] for call in self.log(folder, "claude")], ["opus"])
+            # The session's pid file names the meters it draws on, for the other workers to count.
+            self.assertEqual(self.log(folder, "pidfile")[-1]["session"]["meters"], ["claude-week", "claude-5h"])
+
+    def test_the_pool_recomputes_admission_every_tick_and_logs_each_change(self):
+        hour = 3600.0
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            clock = [hour]
+            shown = []
+
+            class Lines:
+                def write(self, text):
+                    shown.append(text)
+
+                def flush(self):
+                    pass
+            pool, _ = self.pool(folder, 1, now=lambda: clock[0])
+            pool.out = Lines()
+            (folder / "loop.toml").write_text("[pool]\njobs = 1\n" + self.PACED)
+            pids = folder / "pids"
+
+            def set_meter(percent, rate, resets_at):
+                def change(state):
+                    state["meters"] = {}
+                    add_reading(state, "claude-week", "claude", percent - rate, resets_at, 0.0, sessions=1)
+                    add_reading(state, "claude-week", "claude", percent, resets_at, hour, sessions=1)
+                update_state(pids, change)
+
+            def lines():
+                return [text for text in "".join(shown).splitlines() if "admits" in text]
+
+            set_meter(10.0, 1.0, 51 * hour)
+            pool.tune()
+            pool.pace()
+            self.assertEqual(len(lines()), 3)
+            self.assertIn("claude-week: 10.0% used, 50.0 h to reset, 1.00%/h a session: admits 1 (target 95, max 4)", lines()[0])
+            self.assertIn("claude-5h: no readings: admits 3 (target 95, max 3)", "\n".join(lines()))
+            # Unchanged admission is not logged again, though the hours to reset moved.
+            clock[0] = 1.5 * hour
+            pool.pace()
+            self.assertEqual(len(lines()), 3)
+            # The meter falls behind its target's pace: the change is logged with what it came from.
+            set_meter(94.5, 1.0, 51 * hour)
+            pool.pace()
+            self.assertEqual(len(lines()), 4)
+            self.assertIn("claude-week: 94.5% used, 49.5 h to reset, 1.00%/h a session: admits 0 (target 95, max 4)", lines()[-1])
+            # step() is a tick, and recomputes it.
+            set_meter(10.0, 1.0, 51 * hour)
+            pool.step()
+            self.assertIn("admits 1", lines()[-1])
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
