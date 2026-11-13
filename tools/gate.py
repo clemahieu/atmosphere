@@ -70,15 +70,22 @@ WORKSPACE_TESTS = ("test", "--workspace", "--", "--nocapture")
 # Marks cargo test's result line, one per test binary, and the line of a binary with a failing test.
 TEST_RESULT = "test result: "
 TEST_FAILED = "test result: FAILED"
-# The crates the forced lint check holds, each from its own directory, whose .cargo config builds
-# core, and the target specs it checks it for, relative to that directory.
-FORCED_LINT_CRATES = (
-    ("kernel/verified", ("../src/x86_64-unknown-aloader.json", "../src/aarch64-unknown-aloader.json")),
-    ("kernel", ("src/x86_64-unknown-aloader.json", "src/aarch64-unknown-aloader.json")),
+# The workspace's members, whose manifests cargo names by absolute path.
+WORKSPACE_MEMBERS = ("cargo", "metadata", "--no-deps", "--format-version", "1")
+# The forced lint check runs from each member's directory for the target its .cargo config names,
+# the host's when it has none, then from these directories for the aarch64 targets the aarch64
+# build makes: a JSON spec relative to the directory, or a triple rustc has built in.
+FORCED_LINT_AARCH64 = (
+    ("kernel/verified", "../src/aarch64-unknown-aloader.json"),
+    ("kernel", "src/aarch64-unknown-aloader.json"),
+    ("dom0", "src/aarch64-unknown-aloader.json"),
+    ("user/hello", "../aarch64-unknown-aloader.json"),
+    ("aloader", "aarch64-unknown-uefi"),
 )
 # Forced, so no allow in the source hides dead code or an unused import.
 FORCED_LINT_ENV = {"RUSTFLAGS": "--force-warn dead_code --force-warn unused_imports"}
-FORCED_LINT_CHECK = ("cargo", "check", "--message-format=json", "-Zjson-target-spec", "--target")
+FORCED_LINT_CHECK = ("cargo", "check", "--message-format=json")
+FORCED_LINT_TARGET = ("-Zjson-target-spec", "--target")
 # A warning as rustc renders it: its header line, then the line that locates its primary span.
 WARNING_HEADER = re.compile(r"^warning(?:\[\w+\])?: (.*)$")
 WARNING_LOCATION = re.compile(r"^\s*--> (.+):(\d+):(\d+)$")
@@ -282,29 +289,45 @@ def in_tree_messages(output, root):
     return list(found.items())
 
 
+def workspace_members(gate):
+    """The directory of each workspace member, relative to the root, in cargo's order."""
+    ran = gate.call(list(WORKSPACE_MEMBERS), capture=True)
+    if ran.code != 0:
+        raise Failure(f"{' '.join(WORKSPACE_MEMBERS)}: {status(ran.code)}")
+    root = Path(gate.root).resolve()
+    return [str(Path(package["manifest_path"]).resolve().parent.relative_to(root))
+            for package in json.loads(ran.stdout)["packages"]]
+
+
 def forced_lints(gate):
-    """The forced lint check: cargo check of kernel/verified and kernel on both target specs with
-    dead_code and unused_imports forced to warn, which overrides any allow in the source, fails on
-    any warning located in the tree. A ghost-only item a proof reads compiles under
-    cfg(verus_keep_ghost) instead of hiding under an allow. The toolchain's build of core and the
-    registry's crates print their own warnings, which are not the tree's and do not count."""
+    """The forced lint check: cargo check of every workspace member, from its own directory for the
+    target its .cargo config names, and of the crates the aarch64 build makes for their aarch64
+    targets, with dead_code and unused_imports forced to warn, which overrides any allow in the
+    source, fails on any warning located in the tree. A proof-only field or item compiles only under
+    cfg(verus_keep_ghost), so a cargo build has nothing for the lint to find, instead of hiding
+    under an allow. The toolchain's build of core and the registry's crates print their own
+    warnings, which are not the tree's and do not count. A check stays a check, not a test build, so
+    an item only tests use is outside it."""
+    members = workspace_members(gate)
+    checks = [(directory, ()) for directory in members]
+    checks += [(directory, (*FORCED_LINT_TARGET, target)) for directory, target in FORCED_LINT_AARCH64]
     found = {}
-    for directory, specs in FORCED_LINT_CRATES:
-        for spec in specs:
-            argv = [*FORCED_LINT_CHECK, spec]
-            ran = gate.call(argv, capture=True, cwd=directory, env=FORCED_LINT_ENV)
-            here = in_tree_messages(ran.stdout, gate.root)
-            if ran.code != 0:
-                # The JSON holds the diagnostics, so an error that stops the check is shown here.
-                print("".join(rendered for _, rendered in here), end="")
-                raise Failure(f"{' '.join(argv)} in {directory}: {status(ran.code)}"
-                              + "".join(f"\n  {where}" for where, _ in here))
-            found.update(here)
+    for directory, target in checks:
+        argv = [*FORCED_LINT_CHECK, *target]
+        ran = gate.call(argv, capture=True, cwd=directory, env=FORCED_LINT_ENV)
+        here = in_tree_messages(ran.stdout, gate.root)
+        if ran.code != 0:
+            # The JSON holds the diagnostics, so an error that stops the check is shown here.
+            print("".join(rendered for _, rendered in here), end="")
+            raise Failure(f"{' '.join(argv)} in {directory}: {status(ran.code)}"
+                          + "".join(f"\n  {where}" for where, _ in here))
+        found.update(here)
     if found:
         print("".join(found.values()), end="")
         raise Failure(f"{len(found)} warning{'s' if len(found) > 1 else ''} located in the tree:"
                       + "".join(f"\n  {where}" for where in found))
-    return "no warning located in the tree: kernel/verified and kernel, on the x86_64 and aarch64 specs"
+    return (f"no warning located in the tree: {len(members)} workspace members, each from its own directory, "
+            f"and {', '.join(directory for directory, _ in FORCED_LINT_AARCH64)} for aarch64")
 
 
 def hooks(gate):
@@ -702,17 +725,30 @@ class Tests(unittest.TestCase):
         self.assertEqual(in_tree_messages("\n".join([outside, registry, artifact]), self.root), [])
         self.assertEqual(in_tree_messages("\n".join([outside, inside, inside]), self.root),
                          [("kernel/verified/pptr.rs:12: warning: field `perm` is never read", "warning: field `perm` is never read\n")])
-        clean = FakeGate(self.root, {"cargo": (0, outside + "\n")})
+        members = {" ".join(WORKSPACE_MEMBERS): (0, self.workspace("aheap", "kernel/verified"))}
+        clean = FakeGate(self.root, {**members, "cargo": (0, outside + "\n")})
         self.assertEqual(forced_lints(clean),
-                         "no warning located in the tree: kernel/verified and kernel, on the x86_64 and aarch64 specs")
-        # Each crate's directory, since its .cargo config holds build-std, on both specs, with the lints forced.
-        self.assertEqual([(call[-1], cwd, env) for call, cwd, env in clean.contexts],
-                         [(f"{spec}", directory, FORCED_LINT_ENV) for directory, specs in FORCED_LINT_CRATES for spec in specs])
+                         "no warning located in the tree: 2 workspace members, each from its own directory, "
+                         "and kernel/verified, kernel, dom0, user/hello, aloader for aarch64")
+        # Each member from its own directory, since its .cargo config names its target and holds
+        # build-std, then each aarch64 target, every one with the lints forced.
+        self.assertEqual(clean.contexts[1:],
+                         [([*FORCED_LINT_CHECK], "aheap", FORCED_LINT_ENV),
+                          ([*FORCED_LINT_CHECK], "kernel/verified", FORCED_LINT_ENV)]
+                         + [([*FORCED_LINT_CHECK, *FORCED_LINT_TARGET, target], directory, FORCED_LINT_ENV)
+                            for directory, target in FORCED_LINT_AARCH64])
         with self.assertRaisesRegex(Failure, "^1 warning located in the tree:\n  kernel/verified/pptr.rs:12: warning: field `perm` is never read$"):
-            forced_lints(FakeGate(self.root, {"cargo": (0, inside + "\n")}))
+            forced_lints(FakeGate(self.root, {**members, "cargo": (0, inside + "\n")}))
         error = message("error", "kernel/src/main.rs", 3, "cannot find value `x`")
-        with self.assertRaisesRegex(Failure, "in kernel/verified: exit status: 101\n  kernel/src/main.rs:3: error: cannot find value `x`$"):
-            forced_lints(FakeGate(self.root, {"cargo": (101, error + "\n")}))
+        with self.assertRaisesRegex(Failure, "in aheap: exit status: 101\n  kernel/src/main.rs:3: error: cannot find value `x`$"):
+            forced_lints(FakeGate(self.root, {**members, "cargo": (101, error + "\n")}))
+        with self.assertRaisesRegex(Failure, "^cargo metadata --no-deps --format-version 1: exit status: 101$"):
+            forced_lints(FakeGate(self.root, {" ".join(WORKSPACE_MEMBERS): (101, "")}))
+
+    def workspace(self, *directories):
+        """cargo metadata's JSON for a workspace whose members are these directories under the root."""
+        return json.dumps({"packages": [{"manifest_path": str(self.root / directory / "Cargo.toml")}
+                                        for directory in directories]})
 
     # A warning as rustc renders it in the tree, and one in the toolchain's build-std sources.
     IN_TREE = ("warning: variable does not need to be mutable\n"
@@ -757,7 +793,8 @@ class Tests(unittest.TestCase):
     def test_every_step_fails_the_gate_when_a_program_it_runs_fails(self):
         """One failing run per step: each program a step runs, in turn, exits 1 with nothing said."""
         good = {VERIFY: (0, "verification results:: 1 verified, 0 errors\n"),
-                "cargo " + " ".join(WORKSPACE_TESTS): (0, "test result: ok. 1 passed; 0 failed\n")}
+                "cargo " + " ".join(WORKSPACE_TESTS): (0, "test result: ok. 1 passed; 0 failed\n"),
+                " ".join(WORKSPACE_MEMBERS): (0, self.workspace("aheap"))}
         for step in STEPS:
             passing = FakeGate(self.root, dict(good))
             lines, code = run_gate(passing, [step])
