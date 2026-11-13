@@ -8,7 +8,8 @@
 # missing one is a harness change, not a case to paper over.
 #
 # Grok loads this hook too and sets GROK_SESSION_ID on every hook it runs. A Grok session has no env
-# file and runs no rounds, so the hook writes nothing there.
+# file, and the only ones that run rounds are tools/loop.py's, whose actor is in their environment, so
+# the hook writes nothing there.
 #
 # tools/loop.py runs each round, prover and skeptic as a session of its own and names itself the actor,
 # loop-<pid>, in their environment, so what a round hands to the prover stays held between the two

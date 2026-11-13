@@ -4,7 +4,8 @@
 """The round loop, driven from the command line.
 
 Each round runs in the main worktree as a fresh headless agent session (`claude -p --agent round` by
-default, or `agy -p` with `.claude/agents/<kind>.md` when the offering chosen has `harness = "agy"`).
+default, or `agy -p` or `grok -p` with the body of `.claude/agents/<kind>.md` when the offering chosen has
+`harness = "agy"` or `harness = "grok"`).
 Print mode waits for a background command the round started, such as its landing, and wakes the round
 when it exits, so the last result the session streams is the round's report. The report's lines say what
 comes next, as the round skill reads them (.claude/skills/round/SKILL.md):
@@ -40,7 +41,8 @@ and the output of its background commands.
 Automatic routing and zero-token pre-filtering (`design/loops-select-by-work-kind-and-stage/`).
 `[offerings.<name>]` in <project root>/loop.toml names one way to run a session: `harness`, `model`,
 `effort`, `autocompact`, and `meters`, the usage meters the offering draws on (`claude-week` and
-`claude-fable` for Fable; `gemini-week` and `gemini-5h` for a Gemini model). When `[routes]` is defined,
+`claude-fable` for Fable; `gemini-week` and `gemini-5h` for a Gemini model; a `grok-<name>` of the
+file's own choosing for Grok). When `[routes]` is defined,
 `tools/loop.py` inspects Beads in Python at zero token cost and dispatches
 each ready stage, leaf, or epic round by its route `[routes.<key>]` (`default`, `tool`, `sys`, `proof`,
 `spec`, `arch`, `review`, `epic-close`, `epic-split`, `needs-land`, `prover`, `skeptic`, `retry`), which
@@ -84,7 +86,7 @@ continues ready work on the candidates still free. Schema of `logs/loop/state.js
   {
     "meters": {
       "<meter>": {
-        "harness": "claude" | "agy",
+        "harness": "claude" | "agy" | "grok",
         "percent": <float 0..100>,
         "resets_at": <float epoch seconds | null>,
         "read": <float epoch seconds>,
@@ -96,13 +98,22 @@ continues ready work on the candidates still free. Schema of `logs/loop/state.js
     },
     "cooldown": {
       "<meter, or harness when the whole harness is cooled>": {
-        "harness": "claude" | "agy",
+        "harness": "claude" | "agy" | "grok",
         "until": <float epoch seconds>
       }
     }
   }
 
-The session record. Each session a loop runs, round, prover or skeptic on either harness, appends one row
+A Grok session. `grok -p` takes the agent's body and the prompt, as agy does, and these flags:
+`--output-format streaming-messages-json`, Claude's stream-json shape, so one reader follows both;
+`--always-approve`; `--trust`, without which Grok loads none of the worktree's hooks, the license guard
+among them; `--background-wait-timeout`, since a headless Grok stops a background command 600 s after its
+last turn and a landing's gate runs longer; `--rules` with <project root>/CLAUDE.md when it is there,
+which Grok does not look for above the repository; and the offering's `model` and `effort`. Grok's plan
+meter cannot be read from outside its own interface, so a grok meter has no readings: `[meters]` holds it
+to its `max`, and a session whose result names a limit cools the offering's meters for an hour.
+
+The session record. Each session a loop runs, round, prover or skeptic on any harness, appends one row
 to the table `sessions` of <project root>/logs/loop/sessions.sqlite when it ends, written under
 `logs/loop/.sessions.lock` so the workers of a pool write in turn; the file outlives every loop. Columns:
 `actor` (loop-<pid>), `session` (round, prover or skeptic), `issue` (the issue the prompt names, or null
@@ -200,10 +211,12 @@ RESET_JITTER = 300
 PACE_WAIT = 60
 CONFIG = ROOT / "loop.toml"
 SCRATCH = ROOT / "scratch"
+RULES = ROOT / "CLAUDE.md"
+GROK_BACKGROUND_WAIT = 4 * 3600
 KINDS = ("round", "prover", "skeptic")
 RETRY = "retry"
 TABLES = (*KINDS, RETRY)
-HARNESSES = ("claude", "agy")
+HARNESSES = ("claude", "agy", "grok")
 AGY_MODES = ("skip-permissions", "auto", "accept-edits", "plan")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 WORK_KINDS = ("tool", "sys", "proof", "spec", "arch", "review")
@@ -322,9 +335,10 @@ def weighted(usage):
 
 
 def glimpse(tool):
-    """One line for a Claude tool call: its description, or what it acts on."""
+    """One line for a Claude or Grok tool call: its description, or what it acts on."""
     given = tool.get("input", {})
-    what = given.get("description") or given.get("command") or given.get("file_path") or given.get("pattern") or ""
+    what = (given.get("description") or given.get("command") or given.get("file_path") or given.get("target_file")
+            or given.get("target_directory") or given.get("pattern") or "")
     return f"{tool.get('name')}: {what.splitlines()[0] if what else ''}"
 
 
@@ -339,7 +353,8 @@ def agy_glimpse(step):
 
 
 def follow(lines, show):
-    """Read a session's stream-json lines (claude or agy), showing its progress; the last result is the report."""
+    """Read a session's stream-json lines, showing its progress; the last result is the report. Grok's
+    streaming-messages-json is Claude's shape, with an error result's reasons under `errors`."""
     run = Run()
     agy_buffers = {}
     agy_steps = 0
@@ -407,7 +422,7 @@ def follow(lines, show):
             run.error = bool(event.get("is_error")) or event.get("subtype") != "success"
             run.turns += event.get("num_turns") or 0
             run.weighted += weighted(event.get("usage") or {})
-            if run.error and LIMIT_RE.search(run.report):
+            if run.error and LIMIT_RE.search(" ".join([run.report, *map(str, event.get("errors") or [])])):
                 run.limited = True
     return run
 
@@ -447,7 +462,8 @@ def build_agent_spec(table, where):
         elif harness == "claude" and key == "fallback-model":
             pass
         else:
-            allowed = "model, autocompact, effort or fallback-model" if harness == "claude" else "harness, mode, model or effort"
+            allowed = {"claude": "model, autocompact, effort or fallback-model", "agy": "harness, mode, model or effort",
+                       "grok": "harness, model or effort"}[harness]
             raise ValueError(f"{where}.{key}: not {allowed}")
         flags += [f"--{key}", value]
     return AgentSpec(harness=harness, flags=flags)
@@ -479,7 +495,7 @@ def load_toml(text):
         raise ValueError(f"not TOML: {error}")
 
 
-METER_PREFIX = {"claude": "claude-", "agy": "gemini-"}
+METER_PREFIX = {"claude": "claude-", "agy": "gemini-", "grok": "grok-"}
 
 
 def parse_offerings(raw):
@@ -976,9 +992,11 @@ def limit_keys(run, spec):
 class Loop:
     """The driver. The commands and the clock are parameters so the tests can replace them."""
 
-    def __init__(self, claude="claude", agy="agy", bd="bd", notifier="notify-send", cwd=MAIN, pids=PIDS, config=CONFIG,
-                 scratch=SCRATCH, wait=WAIT, sleep=time.sleep, now=time.time, out=sys.stdout, pool=None):
-        self.claude, self.agy, self.bd, self.notifier = claude, agy, bd, notifier
+    def __init__(self, claude="claude", agy="agy", grok="grok", bd="bd", notifier="notify-send", cwd=MAIN, pids=PIDS,
+                 config=CONFIG, scratch=SCRATCH, rules=RULES, wait=WAIT, sleep=time.sleep, now=time.time, out=sys.stdout,
+                 pool=None):
+        self.claude, self.agy, self.grok, self.bd, self.notifier = claude, agy, grok, bd, notifier
+        self.rules = Path(rules)
         self.pool = pool
         self.tag = f"{os.getpid()} " if pool is not None else ""
         self.cwd, self.pids, self.config, self.wait = Path(cwd), Path(pids), Path(config), wait
@@ -1158,10 +1176,15 @@ class Loop:
         session record, with the issue it was given and the route it was chosen by when the loop knows them."""
         self.tune()
         spec = spec or self.spec_for(kind, table)
-        if spec.harness == "agy":
+        if spec.harness in ("agy", "grok"):
             body = agent_body(self.cwd, kind)
             full_prompt = f"{body}\n\n{prompt}" if body else prompt
+        if spec.harness == "agy":
             command = [self.agy, "--output-format", "stream-json", *spec.flags, "-p", full_prompt]
+        elif spec.harness == "grok":
+            rules = ["--rules", self.rules.read_text()] if self.rules.exists() else []
+            command = [self.grok, "-p", full_prompt, "--output-format", "streaming-messages-json", "--always-approve",
+                       "--trust", "--background-wait-timeout", str(GROK_BACKGROUND_WAIT), *rules, *spec.flags]
         else:
             command = [self.claude, "-p", "--agent", kind, "--permission-mode", "auto",
                        "--output-format", "stream-json", "--verbose", *spec.flags, prompt]
@@ -2330,6 +2353,89 @@ class Tests(unittest.TestCase):
             self.assertTrue(call[8].startswith("You run one round.\n\nRun one round. Issue atmo-1.2 is yours"))
             self.assertNotIn("model: opus", call[8])
             self.assertEqual(call[9], loop.actor)
+
+    GROK = ('[offerings.grok-high]\nharness = "grok"\nmodel = "grok-4.7"\neffort = "high"\nmeters = ["grok-week"]\n\n'
+            '[offerings.opus]\nmodel = "opus"\nmeters = ["claude-week"]\n\n[routes.tool]\ncandidates = ["grok-high", "opus"]\n')
+
+    def stub_grok(self, folder, *lines):
+        """A fake grok that logs its arguments and its actor and prints `lines`, each a stream event."""
+        fake = folder / "grok"
+        fake.write_text(
+            f"#!{sys.executable}\nimport json, os, sys\n"
+            f"open({str(folder / 'grok.log')!r}, 'a').write(json.dumps(sys.argv[1:] + [os.environ['BEADS_ACTOR']]) + '\\n')\n"
+            f"print({chr(10).join(json.dumps(line) for line in lines)!r})\n")
+        fake.chmod(0o755)
+        return str(fake)
+
+    def test_a_grok_offering_takes_a_model_an_effort_and_grok_meters(self):
+        [grok, opus] = parse_dispatch(self.GROK).routes["tool"]
+        self.assertEqual((grok.harness, grok.name, grok.flags, grok.meters),
+                         ("grok", "grok-high", ["--model", "grok-4.7", "--effort", "high"], ("grok-week",)))
+        for bad in ('[offerings.x]\nharness = "grok"\nmeters = ["gemini-week"]\n',
+                    '[offerings.x]\nharness = "grok"\nautocompact = "200k"\nmeters = ["grok-week"]\n',
+                    '[offerings.x]\nharness = "grok"\nmode = "auto"\nmeters = ["grok-week"]\n',
+                    '[offerings.x]\nharness = "grok"\neffort = "huge"\nmeters = ["grok-week"]\n'):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_dispatch(bad)
+
+    def test_a_grok_session_is_grok_p_with_the_procedure_body_the_prompt_and_the_project_roots_rules(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            agents_dir = folder / ".claude" / "agents"
+            agents_dir.mkdir(parents=True)
+            (agents_dir / "round.md").write_text("---\nname: round\nmodel: opus\n---\n\nYou run one round.\n")
+            rules = folder / "root-rules.md"
+            rules.write_text("# Local rules\n")
+            grok = self.stub_grok(
+                folder,
+                {"type": "system", "subtype": "init", "model": "grok-4.7"},
+                {"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "Landing it.\nMore."},
+                    {"type": "tool_use", "name": "run_terminal_command", "input": {"command": "tools/land.py", "description": "Land the branch"}},
+                    {"type": "tool_use", "name": "read_file", "input": {"target_file": "tools/land.py"}}]}},
+                {"type": "result", "subtype": "success", "is_error": False, "num_turns": 3, "result": "Landed.\nLoop: stop\n",
+                 "usage": {"input_tokens": 1000, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 0, "output_tokens": 10}})
+            said = io.StringIO()
+            loop, _ = self.driver(folder, grok=grok, rules=rules)
+            loop.out = said
+            (folder / "loop.toml").write_text(self.GROK)
+            (folder / "ready.json").write_text('[{"id": "atmo-1.2", "title": "Fix tool", "issue_type": "task", "priority": 1, "labels": ["kind:tool"]}]')
+            self.assertEqual(loop.drive(once=True), 0)
+            [call] = self.log(folder, "grok")
+            self.assertEqual(call[0], "-p")
+            self.assertTrue(call[1].startswith("You run one round.\n\nRun one round. Issue atmo-1.2 is yours"))
+            self.assertNotIn("model: opus", call[1])
+            self.assertEqual(call[2:], ["--output-format", "streaming-messages-json", "--always-approve", "--trust",
+                                        "--background-wait-timeout", str(GROK_BACKGROUND_WAIT), "--rules", "# Local rules\n",
+                                        "--model", "grok-4.7", "--effort", "high", loop.actor])
+            for line in ("says: Landing it.", "run_terminal_command: Land the branch", "read_file: tools/land.py"):
+                self.assertIn(line, said.getvalue())
+            self.assertEqual(read_sessions(folder), [
+                self.row(loop, issue="atmo-1.2", work_kind="tool", route="tool", offering="grok-high", harness="grok",
+                         model="grok-4.7", effort="high", turns=3, weighted=1090.0, loop="stop")])
+            self.assertEqual(self.log(folder, "claude"), [])
+
+            # A checkout with no rules file beside its worktrees, as a clone is, passes none.
+            rules.unlink()
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertNotIn("--rules", self.log(folder, "grok")[-1])
+
+    def test_a_grok_result_that_names_a_limit_cools_its_meters_and_the_leaf_goes_to_the_next_candidate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            grok = self.stub_grok(folder, {"type": "result", "subtype": "error_during_execution", "is_error": True,
+                                           "num_turns": 0, "errors": ["You have reached your usage limit."], "usage": {}})
+            loop, clock = self.driver(folder, "Loop: stop\n", grok=grok)
+            clock[0] = 100.0
+            (folder / "loop.toml").write_text(self.GROK)
+            (folder / "ready.json").write_text('[{"id": "atmo-1.2", "title": "Fix tool", "issue_type": "task", "priority": 1, "labels": ["kind:tool"]}]')
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertEqual(read_state(folder)["cooldown"], {"grok-week": {"harness": "grok", "until": 3700.0}})
+            self.assertEqual(len(self.log(folder, "grok")), 1)
+            [call] = self.log(folder, "claude")
+            self.assertEqual(call[call.index("--model") + 1], "opus")
+            self.assertEqual([(row["harness"], row["error"], row["limited"]) for row in read_sessions(folder)],
+                             [("grok", 1, 1), ("claude", 0, 0)])
 
     def test_zero_token_precheck_skips_llm_when_no_work_matches_and_recovers_abandoned_leaves(self):
         with tempfile.TemporaryDirectory() as folder:
