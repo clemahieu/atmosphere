@@ -30,6 +30,11 @@ use crate::capability::view::*;
 use crate::arch::Registers;
 use crate::define::*;
 
+/// The position a word names is reached through a process capability, in another process's table.
+pub open spec fn reaches_through(word: u64) -> bool {
+    spec_position(word) is Some && spec_position(word)->0.through is Some
+}
+
 /// Two slots hold the same capability as the process reads it: kind, block and rights. The parent may
 /// differ, since a move of an ancestor renames it.
 pub open spec fn same_cap(a: SlotView, b: SlotView) -> bool {
@@ -241,39 +246,12 @@ impl CapKernel {
             Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
+        Self::lemma_derive_keeps_sealed(pre, post, caller, frame, out, root);
         Self::lemma_derive_contract(pre, post, caller, frame, out);
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
-        let rights = frame.argument(2);
-        let base = frame.argument(3) as usize;
-        let order = frame.argument(4);
-        if pre.sealed(root) {
-            if pre.derive_allowed(caller, from, to, rights, base, order) {
-                let i = from->0.index;
-                let v = pre.table_view(caller)[i];
-                let table = pre.view_table_at(caller, to->0.through)->0;
-                let child = derived_view(v, rights as u32, base, order as u8, pre.tables.node_of(caller, i));
-                pre.lemma_sealed_table_not_root(caller, to->0.through, root);
-                assert(!pre.names_process(v, root));
-                let r = rights as u32;
-                let b = right_bit(Right::Control);
-                let vr = v.rights;
-                if child.kind is Thread && r & b != 0 {
-                    assert(vr & b != 0) by (bit_vector)
-                        requires
-                            r & !vr == 0u32,
-                            r & b != 0u32;
-                }
-                assert(!post.names_process(child, root));
-                assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
-                    implies !post.names_process(post.table_view(t)[j], root) by {
-                    if !(t == table && j == to->0.index) {
-                        assert(pre.table_view(t).contains_key(j));
-                        assert(!pre.names_process(pre.table_view(t)[j], root));
-                    }
-                }
-            }
-            assert(post.table_view(root) == pre.table_view(root));
+        if pre.sealed(root) && pre.derive_allowed(caller, from, to, frame.argument(2), frame.argument(3) as usize, frame.argument(4)) {
+            pre.lemma_sealed_table_not_root(caller, to->0.through, root);
         }
     }
 
@@ -291,6 +269,7 @@ impl CapKernel {
             Self::root_kept(pre, post, root),
     {
         broadcast use vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
+        Self::lemma_move_keeps_sealed(pre, post, caller, frame, out, root);
         Self::lemma_move_contract(pre, post, caller, frame, out);
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
@@ -305,16 +284,6 @@ impl CapKernel {
                 assert forall|j: usize| #[trigger] post.table_view(root).contains_key(j)
                     implies pre.table_view(root).contains_key(j) && same_cap(post.table_view(root)[j], pre.table_view(root)[j]) by {
                     assert(post.table_view(root) == pre.moved_table_view(src, f.index, dst, d.index, root));
-                }
-                assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
-                    implies !post.names_process(post.table_view(t)[j], root) by {
-                    assert(post.table_view(t) == pre.moved_table_view(src, f.index, dst, d.index, t));
-                    if t == dst && j == d.index {
-                        assert(!pre.names_process(pre.table_view(src)[f.index], root));
-                    } else {
-                        assert(pre.table_view(t).contains_key(j));
-                        assert(!pre.names_process(pre.table_view(t)[j], root));
-                    }
                 }
                 if pre.framed(root) {
                     let i = pre.tables.node_of(src, f.index);
@@ -513,77 +482,8 @@ impl CapKernel {
             Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
     {
+        Self::lemma_retype_keeps_sealed(pre, post, caller, frame, out, root);
         Self::lemma_retype_contract(pre, post, caller, frame, out);
-        let kind = frame.argument(1);
-        let from = frame.slot() as usize;
-        let base = frame.argument(2) as usize;
-        let to = frame.argument(3) as usize;
-        let parent = pre.tables.node_of(caller, from);
-        let child = pre.tables.node_of(caller, to);
-        let bound = bound_threads(&pre.list, &pre.tables);
-        let after = bound_threads(&post.list, &post.tables);
-        let added = out == status_only(STATUS_OK) && (kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME);
-        if out == status_only(STATUS_REFUSED) {
-            assert(post == pre);
-        } else if kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME {
-            if out == status_only(STATUS_AGAIN) {
-                assert(post.list == pre.list && post.tables == pre.tables);
-            } else {
-                assert(pre.empty_slot(caller, to));
-                assert(post.is_cap(child));
-                assert(Self::caps_frame(pre, post, child, child));
-                assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
-                reveal(binding_parents);
-                assert forall|x: usize| #[trigger] after.contains_key(x) implies bound.contains_key(x) && after[x] == bound[x] by {
-                    assert(x < NODE_SPACE);
-                    assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Binding);
-                    assert(x != child);
-                    assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding);
-                    assert(binding_parent(&pre.list, &pre.tables, &pre.threads, x));
-                    let p = pre.list.parent@[x];
-                    assert(post.list.parent@[x] == p);
-                    assert(pre.is_cap(p));
-                    assert(p != child);
-                    Self::lemma_caps_frame(pre, post, child, child, p);
-                }
-            }
-        } else if kind == RETYPE_TABLE_PAGE {
-            assert(after == bound);
-        } else if kind == RETYPE_FREE {
-            if out == status_only(STATUS_OK) {
-                let c = choose|c: usize| c < crate::define::NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, caller, from, base, frame.argument(4) as usize);
-                assert(post.list == pre.list && post.tables == pre.tables);
-            }
-            assert(after == bound);
-        } else {
-            reveal(binding_parents);
-            assert forall|x: usize| #[trigger] after.contains_key(x) implies bound.contains_key(x) && after[x] == bound[x] by {
-                assert(x < NODE_SPACE);
-                assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Binding);
-                assert(x != base);
-                assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding);
-                assert(binding_parent(&pre.list, &pre.tables, &pre.threads, x));
-                let p = pre.list.parent@[x];
-                assert(post.list.parent@[x] == p);
-                assert(pre.is_cap(p));
-                assert(post.payload_of(p) == pre.payload_of(p));
-            }
-        }
-        if pre.sealed(root) {
-            assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
-                implies !post.names_process(post.table_view(t)[j], root) by {
-                let v = post.table_view(t)[j];
-                if added && t == caller && j == to {
-                    assert(v.kind is Frame);
-                } else {
-                    assert(pre.table_view(t).contains_key(j) && v == pre.table_view(t)[j]);
-                    assert(!pre.names_process(pre.table_view(t)[j], root));
-                    if after.contains_key(v.base) {
-                        assert(bound.contains_key(v.base) && after[v.base] == bound[v.base]);
-                    }
-                }
-            }
-        }
         assert(post.table_view(root) == pre.table_view(root));
     }
 
@@ -702,6 +602,209 @@ impl CapKernel {
     {
         assert(post.list == pre.list && post.tables == pre.tables);
         Self::lemma_tables_kept_keeps_slots(pre, post, root);
+    }
+
+    /// A derive or a move whose destination position reaches through a process capability into
+    /// another table: the one kind of capability operation by which a process can unseal itself, by
+    /// placing a capability that names it where another process holds it.
+    pub open spec fn places_through(frame: Registers) -> bool {
+        &&& spec_operation(frame.operation_number()) == Some(Operation::Derive)
+            || spec_operation(frame.operation_number()) == Some(Operation::Move)
+        &&& reaches_through(frame.argument(1))
+    }
+
+    /// A retype, by any caller, keeps every process sealed: the frame kinds add a frame capability,
+    /// which names no process and no thread, every other kind adds no slot, and no kind binds a thread
+    /// it did not bind or rebinds one.
+    pub proof fn lemma_retype_keeps_sealed(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_retyped(pre, post, caller, frame, out),
+        ensures
+            pre.sealed(root) ==> post.sealed(root),
+    {
+        Self::lemma_retype_contract(pre, post, caller, frame, out);
+        let kind = frame.argument(1);
+        let from = frame.slot() as usize;
+        let base = frame.argument(2) as usize;
+        let to = frame.argument(3) as usize;
+        let parent = pre.tables.node_of(caller, from);
+        let child = pre.tables.node_of(caller, to);
+        let bound = bound_threads(&pre.list, &pre.tables);
+        let after = bound_threads(&post.list, &post.tables);
+        let added = out == status_only(STATUS_OK) && (kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME);
+        if out == status_only(STATUS_REFUSED) {
+            assert(post == pre);
+        } else if kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME {
+            if out == status_only(STATUS_AGAIN) {
+                assert(post.list == pre.list && post.tables == pre.tables);
+            } else {
+                assert(pre.empty_slot(caller, to));
+                assert(post.is_cap(child));
+                assert(Self::caps_frame(pre, post, child, child));
+                assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+                reveal(binding_parents);
+                assert forall|x: usize| #[trigger] after.contains_key(x) implies bound.contains_key(x) && after[x] == bound[x] by {
+                    assert(x < NODE_SPACE);
+                    assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Binding);
+                    assert(x != child);
+                    assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding);
+                    assert(binding_parent(&pre.list, &pre.tables, &pre.threads, x));
+                    let p = pre.list.parent@[x];
+                    assert(post.list.parent@[x] == p);
+                    assert(pre.is_cap(p));
+                    assert(p != child);
+                    Self::lemma_caps_frame(pre, post, child, child, p);
+                }
+            }
+        } else if kind == RETYPE_TABLE_PAGE {
+            assert(after == bound);
+        } else if kind == RETYPE_FREE {
+            if out == status_only(STATUS_OK) {
+                let c = choose|c: usize| c < crate::define::NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, caller, from, base, frame.argument(4) as usize);
+                assert(post.list == pre.list && post.tables == pre.tables);
+            }
+            assert(after == bound);
+        } else {
+            reveal(binding_parents);
+            assert forall|x: usize| #[trigger] after.contains_key(x) implies bound.contains_key(x) && after[x] == bound[x] by {
+                assert(x < NODE_SPACE);
+                assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Binding);
+                assert(x != base);
+                assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding);
+                assert(binding_parent(&pre.list, &pre.tables, &pre.threads, x));
+                let p = pre.list.parent@[x];
+                assert(post.list.parent@[x] == p);
+                assert(pre.is_cap(p));
+                assert(post.payload_of(p) == pre.payload_of(p));
+            }
+        }
+        if pre.sealed(root) {
+            assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                implies !post.names_process(post.table_view(t)[j], root) by {
+                let v = post.table_view(t)[j];
+                if added && t == caller && j == to {
+                    assert(v.kind is Frame);
+                } else {
+                    assert(pre.table_view(t).contains_key(j) && v == pre.table_view(t)[j]);
+                    assert(!pre.names_process(pre.table_view(t)[j], root));
+                    if after.contains_key(v.base) {
+                        assert(bound.contains_key(v.base) && after[v.base] == bound[v.base]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A derive keeps root sealed when the caller is another process, or root placing the child in its
+    /// own table: the child goes into a table that is not root's only by another caller, which holds
+    /// nothing naming root, or into root's own, which sealed does not read.
+    pub proof fn lemma_derive_keeps_sealed(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_derived(pre, post, caller, frame, out),
+            caller != root || !reaches_through(frame.argument(1)),
+        ensures
+            pre.sealed(root) ==> post.sealed(root),
+    {
+        Self::lemma_derive_contract(pre, post, caller, frame, out);
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        let rights = frame.argument(2);
+        let base = frame.argument(3) as usize;
+        let order = frame.argument(4);
+        if pre.sealed(root) && pre.derive_allowed(caller, from, to, rights, base, order) {
+            let i = from->0.index;
+            let v = pre.table_view(caller)[i];
+            let table = pre.view_table_at(caller, to->0.through)->0;
+            let child = derived_view(v, rights as u32, base, order as u8, pre.tables.node_of(caller, i));
+            if caller != root {
+                pre.lemma_sealed_table_not_root(caller, to->0.through, root);
+                assert(!pre.names_process(v, root));
+                let r = rights as u32;
+                let b = right_bit(Right::Control);
+                let vr = v.rights;
+                if child.kind is Thread && r & b != 0 {
+                    assert(vr & b != 0) by (bit_vector)
+                        requires
+                            r & !vr == 0u32,
+                            r & b != 0u32;
+                }
+                assert(!post.names_process(child, root));
+            } else {
+                assert(table == root);
+            }
+            assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                implies !post.names_process(post.table_view(t)[j], root) by {
+                if !(t == table && j == to->0.index) {
+                    assert(pre.table_view(t).contains_key(j));
+                    assert(!pre.names_process(pre.table_view(t)[j], root));
+                }
+            }
+        }
+    }
+
+    /// A move keeps root sealed when the caller is another process, or root moving into its own table,
+    /// as for a derive.
+    pub proof fn lemma_move_keeps_sealed(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_moved(pre, post, caller, frame, out),
+            caller != root || !reaches_through(frame.argument(1)),
+        ensures
+            pre.sealed(root) ==> post.sealed(root),
+    {
+        broadcast use vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
+        Self::lemma_move_contract(pre, post, caller, frame, out);
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        if pre.sealed(root) && pre.move_allowed(caller, from, to) {
+            let f = from->0;
+            let d = to->0;
+            let src = pre.view_table_at(caller, f.through)->0;
+            let dst = pre.view_table_at(caller, d.through)->0;
+            if caller != root {
+                pre.lemma_sealed_table_not_root(caller, f.through, root);
+                pre.lemma_sealed_table_not_root(caller, d.through, root);
+            } else {
+                assert(dst == root);
+            }
+            assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                implies !post.names_process(post.table_view(t)[j], root) by {
+                assert(post.table_view(t) == pre.moved_table_view(src, f.index, dst, d.index, t));
+                if t == dst && j == d.index {
+                    assert(!pre.names_process(pre.table_view(src)[f.index], root));
+                } else {
+                    assert(pre.table_view(t).contains_key(j));
+                    assert(!pre.names_process(pre.table_view(t)[j], root));
+                }
+            }
+        }
+    }
+
+    /// The step a thread of the process at root takes keeps root sealed, unless it places a capability
+    /// through a process capability into another table: what a call of acall's step changes in the
+    /// kernel's own state between the call's entry and its return.
+    pub proof fn lemma_own_step_keeps_sealed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::invoked(pre, post, root, frame, out),
+            !Self::places_through(frame),
+        ensures
+            pre.sealed(root) ==> post.sealed(root),
+    {
+        match spec_operation(frame.operation_number()) {
+            Some(Operation::Retype) => Self::lemma_retype_keeps_sealed(pre, post, root, frame, out, root),
+            Some(Operation::Derive) => Self::lemma_derive_keeps_sealed(pre, post, root, frame, out, root),
+            Some(Operation::Move) => Self::lemma_move_keeps_sealed(pre, post, root, frame, out, root),
+            Some(Operation::Delete) => Self::lemma_delete_keeps_slots(pre, post, root, frame, out, root),
+            Some(Operation::Revoke) => Self::lemma_revoke_keeps_slots(pre, post, root, frame, out, root),
+            Some(Operation::Link) => Self::lemma_link_keeps_slots(pre, post, root, frame, out, root),
+            Some(Operation::Map) => Self::lemma_map_keeps_slots(pre, post, root, frame, out, root),
+            Some(Operation::Unmap) => Self::lemma_unmap_keeps_slots(pre, post, root, frame, out, root),
+            Some(Operation::Probe) => Self::lemma_probe_keeps_slots(pre, post, root, frame, out, root),
+            _ => {},
+        }
     }
 
     /// From pre to post, as the process at root relies on steps it does not take for its own space:
