@@ -70,7 +70,8 @@ pub ghost enum AcallCall {
     Unmap { slot: u64, va: u64, level: u64 },
 }
 
-/// One step `acall::memory` took for the process at `root`, from `pre` to `post`, returning `out`.
+/// One step `acall::memory` took for the process at `root`, entering from `pre` and leaving `post`,
+/// returning `out`.
 pub ghost struct AcallStep {
     pub pre: CapKernel,
     pub post: CapKernel,
@@ -107,21 +108,27 @@ impl AcallStep {
     }
 }
 
-/// `steps` is a contiguous sequence of valid `acall::memory` steps taking `pre` to `post`.
+/// `steps` is a sequence of valid `acall::memory` steps taking `pre` to `post`: each enters from a state
+/// the rely relates to the one before it, `pre`'s kernel for the first and the last step's `post` for
+/// the others, since other callers' steps may come between.
 #[verifier::opaque]
 pub open spec fn acall_steps(pre: Caller, post: Caller, steps: Seq<AcallStep>) -> bool {
     &&& post.root() == pre.root()
     &&& if steps.len() == 0 {
         post.kernel() == pre.kernel()
     } else {
-        &&& steps[0].pre == pre.kernel()
+        &&& CapKernel::rely(pre.kernel(), steps[0].pre, pre.root())
         &&& steps.last().post == post.kernel()
         &&& forall|k: int| 0 <= k < steps.len() ==> {
             &&& (#[trigger] steps[k]).root == pre.root()
             &&& steps[k].valid()
         }
         &&& forall|j: int, k: int|
-            0 <= j && k == j + 1 && k < steps.len() ==> (#[trigger] steps[j]).post == (#[trigger] steps[k]).pre
+            0 <= j && k == j + 1 && k < steps.len() ==> CapKernel::rely(
+                (#[trigger] steps[j]).post,
+                (#[trigger] steps[k]).pre,
+                pre.root(),
+            )
     }
 }
 
@@ -138,11 +145,12 @@ pub proof fn lemma_acall_steps_none(c: Caller)
     reveal(acall_steps);
 }
 
-/// One valid step of `pre`'s process from `pre`'s kernel to `post`'s takes `pre` to `post`.
+/// One valid step of `pre`'s process, entering from a state the rely relates to `pre`'s kernel and
+/// leaving `post`'s, takes `pre` to `post`.
 pub proof fn lemma_acall_steps_one(pre: Caller, post: Caller, step: AcallStep)
     requires
         post.root() == pre.root(),
-        step.pre == pre.kernel(),
+        CapKernel::rely(pre.kernel(), step.pre, pre.root()),
         step.post == post.kernel(),
         step.root == pre.root(),
         step.valid(),
@@ -154,8 +162,8 @@ pub proof fn lemma_acall_steps_one(pre: Caller, post: Caller, step: AcallStep)
     assert(s[0] == step && s.last() == step);
 }
 
-/// Concatenating two contiguous `acall::memory` step sequences produces one from the first's start to
-/// the second's end.
+/// Concatenating two `acall::memory` step sequences, the second starting where the first ends, produces
+/// one from the first's start to the second's end.
 pub proof fn lemma_acall_steps_append(a: Caller, b: Caller, c: Caller, s1: Seq<AcallStep>, s2: Seq<AcallStep>)
     requires
         acall_steps(a, b, s1),
@@ -182,7 +190,11 @@ pub proof fn lemma_acall_steps_append(a: Caller, b: Caller, c: Caller, s1: Seq<A
                 assert(s[k] == s2[k - s1.len()]);
             }
         }
-        assert forall|j: int, k: int| 0 <= j && k == j + 1 && k < s.len() implies (#[trigger] s[j]).post == (#[trigger] s[k]).pre by {
+        assert forall|j: int, k: int| 0 <= j && k == j + 1 && k < s.len() implies CapKernel::rely(
+            (#[trigger] s[j]).post,
+            (#[trigger] s[k]).pre,
+            a.root(),
+        ) by {
             if k < s1.len() {
                 assert(s[j] == s1[j]);
                 assert(s[k] == s1[k]);
@@ -438,28 +450,60 @@ pub proof fn lemma_frames_shrunk(pre: CapKernel, post: CapKernel, root: usize, f
 }
 
 /// What a source carries across a step another caller takes, as `CapKernel::rely` allows it, while its
-/// process is its own: the process stays sealed and recorded, every frame it holds stays held, and the
-/// slot that names its space still does. The rely is the only premise relating the two states.
-pub proof fn lemma_frames_rely(k1: CapKernel, k2: CapKernel, root: usize, space: u64, frames: Map<int, (usize, Option<usize>)>)
+/// process is its own: the process stays sealed and recorded, and every frame it holds stays held. The
+/// rely is the only premise relating the two states.
+pub proof fn lemma_frames_rely(k1: CapKernel, k2: CapKernel, root: usize, frames: Map<int, (usize, Option<usize>)>)
     requires
         k2.wf(),
         CapKernel::rely(k1, k2, root),
         k1.sealed(root),
         k1.processes.records@.contains_key(root),
         frames_held(k1, root, frames),
-        names_space(k1, root, space),
     ensures
         k2.sealed(root),
         k2.processes.records@.contains_key(root),
         frames_held(k2, root, frames),
-        names_space(k2, root, space),
 {
     let a = space_mapping(tree_of(&k1.table_pages, &k1.spaces), root);
     let b = space_mapping(tree_of(&k2.table_pages, &k2.spaces), root);
     assert forall|p: SpacePath| #[trigger] b.contains_key(p) implies a.contains_key(p) && b[p] == a[p] by {}
     lemma_frames_shrunk(k1, k2, root, frames);
+}
+
+/// The slot that names a sealed process's own space still does across a step another caller takes, as
+/// `CapKernel::rely` allows it: it is gone or holds what it held.
+pub proof fn lemma_space_rely(k1: CapKernel, k2: CapKernel, root: usize, space: u64)
+    requires
+        CapKernel::rely(k1, k2, root),
+        k1.sealed(root),
+        names_space(k1, root, space),
+    ensures
+        names_space(k2, root, space),
+{
     if k2.table_view(root).contains_key(space as usize) {
         assert(same_cap(k2.table_view(root)[space as usize], k1.table_view(root)[space as usize]));
+    }
+}
+
+/// What a source knows of its process and its frames at the state its last call returned holds at the
+/// state the next call entered from, which the step says the rely relates to it: the call's contract
+/// starts from there.
+pub proof fn lemma_entry_held(pre: Caller, post: Caller, frames: Map<int, (usize, Option<usize>)>)
+    requires
+        own_process(pre),
+        frames_held(pre.kernel(), pre.root(), frames),
+        post.root() == pre.root(),
+        post.entry().wf(),
+        CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
+    ensures
+        post.entry().sealed(pre.root()),
+        post.entry().processes.records@.contains_key(pre.root()),
+        frames_held(post.entry(), pre.root(), frames),
+        forall|space: u64| #[trigger] names_own_space(pre, space) ==> names_space(post.entry(), pre.root(), space),
+{
+    lemma_frames_rely(pre.kernel(), post.entry(), pre.root(), frames);
+    assert forall|space: u64| #[trigger] names_own_space(pre, space) implies names_space(post.entry(), pre.root(), space) by {
+        lemma_space_rely(pre.kernel(), post.entry(), pre.root(), space);
     }
 }
 
@@ -835,21 +879,25 @@ pub(crate) fn retype_frame(
     let ghost pre = caller@;
     let out = memory::retype(caller, untyped, RETYPE_FRAME, base, destination, 0);
     let ghost step = AcallStep {
-        pre: pre.kernel(),
+        pre: caller@.entry(),
         post: caller@.kernel(),
         root: pre.root(),
         call: AcallCall::Retype { untyped, kind: RETYPE_FRAME, base, word: destination, level: 0 },
         out,
     };
     proof {
-        // The destination comes to hold a frame, which writes no space.
-        assert forall|space: u64| #[trigger] names_own_space(pre, space) implies names_own_space(caller@, space) by {}
         let root = pre.root();
+        let e = caller@.entry();
+        lemma_entry_held(pre, caller@, frames@);
+        // The destination comes to hold a frame, which writes no space.
+        assert forall|space: u64| #[trigger] names_own_space(pre, space) implies names_own_space(caller@, space) by {
+            assert(names_space(e, root, space));
+        }
         if out.status == STATUS_OK {
-            let parent = pre.kernel().tables.node_of(root, untyped as usize);
-            lemma_frames_retyped(pre.kernel(), caller@.kernel(), root, frames@, key@, destination as usize, base as usize, parent);
+            let parent = e.tables.node_of(root, untyped as usize);
+            lemma_frames_retyped(e, caller@.kernel(), root, frames@, key@, destination as usize, base as usize, parent);
         } else {
-            lemma_frames_same(pre.kernel(), caller@.kernel(), root, frames@);
+            lemma_frames_same(e, caller@.kernel(), root, frames@);
         }
         assert(step.valid()) by {
             reveal(AcallStep::valid);
@@ -888,17 +936,23 @@ pub(crate) fn retype_table_page(
     let ghost pre = caller@;
     let out = memory::retype(caller, untyped, RETYPE_TABLE_PAGE, base, 0, level);
     let ghost step = AcallStep {
-        pre: pre.kernel(),
+        pre: caller@.entry(),
         post: caller@.kernel(),
         root: pre.root(),
         call: AcallCall::Retype { untyped, kind: RETYPE_TABLE_PAGE, base, word: 0, level },
         out,
     };
     proof {
+        let root = pre.root();
+        let e = caller@.entry();
+        lemma_entry_held(pre, caller@, frames@);
+        assert forall|space: u64| #[trigger] names_own_space(pre, space) implies names_own_space(caller@, space) by {
+            assert(names_space(e, root, space));
+        }
         if out.status == STATUS_OK {
-            lemma_frames_kept(pre.kernel(), caller@.kernel(), pre.root(), frames@);
+            lemma_frames_kept(e, caller@.kernel(), root, frames@);
         } else {
-            lemma_frames_same(pre.kernel(), caller@.kernel(), pre.root(), frames@);
+            lemma_frames_same(e, caller@.kernel(), root, frames@);
         }
         assert(step.valid()) by {
             reveal(AcallStep::valid);
@@ -939,16 +993,22 @@ pub(crate) fn link(
     let ghost pre = caller@;
     let out = memory::link(caller, space, address as u64, level, untyped, table);
     let ghost step = AcallStep {
-        pre: pre.kernel(),
+        pre: caller@.entry(),
         post: caller@.kernel(),
         root: pre.root(),
         call: AcallCall::Link { slot: space, va: address as u64, level, from: untyped, child: table },
         out,
     };
     proof {
-        assert(space_mapping(tree_of(&caller@.kernel().table_pages, &caller@.kernel().spaces), pre.root())
-            == space_mapping(tree_of(&pre.kernel().table_pages, &pre.kernel().spaces), pre.root()));
-        lemma_frames_same(pre.kernel(), caller@.kernel(), pre.root(), frames@);
+        let root = pre.root();
+        let e = caller@.entry();
+        lemma_entry_held(pre, caller@, frames@);
+        assert forall|s: u64| #[trigger] names_own_space(pre, s) implies names_own_space(caller@, s) by {
+            assert(names_space(e, root, s));
+        }
+        assert(space_mapping(tree_of(&caller@.kernel().table_pages, &caller@.kernel().spaces), root)
+            == space_mapping(tree_of(&e.table_pages, &e.spaces), root));
+        lemma_frames_same(e, caller@.kernel(), root, frames@);
         assert(step.valid()) by {
             reveal(AcallStep::valid);
         }
@@ -1017,31 +1077,36 @@ pub(crate) fn map_page(
         lemma_own_position(frame);
     }
     let ghost first = caller@;
+    let ghost root = first.root();
     let seen = memory::inspect(caller, frame);
     let ghost mid = caller@;
+    let ghost entered = mid.entry();
     let ghost step1 = AcallStep {
-        pre: first.kernel(),
+        pre: entered,
         post: mid.kernel(),
-        root: first.root(),
+        root,
         call: AcallCall::Inspect { at: frame },
         out: seen,
     };
     proof {
-        assert(space_mapping(tree_of(&caller@.kernel().table_pages, &caller@.kernel().spaces), first.root())
-            == space_mapping(tree_of(&first.kernel().table_pages, &first.kernel().spaces), first.root()));
-        lemma_frames_same(first.kernel(), caller@.kernel(), first.root(), frames@);
+        lemma_entry_held(first, mid, frames@);
+        assert(space_mapping(tree_of(&mid.kernel().table_pages, &mid.kernel().spaces), root)
+            == space_mapping(tree_of(&entered.table_pages, &entered.spaces), root));
+        lemma_frames_same(entered, mid.kernel(), root, frames@);
+        assert forall|s: u64| #[trigger] names_own_space(first, s) implies names_own_space(mid, s) by {
+            assert(names_space(entered, root, s));
+        }
         assert(step1.valid()) by {
             reveal(AcallStep::valid);
         }
         lemma_acall_steps_one(first, mid, step1);
-        let root = first.root();
         if seen.status == STATUS_OK {
             // An accepted inspect names a slot of the caller's own table, and a frame the source holds
             // there has the write right.
-            assert(first.kernel().view_table_at(root, None) == Some(root));
-            assert(first.kernel().table_view(root).contains_key(frame as usize));
-            assert(frame_held(first.kernel(), root, frames@[key@]));
-            let rights = first.kernel().table_view(root)[frame as usize].rights;
+            assert(entered.view_table_at(root, None) == Some(root));
+            assert(entered.table_view(root).contains_key(frame as usize));
+            assert(frame_held(entered, root, frames@[key@]));
+            let rights = entered.table_view(root)[frame as usize].rights;
             assert(rights & right_bit(Right::Write) != 0);
             assert(seen.result_4 == rights as u64);
             assert((rights as u64) & 2u64 != 0) by (bit_vector)
@@ -1057,16 +1122,8 @@ pub(crate) fn map_page(
     if seen.status != STATUS_OK || seen.result_4 & RIGHT_WRITE == 0 {
         return (None, Ghost(inspected));
     }
-    let ghost before = caller@.kernel();
-    let ghost root = caller@.root();
-    proof {
-        let rights = before.table_view(root)[frame as usize].rights;
-        assert(rights as u64 == seen.result_4);
-        assert(rights & 2u32 != 0) by (bit_vector)
-            requires
-                (rights as u64) & 2u64 != 0;
-    }
     let out = memory::map(caller, space, address as u64, PAGE_LEVEL, frame, 0);
+    let ghost before = caller@.entry();
     let ghost step2 = AcallStep {
         pre: before,
         post: caller@.kernel(),
@@ -1076,10 +1133,26 @@ pub(crate) fn map_page(
     };
     let ghost steps = seq![step1, step2];
     proof {
+        lemma_entry_held(mid, caller@, frames@);
+        assert forall|s: u64| #[trigger] names_own_space(first, s) implies names_space(before, root, s) by {
+            assert(names_own_space(mid, s));
+        }
         if out.status == STATUS_OK {
+            // The map was accepted, so the frame's slot was there at its entry, with the capability
+            // the inspect read, the write right among its rights.
+            assert(before.table_view(root).contains_key(frame as usize));
+            assert(same_cap(before.table_view(root)[frame as usize], entered.table_view(root)[frame as usize]));
+            let rights = before.table_view(root)[frame as usize].rights;
+            assert(rights as u64 == seen.result_4);
+            assert(rights & 2u32 != 0) by (bit_vector)
+                requires
+                    (rights as u64) & 2u64 != 0;
             lemma_frames_mapped(before, caller@.kernel(), root, space, address, frames@, key@, out);
         } else {
             lemma_frames_same(before, caller@.kernel(), root, frames@);
+        }
+        assert forall|s: u64| #[trigger] names_own_space(first, s) implies names_own_space(caller@, s) by {
+            assert(names_space(before, root, s));
         }
         assert(step2.valid()) by {
             reveal(AcallStep::valid);
@@ -1247,7 +1320,7 @@ pub(crate) fn unmap_page(
     // The caller gave up the permission to every byte of the page, so nothing it uses is there.
     let out = memory::unmap(caller, space, address as u64, PAGE_LEVEL);
     let ghost step = AcallStep {
-        pre: pre.kernel(),
+        pre: caller@.entry(),
         post: caller@.kernel(),
         root: pre.root(),
         call: AcallCall::Unmap { slot: space, va: address as u64, level: PAGE_LEVEL },
@@ -1255,13 +1328,16 @@ pub(crate) fn unmap_page(
     };
     proof {
         let root = pre.root();
+        let e = caller@.entry();
+        lemma_entry_held(pre, caller@, frames@);
         assert forall|s: u64| #[trigger] names_own_space(pre, s) implies names_own_space(caller@, s) by {
-            assert(caller@.kernel().table_view(root) == pre.kernel().table_view(root));
+            assert(names_space(e, root, s));
+            assert(caller@.kernel().table_view(root) == e.table_view(root));
         }
         if out.status == STATUS_OK {
-            lemma_frames_unmapped(pre.kernel(), caller@.kernel(), root, space, address, frames@, key@, out);
+            lemma_frames_unmapped(e, caller@.kernel(), root, space, address, frames@, key@, out);
         } else {
-            lemma_frames_same(pre.kernel(), caller@.kernel(), root, frames@);
+            lemma_frames_same(e, caller@.kernel(), root, frames@);
             lemma_frames_drop(caller@.kernel(), root, frames@, key@);
         }
         assert(step.valid()) by {

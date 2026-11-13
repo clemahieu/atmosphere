@@ -3,18 +3,17 @@
 //! The kernel step: one system call, the one point of this crate no proof reaches. Its ensures is what
 //! the kernel proves of the step it takes for a thread whose call returns to it, CapKernel::enter in
 //! kernel/verified: some frame carrying the operation number, the slot and the arguments passed takes
-//! the kernel from the state before to a middle state as `invoked` says, the calling core alone then
+//! the kernel from the state at entry to a middle state as `invoked` says, the calling core alone then
 //! catches up on the flush epoch, and the state after is well formed, with that core holding nothing
-//! stale of the caller's space. The ghost caller threads the kernel's state from one call to the next.
-//!
-//! That ensures holds only on a premise no proof checks: the caller handed in is the kernel's state at
-//! this entry and the calling thread's root. The caller is a token verified code cannot build or copy,
-//! so it is the one the process was handed at its start, threaded through every call since. Nothing
-//! proves that it was the kernel's state when it was handed out, nor that it still is: the kernel's
-//! state at the next entry is not the state the previous call returned once another step has run
-//! between, another thread's or process's call, an ancestor's revoke, another core's acknowledge. So
-//! the step is a gap, not glue. See design/who-vouches-for-an-unproven-claim/ and
-//! design/divider-proven-by-invariant/.
+//! stale of the caller's space. The state at entry is not the one the previous call returned: other
+//! steps run between, another thread's or process's call, an ancestor's revoke, another core's
+//! acknowledge, and the kernel proves of each that it keeps CapKernel::rely for every process whose
+//! threads did not take it, and that the rely composes. So the step says only that the entry state is
+//! well formed and one the rely relates to the state the caller token last held, and the token carries
+//! that entry state so the wrappers can state their contracts from it. What stays unproven is that the
+//! token was the kernel's state and the caller's root when the process was handed it, and that the
+//! process's threads make every call through it. The step is the kernel-vouched form of
+//! design/who-vouches-for-an-unproven-claim/.
 use vstd::prelude::*;
 
 use asys::operation;
@@ -30,8 +29,9 @@ use verified::capability::operation::Outcome;
 
 verus! {
 
-/// What a process knows of the kernel as it calls: the kernel's state, and the root of its own table,
-/// which names the process to the kernel and never changes. A token: its fields are private and it has
+/// What a process knows of the kernel as it calls: the kernel's state its last call returned, the state
+/// that call entered from, and the root of its own table, which names the process to the kernel and
+/// never changes. A token: its fields are private and it has
 /// no constructor and no copy, so verified code holds only the one it was handed at the process's
 /// start and cannot keep an old one to call with again. Only specifications read its fields, so only
 /// Verus compiles them.
@@ -39,13 +39,21 @@ pub tracked struct Caller {
     #[cfg(verus_keep_ghost)]
     ghost kernel: CapKernel,
     #[cfg(verus_keep_ghost)]
+    ghost entry: CapKernel,
+    #[cfg(verus_keep_ghost)]
     ghost root: usize,
 }
 
 impl Caller {
-    /// The kernel's state the token says the next call starts from.
+    /// The kernel's state the last call returned, which the rely relates to the state the next call
+    /// enters from.
     pub closed spec fn kernel(self) -> CapKernel {
         self.kernel
+    }
+
+    /// The kernel's state the last call entered from.
+    pub closed spec fn entry(self) -> CapKernel {
+        self.entry
     }
 
     /// The root of the calling process's table.
@@ -53,7 +61,7 @@ impl Caller {
         self.root
     }
 
-    /// The kernel's state is one its steps keep: every step starts from one.
+    /// The kernel's state is one its steps keep: every step returns one.
     pub open spec fn wf(&self) -> bool {
         self.kernel().wf()
     }
@@ -114,24 +122,28 @@ pub proof fn lemma_entered(pre: CapKernel, post: CapKernel, root: usize, frame: 
 }
 
 /// Invokes the operation `number` on the capability at `slot` with arguments 1 to 5, and returns what
-/// the kernel put in the status and result registers.
-#[verifier::external_body]
-// external_body(gap): the system call instruction, whose ensures is what CapKernel::enter proves of a step that returns to the calling thread, on the premise that the caller token was the kernel's state and the caller's root when the process was handed it and no other step ran since the previous return, which nothing proves
-pub fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
+/// the kernel put in the status and result registers. The call enters from a well-formed state the rely
+/// relates to the one the token last held, which the token now carries as its entry.
+// kernel: kernel/verified/capability/operation.rs CapKernel::enter
+// kernel: kernel/verified/capability/rely.rs CapKernel::lemma_rely_transitive
+pub assume_specification[step](caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
     ensures
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
         exists|frame: Registers, c: int, mid: CapKernel|
             carries(frame, number, slot, a1, a2, a3, a4, a5)
-                && #[trigger] entered(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), frame, out, c, mid),
-    no_unwind
-{
+                && #[trigger] entered(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), frame, out, c, mid),
+    no_unwind;
+
+} // verus!
+
+pub fn step(_caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Outcome {
     // The ABI's own: every operation may change the caller's address space, which no Rust value of
     // this crate's caller lives in unless it holds the permission the wrapper's contract speaks of.
     let (status, results) = unsafe { operation::invoke_returning(number, slot, [a1, a2, a3, a4, a5]) };
     Outcome { status, result_1: results[0], result_2: results[1], result_3: results[2], result_4: results[3] }
 }
-
-} // verus!

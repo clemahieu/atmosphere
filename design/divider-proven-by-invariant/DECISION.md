@@ -1,6 +1,6 @@
 ---
 title: "The divider is proven: it establishes an invariant over a checked table of grants, static first, then dynamic on the same invariant"
-date: 2026-11-10
+date: 2026-11-13
 status: active
 tags: [security, proof, tiers, capability]
 one_line: "The rules that divide the machine between tenants are a table of grants with declared overlap, checked by a decidable layout_ok. A Verus-verified user crate establishes an invariant over the kernel's state and that table, with a state per block; with the kernel theorem it bounds each tenant from above by its rows over reach and from below by a capability for each row, and a witness shows it finishes for every layout that fits. Stage one divides at boot and ends dead while still holding; stage two serves create and destroy, then grow and shrink, then forced reclaim and core moves, each handler keeping the invariant."
@@ -25,7 +25,7 @@ It comes in two stages on the one invariant.
 
 Policy stays out of the proof. An unproven placement process decides which tenant to create, what quota to give and what to take back, and asks; the proven divider enforces I and refuses what would break it.
 
-The proof lives in user space. Each operation the divider uses has a caller's-view contract, requires and ensures over the caller's own slots, proven in `kernel/verified` from the operation's specification and carried into the divider's crate by `tools/verify.py`'s import of marked crates. The system call itself is the one `external_body` the divider's crates hold, `step` in `acall/src/step.rs`, classed `gap` in `tools/external-body-list`: debt, which nothing outside the proof vouches for, resting on the premise its reason states, that the caller token was the kernel's state and the caller's root when the process was handed it and no other step ran since the previous return, `design/who-vouches-for-an-unproven-claim/`. Every wrapper over it is verified, and each lands only with its contract's proof. For the root the contracts need no assumption about other processes: its capabilities hang from the synthetic root that nobody holds, so no other step changes its slots unless it gave control of itself away.
+The proof lives in user space. Each operation the divider uses has a caller's-view contract, requires and ensures over the caller's own slots, proven in `kernel/verified` from the operation's specification and carried into the divider's crate by `tools/verify.py`'s import of marked crates. The system call itself is the one claim the divider's crates take from the kernel, `step` in `acall/src/step.rs`, an assumed specification classed `kernel` in `tools/external-body-list`: it restates what `CapKernel::enter` proves of a call, from an entry state the kernel's rely relates to the caller token's last state, on the premise that the token was the kernel's state and the caller's root when the process was handed it, `design/who-vouches-for-an-unproven-claim/`. Every wrapper over it is verified, and each lands only with its contract's proof. For the root the contracts need no assumption about other processes: its capabilities hang from the synthetic root that nobody holds, so no other step changes its slots unless it gave control of itself away.
 
 ## Context
 

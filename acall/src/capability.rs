@@ -27,24 +27,27 @@ pub fn move_cap(caller: &mut Tracked<Caller>, from: u64, to: u64) -> (out: Outco
     ensures
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
-        CapKernel::move_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), out),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        CapKernel::move_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), out),
         !reaches_through(to) ==> (old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root())),
-        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+        old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_MOVE, from, to, 0, 0, 0, 0);
     proof {
+        let entry = caller@.entry();
         let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_MOVE, from, to, 0, 0, 0, 0)
-                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
-        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+                && #[trigger] entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Move);
-        CapKernel::lemma_move_contract(pre.kernel(), mid, pre.root(), frame, out);
-        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_move_contract(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         if !reaches_through(to) {
-            CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
+            CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
         }
     }
     out
@@ -57,23 +60,26 @@ pub fn delete(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
     ensures
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
-        CapKernel::delete_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        CapKernel::delete_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
-        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+        old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_DELETE, at, 0, 0, 0, 0, 0);
     proof {
+        let entry = caller@.entry();
         let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_DELETE, at, 0, 0, 0, 0, 0)
-                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
-        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+                && #[trigger] entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Delete);
-        CapKernel::lemma_delete_contract(pre.kernel(), mid, pre.root(), frame, out);
-        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
-        CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_delete_contract(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
     }
     out
 }
@@ -86,23 +92,26 @@ pub fn revoke(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
     ensures
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
-        CapKernel::revoke_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        CapKernel::revoke_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
-        old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+        old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_REVOKE, at, 0, 0, 0, 0, 0);
     proof {
+        let entry = caller@.entry();
         let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
             carries(frame, OPERATION_REVOKE, at, 0, 0, 0, 0, 0)
-                && #[trigger] entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
-        lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
+                && #[trigger] entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Revoke);
-        CapKernel::lemma_revoke_contract(pre.kernel(), mid, pre.root(), frame, out);
-        CapKernel::lemma_own_step_keeps_record(pre.kernel(), mid, pre.root(), frame, out);
-        CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_revoke_contract(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
     }
     out
 }
