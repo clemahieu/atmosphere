@@ -92,6 +92,7 @@ UNREAD = (
     "tools/bead-status.py",
     "tools/leaf-cost.py",
     "tools/loop.py",
+    "tools/offering-report.py",
     "tools/review-evidence.py",
     "tools/reviews.py",
     "tools/round-status.py",
