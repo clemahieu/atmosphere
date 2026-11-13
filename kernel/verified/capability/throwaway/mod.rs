@@ -6,6 +6,7 @@
 pub mod boot_space_switch;
 pub mod built_process_sealed;
 pub mod dead_device_space_freed;
+pub mod dead_frame_freed;
 pub mod dead_table_page_freed;
 pub mod destroyed_thread_freed;
 pub mod device_frame_reused_after_iommu_flush;

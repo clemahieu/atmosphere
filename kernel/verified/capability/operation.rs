@@ -22,7 +22,7 @@ use crate::capability::position::*;
 use crate::capability::probe::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
-use crate::capability::reclaim::ReclaimStep;
+use crate::capability::reclaim::{FrameReclaimStep, ReclaimStep};
 use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 #[cfg(verus_keep_ghost)]
@@ -757,11 +757,12 @@ impl CapKernel {
     {
     }
 
-    /// A retype of the free kind naming a dead 4K frame reaches reclaim: refused with nothing changed
-    /// unless the caller may retype the page and its frame is dead; again with nothing changed while a
-    /// core has not acknowledged the page's staleness; ok once every core has, with the page freed by
-    /// reclaim, so the next 4K retype of it can succeed.
-    pub proof fn lemma_dead_frame_freed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+    /// A retype of the free kind naming a dead 4K frame reaches reclaim_frame: refused with nothing
+    /// changed unless the caller may retype the page and its frame is dead; again with nothing changed
+    /// while a core or IOMMU has not acknowledged the page's staleness; ok once every core and present
+    /// IOMMU has, with the page freed by reclaim_frame, so the next 4K retype of it can succeed.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_reclaim_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
             Self::invoked(pre, post, root, frame, out),
             spec_operation(frame.operation_number()) == Some(Operation::Retype),
@@ -971,22 +972,32 @@ impl CapKernel {
             }
         } else if frame.argument(1) == RETYPE_FREE {
             let order = frame.argument(4);
-            let step = if order == 0 {
-                self.reclaim_frame(c, root, frame.slot() as usize, frame.argument(2) as usize, Tracked(steps))
-            } else if order == 9 || order == 18 {
-                self.reclaim_large_frame(c, root, frame.slot() as usize, frame.argument(2) as usize, order as u8, Tracked(steps))
-            } else {
-                ReclaimStep::Refused
-            };
-            proof {
-                if step is Freed {
-                    assert(old(self).frame_freed_of(*self, c, root, frame.slot() as usize, frame.argument(2) as usize, order as usize));
+            if order == 0 {
+                let step = self.reclaim_frame(c, root, frame.slot() as usize, frame.argument(2) as usize, Tracked(steps));
+                proof {
+                    if step is Freed {
+                        assert(old(self).frame_freed_of(*self, c, root, frame.slot() as usize, frame.argument(2) as usize, order as usize));
+                    }
                 }
-            }
-            match step {
-                ReclaimStep::Freed => STATUS_OK,
-                ReclaimStep::Again => STATUS_AGAIN,
-                _ => STATUS_REFUSED,
+                match step {
+                    FrameReclaimStep::Freed => STATUS_OK,
+                    FrameReclaimStep::Again => STATUS_AGAIN,
+                    FrameReclaimStep::Refused => STATUS_REFUSED,
+                }
+            } else if order == 9 || order == 18 {
+                let step = self.reclaim_large_frame(c, root, frame.slot() as usize, frame.argument(2) as usize, order as u8, Tracked(steps));
+                proof {
+                    if step is Freed {
+                        assert(old(self).frame_freed_of(*self, c, root, frame.slot() as usize, frame.argument(2) as usize, order as usize));
+                    }
+                }
+                match step {
+                    ReclaimStep::Freed => STATUS_OK,
+                    ReclaimStep::Again => STATUS_AGAIN,
+                    _ => STATUS_REFUSED,
+                }
+            } else {
+                STATUS_REFUSED
             }
         } else {
             STATUS_REFUSED

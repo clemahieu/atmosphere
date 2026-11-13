@@ -19,10 +19,6 @@ kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some
 kernel/verified/capability/power.rs	power_off	returns
 kernel/verified/capability/probe.rs	probe_at	Some
-kernel/verified/capability/reclaim.rs	reclaim_frame	Again
-kernel/verified/capability/reclaim.rs	reclaim_frame	Freed
-kernel/verified/capability/reclaim.rs	reclaim_frame	Unlinked
-kernel/verified/capability/reclaim.rs	reclaim_frame	Slice
 kernel/verified/capability/reclaim.rs	reclaim_large_frame	Again
 kernel/verified/capability/reclaim.rs	reclaim_large_frame	Freed
 kernel/verified/capability/reclaim.rs	reclaim_large_frame	Unlinked

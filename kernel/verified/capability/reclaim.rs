@@ -120,6 +120,18 @@ pub enum ReclaimStep {
     Slice,
 }
 
+/// What reclaiming a frame did: a frame has nothing to unlink or slice, so it is refused, waits on an
+/// acknowledgement, or frees at once.
+pub enum FrameReclaimStep {
+    /// Nothing changed: the caller may not name this block, or it is not a dead frame at zero references.
+    Refused,
+    /// Nothing changed: a core or IOMMU may still hold a translation to it. Retype again later, since
+    /// nothing waits under the lock.
+    Again,
+    /// The frame's block is free.
+    Freed,
+}
+
 /// A page the list holds is page aligned, in the node space and initialised at its own address.
 pub proof fn lemma_list_page(list: &Tree, p: usize)
     requires
@@ -926,7 +938,11 @@ impl CapKernel {
         }
         let object = self.blocks.pages.get(page).object;
         match object {
-            ObjectType::Frame => self.reclaim_frame(c, root, from, base, Tracked(steps)),
+            ObjectType::Frame => match self.reclaim_frame(c, root, from, base, Tracked(steps)) {
+                FrameReclaimStep::Refused => ReclaimStep::Refused,
+                FrameReclaimStep::Again => ReclaimStep::Again,
+                FrameReclaimStep::Freed => ReclaimStep::Freed,
+            },
             ObjectType::TableLeaf => {
                 if self.unlink_leaf(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Unlinked
@@ -4845,7 +4861,7 @@ impl CapKernel {
 
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of
     /// these come from user space, and anything but a free changes nothing.
-    pub fn reclaim_frame(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
+    pub fn reclaim_frame(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: FrameReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -4855,8 +4871,6 @@ impl CapKernel {
             final(steps).count <= old(steps).count + (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
-            !(ret is Unlinked),
-            !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)) ==> ret is Refused,
             old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)
@@ -4871,11 +4885,11 @@ impl CapKernel {
         let ghost pre = *old(self);
         let untyped = match self.retype_parent(root, from, base, 0) {
             Some(found) => found,
-            None => { return ReclaimStep::Refused; },
+            None => { return FrameReclaimStep::Refused; },
         };
         let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
-            return ReclaimStep::Refused;
+            return FrameReclaimStep::Refused;
         }
         let entry = *self.blocks.pages.get(page);
         let unreferenced = match entry.kind {
@@ -4883,19 +4897,19 @@ impl CapKernel {
             _ => false,
         };
         if !unreferenced {
-            return ReclaimStep::Refused;
+            return FrameReclaimStep::Refused;
         }
         match entry.object {
             // A frame's block is dead once its references reach zero, which the invariant says.
             ObjectType::Frame => {},
-            _ => { return ReclaimStep::Refused; },
+            _ => { return FrameReclaimStep::Refused; },
         }
         proof {
             assert(pre.holders@.contains_key(BlockRef::Small(page)));
             assert(block_refs(&pre.blocks, BlockRef::Small(page)) == 0);
         }
         if !self.is_acknowledged(page, Tracked(&mut *steps)) {
-            return ReclaimStep::Again;
+            return FrameReclaimStep::Again;
         }
         proof {
             pre.lemma_dead_frame_unmapped(page);
@@ -4916,7 +4930,7 @@ impl CapKernel {
             }
             lemma_contents_only(v, post.view(), root, e);
         }
-        ReclaimStep::Freed
+        FrameReclaimStep::Freed
     }
 
     /// A dead large frame at zero references, by what the block table says.
