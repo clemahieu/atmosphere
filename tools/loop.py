@@ -854,12 +854,23 @@ def session_rate(history, rate):
 def add_reading(state, meter, harness, percent, resets_at, read, sessions=None):
     """Keep one reading of a meter, with the number of the loops' sessions in flight on it when read when
     that is known: its history, pruned by age and count, and the meter's latest reading, fitted rate and
-    rate a session. A reading at a time already kept is the same reading and is not kept twice."""
+    rate a session. A reading at a time already kept is the same reading and is not kept twice. A window
+    never goes back, so a reading whose reset is more than RESET_JITTER before that of a reading read
+    earlier is a stale copy of a window already past, as agy's lagging replicas serve across a reset, and
+    is dropped."""
     held = state["meters"].setdefault(meter, {"harness": harness, "history": []})
     history = [r for r in held.get("history", []) if r["read"] != read]
     history.append({"read": float(read), "percent": float(percent),
                     "resets_at": None if resets_at is None else float(resets_at), "sessions": sessions})
     history.sort(key=lambda r: r["read"])
+    current, latest = [], None
+    for reading in history:
+        if reading["resets_at"] is not None:
+            if latest is not None and reading["resets_at"] < latest - RESET_JITTER:
+                continue
+            latest = reading["resets_at"] if latest is None else max(latest, reading["resets_at"])
+        current.append(reading)
+    history = current
     newest = history[-1]["read"]
     history = [r for r in history if r["read"] >= newest - HISTORY_MAX_AGE][-MAX_HISTORY:]
     rate = fit_rate(history)
@@ -3289,6 +3300,25 @@ class Tests(unittest.TestCase):
             {"read": 5400.0, "percent": 15.0, "resets_at": 19800.0},
         ]
         self.assertAlmostEqual(fit_rate(two_across_reset), 15.0)
+
+    def test_a_reading_from_a_window_older_than_one_already_read_is_dropped(self):
+        # agy's replicas lag each other across a reset: the old window (75%, resetting at 50000) comes back
+        # after the new one (resetting at 200000) was read. Only the new window's readings are kept.
+        state = {"meters": {}, "cooldown": {}}
+        for read, percent, resets_at in ((0.0, 72.0, 50000.0), (1800.0, 74.0, 50000.0), (3600.0, 0.5, 200000.0),
+                                         (5400.0, 75.0, 50000.0), (7200.0, 1.5, 200000.0), (9000.0, 2.0, 200000.0)):
+            add_reading(state, "gemini-week", "agy", percent, resets_at, read, sessions=1)
+        held = state["meters"]["gemini-week"]
+        self.assertNotIn(75.0, [r["percent"] for r in held["history"]])
+        self.assertEqual((held["percent"], held["resets_at"]), (2.0, 200000.0))
+        self.assertAlmostEqual(held["rate"], 3600 * 6000 / 16.74e6)  # both windows' slopes, without the stale one
+        # A stale reading read last does not become the meter's latest, and history already holding one is
+        # cleaned when the next reading comes.
+        add_reading(state, "gemini-week", "agy", 76.0, 50000.0, 10800.0, sessions=1)
+        self.assertEqual((held["percent"], held["resets_at"]), (2.0, 200000.0))
+        held["history"].insert(-1, {"read": 8000.0, "percent": 75.5, "resets_at": 50000.0, "sessions": 1})
+        add_reading(state, "gemini-week", "agy", 2.5, 200000.0, 12600.0, sessions=1)
+        self.assertNotIn(75.5, [r["percent"] for r in held["history"]])
 
     def test_a_limit_in_one_workers_stream_cools_the_harness_for_a_second_worker_until_reset(self):
         with tempfile.TemporaryDirectory() as folder:
