@@ -203,6 +203,8 @@ impl CapKernel {
             ret is Some == old(self).can_unmap_at(root, slot, va, level),
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> Self::page_unmapped(*old(self), *final(self), root, slot, va, level, ret->0),
+            final(self).spaces == old(self).spaces,
+            final(self).table_pages.records == old(self).table_pages.records,
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         if level != 1 || !entry_named(va, level) {
@@ -224,7 +226,8 @@ impl CapKernel {
             final(self).wf(),
             final(self).cores == old(self).cores,
             (ret is Some) == old(self).can_unmap(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }),
-            final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).spaces == old(self).spaces,
+            final(self).table_pages.records == old(self).table_pages.records,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> Self::unmap_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }),
             ret is Some ==> Self::unmapped_read(*old(self), root, slot, SpacePath { l4, l3, l2, l1 }, ret->0),
@@ -246,7 +249,8 @@ impl CapKernel {
             final(self).wf(),
             final(self).cores == old(self).cores,
             (ret is Some) == old(self).can_unmap(root, slot, kind, SpacePath { l4, l3, l2, l1 }),
-            final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).spaces == old(self).spaces,
+            final(self).table_pages.records == old(self).table_pages.records,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> Self::unmap_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }),
             ret is Some ==> Self::unmapped_read(*old(self), root, slot, SpacePath { l4, l3, l2, l1 }, ret->0),
@@ -364,6 +368,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             ret is Some == old(self).can_unmap(root, slot, kind, SpacePath { l4, l3, l2, l1 }),
             final(self).spaces == old(self).spaces,
+            final(self).table_pages.records == old(self).table_pages.records,
             final(self).processes == old(self).processes,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> {

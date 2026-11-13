@@ -355,6 +355,44 @@ proof fn lemma_top_entry_address(l4: usize)
     lemma_fundamental_div_mod_converse(x, e, 0, x);
 }
 
+/// The address of the second page under entry l4 of a space's level 4 table, for l4 in the lower half:
+/// it names an entry at level 1, and its path is l4 with zeroes below but entry 1 of the level 1 table.
+proof fn lemma_top_entry_next_address(l4: usize)
+    requires
+        l4 < ENTRIES / 2,
+    ensures
+        l4 * SIZE_512G + PAGE_SZ < LOWER_HALF_END,
+        names_entry((l4 * SIZE_512G + PAGE_SZ) as u64, 1),
+        address_path((l4 * SIZE_512G + PAGE_SZ) as u64) == (SpacePath { l4, l3: 0, l2: 0, l1: 1 }),
+{
+    let x = l4 as int;
+    let e = ENTRIES as int;
+    let va = x * SIZE_512G + PAGE_SZ;
+    assert(SIZE_2M == ENTRIES * PAGE_SZ && SIZE_1G == ENTRIES * SIZE_2M && SIZE_512G == ENTRIES * SIZE_1G) by (compute_only);
+    assert(LOWER_HALF_END == (ENTRIES / 2) * SIZE_512G) by (compute_only);
+    assert(PAGE_SZ < SIZE_2M && SIZE_2M < SIZE_1G && SIZE_1G < SIZE_512G && 1 < ENTRIES) by (compute_only);
+    assert(x * SIZE_512G + SIZE_512G <= (e / 2) * SIZE_512G) by (nonlinear_arith)
+        requires
+            x < e / 2,
+            0 < SIZE_512G,
+    ;
+    assert(va == (x * e * e * e + 1) * PAGE_SZ && va == x * e * e * SIZE_2M + PAGE_SZ && va == x * e * SIZE_1G + PAGE_SZ) by (nonlinear_arith)
+        requires
+            va == x * SIZE_512G + PAGE_SZ,
+            SIZE_2M == e * PAGE_SZ,
+            SIZE_1G == e * SIZE_2M,
+            SIZE_512G == e * SIZE_1G,
+    ;
+    lemma_fundamental_div_mod_converse(va, PAGE_SZ as int, x * e * e * e + 1, 0);
+    lemma_fundamental_div_mod_converse(va, SIZE_2M as int, x * e * e, PAGE_SZ as int);
+    lemma_fundamental_div_mod_converse(va, SIZE_1G as int, x * e, PAGE_SZ as int);
+    lemma_fundamental_div_mod_converse(va, SIZE_512G as int, x, PAGE_SZ as int);
+    lemma_fundamental_div_mod_converse(x * e * e * e + 1, e, x * e * e, 1);
+    lemma_fundamental_div_mod_converse(x * e * e, e, x * e, 0);
+    lemma_fundamental_div_mod_converse(x * e, e, x, 0);
+    lemma_fundamental_div_mod_converse(x, e, 0, x);
+}
+
 /// The j-th order-3 block from b is j blocks on, aligned, and starts 8j pages on.
 proof fn lemma_cursor_block(b: usize, j: int)
     requires
@@ -612,6 +650,29 @@ proof fn lemma_witness_empty_kept(pre: CapKernel, post: CapKernel, root: usize, 
     pre.lemma_slot_bound(n);
     assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live implies post.list.nodes@[j].live by {}
     CapKernel::lemma_slot_stays(pre, post, root, i);
+    assert(post.list.nodes@[n as int].live == pre.list.nodes@[n as int].live);
+}
+
+/// A slot's capability stays across steps that kept the capability tables and every node but one that
+/// was not live before them.
+proof fn lemma_slot_holds_but(pre: CapKernel, post: CapKernel, node: usize, root: usize, i: usize, n: usize, c: Payload)
+    requires
+        pre.wf(),
+        post.tables == pre.tables,
+        !pre.list.nodes@[node as int].live,
+        forall|j: int| 0 <= j < NODE_SPACE && j != node ==> #[trigger] post.list.nodes@[j].live == pre.list.nodes@[j].live
+            && post.list.nodes@[j].kind == pre.list.nodes@[j].kind,
+        pre.slot_holds(root, i, n, c),
+    ensures
+        post.slot_holds(root, i, n, c),
+{
+    assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live implies post.list.nodes@[j].live by {
+        assert(j != node);
+    }
+    CapKernel::lemma_slot_stays(pre, post, root, i);
+    pre.lemma_slot(root, i);
+    pre.lemma_slot_bound(n);
+    assert(n != node);
     assert(post.list.nodes@[n as int].live == pre.list.nodes@[n as int].live);
 }
 
@@ -5326,6 +5387,22 @@ impl CapKernel {
                 &&& final(self).root_live(process)
                 &&& final(self).can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path)
             }),
+            ({
+                let tree = tree_of(&final(self).table_pages, &final(self).spaces);
+                let path = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+                let bf = (base + 3 * PROCESS_BYTES + 2 * PAGE_SZ) as usize;
+                let nf = (base + 3 * PROCESS_BYTES + 3) as usize;
+                let n1 = mapping_node(walk_table(tree, process, path)->0, 0);
+                &&& final(self).slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process))
+                &&& final(self).slot_holds(process, WITNESS_FRAME_SLOT, nf, crate::capability::retype::frame_of(bf))
+                &&& witness_alive(*final(self), process)
+                &&& final(self).spaces.records@[process].value().kind == SpaceKind::Process
+                &&& walk_table(tree, process, path) is Some
+                &&& final(self).mappings@.contains_key(n1)
+                &&& final(self).list.parent@[n1] == nf
+                &&& final(self).mappings@[n1].frame == bf / PAGE_SZ
+                &&& block_refs(&final(self).blocks, block_ref(&final(self).blocks, bf / PAGE_SZ)) == 2
+            }),
     {
         hide(CapKernel::wf);
         let ghost s0 = *self;
@@ -5552,6 +5629,25 @@ impl CapKernel {
             assert(space_mapping(a4, process) == space_mapping(a0, process).insert(path, entry));
             assert(space_mapping(a4, process).contains_key(path));
             assert(space_mapping(a4, process)[path] == entry);
+            // What a further map or unmap there needs: the capabilities, the table and the frame's count.
+            let n1 = mapping_node(walk_table(a3, process, path)->0, 0);
+            assert(walk_table(a4, process, path) == walk_table(a3, process, path));
+            assert(s3.wf());
+            lemma_map_kept(s3, s4, n1, nf);
+            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] s3.list.nodes@[j].live implies s4.list.nodes@[j].live by {
+                assert(j != n1);
+            }
+            Self::lemma_slot_stays(s3, s4, process, ROOT_PROCESS_SLOT);
+            Self::lemma_slot_stays(s3, s4, process, WITNESS_FRAME_SLOT);
+            assert(s4.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)));
+            assert(s4.slot_holds(process, WITNESS_FRAME_SLOT, nf, cap));
+            assert(witness_alive(s4, process));
+            assert(s4.mappings@.contains_key(n1));
+            assert(s4.list.parent@[n1] == nf);
+            assert(s4.mappings@[n1].frame == bf / PAGE_SZ);
+            assert(s3.blocks.tracks(fp));
+            assert(block_ref(&s4.blocks, bf / PAGE_SZ) == block_ref(&s3.blocks, bf / PAGE_SZ));
+            assert(block_refs(&s4.blocks, block_ref(&s4.blocks, bf / PAGE_SZ)) == 2);
             // The entry the map wrote is present, under the root's process capability, which the map
             // left as it was, and no step moved the flush epoch from where boot left it.
             assert(s0.flush_epoch == 0);
@@ -5560,12 +5656,8 @@ impl CapKernel {
             assert(s4.tables == s3.tables);
             assert(s3.tables.has_slot(&s3.list, process, ROOT_PROCESS_SLOT));
             assert(s3.payload_of(pn).base == process);
-            lemma_map_kept(s3, s4, mapping_node(walk_table(a3, process, path)->0, 0), nf);
-            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] s3.list.nodes@[j].live implies s4.list.nodes@[j].live by {}
-            CapKernel::lemma_slot_stays(s3, s4, process, ROOT_PROCESS_SLOT);
             assert(s4.tables.has_slot(&s4.list, process, ROOT_PROCESS_SLOT));
             assert(s4.is_cap(pn) && s4.payload_of(pn) == process_of(process));
-            assert(walk_table(a4, process, path) == walk_table(a3, process, path));
             assert(walk(a4, process, path) is Some);
             assert(a4.entry(walk_table(a4, process, path)->0, 0).perm.present);
             assert(s4.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path));
@@ -5635,6 +5727,277 @@ impl CapKernel {
         }
         let unmapped = self.unmap_at(process, ROOT_PROCESS_SLOT, va, 1, Tracked(&mut steps));
         (probed, unmapped)
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the blocks and entry l4 that
+    /// witness_root_maps_a_frame_into_its_own_space takes: map the frame at the first page under entry
+    /// l4 as that witness does, map it again at the second page, then unmap and map the second page again
+    /// until the flush epoch reaches its limit. A revoke of the frame capability, whose first mapping is
+    /// still its child, can then unmap nothing, and says Exhausted.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_revokes_at_the_epoch_limit(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+        l4: usize,
+    ) -> (ret: RevokeStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES / 2,
+            !image_l4(image@, l4),
+        ensures
+            ret is Exhausted,
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ghost a0 = tree_of(&s0.table_pages, &s0.spaces);
+        let _ = self.witness_root_maps_a_frame_into_its_own_space(
+            root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, l4,
+        );
+        let ghost s4 = *self;
+        let ghost a4 = tree_of(&s4.table_pages, &s4.spaces);
+        let ghost pn = (leaf@ + 1) as usize;
+        let ghost bf = (base + 3 * PROCESS_BYTES + 2 * PAGE_SZ) as usize;
+        let ghost nf = (base + 3 * PROCESS_BYTES + 3) as usize;
+        let ghost fp = bf / PAGE_SZ;
+        let ghost cap = crate::capability::retype::frame_of(bf);
+        let ghost path = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+        let ghost path2 = SpacePath { l4, l3: 0, l2: 0, l1: 1 };
+        let ghost t1 = walk_table(a4, process, path)->0;
+        let ghost n1 = mapping_node(t1, 0);
+        let ghost n2 = mapping_node(t1, 1);
+        let ghost br = block_ref(&s4.blocks, fp);
+        let ghost rec2 = MappingRecord { table: t1, entry: 1, frame: fp, large: false };
+        proof {
+            assert(s4.wf());
+            assert(walk_table(a4, process, path2) == walk_table(a4, process, path));
+            s4.lemma_walk_table_facts(process, path2);
+            // The second page's path is under no page of the image, which is all boot mapped.
+            if space_mapping(a0, process).contains_key(path2) {
+                assert(crate::capability::boot_map::image_path(image@, path2));
+                let (ia, ix) = choose|ia: int, ix: int| 0 <= ia < image@.len() && #[trigger] in_virt_at(image@, ia, ix) && page_path(ix) == path2;
+                assert(in_virt_at(image@, ia, ix) && page_path(ix).l4 == l4);
+                assert(image_l4(image@, l4));
+            }
+            assert(path2 != path);
+            assert(!space_mapping(a4, process).contains_key(path2));
+            assert(walk(a4, process, path2) is None);
+            s4.lemma_level1_empty(process, path2);
+            s4.lemma_mapping_node(n1);
+            assert(s4.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_parent_shallow(s4.list, nf, n1);
+            s4.lemma_process_cap(pn);
+            assert(PROCESS_RIGHTS & 128 != 0) by (compute_only);
+            assert(FRAME_RIGHTS & right_bit(Right::Read) != 0) by (compute_only);
+            assert(crate::capability::map::frame_of(cap, 0) == fp);
+            assert(s4.mappings@[n1].frame == fp);
+            assert(mapping_wf(&s4.list, &s4.tables, a4, &s4.blocks, s4.holders@, s4.mappings@, n1)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s4.blocks.tracks(fp as int));
+            assert(block_refs(&s4.blocks, br) == 2);
+            assert(s4.tables.has_slot(&s4.list, process, ROOT_PROCESS_SLOT));
+            assert(s4.tables.node_of(process, ROOT_PROCESS_SLOT) == pn);
+            assert(s4.is_cap(pn) && s4.payload_of(pn) == process_of(process));
+            assert(writes_space(s4.payload_of(pn)));
+            assert(!s4.cap_dead(pn));
+            assert(s4.spaces.records@[process].value().kind == SpaceKind::Process);
+            assert(!s4.blocks.pages@[(t1 / PAGE_SZ) as int].dead);
+            assert(tree_of(&s4.table_pages, &s4.spaces).entry(t1, 1).is_empty());
+            assert(s4.tables.has_slot(&s4.list, process, WITNESS_FRAME_SLOT));
+            assert(s4.tables.node_of(process, WITNESS_FRAME_SLOT) == nf);
+            assert(s4.is_cap(nf) && s4.payload_of(nf) == cap);
+            assert(block_bytes(0) == PAGE_SZ) by {
+                lemma2_to64();
+            }
+            assert(cap.kind is Frame && cap.order == 0);
+            assert(s4.list.nodes@[nf as int].depth < MAX_DEPTH);
+            assert(block_ref(&s4.blocks, fp) == br);
+            assert(s4.can_map(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path2, WITNESS_FRAME_SLOT, 0));
+            lemma_top_entry_next_address(l4);
+            assert(s4.can_map_at(process, ROOT_PROCESS_SLOT, (l4 * SIZE_512G + PAGE_SZ) as u64, 1, WITNESS_FRAME_SLOT, 0));
+        }
+        let va2 = (l4 as u64) * (SIZE_512G as u64) + (PAGE_SZ as u64);
+        let ok = self.map_at(process, ROOT_PROCESS_SLOT, va2, 1, WITNESS_FRAME_SLOT, 0);
+        let ghost s5 = *self;
+        proof {
+            let a5 = tree_of(&s5.table_pages, &s5.spaces);
+            assert(ok);
+            assert(Self::page_mapped(s4, s5, process, ROOT_PROCESS_SLOT, va2, 1, WITNESS_FRAME_SLOT, 0));
+            assert(Self::map_done(s4, s5, process, ROOT_PROCESS_SLOT, path2, WITNESS_FRAME_SLOT, 0));
+            assert(walk_table(a5, process, path2) == Some(t1));
+            assert(!s4.list.nodes@[n2 as int].live);
+            assert(n1 != n2);
+            assert(s5.mappings@.contains_key(n1));
+            assert(s5.mappings@[n2] == rec2);
+            assert(s5.list.parent@[n2] == nf);
+            assert(s5.list.parent@[n1] == nf);
+            assert(s4.blocks.tracks(fp as int));
+            assert(block_ref(&s5.blocks, fp) == br);
+            assert(block_refs(&s5.blocks, br) == 3);
+        }
+
+        // Unmap and map the second page again, each round one epoch on.
+        while self.flush_epoch != usize::MAX
+            invariant
+                s4.wf(),
+                !s4.list.nodes@[n2 as int].live,
+                n1 != n2,
+                s4.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)),
+                s4.slot_holds(process, WITNESS_FRAME_SLOT, nf, cap),
+                witness_alive(s4, process),
+                s4.spaces.records@[process].value().kind == SpaceKind::Process,
+                s4.blocks.tracks(fp as int),
+                cap == crate::capability::retype::frame_of(bf),
+                crate::capability::map::frame_of(cap, 0) == fp,
+                va2 == l4 * SIZE_512G + PAGE_SZ,
+                names_entry(va2, 1),
+                address_path(va2) == path2,
+                path2 == (SpacePath { l4, l3: 0, l2: 0, l1: 1 }),
+                n2 == mapping_node(t1, 1),
+                rec2 == (MappingRecord { table: t1, entry: 1, frame: fp, large: false }),
+                s5.list.parent@[n1] == nf,
+                s5.list.parent@[n2] == nf,
+                self.wf(),
+                self.tables == s4.tables,
+                self.processes == s4.processes,
+                self.spaces == s4.spaces,
+                forall|j: int| 0 <= j < NODE_SPACE && j != n2 ==> #[trigger] self.list.nodes@[j].live == s4.list.nodes@[j].live
+                    && self.list.nodes@[j].kind == s4.list.nodes@[j].kind,
+                self.list.parent@ == s5.list.parent@,
+                walk_table(tree_of(&self.table_pages, &self.spaces), process, path2) == Some(t1),
+                self.mappings@.contains_key(n1),
+                self.mappings@.contains_key(n2),
+                self.mappings@[n2] == rec2,
+                block_ref(&self.blocks, fp) == br,
+                block_refs(&self.blocks, br) == 3,
+            decreases usize::MAX - self.flush_epoch,
+        {
+            let ghost p = *self;
+            let ghost ap = tree_of(&p.table_pages, &p.spaces);
+            proof {
+                lemma_slot_holds_but(s4, p, n2, process, ROOT_PROCESS_SLOT, pn, process_of(process));
+                lemma_slot_holds_but(s4, p, n2, process, WITNESS_FRAME_SLOT, nf, cap);
+                p.lemma_process_cap(pn);
+                assert(PROCESS_RIGHTS & 128 != 0) by (compute_only);
+                p.lemma_walk_table_facts(process, path2);
+                assert(mapping_wf(&p.list, &p.tables, ap, &p.blocks, p.holders@, p.mappings@, n2)) by {
+                    reveal(CapKernel::wf);
+                }
+                assert(ap.entry(t1, 1).perm.present);
+                assert(p.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path2));
+                assert(p.can_unmap_at(process, ROOT_PROCESS_SLOT, va2, 1));
+            }
+            let tracked mut steps = Steps::fresh();
+            let r = self.unmap_at(process, ROOT_PROCESS_SLOT, va2, 1, Tracked(&mut steps));
+            let ghost q = *self;
+            let ghost aq = tree_of(&q.table_pages, &q.spaces);
+            proof {
+                assert(r is Some);
+                assert(Self::page_unmapped(p, q, process, ROOT_PROCESS_SLOT, va2, 1, r->0));
+                assert(Self::unmap_done(p, q, process, ROOT_PROCESS_SLOT, path2));
+                assert(Self::entry_unmapped(p, q, process, ROOT_PROCESS_SLOT, path2));
+                assert(Self::mapping_unlinked(p, q, n2));
+                assert(Self::mapping_stale_noted(p, q, n2));
+                assert(q.flush_epoch == p.flush_epoch + 1);
+                assert(aq.entry(t1, 1).is_empty());
+                // The table walk stays: only a frame entry was cleared.
+                assert(aq.maps.dom() =~= ap.maps.dom());
+                assert(entries_cleared(ap, aq, t1, 1));
+                reveal(entries_cleared);
+                assert(frame_slot(ap, t1, 1));
+                lemma_walk_table_entry_cleared(ap, aq, t1, 1);
+                assert(walk_table(aq, process, path2) == Some(t1));
+                q.lemma_walk_table_facts(process, path2);
+                // The capabilities, the first mapping and the frame's count stay.
+                lemma_slot_holds_but(s4, q, n2, process, ROOT_PROCESS_SLOT, pn, process_of(process));
+                lemma_slot_holds_but(s4, q, n2, process, WITNESS_FRAME_SLOT, nf, cap);
+                q.lemma_process_cap(pn);
+                assert(q.mappings@ == p.mappings@.remove(n2));
+                assert(q.mappings@.contains_key(n1));
+                q.lemma_mapping_node(n1);
+                assert(q.list.parent@[n1] == nf);
+                assert(q.list.wf()) by {
+                    reveal(CapKernel::wf);
+                }
+                lemma_parent_shallow(q.list, nf, n1);
+                assert(p.mappings@[n2].frame == fp);
+                assert(block_ref(&q.blocks, fp) == br);
+                assert(block_refs(&q.blocks, br) == 2);
+                assert(FRAME_RIGHTS & right_bit(Right::Read) != 0) by (compute_only);
+                assert(q.tables.has_slot(&q.list, process, ROOT_PROCESS_SLOT));
+                assert(q.tables.node_of(process, ROOT_PROCESS_SLOT) == pn);
+                assert(q.is_cap(pn) && q.payload_of(pn) == process_of(process));
+                assert(writes_space(q.payload_of(pn)));
+                assert(!q.cap_dead(pn));
+                assert(q.spaces.records@[process].value().kind == SpaceKind::Process);
+                assert(!q.blocks.pages@[(t1 / PAGE_SZ) as int].dead);
+                assert(tree_of(&q.table_pages, &q.spaces).entry(t1, 1).is_empty());
+                assert(q.tables.has_slot(&q.list, process, WITNESS_FRAME_SLOT));
+                assert(q.tables.node_of(process, WITNESS_FRAME_SLOT) == nf);
+                assert(q.is_cap(nf) && q.payload_of(nf) == cap);
+                assert(block_bytes(0) == PAGE_SZ) by {
+                    lemma2_to64();
+                }
+                assert(cap.kind is Frame && cap.order == 0);
+                assert(q.list.nodes@[nf as int].depth < MAX_DEPTH);
+                assert(block_ref(&q.blocks, fp) == br);
+                assert(q.can_map(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path2, WITNESS_FRAME_SLOT, 0));
+                assert(q.can_map_at(process, ROOT_PROCESS_SLOT, va2, 1, WITNESS_FRAME_SLOT, 0));
+            }
+            let ok = self.map_at(process, ROOT_PROCESS_SLOT, va2, 1, WITNESS_FRAME_SLOT, 0);
+            proof {
+                let s = *self;
+                assert(ok);
+                assert(Self::page_mapped(q, s, process, ROOT_PROCESS_SLOT, va2, 1, WITNESS_FRAME_SLOT, 0));
+                assert(Self::map_done(q, s, process, ROOT_PROCESS_SLOT, path2, WITNESS_FRAME_SLOT, 0));
+                assert(s.mappings@[n2] == rec2);
+                assert(s.list.parent@ =~= s5.list.parent@);
+                assert(block_ref(&s.blocks, fp) == br);
+            }
+        }
+
+        // The frame capability still has the first page's mapping as a child, and the epoch is at its limit.
+        let ghost s6 = *self;
+        let rat = Position { through: None, index: WITNESS_FRAME_SLOT };
+        proof {
+            lemma_slot_holds_but(s4, s6, n2, process, WITNESS_FRAME_SLOT, nf, cap);
+            assert(s6.cap_at(process, rat) == Some(nf));
+            assert(s6.root_live(process));
+            s6.lemma_mapping_node(n1);
+            assert(s6.list.is_child(nf, n1));
+        }
+        let tracked mut steps = Steps::fresh();
+        let done = self.revoke(process, rat, Tracked(&mut steps));
+        proof {
+            let s7 = *self;
+            assert(s7 == s6);
+            assert(!(done is Refused));
+            assert(s6.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            s6.lemma_slot_bound(nf);
+            if done is Done {
+                s6.list.lemma_childless(nf, n1);
+            }
+            assert(!(done is Again));
+            assert(done is Exhausted);
+        }
+        done
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

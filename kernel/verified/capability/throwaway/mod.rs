@@ -29,6 +29,7 @@ pub mod root_maps_one_frame_into_two_processes;
 pub mod root_probes_and_unmaps_its_frame;
 pub mod root_retypes_a_freed_2m_frame;
 pub mod root_revokes_a_shared_frame;
+pub mod root_revokes_at_the_epoch_limit;
 pub mod root_revokes_more_than_a_budget;
 pub mod root_suspends_itself;
 pub mod root_thread_enters;

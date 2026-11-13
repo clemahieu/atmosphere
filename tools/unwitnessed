@@ -16,7 +16,6 @@ kernel/verified/capability/operation.rs	enter	Some
 kernel/verified/capability/power.rs	power_off	returns
 kernel/verified/capability/retype.rs	retype_frame	true
 kernel/verified/capability/retype.rs	retype_leaf	true
-kernel/verified/capability/revoke.rs	revoke	Exhausted
 kernel/verified/capability/space.rs	retype_table_page	true
 kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again

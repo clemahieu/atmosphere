@@ -598,6 +598,39 @@ pub proof fn lemma_walk_table_entry_written(a: TableTree, b: TableTree, t: usize
     }
 }
 
+/// Clearing frame mapping e of table t moves no table walk: a step reads only entries that name a child,
+/// which the entry does in neither tree.
+pub proof fn lemma_walk_table_entry_cleared(a: TableTree, b: TableTree, t: usize, e: usize)
+    requires
+        b.maps.dom() == a.maps.dom(),
+        b.roots == a.roots,
+        b.records == a.records,
+        b.space_records == a.space_records,
+        frame_slot(a, t, e),
+        !b.entry(t, e).perm.present,
+        forall|u: usize, i: usize| #![trigger b.entry(u, i)] i < ENTRIES && !(u == t && i == e) ==> b.entry(u, i) == a.entry(u, i),
+    ensures
+        forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q),
+{
+    assert(!a.names_child(t, e));
+    assert(!b.names_child(t, e));
+    assert forall|u: usize, i: usize| #[trigger] step(b, u, i) == step(a, u, i) by {
+        assert(b.child_slot(u, i) == a.child_slot(u, i));
+        if a.child_slot(u, i) && !(u == t && i == e) {
+            assert(b.entry(u, i) == a.entry(u, i));
+        }
+    }
+    assert forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q) by {
+        assert(step(b, r, q.l4) == step(a, r, q.l4));
+        if let Some(t3) = step(a, r, q.l4) {
+            assert(step(b, t3, q.l3) == step(a, t3, q.l3));
+            if let Some(t2) = step(a, t3, q.l3) {
+                assert(step(b, t2, q.l2) == step(a, t2, q.l2));
+            }
+        }
+    }
+}
+
 /// One path reaches a level 1 table's entry: each table has one parent entry, so a walk that ends at
 /// entry p.l1 of the table p reaches from s is p from s.
 pub proof fn lemma_ends_at_unique(a: TableTree, s: usize, p: SpacePath, t: usize, r: usize, q: SpacePath)
