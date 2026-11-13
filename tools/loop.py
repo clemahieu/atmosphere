@@ -56,14 +56,21 @@ left out too. A candidate that is not under `[offerings]` is an error. When noth
 session is started: the loop waits if another loop or actor is active, and stops otherwise. Without
 `[routes]`, the loop runs plain rounds on Claude with the top-level tables' flags.
 
-Pacing (`[meters.<name>]`, with `target` and `max`). A meter at p percent, its reset h hours away, with
-r its fitted rate a session in flight, admits floor((target - p) / (h * r)) sessions at once, clamped to
-[0, max]: the use those sessions project to the reset stays under the target. A meter at or past its
-target admits none; one with no readings, no rate yet, or a window that has reset since the last
-reading admits max; a meter no table names is not paced. r is the meter's fitted rate over the mean
-number of the loops' sessions in flight on it at the readings it was fitted over, a mean under one
-counting as one, so use from outside the loops is charged to the sessions. The pool recomputes every
-paced meter's admission each tick and logs each change with p, h and r; each worker recomputes it
+Pacing (`[meters.<name>]`, with `target` and, for a meter whose use is spread, `window` in hours). Each
+paced meter has a line. With a window it climbs from 0% at the window's opening, `window` hours before
+the reset, to the target at the reset; without one it stands at the target, so the meter runs until it
+nears its target. A meter at p percent, with r its fitted rate a session in flight and L the
+PACE_LOOKAHEAD of an hour, admits floor((line(now + L) - p) / (r * L)) sessions at once: those
+sessions' spend over the next hour keeps the meter under where its line will be. A meter behind its
+line catches up on every free worker and one ahead of it waits, so a climbing line spreads the meter's
+use over its window as a duty cycle that reaches the target at the reset; `[pool] jobs` is the only
+ceiling. A meter at or past its target admits none; one with no rate yet, or none above zero, admits one
+session while under its line; one with no readings, or a window that has reset since the last reading,
+admits any number; a window with no reset known cannot be placed, and its line stands at the target; a
+meter no table names is not paced. r is the meter's fitted rate over the mean number of the loops'
+sessions in flight on it at the readings it was fitted over, a mean under one counting as one, so use
+from outside the loops is charged to the sessions. The pool recomputes every paced meter's admission
+each tick and logs each change with p, the hours to reset, the line and r; each worker recomputes it
 before it chooses. Two workers choosing at the same instant may both take a meter's last place.
 
 Shared meter and cooldown state. The pool and its workers share `<project root>/logs/loop/state.json`,
@@ -218,6 +225,7 @@ MAX_HISTORY = 500
 MIN_RATE_SPAN = 60
 RESET_JITTER = 300
 PACE_WAIT = 60
+PACE_LOOKAHEAD = 3600
 CONFIG = ROOT / "loop.toml"
 SCRATCH = ROOT / "scratch"
 RULES = ROOT / "CLAUDE.md"
@@ -529,24 +537,24 @@ def parse_offerings(raw):
 
 
 def parse_paces(raw):
-    """[meters.<name>]: each meter's target, the percent its projected use at reset stays under, and max,
-    the most sessions it admits at once."""
+    """[meters.<name>]: each meter's target, the percent its line reaches at the reset, and window, the
+    hours its line climbs over, or None for a line that stands at the target."""
     if not isinstance(raw, dict):
         raise ValueError("meters: not a table")
     paces = {}
     for name, table in raw.items():
         where = f"meters.{name}"
         if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name) or not isinstance(table, dict):
-            raise ValueError(f"{where}: not a table of a meter's target and max")
+            raise ValueError(f"{where}: not a table of a meter's target and window")
         for key in table:
-            if key not in ("target", "max"):
-                raise ValueError(f"{where}.{key}: a meter takes target and max")
-        target, most = table.get("target"), table.get("max")
+            if key not in ("target", "window"):
+                raise ValueError(f"{where}.{key}: a meter takes target and window")
+        target, window = table.get("target"), table.get("window")
         if not isinstance(target, (int, float)) or isinstance(target, bool) or not 0 < target <= 100:
             raise ValueError(f"{where}.target: {target!r} is not a percent above 0 and at most 100")
-        if not isinstance(most, int) or isinstance(most, bool) or most < 0:
-            raise ValueError(f"{where}.max: {most!r} is not a whole number of sessions")
-        paces[name] = {"target": float(target), "max": most}
+        if window is not None and (not isinstance(window, (int, float)) or isinstance(window, bool) or window <= 0):
+            raise ValueError(f"{where}.window: {window!r} is not a number of hours above 0")
+        paces[name] = {"target": float(target), "window": None if window is None else float(window)}
     return paces
 
 
@@ -880,22 +888,26 @@ def add_reading(state, meter, harness, percent, resets_at, read, sessions=None):
 
 
 def admission(held, pace, now):
-    """(sessions the meter admits at once, percent, hours to reset, rate a session) for a meter's state
-    `held` (None when it has no readings) under its pace from [meters]: floor((target - percent) / (hours
-    * rate)), so the use the admitted sessions project to the reset stays under the target, clamped to
-    [0, max]. At or past the target none; with no readings, no window running, a window that has reset
-    since the reading, or no rate a session, the max."""
+    """(sessions the meter admits at once, or None for any number, percent, hours to reset, rate a
+    session, line) for a meter's state `held` (None when it has no readings) under its pace from
+    [meters]. With a window the line climbs from 0% at the window's opening to the target at its reset;
+    without one, or with no reset known to place the window by, it stands at the target. `line` is where
+    it stands PACE_LOOKAHEAD from now: n sessions are admitted while percent plus what n sessions spend
+    over the lookahead stays under it, so a meter behind its line catches up and one ahead waits, and
+    one at or past its target admits none. With no rate a session, or none above zero, one while under
+    the line; with no readings, or a window that has reset since the reading, any number."""
     if held is None:
-        return pace["max"], None, None, None
+        return None, None, None, None, None
     percent, resets_at, rate = held["percent"], held.get("resets_at"), held.get("session_rate")
     hours = None if resets_at is None else (resets_at - now) / 3600
     if hours is not None and hours <= 0:
-        return pace["max"], percent, hours, rate
-    if percent >= pace["target"]:
-        return 0, percent, hours, rate
-    if hours is None or rate is None or rate <= 0:
-        return pace["max"], percent, hours, rate
-    return min(int((pace["target"] - percent) / (hours * rate)), pace["max"]), percent, hours, rate
+        return None, percent, hours, rate, None
+    ahead, line, window = PACE_LOOKAHEAD / 3600, pace["target"], pace["window"]
+    if window is not None and hours is not None:
+        line *= min(max(window - hours + ahead, 0.0) / window, 1.0)
+    if rate is None or rate <= 0:
+        return int(percent < line), percent, hours, rate, line
+    return max(int((line - percent) / (rate * ahead)), 0), percent, hours, rate, line
 
 
 def in_flight(folder, alive=loop_alive):
@@ -910,14 +922,20 @@ def in_flight(folder, alive=loop_alive):
     return counts
 
 
-def fmt_admission(meter, admits, percent, hours, rate, pace):
+def fmt_admission(meter, admits, percent, hours, rate, line, pace):
     """One meter's admission with what it was computed from, for the pool's log."""
     if percent is None:
         why = "no readings"
     else:
-        why = f"{percent:.1f}% used, " + ("no reset known" if hours is None else f"{hours:.1f} h to reset") + ", " + (
+        why = f"{percent:.1f}% used, " + ("no reset known" if hours is None else f"{hours:.1f} h to reset") + (
+            "" if line is None else f", line {line:.1f}%") + ", " + (
             "no rate yet" if rate is None else f"{rate:.2f}%/h a session")
-    return f"{meter}: {why}: admits {admits} (target {pace['target']:g}, max {pace['max']})"
+    return f"{meter}: {why}: admits {'any' if admits is None else admits} ({fmt_pace(pace)})"
+
+
+def fmt_pace(pace):
+    """A meter's pace from [meters]: its target, and the window its line climbs over when it has one."""
+    return f"target {pace['target']:g}" + ("" if pace["window"] is None else f", window {pace['window']:g} h")
 
 
 def stream_meter(limit_type):
@@ -1126,7 +1144,7 @@ class Loop:
         for meter in spec.meters:
             if meter in paces:
                 admits = admission(meters.get(meter), paces[meter], self.now())[0]
-                if admits <= flying.get(meter, 0):
+                if admits is not None and admits <= flying.get(meter, 0):
                     found.append((meter, admits, flying.get(meter, 0)))
         return found
 
@@ -1750,10 +1768,10 @@ class Pool:
         meters = read_state(self.pids)["meters"]
         admitted = {}
         for meter, pace in self.paces.items():
-            admits, percent, hours, rate = admission(meters.get(meter), pace, self.now())
+            admits, percent, hours, rate, line = admission(meters.get(meter), pace, self.now())
             admitted[meter] = admits
-            if self.admitted.get(meter) != admits:
-                self.say(fmt_admission(meter, admits, percent, hours, rate, pace))
+            if meter not in self.admitted or self.admitted[meter] != admits:
+                self.say(fmt_admission(meter, admits, percent, hours, rate, line, pace))
         self.admitted = admitted
 
     def sample(self):
@@ -1891,7 +1909,7 @@ def list_offerings(config=CONFIG, out=sys.stdout):
     for key, candidates in routes.items():
         print(f"route {key}: {fmt_candidates(candidates)}", file=out)
     for meter, pace in paces.items():
-        print(f"meter {meter}: target {pace['target']:g}, max {pace['max']}", file=out)
+        print(f"meter {meter}: {fmt_pace(pace)}", file=out)
     if not routes:
         print(f"no [routes] in {Path(config).name}: the loop runs plain rounds on its top-level tables", file=out)
     return 0
@@ -1915,8 +1933,8 @@ def check(config=CONFIG, out=sys.stdout, loop=None):
           + (", ".join(summary["split_epics"]) or "none"), file=out)
     meters, flying = read_state(loop.pids)["meters"], in_flight(loop.pids, loop.alive)
     for meter, pace in loop.dispatch.paces.items():
-        admits, percent, hours, rate = admission(meters.get(meter), pace, loop.now())
-        print(f"meter {fmt_admission(meter, admits, percent, hours, rate, pace)}, {flying.get(meter, 0)} in flight", file=out)
+        admits, percent, hours, rate, line = admission(meters.get(meter), pace, loop.now())
+        print(f"meter {fmt_admission(meter, admits, percent, hours, rate, line, pace)}, {flying.get(meter, 0)} in flight", file=out)
     print(f"waiting on cooldowns or pace ({len(summary['cooled'])})" + ("".join(
         f"\n  {what} [{key}]: {fmt_waits(waits)}" for key, what, waits in summary["cooled"]) or ": none"), file=out)
     return 0
@@ -2334,7 +2352,8 @@ class Tests(unittest.TestCase):
             config.write_text('[round]\nmodel = "fable"\n\n[offerings.carbon]\nharness = "agy"\nmodel = "gemini-4-carbon-high"\n'
                               'meters = ["gemini-week"]\n\n[offerings.opus]\nmodel = "opus"\nmeters = ["claude-week"]\n\n'
                               '[routes.default]\ncandidates = ["opus"]\n\n[routes.tool]\ncandidates = ["carbon", "opus"]\n\n'
-                              '[routes.skeptic]\ndisabled = true\n\n[meters.claude-week]\ntarget = 95\nmax = 4\n')
+                              '[routes.skeptic]\ndisabled = true\n\n[meters.claude-week]\ntarget = 95\nwindow = 168\n\n'
+                              '[meters.gemini-week]\ntarget = 95\n')
             shown = io.StringIO()
             self.assertEqual(list_offerings(config, shown), 0)
             lines = shown.getvalue().splitlines()
@@ -2343,8 +2362,8 @@ class Tests(unittest.TestCase):
             self.assertIn("route tool: carbon > opus", lines)
             self.assertIn("route spec: opus", lines)
             self.assertIn("route skeptic: disabled", lines)
-            self.assertEqual(lines[-1], "meter claude-week: target 95, max 4")
-            self.assertEqual(len(lines), 3 + len(ROUTE_KEYS))
+            self.assertEqual(lines[-2:], ["meter claude-week: target 95, window 168 h", "meter gemini-week: target 95"])
+            self.assertEqual(len(lines), 4 + len(ROUTE_KEYS))
             config.write_text('[round]\nmodel = "fable"\n')
             shown = io.StringIO()
             list_offerings(config, shown)
@@ -3568,43 +3587,61 @@ class Tests(unittest.TestCase):
 
         [meters.claude-week]
         target = 95
-        max = 4
+        window = 168
 
         [meters.claude-5h]
         target = 95
-        max = 3
+        window = 5
 
         [meters.gemini-week]
         target = 90
-        max = 2
         """)
 
     def meter(self, percent, resets_at, read=0.0, rate=None, session_rate=None):
         return {"harness": "claude", "percent": percent, "resets_at": resets_at, "read": read, "rate": rate,
                 "session_rate": session_rate, "history": []}
 
-    def test_a_meter_admits_what_its_headroom_over_its_projected_use_at_reset_allows_up_to_its_max(self):
-        pace = {"target": 95.0, "max": 4}
+    def test_a_meter_admits_what_keeps_it_under_its_line_over_the_next_hour(self):
+        week, five_hours = {"target": 95.0, "window": 168.0}, {"target": 95.0, "window": 5.0}
+        flat = {"target": 95.0, "window": None}
         hour = 3600.0
-        # Behind pace: 10% used, 50 h to reset, 0.5%/h a session: (95 - 10) / (50 * 0.5) = 3.4, so 3.
-        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.5), pace, 0.0)[0], 3)
-        # Further behind, the max clamps it.
-        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.1), pace, 0.0)[0], 4)
-        # Ahead of pace: 80% used, 50 h to go at 0.5%/h a session projects past the target with one more.
-        self.assertEqual(admission(self.meter(80.0, 50 * hour, session_rate=0.5), pace, 0.0)[0], 0)
-        # The same meter near its reset has headroom for more: (95 - 80) / (2 * 0.5) = 15, clamped to 4.
-        self.assertEqual(admission(self.meter(80.0, 2 * hour, session_rate=0.5), pace, 0.0)[0], 4)
-        self.assertEqual(admission(self.meter(80.0, 10 * hour, session_rate=0.5), pace, 0.0)[0], 3)
+        # A week 50 h from its reset is 118 h in; an hour on, its line stands at 95 * 119 / 168 = 67.3%.
+        line = 95 * 119 / 168
+        # Behind the line at 10%: 57.3 points of room, 20%/h a session: 2 sessions; at 5%/h, 11.
+        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=20.0), week, 0.0),
+                         (2, 10.0, 50.0, 20.0, line))
+        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=5.0), week, 0.0)[0], 11)
+        # A meter whose sessions cost a fraction of what a continuous run to the reset allows still runs
+        # while behind its line: 1.6% used an hour into the week, 3.3%/h a session, waits; 10 h in, runs one.
+        self.assertEqual(admission(self.meter(1.6, 167 * hour, session_rate=3.3), week, 0.0)[0], 0)
+        self.assertEqual(admission(self.meter(1.6, 158 * hour, session_rate=3.3), week, 0.0)[0], 1)
+        # Ahead of the line: 80% used, 100 h out (line 39%): none.
+        self.assertEqual(admission(self.meter(80.0, 100 * hour, session_rate=0.5), week, 0.0)[0], 0)
+        # A five-hour meter's line runs over five hours: 3 h out, its line an hour on is 57%.
+        self.assertEqual(admission(self.meter(10.0, 3 * hour, session_rate=10.0), five_hours, 0.0),
+                         (4, 10.0, 3.0, 10.0, 57.0))
+        # Within the last hour the line is the target itself.
+        self.assertEqual(admission(self.meter(90.0, 0.5 * hour, session_rate=2.0), week, 0.0)[0], 2)
+        # With no window the line stands at the target from the window's opening: a meter just past its
+        # reset, which a week's line holds back, runs what keeps it under the target over the next hour.
+        self.assertEqual(admission(self.meter(2.7, 167 * hour, session_rate=3.2), week, 0.0)[0], 0)
+        self.assertEqual(admission(self.meter(2.7, 167 * hour, session_rate=3.2), flat, 0.0),
+                         (28, 2.7, 167.0, 3.2, 95.0))
+        self.assertEqual(admission(self.meter(93.0, 167 * hour, session_rate=3.2), flat, 0.0)[0], 0)
+        # A window with no reset known cannot be placed: its line stands at the target.
+        self.assertEqual(admission(self.meter(10.0, None, session_rate=20.0), week, 0.0), (4, 10.0, None, 20.0, 95.0))
         # At or past the target nothing is admitted, whatever the rate.
-        self.assertEqual(admission(self.meter(95.0, 2 * hour), pace, 0.0)[0], 0)
-        # No fitted rate yet, or a meter that is not moving: up to the max.
-        self.assertEqual(admission(self.meter(50.0, 50 * hour), pace, 0.0)[0], 4)
-        self.assertEqual(admission(self.meter(50.0, 50 * hour, session_rate=0.0), pace, 0.0)[0], 4)
-        # A reading whose window has since reset says nothing of the new window: up to the max.
-        self.assertEqual(admission(self.meter(94.0, 100.0, session_rate=5.0), pace, 200.0)[0], 4)
-        # A meter with no readings: up to the max; the reasons are given for the log.
-        self.assertEqual(admission(None, pace, 0.0), (4, None, None, None))
-        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.5), pace, 0.0), (3, 10.0, 50.0, 0.5))
+        self.assertEqual(admission(self.meter(95.0, 2 * hour), week, 0.0)[0], 0)
+        self.assertEqual(admission(self.meter(96.0, 2 * hour, session_rate=1.0), flat, 0.0)[0], 0)
+        # No fitted rate yet, or a meter that is not moving: one while under the line, none above it.
+        self.assertEqual(admission(self.meter(10.0, 50 * hour), week, 0.0)[0], 1)
+        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.0), week, 0.0)[0], 1)
+        self.assertEqual(admission(self.meter(80.0, 100 * hour), week, 0.0)[0], 0)
+        self.assertEqual(admission(self.meter(94.0, 2 * hour), flat, 0.0)[0], 1)
+        # A reading whose window has since reset says nothing of the new window, and a meter with no
+        # readings nothing at all: any number.
+        self.assertIsNone(admission(self.meter(94.0, 100.0, session_rate=5.0), week, 200.0)[0])
+        self.assertEqual(admission(None, week, 0.0), (None, None, None, None, None))
 
     def test_the_rate_a_session_is_the_meters_rate_over_the_sessions_in_flight_when_read(self):
         state = empty_state()
@@ -3626,13 +3663,16 @@ class Tests(unittest.TestCase):
         add_reading(state, "claude-week", "claude", 20.0, 50000.0, 3600.0, sessions=0)
         self.assertEqual(state["meters"]["claude-week"]["history"][-1]["sessions"], 0)
 
-    def test_meters_tables_take_a_target_and_a_max(self):
-        self.assertEqual(parse_dispatch(self.PACED).paces["claude-5h"], {"target": 95.0, "max": 3})
-        for bad in ('[meters.claude-week]\nmax = 4\n', '[meters.claude-week]\ntarget = 95\n',
-                    '[meters.claude-week]\ntarget = 0\nmax = 4\n', '[meters.claude-week]\ntarget = 101\nmax = 4\n',
-                    '[meters.claude-week]\ntarget = 95\nmax = -1\n', '[meters.claude-week]\ntarget = 95\nmax = 1.5\n',
-                    '[meters.claude-week]\ntarget = 95\nmax = 4\nfloor = 1\n', '[meters.Claude]\ntarget = 95\nmax = 4\n',
-                    '[meters]\nclaude-week = 95\n'):
+    def test_meters_tables_take_a_target_and_a_window_in_hours_or_none(self):
+        paces = parse_dispatch(self.PACED).paces
+        self.assertEqual(paces["claude-5h"], {"target": 95.0, "window": 5.0})
+        self.assertEqual(paces["gemini-week"], {"target": 90.0, "window": None})
+        for bad in ('[meters.claude-week]\nfloor = 4\n', '[meters.claude-week]\ntarget = 0\n',
+                    '[meters.claude-week]\ntarget = 101\n', '[meters.claude-week]\ntarget = true\n',
+                    '[meters.claude-week]\nwindow = 168\n', '[meters.claude-week]\ntarget = 95\nmax = 4\n',
+                    '[meters.claude-week]\ntarget = 95\nwindow = 0\n', '[meters.claude-week]\ntarget = 95\nwindow = -5\n',
+                    '[meters.claude-week]\ntarget = 95\nwindow = true\n', '[meters.claude-week]\ntarget = 95\nwindow = "7d"\n',
+                    '[meters.Claude]\ntarget = 95\n', '[meters]\nclaude-week = 95\n'):
             with self.assertRaises(ValueError, msg=bad):
                 parse_dispatch(bad)
 
@@ -3666,19 +3706,20 @@ class Tests(unittest.TestCase):
                 spec, waits = loop.choose("tool")
                 return spec.name if spec else [(s.name, paced) for s, _, paced in waits]
 
-            # Week behind pace (10% at 1%/h a session, 50 h out: 1 admitted), five-hour fine: opus takes the leaf.
-            readings((10.0, 1.0, 51 * hour), (10.0, 1.0, 5 * hour))
+            # Week behind its line (10% against 67.3%, 40%/h a session: 1 admitted), five-hour fine: opus
+            # takes the leaf.
+            readings((10.0, 40.0, 51 * hour), (10.0, 1.0, 5 * hour))
             in_flight()
             self.assertEqual(choice(), "opus")
             # One session already draws on the week, which admits one: the leaf goes to the next candidate.
             in_flight("sonnet")
             self.assertEqual(choice(), "carbon")
-            # The week has room, the five-hour window is ahead of pace: the five-hour window binds.
-            readings((10.0, 0.5, 51 * hour), (90.0, 2.0, 5 * hour))
+            # The week has room, the five-hour window is ahead of its line (90% against 38%): it binds.
+            readings((10.0, 5.0, 51 * hour), (90.0, 2.0, 5 * hour))
             in_flight("sonnet")
             self.assertEqual(choice(), "carbon")
             # The week admits two and the five-hour window three: opus again, with one in flight on each.
-            readings((10.0, 0.8, 51 * hour), (10.0, 2.0, 5 * hour))
+            readings((10.0, 25.0, 51 * hour), (10.0, 9.0, 5 * hour))
             in_flight("opus")
             self.assertEqual(choice(), "opus")
             # Every candidate held: Gemini's week at its target admits none; the leaf waits and is not claimed.
@@ -3697,7 +3738,7 @@ class Tests(unittest.TestCase):
                 def flush(self):
                     pass
             check(config=folder / "loop.toml", out=Lines(), loop=loop)
-            self.assertIn("meter claude-week: 10.0% used, 50.0 h to reset, 0.80%/h a session: admits 2 (target 95, max 4), "
+            self.assertIn("meter claude-week: 10.0% used, 50.0 h to reset, line 67.3%, 25.00%/h a session: admits 2 (target 95, window 168 h), "
                           "2 in flight", "".join(shown))
             self.assertIn("opus paced on claude-week (admits 2, 2 in flight); carbon paced on gemini-week (admits 0, 0 in flight)", "".join(shown))
 
@@ -3758,21 +3799,22 @@ class Tests(unittest.TestCase):
             pool.tune()
             pool.pace()
             self.assertEqual(len(lines()), 3)
-            self.assertIn("claude-week: 10.0% used, 50.0 h to reset, 1.00%/h a session: admits 1 (target 95, max 4)", lines()[0])
-            self.assertIn("claude-5h: no readings: admits 3 (target 95, max 3)", "\n".join(lines()))
+            self.assertIn("claude-week: 10.0% used, 50.0 h to reset, line 67.3%, 1.00%/h a session: admits 57 (target 95, window 168 h)",
+                          lines()[0])
+            self.assertIn("claude-5h: no readings: admits any (target 95, window 5 h)", "\n".join(lines()))
             # Unchanged admission is not logged again, though the hours to reset moved.
             clock[0] = 1.5 * hour
             pool.pace()
             self.assertEqual(len(lines()), 3)
-            # The meter falls behind its target's pace: the change is logged with what it came from.
+            # The meter runs ahead of its line: the change is logged with what it came from.
             set_meter(94.5, 1.0, 51 * hour)
             pool.pace()
             self.assertEqual(len(lines()), 4)
-            self.assertIn("claude-week: 94.5% used, 49.5 h to reset, 1.00%/h a session: admits 0 (target 95, max 4)", lines()[-1])
+            self.assertIn("claude-week: 94.5% used, 49.5 h to reset, line 67.6%, 1.00%/h a session: admits 0 (target 95, window 168 h)", lines()[-1])
             # step() is a tick, and recomputes it.
             set_meter(10.0, 1.0, 51 * hour)
             pool.step()
-            self.assertIn("admits 1", lines()[-1])
+            self.assertIn("admits 57", lines()[-1])
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
