@@ -40,8 +40,11 @@ the one its first round ran on, or its first session when it has no round, and i
 session on it, the skeptic included. One row per such offering: reviews taken, closed on a skeptic
 pass, closed refuted, and that cost. Sessions on no leaf (epic rounds, decisions, and the unrouted
 loop's rounds, which claim their own issue and record none) follow, one line per offering: sessions,
-of them limited, and weighted tokens. The sum column, the review costs and those lines add up to the
-accounted line, which over the whole record is every session once.
+of them limited, and weighted tokens. The sum column, the review weighted column and those lines are
+printed in hundredths of a million apportioned so the printed figures add to the accounted line:
+each starts at the hundredths its own tokens would print, and a hundredth moves onto the rows whose
+rounding discarded the most until the sum matches. Rounding each row on its own does not add up.
+The accounted line, over the whole record, is every session once.
 
 usage: tools/offering-report.py [--since WHEN] [--until WHEN]   (local time: 2026-11-12 or 2026-11-12T20:00)
        tools/offering-report.py --test                          (this script's own tests)
@@ -118,6 +121,41 @@ def taker_of(worked):
     return rounds[0] if rounds else worked[0]
 
 
+def millions(tokens):
+    """`tokens` as millions, to 0.01."""
+    return f"{tokens / 1e6:.2f}"
+
+
+def printed_hundredths(tokens):
+    """The hundredths of a million that `millions` shows, as an int."""
+    whole, frac = millions(tokens).split(".")
+    return int(whole) * 100 + int(frac)
+
+
+def apportioned(parts, total):
+    """Each part as millions to 0.01, the strings adding to `millions(total)`.
+
+    A part starts at the hundredths printing it on its own would show. That can miss the total's
+    hundredths, so the difference moves a hundredth at a time onto the parts whose own rounding
+    discarded the most in that direction. A part of zero stays 0.00.
+    """
+    target = printed_hundredths(total)
+    got = [printed_hundredths(part) for part in parts]
+    delta = target - sum(got)
+    step = 1 if delta > 0 else -1
+
+    def discarded(part, shown):
+        return part / 10_000 - shown
+
+    while delta != 0:
+        way = [i for i in range(len(parts)) if parts[i] != 0 and got[i] + step >= 0]
+        assert way, "the printed total's hundredths have nowhere to land"
+        pick = max(way, key=lambda i: step * discarded(parts[i], got[i]))
+        got[pick] += step
+        delta -= step
+    return [f"{value / 100:.2f}" for value in got]
+
+
 def report(sessions, tracker, since=-math.inf, until=math.inf):
     """The lines of the report over the sessions of the record and the issues of the tracker."""
     issues = {issue["id"]: issue for issue in tracker}
@@ -178,16 +216,6 @@ def report(sessions, tracker, since=-math.inf, until=math.inf):
         for session in worked:
             spend(row, session)
         place(worked)
-    lines = ["leaves by the work kind and the offering that took them; cost a landed leaf, every session counted, "
-             "in millions of weighted tokens and weekly points of the Claude plan",
-             f"{'kind':<8}{'offering':<20}{'taken':>6}{'landed':>7}{'first':>6}{'escalated':>10}{'refuted':>8}"
-             f"{'weighted':>10}{'points':>8}{'sum':>8}"]
-    for (kind, offering), row in sorted(rows.items()):
-        each = (lambda total: total / row["landed"]) if row["landed"] else None
-        lines.append(
-            f"{kind:<8}{offering:<20}{row['taken']:>6}{row['landed']:>7}{row['first']:>6}{row['escalated']:>10}"
-            f"{row['refuted']:>8}{(f'{each(row['weighted']) / 1e6:.2f}' if each else '-'):>10}"
-            f"{(f'{each(row['points']):.3f}' if each and row['rated'] else '-'):>8}{row['weighted'] / 1e6:>8.2f}")
     review_rows = {}
     for id, worked in reviews.items():
         taker = taker_of(worked)
@@ -203,12 +231,6 @@ def report(sessions, tracker, since=-math.inf, until=math.inf):
         for session in worked:
             spend(row, session)
         place(worked)
-    lines.append("reviews by the offering that took them; taken, closed on a skeptic pass, closed refuted, "
-                 "and the cost of every session on them")
-    lines.append(f"{'offering':<20}{'taken':>6}{'passed':>8}{'refuted':>8}{'weighted':>10}{'points':>8}")
-    for offering, row in sorted(review_rows.items()):
-        lines.append(f"{offering:<20}{row['taken']:>6}{row['passed']:>8}{row['refuted']:>8}"
-                     f"{row['weighted'] / 1e6:>10.2f}{(f'{row['points']:.3f}' if row['rated'] else '-'):>8}")
     offerings = {}
     for session in other:
         if not since <= session["started"] < until:
@@ -218,10 +240,39 @@ def report(sessions, tracker, since=-math.inf, until=math.inf):
         line[1] += session["limited"]
         line[2] += session["weighted"] or 0
         place([session])
+    leaf_order = sorted(rows)
+    review_order = sorted(review_rows)
+    other_order = sorted(offerings)
+    parts = ([rows[key]["weighted"] for key in leaf_order]
+             + [review_rows[key]["weighted"] for key in review_order]
+             + [offerings[key][2] for key in other_order])
+    shown_millions = apportioned(parts, shown[1])
+    n_leaves, n_reviews = len(leaf_order), len(review_order)
+    leaf_millions = shown_millions[:n_leaves]
+    review_millions = shown_millions[n_leaves:n_leaves + n_reviews]
+    other_millions = shown_millions[n_leaves + n_reviews:]
+    lines = ["leaves by the work kind and the offering that took them; cost a landed leaf, every session counted, "
+             "in millions of weighted tokens and weekly points of the Claude plan",
+             f"{'kind':<8}{'offering':<20}{'taken':>6}{'landed':>7}{'first':>6}{'escalated':>10}{'refuted':>8}"
+             f"{'weighted':>10}{'points':>8}{'sum':>8}"]
+    for (kind, offering), millions_text in zip(leaf_order, leaf_millions):
+        row = rows[(kind, offering)]
+        each = (lambda total: total / row["landed"]) if row["landed"] else None
+        lines.append(
+            f"{kind:<8}{offering:<20}{row['taken']:>6}{row['landed']:>7}{row['first']:>6}{row['escalated']:>10}"
+            f"{row['refuted']:>8}{(f'{each(row['weighted']) / 1e6:.2f}' if each else '-'):>10}"
+            f"{(f'{each(row['points']):.3f}' if each and row['rated'] else '-'):>8}{millions_text:>8}")
+    lines.append("reviews by the offering that took them; taken, closed on a skeptic pass, closed refuted, "
+                 "and the cost of every session on them")
+    lines.append(f"{'offering':<20}{'taken':>6}{'passed':>8}{'refuted':>8}{'weighted':>10}{'points':>8}")
+    for offering, millions_text in zip(review_order, review_millions):
+        row = review_rows[offering]
+        lines.append(f"{offering:<20}{row['taken']:>6}{row['passed']:>8}{row['refuted']:>8}"
+                     f"{millions_text:>10}{(f'{row['points']:.3f}' if row['rated'] else '-'):>8}")
     lines.append(f"{'on no leaf':<28}{'sessions':>9}{'limited':>8}{'weighted':>10}")
-    lines += [f"{offering:<28}{count:>9}{limited:>8}{weighted / 1e6:>10.2f}"
-              for offering, (count, limited, weighted) in sorted(offerings.items())]
-    lines.append(f"accounted {shown[0]} sessions, {shown[1] / 1e6:.2f}M weighted")
+    lines += [f"{offering:<28}{offerings[offering][0]:>9}{offerings[offering][1]:>8}{millions_text:>10}"
+              for offering, millions_text in zip(other_order, other_millions)]
+    lines.append(f"accounted {shown[0]} sessions, {millions(shown[1])}M weighted")
     lines += [f"no rate for {model}: its sessions add no points" for model in sorted(unrated)]
     if saw_grok:
         lines.append("grok: a landed leaf's cost is the weighted column, in millions of weighted tokens; "
@@ -382,6 +433,52 @@ class Tests(unittest.TestCase):
             no_leaf.append(line.split())
         self.assertEqual(no_leaf, [["opus", "1", "0", "0.10"]])
         self.assertIn("accounted 7 sessions, 11.10M weighted", lines)
+
+    def cents(self, text):
+        whole, frac = text.split(".")
+        return int(whole) * 100 + int(frac)
+
+    def column_hundredths(self, lines):
+        """Hundredths of a million on the sum column, the review weighted column and the on-no-leaf column."""
+        reviews_at = next(i for i, line in enumerate(lines) if line.startswith("reviews "))
+        no_leaf_at = next(i for i, line in enumerate(lines) if line.startswith("on no leaf"))
+        leaf_header = next(i for i, line in enumerate(lines) if line.split()[:1] == ["kind"])
+        sums = [self.cents(line.split()[-1]) for line in lines[leaf_header + 1:reviews_at]]
+        reviews = [self.cents(line.split()[-2]) for line in lines[reviews_at + 2:no_leaf_at]]
+        others = []
+        for line in lines[no_leaf_at + 1:]:
+            if line.startswith(("accounted", "no rate", "grok:")):
+                break
+            others.append(self.cents(line.split()[-1]))
+        accounted = next(line for line in lines if line.startswith("accounted "))
+        total = self.cents(accounted.split()[3][:-1])
+        return sums, reviews, others, int(accounted.split()[1]), total
+
+    def sessions_whose_rows_do_not_round_cancel(self, weight):
+        """One leaf, one review and one session on no leaf, each of `weight` tokens."""
+        self.run_session("a-1.1", "opus", kind="proof", weighted=weight)
+        self.run_session("r-1.1", "opus", kind="review", weighted=weight)
+        self.run_session(None, "carbon-high", kind=None, weighted=weight)
+        lines = self.lines([
+            self.issue("a-1.1", labels=("kind:proof",)),
+            self.issue("r-1.1", labels=("review",), reason="skeptic pass: stands"),
+        ])
+        sums, reviews, others, count, total = self.column_hundredths(lines)
+        own = self.cents(f"{weight / 1e6:.2f}")
+        together = self.cents(f"{3 * weight / 1e6:.2f}")
+        self.assertEqual((len(sums), len(reviews), len(others), count), (1, 1, 1, 3))
+        self.assertEqual(total, together)
+        # Rounding each row on its own misses the accounted line; the fixture is that case.
+        self.assertNotEqual(3 * own, together)
+        self.assertEqual(sum(sums) + sum(reviews) + sum(others), total)
+
+    def test_rows_that_round_up_past_the_accounted_line_still_add_to_it(self):
+        # 1.006M prints as 1.01, and three of them are 3.018M, which prints as 3.02.
+        self.sessions_whose_rows_do_not_round_cancel(1_006_000)
+
+    def test_rows_that_round_down_under_the_accounted_line_still_add_to_it(self):
+        # 1.004M prints as 1.00, and three of them are 3.012M, which prints as 3.01.
+        self.sessions_whose_rows_do_not_round_cancel(1_004_000)
 
 
 if __name__ == "__main__":
