@@ -10,6 +10,7 @@ pub mod free_emptied;
 pub mod free_emptied_two;
 pub mod free_partial;
 pub mod heap;
+pub mod heap_alloc;
 pub mod heap_objects;
 pub mod large;
 pub mod one_page;

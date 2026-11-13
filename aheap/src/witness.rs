@@ -115,7 +115,9 @@
 //! buddy-run object's runs are followed through the page buddy's cuts and frees (`tracks`); the large
 //! object's span, one the source did not hold, is reserved and given back whole, which leaves the
 //! spans as they were. A refusal stops the sequence after freeing what it took, and is the source's
-//! refusal of a request one of the three allocations made (`heap_refused`).
+//! refusal of a request one of the three allocations made (`heap_refused`). Its allocation witness
+//! starts from `Heap::new(0)` and returns one slot of the smallest class with the heap that holds it,
+//! granted whenever the source recorded no refusal.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -3313,6 +3315,58 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S, token: &mut Tracked<S::T
         assert(h6.live() =~= ISet::<int>::empty());
     }
     (h, true)
+}
+
+/// From `Heap::new(0)` over `src`, allocates one slot of the smallest class and returns the heap
+/// with what `alloc` returned: a live slot of `SLOT_MIN` bytes with the permission to its bytes
+/// whenever the source recorded no refusal, and otherwise `None`, the source having recorded one
+/// refusal and holding the spans it held at the start.
+pub fn witness_heap_alloc<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (
+    Heap,
+    Option<(*mut u8, Tracked<PointsToRaw>)>,
+))
+    requires
+        old(src).serves(old(token)@),
+        old(src)@.wf(),
+    ensures
+        final(src).serves(final(token)@),
+        r.0.wf(final(src)@),
+        r.0.spares() == 0,
+        final(src)@.refusals == old(src)@.refusals ==> r.1 is Some,
+        r.1 is Some ==> {
+            let (p, perm) = r.1->Some_0;
+            &&& r.0.live() == ISet::<int>::empty().insert(p@.addr as int)
+            &&& perm@.is_range(p@.addr as int, SLOT_MIN as int)
+            &&& perm@.provenance() == old(src)@.provenance
+            &&& p@.provenance == old(src)@.provenance
+        },
+        r.1 is None ==> {
+            let f = final(src)@.refusals.last();
+            &&& r.0.live() == ISet::<int>::empty()
+            &&& final(src)@.provenance == old(src)@.provenance
+            &&& final(src)@.refusals == old(src)@.refusals.push(f)
+            &&& final(src)@.spans == old(src)@.spans
+        },
+{
+    let ghost start = src@;
+    let mut h = Heap::new(0);
+    let ghost h0 = h;
+    proof {
+        lemma_tracks_new(start, h0.pb());
+        lemma_class(0);
+        assert(class_for(1, 1) == 0);
+        h0.lemma_parts(start);
+    }
+    let got = h.alloc(src, token, 1, 1);
+    proof {
+        if got is None {
+            lemma_tracks_slab_refused(start, h0.store(), h0.pb(), h.pb(), start, src@, slab_order(0));
+            h.lemma_parts(src@);
+            lemma_tracks_end(start.recorded(src@.refusals.last()), h.pb(), src@);
+            assert(src@.refusals.len() == start.refusals.len() + 1);
+        }
+    }
+    (h, got)
 }
 
 } // verus!
