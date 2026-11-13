@@ -13,6 +13,7 @@ pub mod heap;
 pub mod heap_alloc;
 pub mod heap_objects;
 pub mod large;
+pub mod layout_fits;
 pub mod one_page;
 pub mod page_buddy;
 pub mod page_buddy_many;

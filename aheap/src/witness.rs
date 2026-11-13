@@ -117,7 +117,8 @@
 //! spans as they were. A refusal stops the sequence after freeing what it took, and is the source's
 //! refusal of a request one of the three allocations made (`heap_refused`). Its allocation witness
 //! starts from `Heap::new(0)` and returns one slot of the smallest class with the heap that holds it,
-//! granted whenever the source recorded no refusal.
+//! granted whenever the source recorded no refusal, and its layout witness checks `layout_fits` on a
+//! slot's layout, a buddy run's, a large object's and an alignment that does not divide the page.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -3367,6 +3368,23 @@ pub fn witness_heap_alloc<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Tok
         }
     }
     (h, got)
+}
+
+/// Checks `layout_fits` on a slot's layout, a buddy run's and a large object's, which fit, and on an
+/// alignment that does not divide the page, which does not.
+pub fn witness_layout_fits() -> (r: (bool, bool, bool, bool))
+    ensures
+        r.0,
+        r.1,
+        r.2,
+        !r.3,
+{
+    (
+        crate::heap::layout_fits(1, 1),
+        crate::heap::layout_fits(PAGE_BYTES + 1, PAGE_BYTES),
+        crate::heap::layout_fits(BLOCK_BYTES + 1, PAGE_BYTES),
+        crate::heap::layout_fits(1, 3),
+    )
 }
 
 } // verus!

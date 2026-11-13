@@ -40,7 +40,6 @@ kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again
 kernel/verified/capability/thread.rs	check_current	true
 kernel/verified/capability/unmap.rs	unmap_at	Some
-aheap/src/heap.rs	layout_fits	true
 aeager/src/eager.rs	Eager::reserve	Some
 aeager/src/eager.rs	Eager::back	Some
 aeager/src/eager.rs	Eager::release	returns
