@@ -117,7 +117,7 @@ impl CapKernel {
         &&& Self::mappings_shrunk(pre, post)
         &&& pre.list.nodes@[node as int].kind is Mapping
         &&& !post.list.nodes@[node as int].live
-        &&& forall|x: int| 0 <= x < NODE_SPACE && x != node ==> #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live
+        &&& forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != node ==> post.list.nodes@[x].live == pre.list.nodes@[x].live
             && post.list.nodes@[x].kind == pre.list.nodes@[x].kind
         &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == pre.list.nodes@[x].depth
         &&& post.list.parent == pre.list.parent
@@ -177,18 +177,7 @@ impl CapKernel {
                 || post.list.nodes@[x].live != pre.list.nodes@[x].live) ==> pre.list.nodes@[x].kind is Mapping
                 && !post.list.nodes@[x].live,
     {
-        let p = address_path(va);
-        let tree = tree_of(&pre.table_pages, &pre.spaces);
-        let t = walk_table(tree, pre.payload_of(pre.tables.node_of(root, slot)).base, p)->0;
-        let node = mapping_node(t, p.l1);
-        assert(Self::entry_unmapped(pre, post, root, slot, p));
-        assert forall|x: int| 0 <= x < NODE_SPACE && (#[trigger] post.list.nodes@[x].kind != pre.list.nodes@[x].kind
-            || post.list.nodes@[x].live != pre.list.nodes@[x].live) implies pre.list.nodes@[x].kind is Mapping
-            && !post.list.nodes@[x].live by {
-            if x != node {
-                assert(post.list.nodes@[x].live == pre.list.nodes@[x].live);
-            }
-        }
+        assert(Self::entry_unmapped(pre, post, root, slot, address_path(va)));
     }
 
     /// Unmaps the entry the address `va` and the level `level` name in the space of the capability at
@@ -312,9 +301,6 @@ impl CapKernel {
         let node = mapping_node(t, p.l1);
         let pages = record_pages(pre.mappings@[node]);
         assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&mid.table_pages, &mid.spaces));
-        assert forall|x: int| 0 <= x < NODE_SPACE && x != node implies #[trigger] post.list.nodes@[x].kind == pre.list.nodes@[x].kind by {
-            assert(mid.list.nodes@[x].live == pre.list.nodes@[x].live);
-        }
         assert(Self::mapping_unlinked(pre, post, node));
         assert(post.cores == mid.cores && post.iommus == mid.iommus && post.stale_epoch == mid.stale_epoch && post.blocks == mid.blocks);
         if post.flush_awaited() {
