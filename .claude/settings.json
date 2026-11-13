@@ -1,8 +1,6 @@
 {
   "permissions": {
     "deny": [
-      "Read(//usr/src/kernels/**)",
-      "Read(//usr/src/debug/**)",
       "WebFetch(domain:elixir.bootlin.com)",
       "WebFetch(domain:kernel.org)",
       "WebFetch(domain:*.kernel.org)",
