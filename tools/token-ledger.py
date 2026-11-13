@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 
-"""The tokens each Beads issue cost, out of the transcripts Claude Code keeps for this project.
+"""The tokens each Beads issue cost, out of the transcripts Claude Code and Grok keep for this project.
 
 Claude Code writes one transcript per session under ~/.claude/projects/<the session's directory,
 every character not a letter or digit made '-'>, and one per agent the session spawned under
@@ -22,7 +22,18 @@ A call goes to the issue its transcript was working:
 - a prover's or a skeptic's, the issue or review its first prompt names;
 - any other, none, which the page counts at the root.
 
-The ledger keeps what it harvested after Claude Code removes a transcript, so the history outlives
+Grok writes one directory per session under ~/.grok/sessions/<the session's cwd, percent-encoded>,
+and the transcript is that directory's updates.jsonl. A turn_completed line stamps the turn's token
+buckets (inputTokens, cachedReadTokens, cacheCreationTokens, outputTokens) and costUsdTicks, 10^10
+ticks a dollar. The ledger stores the buckets in the same columns as a Claude call and does not store
+the dollar stamp: list price is not the unit. inputTokens counts the cache buckets inside it when
+totalTokens is inputTokens plus outputTokens, and those buckets then go in their own columns. The
+prompt id is the request id, so a turn a resumed session repeats counts once. The kind is round,
+prover or skeptic when the first user message is the loop's prompt for that agent, and a session's
+otherwise; the issue is read by the same rules as a Claude transcript. A session whose cwd is not
+this project root or somewhere below it is not this project's.
+
+The ledger keeps what it harvested after Claude Code or Grok removes a transcript, so the history outlives
 the transcripts' retention.
 
 A harvest also keeps the plan's meter as Claude Code last fetched it (`cachedUsageUtilization` in
@@ -46,6 +57,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,6 +71,9 @@ WRITE = re.compile(rf"\bbd\s+(?:update|close)\s+({ISSUE})\b")
 PROMPTED = re.compile(rf"\b(?:Issue|Review|Epic):?\s+({ISSUE})\b")
 FIRST_ID = re.compile(rf'"id":\s*"({ISSUE})"')
 PINNED = re.compile(rf"^Run one round\. Issue ({ISSUE}) is yours\b")
+ROUND_PIN = re.compile(rf"Run one round\. Issue ({ISSUE}) is yours\b")
+PROVER_PIN = re.compile(rf"Issue ({ISSUE}), worktree\b")
+SKEPTIC_PIN = re.compile(rf"Review ({ISSUE})\. Your input is the review's last Skeptic input note")
 NAMED_BY_PROMPT = ("prover", "skeptic")
 SESSION = "session"
 
@@ -219,8 +234,169 @@ def follow(db, file, state, kind, raw):
                     claim(db, file, state, kind, found.group(1))
 
 
-def read(db, path, kind):
-    """Take in what was appended to that transcript since the last harvest; the number of lines taken."""
+def grok_text(update):
+    """The text of a Grok user message."""
+    content = update.get("content")
+    return content.get("text") or "" if isinstance(content, dict) else ""
+
+
+def grok_result_text(update):
+    """The text of a Grok tool result."""
+    content = update.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        inner = item.get("content") if isinstance(item, dict) else None
+        if isinstance(inner, dict) and isinstance(inner.get("text"), str):
+            parts.append(inner["text"])
+        elif isinstance(inner, str):
+            parts.append(inner)
+    return "\n".join(parts)
+
+
+def grok_prompt(text):
+    """The loop's prompt inside a Grok user message, in the shape a Claude transcript's first user line has."""
+    found = ROUND_PIN.search(text)
+    if found:
+        return found.group(0)
+    if "Run one round." in text:
+        return "Run one round."
+    found = PROVER_PIN.search(text) if "Prover input note" in text else None
+    if found:
+        return f"Issue {found.group(1)}, worktree x. Your input is the issue's last Prover input note."
+    found = SKEPTIC_PIN.search(text)
+    if found:
+        return found.group(0)
+    return ""
+
+
+def grok_buckets(usage):
+    """The ledger's four columns from the usage object a Grok turn stamps."""
+    cached = int(usage.get("cachedReadTokens") or 0)
+    created = int(usage.get("cacheCreationTokens") or 0)
+    incoming = int(usage.get("inputTokens") or 0)
+    output = int(usage.get("outputTokens") or 0)
+    # totalTokens is inputTokens + outputTokens, so a cache bucket that fits in inputTokens was counted
+    # there. It is stored in its own column, as a Claude call's cache buckets are.
+    if usage.get("totalTokens") == incoming + output and incoming >= cached + created:
+        incoming -= cached + created
+    return {"input_tokens": incoming, "cache_creation_input_tokens": created,
+            "cache_read_input_tokens": cached, "output_tokens": output}
+
+
+def grok_lines(raw, model):
+    """The Claude-shaped lines one Grok updates.jsonl line counts as, or none."""
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return ()
+    update = (obj.get("params") or {}).get("update")
+    if not isinstance(update, dict):
+        return ()
+    event = update.get("sessionUpdate")
+    if event == "user_message_chunk":
+        content = grok_prompt(grok_text(update))
+        if not content:
+            return ()
+        return (json.dumps({"type": "user", "message": {"content": content}}, separators=(",", ":")).encode(),)
+    if event == "tool_call":
+        command = (update.get("rawInput") or {}).get("command") if isinstance(update.get("rawInput"), dict) else None
+        if not isinstance(command, str) or not update.get("toolCallId"):
+            return ()
+        line = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": update["toolCallId"], "name": "Bash", "input": {"command": command}}]}}
+        return (json.dumps(line, separators=(",", ":")).encode(),)
+    if event == "tool_call_update":
+        text = grok_result_text(update)
+        if not text or not update.get("toolCallId"):
+            return ()
+        line = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": update["toolCallId"], "content": text}]}}
+        return (json.dumps(line, separators=(",", ":")).encode(),)
+    if event != "turn_completed":
+        return ()
+    usage = update.get("usage")
+    prompt = update.get("prompt_id")
+    stamp = obj.get("timestamp")
+    if not isinstance(usage, dict) or not isinstance(prompt, str) or not isinstance(stamp, str):
+        return ()
+    names = [name for name in (usage.get("modelUsage") or {}) if isinstance(name, str)]
+    line = {"type": "assistant", "requestId": prompt, "timestamp": stamp, "message": {
+        "model": names[0] if len(names) == 1 else model, "usage": grok_buckets(usage)}}
+    return (json.dumps(line, separators=(",", ":")).encode(),)
+
+
+def grok_directories(sessions, root):
+    """The Grok session directories of runs whose cwd is this project root or anywhere below it."""
+    if not sessions.is_dir():
+        return []
+    root = Path(root).resolve()
+    found = []
+    for path in sessions.iterdir():
+        if not path.is_dir():
+            continue
+        cwd = Path(urllib.parse.unquote(path.name))
+        if cwd == root or root in cwd.parents:
+            found.append(path)
+    return sorted(found)
+
+
+def grok_kind(session_dir):
+    """The agent a Grok session was, from the loop's prompt in its first user message, and its model."""
+    model, agent = "", None
+    try:
+        summary = json.loads((session_dir / "summary.json").read_text())
+        model = summary.get("current_model_id") or ""
+        if summary.get("agent_name") in ("round", "prover", "skeptic"):
+            agent = summary["agent_name"]
+    except (OSError, ValueError):
+        pass
+    text = ""
+    try:
+        with (session_dir / "updates.jsonl").open() as stream:
+            for raw in stream:
+                if "user_message_chunk" not in raw:
+                    continue
+                try:
+                    update = json.loads(raw)["params"]["update"]
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if isinstance(update, dict) and update.get("sessionUpdate") == "user_message_chunk":
+                    text = grok_text(update)
+                    break
+    except OSError:
+        pass
+    if "Run one round." in text:
+        return "round", model
+    if "Prover input note" in text:
+        return "prover", model
+    if "Skeptic input note" in text:
+        return "skeptic", model
+    return agent or SESSION, model
+
+
+def grok_sessions(directory):
+    """Each Grok session's transcript in that directory, with its kind and model, oldest first."""
+    found = []
+    for path in directory.iterdir():
+        if path.is_dir() and (path / "updates.jsonl").is_file():
+            found.append(path)
+
+    def created(path):
+        try:
+            return json.loads((path / "summary.json").read_text()).get("created_at") or ""
+        except (OSError, ValueError):
+            return ""
+
+    for path in sorted(found, key=lambda path: (created(path), path.name)):
+        kind, model = grok_kind(path)
+        yield path / "updates.jsonl", kind, model
+
+
+def read(db, path, kind, adapt=None):
+    """Take in what was appended to that transcript since the last harvest; the number of lines taken.
+    adapt turns one source line into the Claude-shaped lines follow counts, when the transcript is not Claude's."""
     size = path.stat().st_size
     db.execute("begin immediate")
     try:
@@ -241,10 +417,11 @@ def read(db, path, kind):
             whole = data.rfind(b"\n") + 1
             for raw in data[:whole].split(b"\n")[:-1]:
                 if raw.strip():
-                    try:
-                        follow(db, file, state, kind, raw)
-                    except (ValueError, KeyError, TypeError, AttributeError):
-                        pass  # a line of a shape this does not know carries nothing it counts
+                    for line in (adapt(raw) if adapt else (raw,)):
+                        try:
+                            follow(db, file, state, kind, line)
+                        except (ValueError, KeyError, TypeError, AttributeError):
+                            pass  # a line of a shape this does not know carries nothing it counts
                     taken += 1
             offset += whole
         db.execute("insert or replace into files values (?, ?, ?, ?)", (str(path), file, offset, json.dumps(state)))
@@ -274,7 +451,7 @@ def reading(account):
 
 def harvest(ledger, home, root):
     """Bring the ledger up to date with every transcript of this project and with the meter, out of
-    what Claude Code keeps under that home directory; the number of new lines read."""
+    what Claude Code and Grok keep under that home directory; the number of new lines read."""
     db = connect(ledger)
     try:
         found = reading(home / ".claude.json")
@@ -289,6 +466,13 @@ def harvest(ledger, home, root):
                         taken += read(db, path, kind)
                 except FileNotFoundError:
                     pass  # removed by Claude Code's retention between the listing and the read
+        for directory in grok_directories(home / ".grok" / "sessions", root):
+            for path, kind, model in grok_sessions(directory):
+                try:
+                    if path.stat().st_size != known.get(str(path)):
+                        taken += read(db, path, kind, lambda raw, model=model: grok_lines(raw, model))
+                except FileNotFoundError:
+                    pass  # removed between the listing and the read
         return taken
     finally:
         db.close()
@@ -548,6 +732,43 @@ class Tests(unittest.TestCase):
         self.meter(1000, 60, 20)  # an older fetch harvested later is not the newest
         self.kept()
         self.assertEqual(newest(self.ledger)[:2], (2000, 4))
+
+    def grok_session(self, cwd, name, lines, model="grok-4.7", created="2026-11-13T12:00:00Z"):
+        """One Grok session directory under the percent-encoded cwd, as ~/.grok/sessions keeps it."""
+        session = self.home / ".grok" / "sessions" / urllib.parse.quote(cwd, safe="") / name
+        session.mkdir(parents=True)
+        (session / "summary.json").write_text(json.dumps({"current_model_id": model, "created_at": created}))
+        self.write(session / "updates.jsonl", lines)
+        return session
+
+    def test_a_grok_session_counts_under_the_issue_its_prompt_names(self):
+        usage = {"inputTokens": 1000, "cachedReadTokens": 400, "cacheCreationTokens": 0, "outputTokens": 10,
+                 "reasoningTokens": 4, "totalTokens": 1010, "costUsdTicks": 50_000_000_000, "modelUsage": {"grok-4.7": {}}}
+        turn = {"timestamp": "2026-11-13T12:10:00.152Z", "method": "session/update", "params": {"update": {
+            "sessionUpdate": "turn_completed", "prompt_id": "prompt-1", "usage": usage}}}
+        self.grok_session("/work/atmo.src", "sess-round", [
+            {"timestamp": "2026-11-13T12:00:00Z", "method": "session/update", "params": {"update": {
+                "sessionUpdate": "user_message_chunk", "content": {"type": "text", "text":
+                    "You run one round.\n\nRun one round. Issue atmo-1.6 is yours (claimed for route tool; take no other issue)."}}}},
+            turn])
+        # A resumed session repeats the turn. The prompt id is the request id, so the turn counts once.
+        self.grok_session("/work/atmo.src", "sess-again", [turn], created="2026-11-13T13:00:00Z")
+        self.grok_session("/work/atmo.src/main", "sess-prover", [
+            {"timestamp": "2026-11-13T12:20:00Z", "method": "session/update", "params": {"update": {
+                "sessionUpdate": "user_message_chunk", "content": {"type": "text", "text":
+                    "Prove it.\n\nIssue atmo-2.2, worktree /work/atmo-2.2. Your input is the issue's last Prover input note."}}}},
+            {"timestamp": "2026-11-13T12:21:00Z", "method": "session/update", "params": {"update": {
+                "sessionUpdate": "tool_call", "toolCallId": "c1", "rawInput": {"command": "bd update atmo-9 --claim"}}}},
+            {"timestamp": "2026-11-13T12:30:00Z", "method": "session/update", "params": {"update": {
+                "sessionUpdate": "turn_completed", "prompt_id": "prompt-2", "usage": {
+                    "inputTokens": 50, "cachedReadTokens": 0, "cacheCreationTokens": 0, "outputTokens": 5,
+                    "totalTokens": 55, "modelUsage": {"grok-4.7": {}}}}}}])
+        self.grok_session("/other", "sess-out", [
+            {"timestamp": "2026-11-13T12:00:00Z", "method": "session/update", "params": {"update": {
+                "sessionUpdate": "turn_completed", "prompt_id": "prompt-out", "usage": {
+                    "inputTokens": 9_000_000, "outputTokens": 1, "totalTokens": 9_000_001, "modelUsage": {"grok-4.7": {}}}}}}])
+        self.assertEqual(self.issues(), {"atmo-1.6": [600, 0, 400, 10, 1], "atmo-2.2": [50, 0, 0, 5, 1]})
+        self.assertEqual([kind for _, kind, _ in spent(self.ledger)[1]], ["prover", "round"])
 
     def test_an_account_file_with_no_reading_adds_none_and_fails_nothing(self):
         self.write(self.sessions / "s1.jsonl", [self.call()])

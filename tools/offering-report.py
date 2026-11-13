@@ -24,12 +24,15 @@ first round started in it; what became of it is read as of now. For each work ki
   weekly points of the Claude plan. An offering that hands its hard leaves to a dearer one carries
   that cost.
 
-Points are weighted tokens at the rates tools/leaf-cost.py measured (RATES there, one place), by the
-model id the session's model flag stands for (MODEL_IDS). A session whose model has no rate, every
-agy session among them, adds no points, and its model is named on a last line; its offering's points
-are `-` when none of its sessions has a rate. Sessions on no leaf (reviews, epic rounds, and the
-unrouted loop's rounds, which claim their own issue and record none) follow, one line per offering:
-sessions, of them limited, and weighted tokens.
+Points are weekly points of the Claude plan: weighted tokens at the rates tools/leaf-cost.py measured
+(RATES there, one place), by the model id the session's model flag stands for (MODEL_IDS). A session
+on another harness has no such rate. An agy session adds no points and its model is named on a last
+line; its offering's points are `-` when none of its sessions has a rate. A grok session is not
+unrated. The plan is a flat subscription, so it has no weekly points, and its cost is the weighted
+column, in millions of weighted tokens. The API-equivalent dollars Grok stamps on a session are list
+price, which is not a unit here. Sessions on no leaf (reviews, epic rounds, and the unrouted loop's
+rounds, which claim their own issue and record none) follow, one line per offering: sessions, of them
+limited, and weighted tokens.
 
 usage: tools/offering-report.py [--since WHEN] [--until WHEN]   (local time: 2026-11-12 or 2026-11-12T20:00)
        tools/offering-report.py --test                          (this script's own tests)
@@ -99,8 +102,11 @@ def report(sessions, tracker, since=-math.inf, until=math.inf):
     issues = {issue["id"]: issue for issue in tracker}
     refuted = refutations(tracker)
     by_leaf, other, unrated = {}, [], set()
+    saw_grok = False
     for session in sorted(sessions, key=lambda session: session["started"]):
-        if rate(session) is None:
+        if session["harness"] == "grok":
+            saw_grok = True
+        elif rate(session) is None:
             unrated.add(f"{session['harness']} {session['model'] or 'default'}")
         issue = issues.get(session["issue"])
         if issue is not None and a_leaf(issue):
@@ -148,6 +154,9 @@ def report(sessions, tracker, since=-math.inf, until=math.inf):
     lines += [f"{offering:<28}{count:>9}{limited:>8}{weighted / 1e6:>10.2f}"
               for offering, (count, limited, weighted) in sorted(offerings.items())]
     lines += [f"no rate for {model}: its sessions add no points" for model in sorted(unrated)]
+    if saw_grok:
+        lines.append("grok: a landed leaf's cost is the weighted column, in millions of weighted tokens; "
+                     "the plan is a flat subscription, so no weekly points")
     return lines
 
 
@@ -180,7 +189,8 @@ class Tests(unittest.TestCase):
     def run_session(self, issue, offering, session="round", kind="tool", weighted=1_000_000, retry=None, limited=0, at=None):
         """One row as tools/loop.py writes it, on an offering of the loop.toml the tests assume."""
         harness, model = {"opus": ("claude", "opus"), "fable-xhigh": ("claude", "fable"),
-                          "carbon-high": ("agy", "gemini-4-carbon-high")}[offering]
+                          "carbon-high": ("agy", "gemini-4-carbon-high"),
+                          "grok-high": ("grok", "grok-4.7")}[offering]
         self.minute += 1
         self.loop["record_session"](self.folder, {
             "actor": "loop-1", "session": session, "issue": issue, "work_kind": kind, "route": kind, "offering": offering,
@@ -233,6 +243,22 @@ class Tests(unittest.TestCase):
         self.run_session("a-1.2", "opus", at=self.NOON)
         lines = self.lines([self.issue("a-1.1"), self.issue("a-1.2", status="open")], since=self.NOON - 3600)
         self.assertEqual(self.row(lines, "tool", "opus")[:3], ["1", "0", "0"])
+
+    def test_a_grok_offering_costs_weighted_tokens_and_is_not_unrated(self):
+        # g-1.1 lands; g-1.2 ends its attempt and lands; g-1.3 lands, then a review of g-1 closes refuted after it.
+        self.run_session("g-1.1", "grok-high", weighted=2_000_000)
+        self.run_session("g-1.2", "grok-high", retry="g-1.2", weighted=1_000_000)
+        self.run_session("g-1.3", "grok-high", weighted=3_000_000)
+        self.run_session("c-1.1", "carbon-high", weighted=1_000_000)
+        tracker = [self.issue("g-1.1"), self.issue("g-1.2"), self.issue("g-1.3", closed=self.NOON + 3600),
+                   self.issue("g-1.9", reason="refuted: criterion 1", labels=("review",), closed=self.NOON + 7200),
+                   self.issue("c-1.1")]
+        lines = self.lines(tracker)
+        self.assertEqual(self.row(lines, "tool", "grok-high"), ["3", "3", "2", "1", "1", "2.00", "-"])
+        self.assertFalse(any(line.startswith("no rate for grok") for line in lines))
+        self.assertIn("no rate for agy gemini-4-carbon-high: its sessions add no points", lines)
+        self.assertIn("grok: a landed leaf's cost is the weighted column, in millions of weighted tokens; "
+                      "the plan is a flat subscription, so no weekly points", lines)
 
     def test_sessions_on_no_leaf_are_counted_by_offering(self):
         self.run_session("a-1.9", "opus", session="skeptic", kind="review", limited=1, weighted=4_000_000)

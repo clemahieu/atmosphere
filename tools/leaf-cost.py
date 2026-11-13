@@ -23,7 +23,10 @@ and what the human budgets in. List dollars are not given, since the meter does 
 price and a dollar on one model moves it further than a dollar on another. Its model is the one its
 rounds cost most on. Rework is a leaf labelled `refuted`, filed for a criterion a skeptic pass
 refuted. The ledger counts by the hour, so a day's spend starts at the hour the window does. A model
-RATES does not hold is named on a last line, and its calls are left out.
+RATES does not hold is named on a last line, and its calls are left out. A model whose id starts
+with `grok-` is not one of those: the plan is a flat subscription, so it has no weekly points. Its
+round sessions are counted with the leaf's and its calls add nothing to the points. Its cost in
+weighted tokens is what tools/offering-report.py shows.
 
 The plan does not publish what a call costs it, so RATES is measured: a call's tokens are weighted
 (WEIGHTS: input 1, cache write 1.25, cache read 0.1, output 5, the weights the rates were fitted
@@ -103,6 +106,11 @@ def points(model, counts):
     return RATES[model][0] * sum(count * weight for count, weight in zip(counts, WEIGHTS)) / 1e6
 
 
+def grok_model(model):
+    """Whether the model is Grok's. Its plan is a flat subscription, so it has no weekly points."""
+    return model == "grok" or model.startswith("grok-")
+
+
 def spent(ledger):
     """From the ledger: each issue's points by agent kind and model, each issue's round sessions,
     the loop's points by hour, and the models with no rate."""
@@ -112,12 +120,14 @@ def spent(ledger):
             "select issue, kind, model, hour, sum(input), sum(cache_write), sum(cache_read), sum(output) "
             "from totals group by issue, kind, model, hour"):
         cost = points(model, counts)
-        if cost is None:
+        if cost is None and not grok_model(model):
             unrated.add(model)
             continue
+        if cost is None:
+            cost = 0.0
         by = issues.setdefault(issue, {})
         by[kind, model] = by.get((kind, model), 0.0) + cost
-        if kind in LOOP:
+        if kind in LOOP and cost:
             hours.append((hour, cost))
     sessions = dict(db.execute("select issue, count(distinct file) from calls where kind = 'round' group by issue"))
     db.close()
@@ -193,6 +203,9 @@ def report(found, hours, tracker, since, until, unrated=()):
     lines.append(f"reviews closed: {sum(reason.startswith('skeptic pass') for reason in reviews)} passed, "
                  f"{sum(reason.startswith('refuted') for reason in reviews)} refuted")
     lines += [f"no rate for {model}: its calls are left out" for model in sorted(unrated)]
+    grok = sorted({leaf.model for leaf in window if grok_model(leaf.model)})
+    lines += [f"{model}: sessions are counted and add no weekly points; the plan is a flat subscription, "
+              f"and its cost is weighted tokens" for model in grok]
     return lines
 
 
@@ -331,6 +344,23 @@ class Tests(unittest.TestCase):
         tracker = [self.issue("a-1", labels=["refuted"])]
         found, hours, _ = self.found(*tracker)
         self.assertEqual(report(found, hours, tracker, -math.inf, math.inf)[-2].split(), ["2026-11-12", "0.03", "1", "0", "-"])
+
+    def test_a_leafs_round_count_includes_its_grok_sessions_and_not_their_tokens(self):
+        self.spend("a-1", "round", self.OPUS, sessions=("s1",), output=1_000_000)
+        self.spend("a-1", "round", "grok-4.7", sessions=("g1", "g2"), output=9_000_000)
+        (leaf,), _, unrated = self.found(self.issue("a-1"))
+        self.assertEqual(leaf.rounds, 3)
+        self.assertAlmostEqual(leaf.points, 0.12 * 5)
+        self.assertNotIn("grok-4.7", unrated)
+
+    def test_a_leaf_whose_rounds_are_only_grok_is_counted_with_no_weekly_points(self):
+        self.spend("a-1", "round", "grok-4.7", sessions=("g1",), output=1_000_000)
+        found, hours, unrated = self.found(self.issue("a-1"))
+        self.assertEqual([(leaf.id, leaf.model, leaf.rounds, leaf.points) for leaf in found], [("a-1", "grok-4.7", 1, 0.0)])
+        self.assertNotIn("grok-4.7", unrated)
+        lines = report(found, hours, [self.issue("a-1")], -math.inf, math.inf, unrated)
+        self.assertEqual(lines[-1], "grok-4.7: sessions are counted and add no weekly points; "
+                         "the plan is a flat subscription, and its cost is weighted tokens")
 
     def test_a_model_without_a_rate_is_named_and_left_out(self):
         self.spend("a-1", "round", self.OPUS, output=50_000)
