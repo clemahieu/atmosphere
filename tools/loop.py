@@ -88,6 +88,17 @@ continues ready work on the candidates still free. Schema of `logs/loop/state.js
     }
   }
 
+The session record. Each session a loop runs, round, prover or skeptic on either harness, appends one row
+to the table `sessions` of <project root>/logs/loop/sessions.sqlite when it ends, written under
+`logs/loop/.sessions.lock` so the workers of a pool write in turn; the file outlives every loop. Columns:
+`actor` (loop-<pid>), `session` (round, prover or skeptic), `issue` (the issue the prompt names, or null
+for a round that claims its own), `work_kind` (the issue's kind when the loop classified it at claim),
+`route` (the route key the offering was chosen by, or null for the unrouted loop's round), `offering`
+(null for the unrouted loop's table), `harness`, `model` and `effort` (null for the
+harness's default), `started` (epoch seconds), `minutes`, `turns`, `weighted` (plan-weighted tokens),
+`exit`, `error` and `limited` (0 or 1), and a round's report words `loop`, `prover`, `retry` and
+`skeptic` (null when the report has none, and for a prover or skeptic session).
+
 Stopping. SIGINT (Ctrl-C) or SIGTERM to the pool, or `tools/loop.py --stop`, is passed to every worker
 as SIGTERM, which lets the agent run in flight finish and ends that loop; a prover or skeptic pass a finished round handed over is not started, and its
 issue is released with a note so the next round picks it up. A second signal, or `--stop --now`
@@ -131,10 +142,12 @@ import fcntl
 import importlib.util
 import io
 import json
+import multiprocessing
 import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -142,6 +155,7 @@ import textwrap
 import time
 import tomllib
 import unittest
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -153,6 +167,13 @@ MAIN = ROOT / "main"
 PIDS = ROOT / "logs" / "loop"
 STATE_FILE = "state.json"
 STATE_LOCK = ".state.lock"
+SESSIONS_FILE = "sessions.sqlite"
+SESSIONS_LOCK = ".sessions.lock"
+SESSION_COLUMNS = (("actor", "TEXT"), ("session", "TEXT"), ("issue", "TEXT"), ("work_kind", "TEXT"), ("route", "TEXT"),
+                   ("offering", "TEXT"), ("harness", "TEXT"), ("model", "TEXT"), ("effort", "TEXT"),
+                   ("started", "REAL"), ("minutes", "REAL"), ("turns", "INTEGER"), ("weighted", "REAL"),
+                   ("exit", "INTEGER"), ("error", "INTEGER"), ("limited", "INTEGER"),
+                   ("loop", "TEXT"), ("prover", "TEXT"), ("retry", "TEXT"), ("skeptic", "TEXT"))
 AGY_GROUP = "Gemini Models"
 AGY_USAGE_INTERVAL = 300
 AGY_USAGE_TIMEOUT = 30
@@ -636,6 +657,36 @@ def read_pid_file(folder, pid):
     return held if isinstance(held, dict) else {}
 
 
+# The session record (the opening comment gives its columns).
+
+def record_session(folder, row):
+    """Append one session's row to <folder>/sessions.sqlite, under <folder>/.sessions.lock so the loops of a
+    pool write in turn, the first of them creating the table. In WAL mode a reader such as a report holds
+    no writer up."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    names = [name for name, _ in SESSION_COLUMNS]
+    assert sorted(row) == sorted(names), sorted(row)
+    with open(folder / SESSIONS_LOCK, "a") as lock, closing(sqlite3.connect(folder / SESSIONS_FILE, timeout=60)) as db:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        db.execute("PRAGMA journal_mode=WAL")
+        with db:
+            db.execute("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, "
+                       + ", ".join(f"{name} {kind}" for name, kind in SESSION_COLUMNS) + ")")
+            db.execute(f"INSERT INTO sessions ({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
+                       [row[name] for name in names])
+
+
+def read_sessions(folder):
+    """Every row of <folder>/sessions.sqlite in the order written, as dicts without the row id."""
+    path = Path(folder) / SESSIONS_FILE
+    if not path.exists():
+        return []
+    names = [name for name, _ in SESSION_COLUMNS]
+    with closing(sqlite3.connect(path, timeout=60)) as db:
+        return [dict(zip(names, values)) for values in db.execute(f"SELECT {', '.join(names)} FROM sessions ORDER BY id")]
+
+
 # The shared meter and cooldown state (the opening comment gives its schema).
 
 def empty_state():
@@ -841,6 +892,7 @@ class Loop:
         self.reloading = False
         self.child = None
         self.retry = None
+        self.kinds = {}
 
     def record(self, kind=None, spec=None):
         """Rewrite the loop's pid file to name the session it runs, or none."""
@@ -972,9 +1024,10 @@ class Loop:
         agents = self.dispatch.agents
         return agents.get(table or kind) or agents.get(kind) or AgentSpec()
 
-    def agent(self, kind, prompt, table=None, spec=None):
+    def agent(self, kind, prompt, table=None, spec=None, issue=None, route=None):
         """Run one agent session in the main worktree on the offering chosen for it, or with the flags of its
-        kind's table or of the one named; its stream is shown as it comes."""
+        kind's table or of the one named; its stream is shown as it comes. The session's row goes to the
+        session record, with the issue it was given and the route it was chosen by when the loop knows them."""
         self.tune()
         spec = spec or self.spec_for(kind, table)
         if spec.harness == "agy":
@@ -1005,6 +1058,13 @@ class Loop:
             self.record()
         self.keep_readings(run, spec)
         minutes = (self.now() - started) / 60
+        words = parse(run.report) if kind == "round" and not run.error else Report()
+        record_session(self.pids, {
+            "actor": self.actor, "session": kind, "issue": issue, "work_kind": self.kinds.get(issue), "route": route,
+            "offering": spec.name, "harness": spec.harness, "model": flag(spec.flags, "model"),
+            "effort": flag(spec.flags, "effort"), "started": started, "minutes": minutes, "turns": run.turns,
+            "weighted": run.weighted, "exit": run.exit, "error": int(run.error), "limited": int(run.limited),
+            "loop": words.loop, "prover": words.prover, "retry": words.retry, "skeptic": words.skeptic})
         usage = f", weekly {100 * run.utilization:.0f}%" if run.utilization is not None else ""
         self.say(kind, f"end: exit {run.exit}, {minutes:.1f} min, {run.turns} turns, "
                        f"{run.weighted / 1e6:.2f}M weighted tokens{usage}")
@@ -1127,6 +1187,7 @@ class Loop:
                 if claim:
                     ok, _ = self.beads_run("update", leaf["id"], "--claim")
                     if ok:
+                        self.kinds[leaf["id"]] = classify_issue(leaf, by_id)
                         return f"stage:{sname}", (leaf["id"], rkey, spec), {}
                 break
 
@@ -1148,6 +1209,7 @@ class Loop:
             if claim:
                 ok, _ = self.beads_run("update", leaf["id"], "--claim")
                 if ok:
+                    self.kinds[leaf["id"]] = kind
                     return "leaf", (leaf["id"], kind, spec), {}
 
         # 3. Epic rounds (finished epics first via tools/reviews.py, then childless ready epics).
@@ -1215,7 +1277,7 @@ class Loop:
             self.beads("update", issue, "--append-notes",
                        f"{label} not run: the loop stopped before it started; the next round hands it over again.")
         else:
-            run = self.agent(kind, prompt, spec=spec)
+            run = self.agent(kind, prompt, spec=spec, issue=issue, route=kind)
             if run.limited and self.dispatch.routed:
                 stage = STAGE_FOR_HAND_OFF[kind]
                 self.say(kind, f"{fmt_spec(spec)} hit a usage limit; parking {issue} on stage:{stage}")
@@ -1240,7 +1302,7 @@ class Loop:
         prompt = (f"Issue {issue}, worktree {self.cwd.parent / issue}. Your input is the issue's last Prover input note."
                   if kind == "prover" else
                   f"Review {issue}. Your input is the review's last Skeptic input note.")
-        run = self.agent(kind, prompt, spec=spec)
+        run = self.agent(kind, prompt, spec=spec, issue=issue, route=kind)
         if run.limited:
             self.beads("update", issue, "-s", "open", "--assignee", "")
             return "cooldown", run
@@ -1297,7 +1359,7 @@ class Loop:
                 self.retry = issue
                 return "cooldown_wait", Run()
             run = self.agent("round", f"Run one round. Issue {issue} is yours: a round of this loop left it unfinished.",
-                             spec=spec)
+                             spec=spec, issue=issue, route=RETRY)
             if run.limited and self.dispatch.routed:
                 self.beads("update", issue, "--add-label", "stage:escalated", "-s", "open", "--assignee", "")
                 return "cooldown", run
@@ -1314,10 +1376,10 @@ class Loop:
             target, _, spec = payload
             return self.run_specialist_stage(action.split(":", 1)[1], target, spec)
         if action == "stage:escalated":
-            target, _, spec = payload
+            target, rkey, spec = payload
             run = self.agent("round",
                              f"Run one round. Issue {target} is yours: a round left it unfinished; take no other issue.",
-                             spec=spec)
+                             spec=spec, issue=target, route=rkey)
             if run.limited:
                 self.release_if_held(target)
                 return "cooldown", run
@@ -1325,7 +1387,7 @@ class Loop:
         if action in ("stage:needs-land", "leaf"):
             target, rkey, spec = payload
             run = self.agent("round", f"Run one round. Issue {target} is yours (claimed for route {rkey}; take no other issue).",
-                             spec=spec)
+                             spec=spec, issue=target, route=rkey)
             if run.limited:
                 self.release_if_held(target)
                 return "cooldown", run
@@ -1334,13 +1396,14 @@ class Loop:
         if action == "epic_finished":
             _, spec = payload
             run = self.agent("round", "Run one round. Epic round only: act on finished epics from tools/reviews.py; "
-                                      "do not claim from bd ready and do not run an epic split round.", spec=spec)
+                                      "do not claim from bd ready and do not run an epic split round.", spec=spec,
+                             route="epic-close")
             if run.limited:
                 return "cooldown", run
             return self.finish_round_report(run)
         if action == "epic_split":
             _, spec = payload
-            run = self.agent("round", "Run one round.", spec=spec)
+            run = self.agent("round", "Run one round.", spec=spec, route="epic-split")
             if run.limited:
                 return "cooldown", run
             return self.finish_round_report(run)
@@ -2552,6 +2615,90 @@ class Tests(unittest.TestCase):
             ]))
             self.assertEqual(loop.drive(once=True), 0)
             self.assertEqual((len(self.log(folder, "claude")), len(self.log(folder, "agy"))), (1, 1))
+
+    # The session record.
+
+    def row(self, driver, **given):
+        """A session row with the fake sessions' outcome and nothing else known, then what `given` says."""
+        row = {"actor": driver.actor, "session": "round", "issue": None, "work_kind": None, "route": None, "offering": None,
+               "harness": "claude", "model": None, "effort": None, "started": 0.0, "minutes": 0.0, "turns": 1,
+               "weighted": 0.0, "exit": 0, "error": 0, "limited": 0, "loop": None, "prover": None, "retry": None,
+               "skeptic": None}
+        row.update(given)
+        return row
+
+    def test_each_session_on_either_harness_appends_its_row_with_issue_route_offering_tokens_and_report_words(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            agy = folder / "agy"
+            agy.write_text(
+                f"#!{sys.executable}\nimport json\n"
+                "print(json.dumps({'event': 'result', 'result': {'status': 'SUCCESS', 'num_turns': 7, "
+                "'response': 'Prover: atmo-1.1\\nLoop: continue\\n', "
+                "'usage': {'input_tokens': 1000, 'cache_read_tokens': 400, 'output_tokens': 10}}}))\n")
+            agy.chmod(0o755)
+            loop, clock = self.driver(folder, "Verified 12, 0 errors.", agy=str(agy))
+            clock[0] = 100.0
+            (folder / "loop.toml").write_text(self.ROUTES)
+            (folder / "ready.json").write_text(json.dumps([
+                {"id": "atmo-1.1", "title": "Tool fix", "issue_type": "task", "priority": 1, "labels": ["kind:tool"]}]))
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertEqual(read_sessions(folder), [
+                self.row(loop, issue="atmo-1.1", work_kind="tool", route="tool", offering="carbon", harness="agy",
+                         model="gemini-4-carbon-high", started=100.0, turns=7, weighted=690.0, loop="continue",
+                         prover="atmo-1.1"),
+                self.row(loop, session="prover", issue="atmo-1.1", work_kind="tool", route="prover", offering="fable",
+                         model="fable", effort="xhigh", started=100.0)])
+
+            # The unrouted loop records its round with no issue or route, since the round claims its own.
+            (folder / "loop.toml").write_text('[round]\nmodel = "opus"\n')
+            loop, _ = self.driver(folder, "Notify: none\nLoop: stop\n")
+            self.assertEqual(loop.drive(), 0)
+            self.assertEqual(read_sessions(folder)[2:], [self.row(loop, model="opus", loop="stop")])
+
+    def test_a_session_that_hits_a_usage_limit_is_recorded_as_limited(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            fake_claude = folder / "claude_limit"
+            fake_claude.write_text(
+                f"#!{sys.executable}\nimport json\n"
+                "print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'rejected', 'resetsAt': 5000}}))\n"
+                "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': True, 'num_turns': 2, "
+                "'result': 'You hit your usage limit'}))\n")
+            fake_claude.chmod(0o755)
+            loop, _ = self.driver(folder, agy=self.stub_agy(folder, "Loop: continue\n"))
+            loop.claude = str(fake_claude)
+            (folder / "loop.toml").write_text(self.ROUTES)
+            (folder / "ready.json").write_text(json.dumps([
+                {"id": "atmo-1.1", "title": "Review epic", "issue_type": "task", "priority": 0, "labels": ["review", "stage:needs-skeptic"]},
+                {"id": "atmo-1.2", "title": "Tool fix", "issue_type": "task", "priority": 2, "labels": ["kind:tool"]}]))
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertEqual(read_sessions(folder), [
+                self.row(loop, session="skeptic", issue="atmo-1.1", work_kind="review", route="skeptic", offering="opus-xhigh",
+                         model="opus", effort="xhigh", turns=2, error=1, limited=1),
+                self.row(loop, issue="atmo-1.2", work_kind="tool", route="tool", offering="carbon", harness="agy",
+                         model="gemini-4-carbon-high", loop="continue")])
+
+    def test_two_workers_writing_sessions_at_once_lose_no_row(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            context = multiprocessing.get_context("fork")
+            start = context.Barrier(2)
+
+            def write(actor):
+                start.wait()
+                for number in range(40):
+                    record_session(folder, {name: None for name, _ in SESSION_COLUMNS} | {"actor": actor, "turns": number})
+
+            workers = [context.Process(target=write, args=(f"loop-{n}",)) for n in (1, 2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(60)
+            self.assertEqual([worker.exitcode for worker in workers], [0, 0])
+            rows = read_sessions(folder)
+            for actor in ("loop-1", "loop-2"):
+                self.assertEqual([row["turns"] for row in rows if row["actor"] == actor], list(range(40)))
 
     # The pool against fake workers: each logs what it is sent, ends on SIGTERM unless the file
     # `linger` exists, ends on SIGUSR1, stays on SIGHUP (as a worker re-executing in place would), and
