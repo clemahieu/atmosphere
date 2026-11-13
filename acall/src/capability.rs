@@ -12,6 +12,8 @@ use verified::capability::kernel::CapKernel;
 use verified::capability::operation::*;
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::spec_position;
+#[cfg(verus_keep_ghost)]
+use verified::capability::rely::reaches_through;
 
 use crate::step::*;
 
@@ -26,6 +28,7 @@ pub fn move_cap(caller: &mut Tracked<Caller>, from: u64, to: u64) -> (out: Outco
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::move_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), out),
+        !reaches_through(to) ==> (old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root())),
     no_unwind
 {
     let ghost pre = caller@;
@@ -37,6 +40,9 @@ pub fn move_cap(caller: &mut Tracked<Caller>, from: u64, to: u64) -> (out: Outco
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Move);
         CapKernel::lemma_move_contract(pre.kernel(), mid, pre.root(), frame, out);
+        if !reaches_through(to) {
+            CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
+        }
     }
     out
 }
@@ -49,6 +55,7 @@ pub fn delete(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::delete_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
+        old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
@@ -60,6 +67,7 @@ pub fn delete(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Delete);
         CapKernel::lemma_delete_contract(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
@@ -73,6 +81,7 @@ pub fn revoke(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
         CapKernel::revoke_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
+        old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
     no_unwind
 {
     let ghost pre = caller@;
@@ -84,6 +93,7 @@ pub fn revoke(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         lemma_entered(pre.kernel(), caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Revoke);
         CapKernel::lemma_revoke_contract(pre.kernel(), mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(pre.kernel(), mid, pre.root(), frame, out);
     }
     out
 }
