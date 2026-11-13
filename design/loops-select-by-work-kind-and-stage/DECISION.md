@@ -3,14 +3,16 @@ title: "Loops select ready work and model difficulty in Python by work kind and 
 date: 2026-11-13
 status: active
 tags: [process, tools, tracker]
-one_line: "One driver, tools/loop.py, inspects Beads in Python at zero token cost and either auto-routes each work kind, epic round and specialist stage to its configured harness and model difficulty under [routes.<key>] in loop.toml (with per-provider quota cooldowns so a rate-limited provider yields to the non-limited provider without stopping the loop) or runs a single slice with --profile <name>."
+one_line: "One driver, tools/loop.py, runs a pool of worker loops sized live by [pool] jobs; each worker inspects Beads in Python at zero token cost and either auto-routes each work kind, epic round and specialist stage to its configured harness and model difficulty under [routes.<key>] in loop.toml (with per-provider quota cooldowns so a rate-limited provider yields to the non-limited provider without stopping the loop) or runs a single slice with --profile <name>."
 revisit_if: "One provider and one model become cheap enough to carry every round, proof search and skeptic pass within a single subscription window, so routing across harnesses and models buys nothing; or the heuristic that classifies unlabeled leaves misroutes enough leaves that requiring an explicit kind:* label on every task becomes cheaper."
 confidence: "Measured over five days of token-ledger history (774M weighted tokens across 631 leaves and 77 reviews) and meter readings: Fable 5.2 costs 0.57 weekly points per million weighted tokens against Opus 5.5 at 0.12, while round sessions account for 77% of weighted tokens and 62% of leaves touch no Verus specification. How much of that base load a second provider's subscription carries before its own window saturates is settled by running the routed loop under live load."
 ---
 
 ## Decision
 
-One driver script, `tools/loop.py`, inspects Beads in Python at zero token cost and dispatches sessions across harnesses (`claude` and `agy`) and model difficulties from `loop.toml` at the project root:
+One driver script, `tools/loop.py`, inspects Beads in Python at zero token cost and dispatches sessions across harnesses (`claude` and `agy`) and model difficulties from `loop.toml` at the project root.
+
+One invocation is a pool. The pool process runs no session; it keeps `[pool] jobs` worker loops running, each a `tools/loop.py --worker <pool pid>` process, and re-reads the number every few seconds, so concurrency is changed by editing `loop.toml` rather than by opening or closing terminals. Each worker is a whole loop as before: its own Beads actor `loop-<pid>`, its own pid file under `logs/loop/` naming its pool, and the same claim, recovery and wait rules toward its siblings as toward any other loop. The pool passes stop, stop-now and reload on to its workers, stops them all when one finds nothing left but questions, and does not replace a worker that failed until the number changes. Each worker chooses as follows:
 
 - **Automatic routing (`[routes.<key>]`, plain `tools/loop.py` with no `--profile` or `--model` flag).** `[routes]` maps each of the twelve work and stage keys — leaf kinds (`tool`, `sys`, `proof`, `spec`, `arch`, `review`), epic rounds (`epic-close`, `epic-split`), post-prover landing (`needs-land`), and specialist or escalation passes (`prover`, `skeptic`, `retry`), with `[routes.default]` as fallback and `disabled = true` to turn off a route — to its own `harness`, `model`, and `effort`. One `tools/loop.py` invocation determines both what is ready next and which harness and difficulty tier runs it.
 - **Named single-slice profiles (`[profiles.<name>]`, `tools/loop.py --profile <name>`).** Each profile names its harness, per-agent flags (`round`, `retry`, `prover`, `skeptic`), the work kinds and stage hand-offs it takes, whether it takes epic close or split rounds (`epics = "none" | "close" | "split" | "all"`), and which specialist hand-offs it delegates (`prover`, `skeptic`, `retry`).
@@ -41,6 +43,8 @@ Measured on 2026-11-13 from `logs/token-ledger.sqlite` (`tools/token-ledger.py` 
 - Across 631 closed leaves with ledger rows, 62% were tier-3 tooling, unverified platform glue, or closed-oracle tier-1 proofs that never invoked `prover`. Even within a tier-1 leaf that does invoke `prover`, reading, editing, running `tools/land.py` across the gate, and closing are distinct stages from the 25-run Verus search itself, which `stage:needs-prover` and `stage:needs-land` separate cleanly across loops.
 - Checking Beads in Python before spawning a headless CLI session costs zero tokens when a specialist profile (`fable` or `opus`) has no matching stage or leaf ready, instead of paying ~90K cached input tokens per idle `Loop: wait` check.
 
+Concurrency is the lever that keeps the subscriptions under their limits: one number moves every provider's spend together, and later pacing changes the number rather than each loop's choice of work. Workers stay separate processes, not threads of the pool, because the Beads actor is per process (the hook reads the pid), a session's process group is ended by its own loop's signal, and a worker that crashes takes no sibling with it.
+
 Keeping one `tools/loop.py` binary preserves `loop_alive(pid)` (`/proc/<pid>/cmdline` ending in `tools/loop.py`), which `--stop`, `--reload`, peer-loop detection, and `.claude/agents/round.md` orient recovery all rely on.
 
 ## Alternatives rejected
@@ -48,6 +52,8 @@ Keeping one `tools/loop.py` binary preserves `loop_alive(pid)` (`/proc/<pid>/cmd
 - **One script per loop flavor (`tools/loop-carbon.py`, `tools/loop-fable.py`).** Duplicates signal handling, PID tracking, stream parsing, backoff and tests across files, and breaks `loop_alive(pid)` unless every recovery check learns every script name.
 - **Model-named labels on issues (`carbon`, `fable`, `opus`).** Couples the issue tracker to today's model names and subscription tiers; every model release or quota shift requires relabeling open issues instead of editing `loop.toml`.
 - **A second copy of `round.md` for `agy`.** Tried for the earlier Grok loop and drifted within a day. Passing the body of `.claude/agents/<kind>.md` directly to `agy -p` keeps one procedure.
+- **Several loops started by hand, one per terminal.** Concurrency then changes only by starting or stopping terminals, so nothing in the script can adjust it to the meters, and stopping or reloading them all is a per-terminal chore.
+- **Threads inside one loop process.** Every thread would share one pid and so one Beads actor, which breaks orient's rule that an issue in progress under your own actor was left by this loop.
 - **Letting the LLM check whether matching work exists.** Each idle wake-up loads rules and procedures into context only to emit `Loop: wait`. Querying `bd` in Python before starting a session makes idle specialist loops free.
 
 ## What this does not settle

@@ -19,16 +19,25 @@ comes next, as the round skill reads them (.claude/skills/round/SKILL.md):
 - `Loop: continue` starts the next round, `Loop: wait` waits (another loop holds the issues in
   progress), `Loop: stop` prints the questions waiting on the human and ends the loop.
 
-The loop is one Beads actor, loop-<pid>, for every session it runs (.claude/hooks/beads-actor.sh),
-so an issue a round hands to the prover, or leaves for a retry, stays held between the two sessions.
+One invocation is a pool of loops. The pool runs no session itself: it keeps `jobs` worker loops
+running, each a `tools/loop.py --worker <pool pid>` process in its own session, and re-reads `[pool] jobs`
+in <project root>/loop.toml every 5 s (1 when the table is absent). A larger number starts workers; a
+smaller one stops the newest after their run in flight. Each worker is one Beads actor, loop-<pid>, for
+every session it runs (.claude/hooks/beads-actor.sh), so an issue a round hands to the prover, or leaves
+for a retry, stays held between the two sessions, and workers of one pool claim, recover and wait on
+one another as separate loops do. A worker that stops by itself because nothing is left (`Loop: stop`, or
+no matching work with no other loop active) exits with status 3, and the pool then stops the others and
+ends with status 0. A worker that ends with status 1 (four failures in a row, or a configuration error)
+is not replaced until `jobs` changes; the pool ends with status 1 when no worker is left. Workers' lines
+carry their pid after the time.
 
 Each session's temporary directory is <project root>/scratch, on disk: the loop sets TMPDIR, which the
 session's commands read, and CLAUDE_CODE_TMPDIR, under which Claude Code keeps the session's scratchpad
 and the output of its background commands.
 
 Automatic routing, profiles, and zero-token pre-filtering (`design/loops-select-by-work-kind-and-stage/`).
-When `[routes]` is defined in <project root>/loop.toml, plain `tools/loop.py` (with no `--profile` or
-`--model` flag) inspects Beads in Python at zero token cost and dispatches each ready stage, leaf, or
+When `[routes]` is defined in <project root>/loop.toml, plain `tools/loop.py` (with no `--profile`)
+inspects Beads in Python at zero token cost and dispatches each ready stage, leaf, or
 epic round to the harness and model difficulty configured under `[routes.<key>]` (`default`, `tool`,
 `sys`, `proof`, `spec`, `arch`, `review`, `epic-close`, `epic-split`, `needs-land`, `prover`, `skeptic`,
 `retry`, with optional `disabled = true`). With `--profile <name>`, the loop instead runs the named
@@ -41,22 +50,26 @@ issue is released back to open keeping its stage label, specialist hand-offs tar
 harness park on `stage:needs-prover`, `stage:needs-skeptic`, or `stage:escalated`, and ready work routed
 to non-limited harnesses continues immediately.
 
-Stopping. SIGINT (Ctrl-C) or SIGTERM, or `tools/loop.py --stop`, lets the agent run in flight finish
-and ends the loop; a prover or skeptic pass a finished round handed over is not started, and its
+Stopping. SIGINT (Ctrl-C) or SIGTERM to the pool, or `tools/loop.py --stop`, is passed to every worker
+as SIGTERM, which lets the agent run in flight finish and ends that loop; a prover or skeptic pass a finished round handed over is not started, and its
 issue is released with a note so the next round picks it up. A second signal, or `--stop --now`
-(SIGUSR1), ends the run in flight too: the session's process group gets SIGTERM, then SIGKILL after
-30 s, and the next round's orient recovers what it left. Each loop keeps the file
-<project root>/logs/loop/<pid> while it runs; `--stop` signals each such pid that is still a loop.
-The file is JSON: `session` is the session the loop runs, as its kind, harness, model and effort
+(SIGUSR1, passed to every worker), ends the run in flight too: the session's process group gets SIGTERM, then SIGKILL after
+30 s, and the next round's orient recovers what it left. The pool and each worker keep the file
+<project root>/logs/loop/<pid> while they run; `--stop` with no pid signals each such pid that is still a
+loop and not a worker of a live pool, and with pids signals those. The file is JSON: `pool` is a
+worker's pool pid, `workers` and `leaving` are a pool's workers and those it is stopping, and `session`
+is the session a worker runs, as its kind, harness, model and effort
 (each model and effort the flags name, or null for the harness's own default), or null between
 sessions, so another process such as tools/bead-status.py can say what an issue is worked at.
 
 Tuning. Before each session the loop reads <project root>/loop.toml: `[routes.<key>]` configures
 automatic per-task routing, `[profiles.<name>]` configures named single-slice profiles, and top-level
 tables (`round`, `prover`, `skeptic`, `retry`) configure the unrouted default Claude loop. An edit takes
-effect at the next session. A file that does not parse or names invalid keys is reported, and the loop
-keeps the last values it read. SIGHUP, or `tools/loop.py --reload`, re-executes the loop after the run
-in flight and its hand-off, with the same pid and so the same actor, to take up a change to this script.
+effect at the next session, and `[pool] jobs` within 5 s. A file that does not parse or names invalid
+keys is reported, and the loop keeps the last values it read. SIGHUP to the pool, or `tools/loop.py
+--reload`, passes SIGHUP to every worker, which re-executes after the run in flight and its hand-off,
+with the same pid and so the same actor, and re-executes the pool at once, which takes its workers back
+from its pid file; either way a change to this script is taken up.
 
 A usage limit on an unrouted single-provider loop waits until the limit's reset and goes on. A round
 that fails otherwise (no report, or an error result) is followed after 1, 2 and 4 minutes by another;
@@ -65,7 +78,8 @@ under the loop's actor, the round that follows is a retry on that issue; with no
 plain round, whose orient recovers them. A retry is a round in every other way: its report is read the
 same, and its failure counts the same.
 
-usage: tools/loop.py [--profile NAME] [--once] [--wait SECONDS]   run rounds until the loop stops
+usage: tools/loop.py [--profile NAME] [--wait SECONDS]            run a pool of loops until it stops
+       tools/loop.py [--profile NAME] --once                      run one round in this process
        tools/loop.py [--profile NAME] --check                     show matching ready work (0 tokens)
        tools/loop.py --list-profiles                              list routes and profiles in loop.toml
        tools/loop.py --stop [--now] [PID...]                      stop running loops, after their run in flight
@@ -122,6 +136,8 @@ WAIT = 900
 FAILURES = 4
 KILL_AFTER = 30
 SHOWN = 160
+TICK = 5
+DONE = 3
 
 _reviews_spec = importlib.util.spec_from_file_location("reviews", Path(__file__).with_name("reviews.py"))
 reviews_mod = importlib.util.module_from_spec(_reviews_spec)
@@ -350,6 +366,25 @@ def check_list(value, allowed, where):
     return tuple(dict.fromkeys(value))
 
 
+def check_pool(table):
+    """The number of worker loops a [pool] table asks for."""
+    if not isinstance(table, dict):
+        raise ValueError("pool: not a table")
+    for key in table:
+        if key != "jobs":
+            raise ValueError(f"pool.{key}: not jobs")
+    jobs = table.get("jobs", 1)
+    if not isinstance(jobs, int) or isinstance(jobs, bool) or jobs < 1:
+        raise ValueError(f"pool.jobs: {jobs!r} is not a whole number of at least 1")
+    return jobs
+
+
+def pool_jobs(text):
+    """How many worker loops loop.toml asks the pool for; the whole file is validated, as a session's tune does."""
+    parse_all(text)
+    return check_pool(load_toml(text).get("pool", {}))
+
+
 def load_toml(text):
     try:
         return tomllib.loads(text)
@@ -375,8 +410,11 @@ def parse_all(text):
                 raise ValueError("routes: not a table")
             raw_routes = table
             continue
+        if key == "pool":
+            check_pool(table)
+            continue
         if key not in TABLES or not isinstance(table, dict):
-            raise ValueError(f"{key}: not a table of {', '.join((*TABLES, 'routes', 'profiles'))}")
+            raise ValueError(f"{key}: not a table of {', '.join((*TABLES, 'pool', 'routes', 'profiles'))}")
         if "harness" in table or "mode" in table:
             raise ValueError(f"{key}: top-level tables take model, autocompact, effort or fallback-model")
         spec = build_agent_spec(table, key, default_harness="claude")
@@ -590,6 +628,24 @@ def claude_alive(pid):
         return False
 
 
+def write_pid_file(folder, held):
+    """Replace <folder>/<pid> with `held` as JSON, so a reader never sees half a file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / str(held["pid"])
+    scratch = path.with_name(f".{path.name}.new")
+    scratch.write_text(json.dumps(held) + "\n")
+    os.replace(scratch, path)
+
+
+def read_pid_file(folder, pid):
+    """The JSON a loop's pid file holds, or {} when there is none or it is not a JSON object."""
+    try:
+        held = json.loads((Path(folder) / str(pid)).read_text())
+    except (OSError, ValueError):
+        return {}
+    return held if isinstance(held, dict) else {}
+
+
 def flag(flags, name):
     """The value given to --name among the flags, or None."""
     for at, given in enumerate(flags[:-1]):
@@ -610,8 +666,10 @@ class Loop:
     """The driver. The commands and the clock are parameters so the tests can replace them."""
 
     def __init__(self, claude="claude", agy="agy", bd="bd", notifier="notify-send", cwd=MAIN, pids=PIDS, config=CONFIG,
-                 scratch=SCRATCH, wait=WAIT, profile=None, sleep=time.sleep, now=time.time, out=sys.stdout):
+                 scratch=SCRATCH, wait=WAIT, profile=None, sleep=time.sleep, now=time.time, out=sys.stdout, pool=None):
         self.claude, self.agy, self.bd, self.notifier = claude, agy, bd, notifier
+        self.pool = pool
+        self.tag = f"{os.getpid()} " if pool is not None else ""
         self.cwd, self.pids, self.config, self.wait = Path(cwd), Path(pids), Path(config), wait
         self.scratch = Path(scratch)
         self.profile_name = profile
@@ -635,14 +693,13 @@ class Loop:
         """Rewrite the loop's pid file to name the session it runs, or none."""
         session = spec and {"kind": kind, "harness": spec.harness,
                             "model": flag(spec.flags, "model"), "effort": flag(spec.flags, "effort")}
-        self.pids.mkdir(parents=True, exist_ok=True)
-        path = self.pids / str(os.getpid())
-        scratch = path.with_name(f".{path.name}.new")
-        scratch.write_text(json.dumps({"pid": os.getpid(), "session": session}) + "\n")
-        os.replace(scratch, path)
+        held = {"pid": os.getpid(), "session": session}
+        if self.pool is not None:
+            held["pool"] = self.pool
+        write_pid_file(self.pids, held)
 
     def say(self, who, text):
-        print(f"{time.strftime('%H:%M:%S')} {who:<8} {text}", file=self.out, flush=True)
+        print(f"{time.strftime('%H:%M:%S')} {self.tag}{who:<8} {text}", file=self.out, flush=True)
 
     # Signals.
 
@@ -866,9 +923,9 @@ class Loop:
     def other_loop_alive(self):
         if not self.pids.exists():
             return False
-        me = os.getpid()
+        mine = (os.getpid(), self.pool)
         for path in self.pids.glob("*"):
-            if path.name.isdigit() and int(path.name) != me and loop_alive(int(path.name)):
+            if path.name.isdigit() and int(path.name) not in mine and loop_alive(int(path.name)):
                 return True
         return False
 
@@ -1043,7 +1100,7 @@ class Loop:
     def finish_round_report(self, run, clear_stage=None):
         """Parse a round's report, clear any consumed stage label, run or delegate hand-offs, and return Loop word."""
         if run.report.strip():
-            print(textwrap.indent(run.report.strip(), "    "), file=self.out, flush=True)
+            print(textwrap.indent(run.report.strip(), f"{self.tag}    "), file=self.out, flush=True)
         report = parse(run.report) if not run.error else Report()
         if report.loop is not None and clear_stage:
             issue_id, stage_label = clear_stage
@@ -1198,6 +1255,164 @@ class Loop:
         return 0
 
 
+class Pool:
+    """The supervisor: keeps loop.toml's [pool] jobs worker loops running, each a process of this script.
+
+    A worker is spawned as `worker + ["--worker", <the pool's pid>]` in a session of its own, so a Ctrl-C
+    at the terminal reaches the pool alone, which passes a stop on. The workers are tracked by pid, and
+    the pool's pid file names them, so a pool that re-executes itself adopts the workers it had. The
+    sleep is a parameter so the tests can drive the pool a tick at a time with step().
+    """
+
+    def __init__(self, worker, pids=PIDS, config=CONFIG, tick=TICK, sleep=time.sleep, out=sys.stdout,
+                 execute=os.execv, argv=None):
+        self.worker = list(worker)
+        self.pids, self.config, self.tick = Path(pids), Path(config), tick
+        self.sleep, self.out, self.execute = sleep, out, execute
+        self.argv = argv or [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
+        self.pid = os.getpid()
+        self.workers = []
+        self.leaving = set()
+        self.failed = 0
+        self.jobs = 1
+        self.read = None
+        self.stopping = self.halting = self.reloading = False
+        self.status = 0
+
+    def say(self, text):
+        print(f"{time.strftime('%H:%M:%S')} pool     {text}", file=self.out, flush=True)
+
+    def record(self):
+        write_pid_file(self.pids, {"pid": self.pid, "session": None, "workers": self.workers,
+                                   "leaving": sorted(self.leaving)})
+
+    def signal_workers(self, signum, pids):
+        for pid in pids:
+            try:
+                os.kill(pid, signum)
+            except ProcessLookupError:
+                pass
+
+    # Signals, passed on to the workers.
+
+    def on_stop(self, signum, frame):
+        if self.stopping or signum == signal.SIGUSR1:
+            self.stopping = self.halting = True
+            self.say("ending every worker's run in flight")
+            self.signal_workers(signal.SIGUSR1, self.workers)
+        else:
+            self.stop("stopping every worker after its run in flight (again, or --stop --now, ends them now)")
+
+    def on_reload(self, signum, frame):
+        self.reloading = True
+
+    def stop(self, why):
+        self.stopping = True
+        self.say(why)
+        self.signal_workers(signal.SIGTERM, [pid for pid in self.workers if pid not in self.leaving])
+
+    # The tick.
+
+    def tune(self):
+        """Take up [pool] jobs when loop.toml changed; keep the last value when it is wrong. A new value
+        forgives the workers lost to failures, since the human has looked at the pool."""
+        text = self.config.read_text() if self.config.exists() else ""
+        if text == self.read:
+            return
+        self.read = text
+        try:
+            jobs = pool_jobs(text)
+        except ValueError as error:
+            self.say(f"{self.config.name}: {error}; keeping {self.jobs} jobs")
+            return
+        if jobs != self.jobs or not self.workers:
+            self.say(f"{self.config.name}: {jobs} jobs")
+        if jobs != self.jobs:
+            self.failed = 0
+        self.jobs = jobs
+
+    def exit_status(self, pid):
+        """A worker's exit status once it has ended, else None."""
+        try:
+            done, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return None if loop_alive(pid) else 0
+        return os.waitstatus_to_exitcode(status) if done else None
+
+    def reap(self):
+        for pid in list(self.workers):
+            status = self.exit_status(pid)
+            if status is None:
+                continue
+            self.workers.remove(pid)
+            shrunk = pid in self.leaving
+            self.leaving.discard(pid)
+            if status == DONE and not self.stopping:
+                self.stop(f"worker {pid} found only questions for the human left; stopping the pool")
+            elif status == 1 and not shrunk and not self.stopping:
+                self.failed += 1
+                self.say(f"worker {pid} ended after {FAILURES} failed rounds in a row; not replaced until jobs changes")
+            else:
+                self.say(f"worker {pid} ended (status {status})")
+
+    def spawn(self):
+        argv = [*self.worker, "--worker", str(self.pid)]
+        pid = os.posix_spawn(argv[0], argv, os.environ, setsid=True,
+                             file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)])
+        self.workers.append(pid)
+        self.say(f"worker {pid} started")
+
+    def resize(self):
+        active = [pid for pid in self.workers if pid not in self.leaving]
+        target = max(self.jobs - self.failed, 0)
+        for pid in active[target:][::-1]:
+            self.say(f"worker {pid} stopping after its run in flight: the pool shrank to {self.jobs}")
+            self.leaving.add(pid)
+            os.kill(pid, signal.SIGTERM)
+        for _ in range(target - len(active)):
+            self.spawn()
+
+    def adopt(self):
+        """Take back the workers the pid file names, after this pool re-executed itself."""
+        held = read_pid_file(self.pids, self.pid)
+        self.workers = [pid for pid in held.get("workers", []) if loop_alive(pid)]
+        self.leaving = {pid for pid in held.get("leaving", []) if pid in self.workers}
+        if self.workers:
+            self.say(f"adopted workers {', '.join(map(str, self.workers))}")
+
+    def step(self):
+        """One tick. False once the pool is over."""
+        self.tune()
+        self.reap()
+        if self.reloading and not self.stopping:
+            self.say("re-executing; each worker re-executes after its run in flight")
+            self.signal_workers(signal.SIGHUP, self.workers)
+            self.record()
+            self.execute(self.argv[0], self.argv)
+            return False
+        if self.stopping:
+            return bool(self.workers)
+        self.resize()
+        if not self.workers:
+            self.say("every worker ended after repeated failures; stopping")
+            self.status = 1
+            return False
+        return True
+
+    def run(self):
+        """Ticks until the pool is over; the exit status: 0 for a stop, 1 when every worker failed."""
+        self.adopt()
+        try:
+            while self.step():
+                self.record()
+                self.sleep(self.tick)
+        finally:
+            if not self.reloading or self.stopping:
+                (self.pids / str(self.pid)).unlink(missing_ok=True)
+        self.say("stopped")
+        return self.status
+
+
 def list_profiles(config=CONFIG, out=sys.stdout):
     text = Path(config).read_text() if Path(config).exists() else ""
     top_flags, profiles, routes = parse_all(text)
@@ -1238,7 +1453,8 @@ def check_profile(profile, config=CONFIG, out=sys.stdout):
 
 
 def main_loop(args):
-    loop = Loop(wait=args.wait, profile=args.profile)
+    """One loop in this process: a worker of a pool, or a loop run --once."""
+    loop = Loop(wait=args.wait, profile=args.profile, pool=args.worker)
     if args.profile is not None:
         text = loop.config.read_text() if loop.config.exists() else ""
         parse_profile(text, args.profile)
@@ -1255,16 +1471,42 @@ def main_loop(args):
         pidfile.unlink(missing_ok=True)
     if loop.reloading and not loop.stopping and not args.once:
         os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
+    if args.worker is not None and status == 0 and not loop.stopping:
+        return DONE
     return status
+
+
+def main_pool(args):
+    """The pool of worker loops, in this process; each worker is this script with --worker."""
+    text = CONFIG.read_text() if CONFIG.exists() else ""
+    parse_profile(text, args.profile)
+    worker = [sys.executable, str(Path(__file__).resolve()), "--wait", str(args.wait)]
+    if args.profile is not None:
+        worker += ["--profile", args.profile]
+    pool = Pool(worker)
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1):
+        signal.signal(signum, pool.on_stop)
+    signal.signal(signal.SIGHUP, pool.on_reload)
+    prof = f" (profile {args.profile})" if args.profile else ""
+    pool.say(f"pool {pool.pid}{prof}; resize with [pool] jobs in {CONFIG.name}, stop with Ctrl-C or tools/loop.py --stop")
+    return pool.run()
 
 
 SIGNALS = {signal.SIGTERM: "stopping after its run in flight", signal.SIGUSR1: "ending now",
            signal.SIGHUP: "re-executing after its run in flight"}
 
 
+def pooled(folder, pid):
+    """Whether the loop with this pid is a worker of a pool that still runs, which passes signals on."""
+    pool = read_pid_file(folder, pid).get("pool")
+    return isinstance(pool, int) and loop_alive(pool)
+
+
 def send(pids, signum, folder=PIDS):
-    """Signal each named loop, or every loop with a pid file; a pid file whose process is no loop is removed."""
-    named = [int(pid) for pid in pids] or sorted(int(path.name) for path in folder.glob("*") if path.name.isdigit())
+    """Signal each named loop, or every loop with a pid file except a live pool's workers, which their
+    pool signals; a pid file whose process is no loop is removed."""
+    named = [int(pid) for pid in pids] or sorted(int(path.name) for path in folder.glob("*")
+                                                 if path.name.isdigit() and not pooled(folder, path.name))
     signalled = 0
     for pid in named:
         if loop_alive(pid):
@@ -2028,6 +2270,209 @@ class Tests(unittest.TestCase):
             self.assertEqual(len(self.log(folder, "agy")), 1)
 
 
+    # The pool against fake workers: each logs what it is sent, ends on SIGTERM unless the file
+    # `linger` exists, ends on SIGUSR1, stays on SIGHUP (as a worker re-executing in place would), and
+    # ends with the status written to quit-<pid>.
+
+    FAKE_WORKER = textwrap.dedent("""\
+        import os, signal, sys, time
+        folder = os.environ["FAKE"]
+        def log(word):
+            open(os.path.join(folder, "workers.log"), "a").write(f"{os.getpid()} {word}\\n")
+        def term(signum, frame):
+            log("TERM")
+            if not os.path.exists(os.path.join(folder, "linger")):
+                sys.exit(0)
+        def now(signum, frame):
+            log("USR1")
+            sys.exit(0)
+        signal.signal(signal.SIGTERM, term)
+        signal.signal(signal.SIGUSR1, now)
+        signal.signal(signal.SIGHUP, lambda signum, frame: log("HUP"))
+        log("start " + " ".join(sys.argv[1:]))
+        quit = os.path.join(folder, f"quit-{os.getpid()}")
+        while not os.path.exists(quit):
+            time.sleep(0.02)
+        sys.exit(int(open(quit).read()))
+        """)
+
+    def pool(self, folder, jobs):
+        (folder / "tools").mkdir(exist_ok=True)
+        (folder / "tools" / "loop.py").write_text(self.FAKE_WORKER)
+        (folder / "loop.toml").write_text(f"[pool]\njobs = {jobs}\n")
+        os.environ["FAKE"] = str(folder)
+        sink = open(os.devnull, "w")
+        self.addCleanup(sink.close)
+        executed = []
+        pool = Pool([sys.executable, str(folder / "tools" / "loop.py")], pids=folder / "pids", config=folder / "loop.toml",
+                    tick=0, sleep=lambda seconds: None, out=sink, argv=["python", "loop.py"],
+                    execute=lambda path, argv: executed.append(argv))
+        self.addCleanup(self.end_workers, pool)
+        return pool, executed
+
+    def end_workers(self, pool):
+        for pid in pool.workers:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except (ProcessLookupError, ChildProcessError):
+                pass
+
+    def workers_log(self, folder):
+        path = folder / "workers.log"
+        lines = path.read_text().splitlines() if path.exists() else []
+        return [(int(pid), word) for pid, _, word in (line.partition(" ") for line in lines)]
+
+    def started(self, folder):
+        return [pid for pid, word in self.workers_log(folder) if word.startswith("start")]
+
+    def settle(self, pool, done):
+        """Tick the pool until done() holds; the last tick's answer."""
+        deadline = time.time() + 20
+        while True:
+            going = pool.step()
+            if going:
+                pool.record()
+            if done():
+                return going
+            self.assertLess(time.time(), deadline, "the pool did not settle")
+            time.sleep(0.02)
+
+    def test_a_pool_keeps_as_many_workers_as_jobs_says_and_follows_an_edit_both_ways(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            pool, _ = self.pool(folder, 2)
+            self.settle(pool, lambda: len(self.started(folder)) == 2)
+            self.assertEqual(sorted(pool.workers), sorted(self.started(folder)))
+            self.assertEqual({word for _, word in self.workers_log(folder)}, {f"start --worker {os.getpid()}"})
+            self.assertEqual(read_pid_file(folder / "pids", os.getpid()),
+                             {"pid": os.getpid(), "session": None, "workers": pool.workers, "leaving": []})
+            (folder / "loop.toml").write_text("[pool]\njobs = 3\n")
+            self.settle(pool, lambda: len(self.started(folder)) == 3)
+            first, second, third = pool.workers
+            (folder / "loop.toml").write_text("[pool]\njobs = 1\n")
+            self.assertTrue(self.settle(pool, lambda: pool.workers == [first]))
+            self.assertEqual(sorted(pid for pid, word in self.workers_log(folder) if word == "TERM"), sorted([second, third]))
+            for _ in range(3):
+                self.assertTrue(pool.step())
+            self.assertEqual(len(self.started(folder)), 3)
+
+    def test_a_worker_that_fails_is_not_replaced_and_one_that_finds_only_questions_stops_the_pool(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "linger").write_text("")
+            pool, _ = self.pool(folder, 3)
+            self.settle(pool, lambda: len(self.started(folder)) == 3)
+            failing, done, other = pool.workers
+            (folder / f"quit-{failing}").write_text("1")
+            self.settle(pool, lambda: failing not in pool.workers)
+            for _ in range(3):
+                self.assertTrue(pool.step())
+            self.assertEqual((len(self.started(folder)), pool.failed), (3, 1))
+            (folder / f"quit-{done}").write_text(str(DONE))
+            self.settle(pool, lambda: (other, "TERM") in self.workers_log(folder))
+            self.assertTrue(pool.stopping)
+            (folder / f"quit-{other}").write_text("0")
+            self.assertFalse(self.settle(pool, lambda: not pool.workers))
+            self.assertEqual(pool.status, 0)
+
+    def test_a_pool_whose_every_worker_failed_ends_with_status_1(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            pool, _ = self.pool(folder, 1)
+            self.settle(pool, lambda: len(self.started(folder)) == 1)
+            (folder / f"quit-{self.started(folder)[0]}").write_text("1")
+            self.assertFalse(self.settle(pool, lambda: not pool.workers))
+            self.assertEqual(pool.status, 1)
+
+    def test_a_stop_reaches_every_worker_and_a_second_ends_their_runs_in_flight(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "linger").write_text("")
+            pool, _ = self.pool(folder, 2)
+            self.settle(pool, lambda: len(self.started(folder)) == 2)
+            pool.on_stop(signal.SIGTERM, None)
+            self.assertTrue(self.settle(pool, lambda: sum(word == "TERM" for _, word in self.workers_log(folder)) == 2))
+            pool.on_stop(signal.SIGTERM, None)
+            self.assertFalse(self.settle(pool, lambda: not pool.workers))
+            self.assertEqual(sorted(pid for pid, word in self.workers_log(folder) if word == "USR1"), sorted(self.started(folder)))
+            self.assertEqual(pool.run(), 0)
+            self.assertFalse((folder / "pids" / str(os.getpid())).exists())
+
+    def test_a_reload_passes_on_to_the_workers_and_the_re_executed_pool_adopts_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            pool, executed = self.pool(folder, 2)
+            self.settle(pool, lambda: len(self.started(folder)) == 2)
+            workers = pool.workers
+            pool.on_reload(signal.SIGHUP, None)
+            self.assertFalse(pool.step())
+            self.assertEqual(executed, [["python", "loop.py"]])
+            again, _ = self.pool(folder, 2)
+            again.adopt()
+            self.assertEqual(again.workers, workers)
+            self.settle(again, lambda: sum(word == "HUP" for _, word in self.workers_log(folder)) == 2)
+            self.assertEqual(len(self.started(folder)), 2)
+            again.on_stop(signal.SIGTERM, None)
+            self.assertFalse(self.settle(again, lambda: not again.workers))
+
+    def test_a_stop_for_every_loop_leaves_a_live_pools_workers_to_their_pool(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            catcher = "import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *a: sys.exit(7))\nprint('up', flush=True)\ntime.sleep(60)\n"
+            pool, worker = (subprocess.Popen([sys.executable, "-c", catcher, "/x/tools/loop.py"], stdout=subprocess.PIPE, text=True)
+                            for _ in range(2))
+            try:
+                for process in (pool, worker):
+                    process.stdout.readline()
+                    process.stdout.close()
+                write_pid_file(folder, {"pid": pool.pid, "session": None, "workers": [worker.pid], "leaving": []})
+                write_pid_file(folder, {"pid": worker.pid, "session": None, "pool": pool.pid})
+                with open(os.devnull, "w") as quiet:
+                    sys.stdout, saved = quiet, sys.stdout
+                    try:
+                        self.assertEqual(send([], signal.SIGTERM, folder), 0)
+                        self.assertEqual(pool.wait(timeout=10), 7)
+                        self.assertIsNone(worker.poll())
+                        self.assertEqual(send([str(worker.pid)], signal.SIGTERM, folder), 0)
+                        self.assertEqual(worker.wait(timeout=10), 7)
+                    finally:
+                        sys.stdout = saved
+            finally:
+                for process in (pool, worker):
+                    process.kill()
+                    process.wait()
+
+    def test_a_worker_names_its_pool_and_does_not_count_it_as_a_peer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            sleep = [sys.executable, "-c", "import time; print('up', flush=True); time.sleep(60)", "/x/tools/loop.py"]
+            pool, sibling = (subprocess.Popen(sleep, stdout=subprocess.PIPE, text=True) for _ in range(2))
+            try:
+                for process in (pool, sibling):
+                    process.stdout.readline()
+                    process.stdout.close()
+                loop, _ = self.driver(folder, pool=pool.pid)
+                loop.record()
+                self.assertEqual(read_pid_file(folder, os.getpid()), {"pid": os.getpid(), "session": None, "pool": pool.pid})
+                write_pid_file(folder, {"pid": pool.pid, "session": None, "workers": [os.getpid()], "leaving": []})
+                self.assertFalse(loop.other_loop_alive())
+                write_pid_file(folder, {"pid": sibling.pid, "session": None, "pool": pool.pid})
+                self.assertTrue(loop.other_loop_alive())
+            finally:
+                for process in (pool, sibling):
+                    process.kill()
+                    process.wait()
+
+    def test_pool_jobs_is_a_whole_number_of_at_least_one_and_defaults_to_one(self):
+        self.assertEqual(pool_jobs(""), 1)
+        self.assertEqual(pool_jobs("[pool]\njobs = 6\n[round]\nmodel = \"opus\"\n"), 6)
+        for text in ("[pool]\njobs = 0\n", "[pool]\njobs = \"2\"\n", "[pool]\njobs = true\n", "[pool]\nsize = 2\n",
+                     "pool = 2\n", "[pool]\njobs = 2\n[round]\neffort = \"huge\"\n"):
+            with self.assertRaises(ValueError, msg=text):
+                pool_jobs(text)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--profile", help="run the named [profiles.<name>] configuration from loop.toml")
@@ -2039,6 +2484,7 @@ def main():
     parser.add_argument("--now", action="store_true", help="with --stop, end the run in flight too")
     parser.add_argument("--reload", action="store_true", help="re-execute running loops after their run in flight")
     parser.add_argument("--test", action="store_true", help="run this script's own tests")
+    parser.add_argument("--worker", type=int, metavar="POOL", help="run as a worker loop of the pool with this pid")
     parser.add_argument("pids", nargs="*", help="with --stop or --reload, the loops to signal; all by default")
     args = parser.parse_args()
     if args.test:
@@ -2055,7 +2501,9 @@ def main():
         return send(args.pids, signal.SIGHUP)
     if args.pids or args.now:
         parser.error("PID goes with --stop or --reload, --now with --stop")
-    return main_loop(args)
+    if args.worker is not None or args.once:
+        return main_loop(args)
+    return main_pool(args)
 
 
 if __name__ == "__main__":
