@@ -4525,6 +4525,7 @@ impl CapKernel {
             !final(self).list.nodes@[n as int].live,
             final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
             forall|x: int| 0 <= x < NODE_SPACE && x != n ==> #[trigger] final(self).list.nodes@[x].live == old(self).list.nodes@[x].live,
+            forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             final(self).list.parent == old(self).list.parent,
             final(self).tables == old(self).tables,
             final(self).spaces == old(self).spaces,

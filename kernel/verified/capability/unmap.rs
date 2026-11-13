@@ -100,8 +100,9 @@ impl CapKernel {
 
     /// What clearing the entry leaves: the entry the path reaches is empty, its mapping node is the only
     /// node that left the list, its record and its frame's reference went with it, its staleness is
-    /// recorded, and no capability changed: the tables, the list's parents, every other node's kind and
-    /// the bound threads are as they were. A device space shares what a walk other than the one ending
+    /// recorded, and no capability changed: the tables, the list's parents, every other node's kind,
+    /// every node's depth and the bound threads are as they were. Every table walk finds the table it
+    /// found: the entry cleared mapped a frame, not a table. A device space shares what a walk other than the one ending
     /// at the entry still finds: the page leaves unless another path of the space maps it too.
     pub open spec fn entry_unmapped(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
@@ -118,8 +119,10 @@ impl CapKernel {
         &&& !post.list.nodes@[node as int].live
         &&& forall|x: int| 0 <= x < NODE_SPACE && x != node ==> #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live
             && post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+        &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == pre.list.nodes@[x].depth
         &&& post.list.parent == pre.list.parent
         &&& post.tables == pre.tables
+        &&& forall|r: usize, q: SpacePath| #[trigger] walk_table(tree_of(&post.table_pages, &post.spaces), r, q) == walk_table(tree, r, q)
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
         &&& post.list.seq@.len() == pre.list.seq@.len() - 1
         &&& sheds_shares(pre.view(), post.view())
@@ -309,6 +312,9 @@ impl CapKernel {
         let node = mapping_node(t, p.l1);
         let pages = record_pages(pre.mappings@[node]);
         assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&mid.table_pages, &mid.spaces));
+        assert forall|x: int| 0 <= x < NODE_SPACE && x != node implies #[trigger] post.list.nodes@[x].kind == pre.list.nodes@[x].kind by {
+            assert(mid.list.nodes@[x].live == pre.list.nodes@[x].live);
+        }
         assert(Self::mapping_unlinked(pre, post, node));
         assert(post.cores == mid.cores && post.iommus == mid.iommus && post.stale_epoch == mid.stale_epoch && post.blocks == mid.blocks);
         if post.flush_awaited() {
@@ -452,6 +458,10 @@ impl CapKernel {
             lemma_sheds_shares_discharges_local(pre.view(), self.view(), root);
             Self::lemma_unlinked_shrunk(pre, *self, node);
             Self::lemma_unlinked_shares(pre, *self, node, t, l1);
+            let b = tree_of(&self.table_pages, &self.spaces);
+            assert(b.maps.dom() =~= tree.maps.dom());
+            reveal(entries_cleared);
+            lemma_walk_table_entry_cleared(tree, b, t, l1);
         }
         let status = usize2page_entry_status(word, 1);
         Some((s, Unmapped {

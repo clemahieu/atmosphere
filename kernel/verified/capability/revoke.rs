@@ -297,7 +297,7 @@ impl CapKernel {
     /// What a revoke of the capability at a position did when it was not refused, by a thread of the
     /// process whose table is at root: the position names a capability, which stays one, at most
     /// REVOKE_BUDGET nodes of its run went and no other node, no mapping appeared, the tables are as they
-    /// were, no node changed its parent, the threads bound are those that were whose bindings are still
+    /// were, no node changed its parent or its depth, the threads bound are those that were whose bindings are still
     /// live, the devices unbound are those whose binding nodes went, every process's record is as it was, and
     /// the step discharges the revoke's effect for the caller, which commands the capability.
     pub open spec fn cap_revoking_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
@@ -305,6 +305,7 @@ impl CapKernel {
         &&& pre.cap_at(root, at) is Some
         &&& post.is_cap(c)
         &&& run_shrunk(pre.list, post.list, c)
+        &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == pre.list.nodes@[x].depth
         &&& post.tables == pre.tables
         &&& Self::mappings_shrunk(pre, post)
         &&& pre.list.seq@.len() - post.list.seq@.len() <= REVOKE_BUDGET
