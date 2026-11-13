@@ -4,18 +4,18 @@
 """The round loop, driven from the command line.
 
 Each round runs in the main worktree as a fresh headless agent session (`claude -p --agent round` by
-default, or `agy -p` with `.claude/agents/<kind>.md` when the offering or profile chosen has `harness = "agy"`).
+default, or `agy -p` with `.claude/agents/<kind>.md` when the offering chosen has `harness = "agy"`).
 Print mode waits for a background command the round started, such as its landing, and wakes the round
 when it exits, so the last result the session streams is the round's report. The report's lines say what
 comes next, as the round skill reads them (.claude/skills/round/SKILL.md):
 
 - `Notify: <text>` (or bullets under a bare `Notify:`), each sent with notify-send and printed;
 - `Prover: <id>` runs the prover agent on the first of its candidates not cooled down (or stamps
-  `stage:needs-prover` when delegated or every candidate is cooled down), then appends its report to the issue as `Prover report:` and sets the issue open; `Skeptic: <review>`
-  does the same with the skeptic (`stage:needs-skeptic` when delegated or cooled down);
+  `stage:needs-prover` when the route is disabled or every candidate is cooled down), then appends its report to the issue as `Prover report:` and sets the issue open; `Skeptic: <review>`
+  does the same with the skeptic (`stage:needs-skeptic` when disabled or cooled down);
 - `Retry: <id>`, from a round whose attempt on a leaf ended at its bound, makes the next session a
-  retry (or stamps `stage:escalated` when `retry` is delegated or disabled, or when a routed or profile
-  loop finds every retry candidate cooled down): a round whose prompt
+  retry (or stamps `stage:escalated` when `retry` is disabled, or when a routed loop finds every retry
+  candidate cooled down): a round whose prompt
   names that issue, so it takes that issue and no other, with the flags of the retry table or on the
   first retry candidate not cooled down;
 - `Loop: continue` starts the next round, `Loop: wait` waits (another loop holds the issues in
@@ -37,20 +37,20 @@ Each session's temporary directory is <project root>/scratch, on disk: the loop 
 session's commands read, and CLAUDE_CODE_TMPDIR, under which Claude Code keeps the session's scratchpad
 and the output of its background commands.
 
-Automatic routing, profiles, and zero-token pre-filtering (`design/loops-select-by-work-kind-and-stage/`).
+Automatic routing and zero-token pre-filtering (`design/loops-select-by-work-kind-and-stage/`).
 `[offerings.<name>]` in <project root>/loop.toml names one way to run a session: `harness`, `model`,
 `effort`, `autocompact`, and `meters`, the usage meters the offering draws on (`claude-week` and
 `claude-fable` for Fable; `gemini-week` and `gemini-5h` for a Gemini model). When `[routes]` is defined,
-plain `tools/loop.py` (with no `--profile`) inspects Beads in Python at zero token cost and dispatches
+`tools/loop.py` inspects Beads in Python at zero token cost and dispatches
 each ready stage, leaf, or epic round by its route `[routes.<key>]` (`default`, `tool`, `sys`, `proof`,
 `spec`, `arch`, `review`, `epic-close`, `epic-split`, `needs-land`, `prover`, `skeptic`, `retry`), which
 holds `candidates`, the offerings capable of that work, cheapest first, or `disabled = true`. At claim,
 and for each hand-off, the work goes to the first candidate none of whose meters, nor its harness as a
 whole, is cooled down; when every candidate is, the work waits for the earliest reset and `--check`
 names each cooldown it waits on. A key left out takes `default`'s candidates, or none when `default` is
-left out too. A candidate that is not under `[offerings]` is an error. With `--profile <name>`, the loop instead runs the named
-`[profiles.<name>]` slice (`kinds`, `stages`, `epics`, `delegate`). When nothing matches, no LLM session
-is started: the loop waits if another loop or actor is active, and stops otherwise.
+left out too. A candidate that is not under `[offerings]` is an error. When nothing matches, no LLM
+session is started: the loop waits if another loop or actor is active, and stops otherwise. Without
+`[routes]`, the loop runs plain rounds on Claude with the top-level tables' flags.
 
 Shared meter and cooldown state. The pool and its workers share `<project root>/logs/loop/state.json`,
 updated under `<project root>/logs/loop/.state.lock` and replaced atomically so readers never see half a
@@ -61,8 +61,8 @@ window, and each scoped model limit `claude-<model>` such as `claude-fable`) and
 readings when `/usage` fails); workers also record `rate_limit_event` readings streamed by Claude
 sessions and write a usage-limit cooldown immediately. A limit cools the meter its stream names, or,
 when it names none, every meter the offering draws on; when the meter that refused is not one the
-offering declares, the harness as a whole is cooled too, since the declaration missed it. A profile's or
-the unrouted loop's table declares no meters, so its limit cools its whole harness. Every worker reads
+offering declares, the harness as a whole is cooled too, since the declaration missed it. The unrouted
+loop's tables declare no meters, so their limit cools the whole harness. Every worker reads
 this file before claiming or starting a session: when one worker hits a usage limit, every worker passes
 over the offerings that draw on the cooled meter until its reset without spending a session, parks
 specialist hand-offs with no free candidate on `stage:needs-prover`, `stage:needs-skeptic` or
@@ -96,13 +96,13 @@ issue is released with a note so the next round picks it up. A second signal, or
 <project root>/logs/loop/<pid> while they run; `--stop` with no pid signals each such pid that is still a
 loop and not a worker of a live pool, and with pids signals those. The file is JSON: `pool` is a
 worker's pool pid, `workers` and `leaving` are a pool's workers and those it is stopping, and `session`
-is the session a worker runs, as its kind, the offering it runs on (null for a profile's or the
-unrouted loop's table), harness, model and effort
+is the session a worker runs, as its kind, the offering it runs on (null for the unrouted loop's
+tables), harness, model and effort
 (each model and effort the flags name, or null for the harness's own default), or null between
 sessions, so another process such as tools/bead-status.py can say what an issue is worked at.
 
 Tuning. Before each session the loop reads <project root>/loop.toml: `[offerings.<name>]` and
-`[routes.<key>]` configure automatic per-task routing, `[profiles.<name>]` configures named single-slice profiles, and top-level
+`[routes.<key>]` configure automatic per-task routing, and top-level
 tables (`round`, `prover`, `skeptic`, `retry`) configure the unrouted default Claude loop. An edit takes
 effect at the next session, and `[pool] jobs` within 5 s. A file that does not parse or names invalid
 keys, or a route naming an offering that is not there, is reported, and the loop keeps the last
@@ -118,10 +118,10 @@ under the loop's actor, the round that follows is a retry on that issue; with no
 plain round, whose orient recovers them. A retry is a round in every other way: its report is read the
 same, and its failure counts the same.
 
-usage: tools/loop.py [--profile NAME] [--wait SECONDS]            run a pool of loops until it stops
-       tools/loop.py [--profile NAME] --once                      run one round in this process
-       tools/loop.py [--profile NAME] --check                     show matching ready work (0 tokens)
-       tools/loop.py --list-profiles                              list offerings, routes and profiles in loop.toml
+usage: tools/loop.py [--wait SECONDS]                             run a pool of loops until it stops
+       tools/loop.py --once                                       run one round in this process
+       tools/loop.py --check                                      show matching ready work (0 tokens)
+       tools/loop.py --list-profiles                              list the offerings and routes in loop.toml
        tools/loop.py --stop [--now] [PID...]                      stop running loops, after their run in flight
        tools/loop.py --reload [PID...]                            re-execute running loops, after their run in flight
        tools/loop.py --test                                       this script's own tests
@@ -129,6 +129,7 @@ usage: tools/loop.py [--profile NAME] [--wait SECONDS]            run a pool of 
 import argparse
 import fcntl
 import importlib.util
+import io
 import json
 import os
 import re
@@ -170,10 +171,9 @@ AGY_MODES = ("skip-permissions", "auto", "accept-edits", "plan")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 WORK_KINDS = ("tool", "sys", "proof", "spec", "arch", "review")
 STAGE_NAMES = ("needs-prover", "needs-skeptic", "escalated", "needs-land")
-EPIC_MODES = ("none", "close", "split", "all")
-DELEGATABLE = ("prover", "skeptic", "retry")
-ROUTE_KEYS = (*WORK_KINDS, "epic-close", "epic-split", "needs-land", *DELEGATABLE)
-STAGE_FOR_DELEGATE = {"prover": "needs-prover", "skeptic": "needs-skeptic", "retry": "escalated"}
+HAND_OFFS = ("prover", "skeptic", "retry")
+ROUTE_KEYS = (*WORK_KINDS, "epic-close", "epic-split", "needs-land", *HAND_OFFS)
+STAGE_FOR_HAND_OFF = {"prover": "needs-prover", "skeptic": "needs-skeptic", "retry": "escalated"}
 STAGE_ROUTE = {
     "needs-prover": "prover",
     "needs-skeptic": "skeptic",
@@ -209,7 +209,7 @@ class Report:
 @dataclass
 class AgentSpec:
     """The harness and CLI flags for one agent table. An offering of [offerings] also has its name and the
-    meters it draws on; a top-level or profile table has neither and stands for its whole harness."""
+    meters it draws on; a top-level table has neither and stands for its whole harness."""
     harness: str = "claude"
     flags: list = field(default_factory=list)
     name: str = None
@@ -217,16 +217,10 @@ class AgentSpec:
 
 
 @dataclass
-class ProfileConfig:
-    """Resolved settings and work/stage selectors for one loop profile, [routes], or unprofiled default."""
-    name: str = None
+class Dispatch:
+    """What loop.toml gives the loop: its top-level tables, and with [routes] each route's candidates."""
     agents: dict = field(default_factory=dict)
     routes: dict = field(default_factory=dict)
-    kinds: tuple = WORK_KINDS
-    stages: tuple = STAGE_NAMES
-    epics: str = "all"
-    delegate: frozenset = field(default_factory=frozenset)
-    filtered: bool = False
     routed: bool = False
 
 
@@ -385,11 +379,10 @@ def validate_str(value, where):
         raise ValueError(f"{where}: not a value")
 
 
-def build_agent_spec(table, where, default_harness="claude", base=None):
-    """Validate an agent table (or profile-level agent keys) and build an AgentSpec."""
-    merged = dict(base or {})
-    merged.update(table)
-    harness = merged.pop("harness", default_harness)
+def build_agent_spec(table, where):
+    """Validate an agent table and build an AgentSpec."""
+    merged = dict(table)
+    harness = merged.pop("harness", "claude")
     validate_str(harness, f"{where}.harness")
     if harness not in HARNESSES:
         raise ValueError(f"{where}.harness: {harness} is not one of {', '.join(HARNESSES)}")
@@ -420,12 +413,6 @@ def build_agent_spec(table, where, default_harness="claude", base=None):
             raise ValueError(f"{where}.{key}: not {allowed}")
         flags += [f"--{key}", value]
     return AgentSpec(harness=harness, flags=flags)
-
-
-def check_list(value, allowed, where):
-    if not isinstance(value, list) or not all(isinstance(item, str) and item in allowed for item in value):
-        raise ValueError(f"{where}: must be a list from {', '.join(allowed)}")
-    return tuple(dict.fromkeys(value))
 
 
 def check_pool(table):
@@ -468,7 +455,7 @@ def parse_offerings(raw):
             raise ValueError(f"{where}: not a table")
         table = dict(table)
         meters = table.pop("meters", None)
-        spec = build_agent_spec(table, where, default_harness=table.get("harness", "claude"))
+        spec = build_agent_spec(table, where)
         prefix = METER_PREFIX[spec.harness]
         if (not isinstance(meters, list) or not meters
                 or not all(isinstance(m, str) and re.fullmatch(rf"{prefix}[a-z0-9]+(-[a-z0-9]+)*", m) for m in meters)):
@@ -498,20 +485,13 @@ def parse_route(table, where, offerings):
 
 
 def parse_all(text):
-    """Validate the whole loop.toml and return (top_flags_dict, profiles_dict, routes_dict). A route maps
+    """Validate the whole loop.toml and return (top_flags_dict, offerings_dict, routes_dict). A route maps
     to its tuple of candidate offerings, or None when disabled or left out with no [routes.default]."""
     raw = load_toml(text)
-    top_raw = {}
     top_flags = {}
-    raw_profiles = {}
     raw_routes = None
     offerings = {}
     for key, table in raw.items():
-        if key == "profiles":
-            if not isinstance(table, dict):
-                raise ValueError("profiles: not a table")
-            raw_profiles = table
-            continue
         if key == "routes":
             if not isinstance(table, dict):
                 raise ValueError("routes: not a table")
@@ -524,12 +504,10 @@ def parse_all(text):
             check_pool(table)
             continue
         if key not in TABLES or not isinstance(table, dict):
-            raise ValueError(f"{key}: not a table of {', '.join((*TABLES, 'pool', 'offerings', 'routes', 'profiles'))}")
+            raise ValueError(f"{key}: not a table of {', '.join((*TABLES, 'pool', 'offerings', 'routes'))}")
         if "harness" in table or "mode" in table:
             raise ValueError(f"{key}: top-level tables take model, autocompact, effort or fallback-model")
-        spec = build_agent_spec(table, key, default_harness="claude")
-        top_raw[key] = dict(table)
-        top_flags[key] = spec.flags
+        top_flags[key] = build_agent_spec(table, key).flags
 
     routes = {}
     if raw_routes is not None:
@@ -540,89 +518,20 @@ def parse_all(text):
         parsed = {rkey: parse_route(rtable, f"routes.{rkey}", offerings) for rkey, rtable in raw_routes.items()}
         for rkey in ROUTE_KEYS:
             routes[rkey] = parsed[rkey] if rkey in parsed else parsed.get("default")
-
-    profiles = {}
-    agent_keys = ("harness", "mode", "model", "effort", "autocompact", "fallback-model")
-    selector_keys = ("kinds", "stages", "epics", "delegate")
-    for name, ptable in raw_profiles.items():
-        if not isinstance(ptable, dict):
-            raise ValueError(f"profiles.{name}: not a table")
-        where = f"profiles.{name}"
-        unknown = set(ptable) - set(agent_keys) - set(selector_keys) - set(TABLES)
-        if unknown:
-            raise ValueError(f"{where}.{sorted(unknown)[0]}: unknown profile key")
-        default_harness = ptable.get("harness", "claude")
-        validate_str(default_harness, f"{where}.harness")
-        if default_harness not in HARNESSES:
-            raise ValueError(f"{where}.harness: {default_harness} is not one of {', '.join(HARNESSES)}")
-
-        p_base = {k: ptable[k] for k in ptable if k in agent_keys}
-        # Validate profile-level agent defaults immediately so invalid keys fail even with no subtables.
-        default_spec = build_agent_spec({}, where, default_harness=default_harness, base=p_base)
-
-        delegate = frozenset()
-        if "delegate" in ptable:
-            delegate = frozenset(check_list(ptable["delegate"], DELEGATABLE, f"{where}.delegate"))
-        kinds = check_list(ptable["kinds"], WORK_KINDS, f"{where}.kinds") if "kinds" in ptable else WORK_KINDS
-        if "stages" in ptable:
-            stages = check_list(ptable["stages"], STAGE_NAMES, f"{where}.stages")
-        else:
-            skipped = {STAGE_FOR_DELEGATE[d] for d in delegate}
-            stages = tuple(s for s in STAGE_NAMES if s not in skipped)
-        epics = ptable.get("epics", "all")
-        if not isinstance(epics, str) or epics not in EPIC_MODES:
-            raise ValueError(f"{where}.epics: {epics!r} is not one of {', '.join(EPIC_MODES)}")
-
-        agents = {}
-        for tname in TABLES:
-            sub = ptable.get(tname)
-            if sub is not None:
-                if not isinstance(sub, dict):
-                    raise ValueError(f"{where}.{tname}: not a table")
-                sub_harness = sub.get("harness", default_harness)
-                inherited = {k: v for k, v in p_base.items() if k != "harness"} if sub_harness == default_harness else {}
-                agents[tname] = build_agent_spec(sub, f"{where}.{tname}", default_harness=sub_harness, base=inherited)
-            elif p_base:
-                agents[tname] = AgentSpec(harness=default_spec.harness, flags=list(default_spec.flags))
-            elif default_harness == "claude" and tname in top_raw:
-                agents[tname] = build_agent_spec(top_raw[tname], tname, default_harness="claude")
-            elif default_harness == "agy":
-                agents[tname] = build_agent_spec({}, f"{where}.{tname}", default_harness="agy")
-
-        profiles[name] = ProfileConfig(
-            name=name, agents=agents, kinds=kinds, stages=stages,
-            epics=epics, delegate=delegate, filtered=True,
-        )
-    return top_flags, profiles, routes
+    return top_flags, offerings, routes
 
 
 def options(text):
-    """The claude -p flags loop.toml gives each top-level table. Kept compatible for callers and tests."""
+    """The claude -p flags loop.toml gives each top-level table."""
     top_flags, _, _ = parse_all(text)
     return top_flags
 
 
-def parse_profile(text, profile=None):
-    """Resolve [routes] (when present and profile is None), the unprofiled default, or [profiles.<name>]."""
-    top_flags, profiles, routes = parse_all(text)
-    if profile is None:
-        agents = {kind: AgentSpec(harness="claude", flags=list(flags)) for kind, flags in top_flags.items()}
-        if routes:
-            kinds = tuple(k for k in WORK_KINDS if routes.get(k) is not None)
-            stages = tuple(s for s in STAGE_NAMES if routes.get(STAGE_ROUTE[s]) is not None)
-            delegate = frozenset(d for d in DELEGATABLE if routes.get(d) is None)
-            has_close = routes.get("epic-close") is not None
-            has_split = routes.get("epic-split") is not None
-            epics = "all" if (has_close and has_split) else ("close" if has_close else ("split" if has_split else "none"))
-            return ProfileConfig(
-                name=None, agents=agents, routes=routes, kinds=kinds, stages=stages,
-                epics=epics, delegate=delegate, filtered=True, routed=True,
-            )
-        return ProfileConfig(name=None, agents=agents, filtered=False, routed=False)
-    if profile not in profiles:
-        known = ", ".join(sorted(profiles)) or "none defined"
-        raise ValueError(f"profile {profile!r} not in [profiles] ({known})")
-    return profiles[profile]
+def parse_dispatch(text):
+    """The loop's dispatch from loop.toml: routed when [routes] is there, else the top-level tables alone."""
+    top_flags, _, routes = parse_all(text)
+    agents = {kind: AgentSpec(harness="claude", flags=list(flags)) for kind, flags in top_flags.items()}
+    return Dispatch(agents=agents, routes=routes, routed=bool(routes))
 
 
 def nearest_tier(issue, by_id):
@@ -914,15 +823,13 @@ class Loop:
     """The driver. The commands and the clock are parameters so the tests can replace them."""
 
     def __init__(self, claude="claude", agy="agy", bd="bd", notifier="notify-send", cwd=MAIN, pids=PIDS, config=CONFIG,
-                 scratch=SCRATCH, wait=WAIT, profile=None, sleep=time.sleep, now=time.time, out=sys.stdout, pool=None):
+                 scratch=SCRATCH, wait=WAIT, sleep=time.sleep, now=time.time, out=sys.stdout, pool=None):
         self.claude, self.agy, self.bd, self.notifier = claude, agy, bd, notifier
         self.pool = pool
         self.tag = f"{os.getpid()} " if pool is not None else ""
         self.cwd, self.pids, self.config, self.wait = Path(cwd), Path(pids), Path(config), wait
         self.scratch = Path(scratch)
-        self.profile_name = profile
-        self.flags = {}
-        self.profile_cfg = ProfileConfig(name=profile, filtered=profile is not None)
+        self.dispatch = Dispatch()
         self.read = None
         self.sleep, self.now, self.out = sleep, now, out
         self.actor = f"loop-{os.getpid()}"
@@ -1025,34 +932,25 @@ class Loop:
             return
         self.read = text
         try:
-            if self.profile_name is None:
-                self.flags = options(text)
-                self.profile_cfg = parse_profile(text, None)
-            else:
-                self.profile_cfg = parse_profile(text, self.profile_name)
-                self.flags = {k: list(spec.flags) for k, spec in self.profile_cfg.agents.items()}
+            self.dispatch = parse_dispatch(text)
         except ValueError as error:
             self.say("loop", f"{self.config.name}: {error}; keeping the last values")
             return
-        if self.profile_name is None and self.profile_cfg.routed:
-            parts = [f"{k}={fmt_candidates(c)}" for k, c in self.profile_cfg.routes.items()]
+        if self.dispatch.routed:
+            parts = [f"{k}={fmt_candidates(c)}" for k, c in self.dispatch.routes.items()]
             self.say("loop", f"{self.config.name} [routes]: {'; '.join(parts)}")
-        elif self.profile_name is None:
-            shown = "; ".join(f"{kind} {' '.join(flags)}" for kind, flags in self.flags.items() if flags)
-            self.say("loop", f"{self.config.name}: {shown or 'no flags'}")
         else:
-            parts = [f"{kind}[{spec.harness}] {' '.join(spec.flags)}".strip()
-                     for kind, spec in self.profile_cfg.agents.items()]
-            self.say("loop", f"{self.config.name} [{self.profile_name}]: {'; '.join(parts) or 'defaults'}")
+            shown = "; ".join(f"{kind} {' '.join(spec.flags)}" for kind, spec in self.dispatch.agents.items() if spec.flags)
+            self.say("loop", f"{self.config.name}: {shown or 'no flags'}")
 
     def candidates(self, route_key):
-        """The offerings `route_key` may run on, cheapest capable first, or None when it is disabled or
-        excluded: a route's candidates under [routes], or the one table a profile or the unrouted loop gives."""
-        cfg = self.profile_cfg
-        if cfg.routed:
-            return cfg.routes.get(route_key)
-        spec = self.table_spec(route_key)
-        return None if spec is None else (spec,)
+        """The offerings `route_key` may run on, cheapest capable first, or None when it is disabled: a
+        route's candidates under [routes], or for the unrouted loop the one table of its kind."""
+        if self.dispatch.routed:
+            return self.dispatch.routes.get(route_key)
+        if route_key in ("prover", "skeptic"):
+            return (self.spec_for(route_key),)
+        return (self.spec_for("round", RETRY if route_key == RETRY else None),)
 
     def choose(self, route_key):
         """(the first candidate no cooldown keeps, None) for a session; (None, [(candidate, its cooldowns)])
@@ -1069,31 +967,10 @@ class Loop:
             waits.append((spec, cooled))
         return None, waits
 
-    def table_spec(self, route_key):
-        """The AgentSpec a profile or the unrouted loop gives `route_key`, or None when excluded."""
-        cfg = self.profile_cfg
-        if route_key in DELEGATABLE:
-            if route_key in cfg.delegate:
-                return None
-            return self.spec_for("round" if route_key == RETRY else route_key, RETRY if route_key == RETRY else None)
-        if route_key == "needs-land":
-            return self.spec_for("round") if "needs-land" in cfg.stages else None
-        if route_key in WORK_KINDS:
-            return self.spec_for("round") if route_key in cfg.kinds else None
-        if route_key == "epic-close":
-            return self.spec_for("round") if cfg.epics in ("close", "all") else None
-        if route_key == "epic-split":
-            return self.spec_for("round") if cfg.epics in ("split", "all") else None
-        return None
-
     def spec_for(self, kind, table=None):
-        """The AgentSpec of a profile's or the unrouted loop's table for `kind`, or of the table named."""
-        chosen = table or kind
-        if chosen in self.profile_cfg.agents:
-            return self.profile_cfg.agents[chosen]
-        if kind in self.profile_cfg.agents:
-            return self.profile_cfg.agents[kind]
-        return AgentSpec(harness="claude", flags=list(self.flags.get(chosen, [])))
+        """The AgentSpec of the unrouted loop's table for `kind`, or of the table named when loop.toml has it."""
+        agents = self.dispatch.agents
+        return agents.get(table or kind) or agents.get(kind) or AgentSpec()
 
     def agent(self, kind, prompt, table=None, spec=None):
         """Run one agent session in the main worktree on the offering chosen for it, or with the flags of its
@@ -1159,7 +1036,7 @@ class Loop:
             subprocess.run([self.notifier, "atmosphere loop", text], stdin=subprocess.DEVNULL,
                            capture_output=True)
 
-    # Zero-token pre-check and stage recovery for routed and profiled loops.
+    # Zero-token pre-check and stage recovery for routed loops.
 
     def worktree_note(self, issue_id):
         wt = self.cwd.parent / issue_id
@@ -1214,13 +1091,12 @@ class Loop:
         return False
 
     def inspect_work(self, claim=False):
-        """Inspect Beads at zero token cost for self.profile_cfg.
+        """Inspect Beads at zero token cost for the routes of loop.toml.
 
         When claim=True, atomically claims the first matching non-cooled-down stage or leaf so no peer loop races it.
         Returns (action, payload, summary_dict).
         """
         self.tune()
-        cfg = self.profile_cfg
         recovered, other_live = self.recover_abandoned(dry_run=not claim)
         ready = self.beads_json("ready", "--exclude-type=epic", "--json", "--limit", "0")
         all_issues = None
@@ -1241,8 +1117,6 @@ class Loop:
         for leaf in ready:
             stages = issue_stages(leaf)
             for sname in stages:
-                if sname not in cfg.stages:
-                    continue
                 rkey = STAGE_ROUTE[sname]
                 spec, waits = self.choose(rkey)
                 if spec is None:
@@ -1256,7 +1130,7 @@ class Loop:
                         return f"stage:{sname}", (leaf["id"], rkey, spec), {}
                 break
 
-        # 2. Plain ready leaves matching cfg.kinds (skipping leaves waiting on another stage).
+        # 2. Plain ready leaves whose kind has a route (skipping leaves waiting on another stage).
         for leaf in ready:
             if issue_stages(leaf):
                 continue
@@ -1265,8 +1139,6 @@ class Loop:
             if not has_explicit:
                 ensure_all()
             kind = classify_issue(leaf, by_id)
-            if kind not in cfg.kinds:
-                continue
             spec, waits = self.choose(kind)
             if spec is None:
                 if waits:
@@ -1329,13 +1201,13 @@ class Loop:
 
     def hand_off(self, kind, issue, prompt):
         """Run the prover or the skeptic a round handed over on the first of its route's candidates no
-        cooldown keeps, and record its report; or, when the route is delegated or every candidate is cooled
+        cooldown keeps, and record its report; or, when the route is disabled or every candidate is cooled
         down, stamp the issue's stage for a later loop. Then release the issue."""
         label = kind.capitalize()
         spec, waits = self.choose(kind)
         if spec is None:
-            stage = STAGE_FOR_DELEGATE[kind]
-            why = f"every candidate is cooled down ({fmt_waits(waits)})" if waits else "delegated"
+            stage = STAGE_FOR_HAND_OFF[kind]
+            why = f"every candidate is cooled down ({fmt_waits(waits)})" if waits else "route disabled"
             self.say(kind, f"{why}: queueing {issue} on stage:{stage}")
             self.beads("update", issue, "--add-label", f"stage:{stage}", "-s", "open", "--assignee", "")
             return
@@ -1344,8 +1216,8 @@ class Loop:
                        f"{label} not run: the loop stopped before it started; the next round hands it over again.")
         else:
             run = self.agent(kind, prompt, spec=spec)
-            if run.limited and self.profile_cfg.filtered:
-                stage = STAGE_FOR_DELEGATE[kind]
+            if run.limited and self.dispatch.routed:
+                stage = STAGE_FOR_HAND_OFF[kind]
                 self.say(kind, f"{fmt_spec(spec)} hit a usage limit; parking {issue} on stage:{stage}")
                 self.beads("update", issue, "--add-label", f"stage:{stage}", "-s", "open", "--assignee", "")
                 return
@@ -1353,7 +1225,7 @@ class Loop:
                 f"none; the {kind}'s session ended without one (exit {run.exit}"
                 f"{', usage limit' if run.limited else ''}).")
             self.beads("update", issue, "--append-notes", f"{label} report: {report}")
-            if self.profile_cfg.routed and kind == "prover" and self.candidates("needs-land") is not None:
+            if self.dispatch.routed and kind == "prover" and self.candidates("needs-land") is not None:
                 self.beads("update", issue, "--add-label", "stage:needs-land", "-s", "open", "--assignee", "")
                 return
         self.beads("update", issue, "-s", "open", "--assignee", "")
@@ -1385,7 +1257,7 @@ class Loop:
         self.beads("update", issue, "--add-label", "stage:escalated", "-s", "open", "--assignee", "")
 
     def finish_round_report(self, run, clear_stage=None):
-        """Parse a round's report, clear any consumed stage label, run or delegate hand-offs, and return Loop word."""
+        """Parse a round's report, clear any consumed stage label, run or queue hand-offs, and return Loop word."""
         if run.report.strip():
             print(textwrap.indent(run.report.strip(), f"{self.tag}    "), file=self.out, flush=True)
         report = parse(run.report) if not run.error else Report()
@@ -1405,8 +1277,8 @@ class Loop:
         if report.retry:
             spec, waits = self.choose(RETRY)
             if spec is None and waits is None:
-                self.escalate(report.retry, "delegated")
-            elif spec is None and self.profile_cfg.filtered:
+                self.escalate(report.retry, "route disabled")
+            elif spec is None and self.dispatch.routed:
                 self.escalate(report.retry, f"every candidate is cooled down ({fmt_waits(waits)})")
             else:
                 self.retry = report.retry
@@ -1419,19 +1291,19 @@ class Loop:
         if issue:
             spec, waits = self.choose(RETRY)
             if spec is None and waits is None:
-                self.escalate(issue, "delegated")
+                self.escalate(issue, "route disabled")
                 return "continue", Run()
             if spec is None:
                 self.retry = issue
                 return "cooldown_wait", Run()
             run = self.agent("round", f"Run one round. Issue {issue} is yours: a round of this loop left it unfinished.",
                              spec=spec)
-            if run.limited and self.profile_cfg.filtered:
+            if run.limited and self.dispatch.routed:
                 self.beads("update", issue, "--add-label", "stage:escalated", "-s", "open", "--assignee", "")
                 return "cooldown", run
             return self.finish_round_report(run)
 
-        if not self.profile_cfg.filtered:
+        if not self.dispatch.routed:
             if self.cooled(self.spec_for("round")):
                 return "cooldown_wait", Run()
             run = self.agent("round", "Run one round.")
@@ -1452,8 +1324,7 @@ class Loop:
             return self.finish_round_report(run, clear_stage=(target, "stage:escalated"))
         if action in ("stage:needs-land", "leaf"):
             target, rkey, spec = payload
-            owner = f"profile {self.profile_name}" if self.profile_name else f"route {rkey}"
-            run = self.agent("round", f"Run one round. Issue {target} is yours (claimed for {owner}; take no other issue).",
+            run = self.agent("round", f"Run one round. Issue {target} is yours (claimed for route {rkey}; take no other issue).",
                              spec=spec)
             if run.limited:
                 self.release_if_held(target)
@@ -1496,8 +1367,7 @@ class Loop:
                 self.notify(f"round loop stopped: {questions} questions in bd list -s blocked")
                 return 0
             if loop == "idle_stop":
-                label = f"profile {self.profile_name}" if self.profile_name else "configured routes"
-                self.say("loop", f"no work matching {label} and no peer loop running; stopping")
+                self.say("loop", "no work matching the configured routes and no peer loop running; stopping")
                 return 0
             if loop == "cooldown_wait":
                 if once:
@@ -1510,9 +1380,8 @@ class Loop:
             if once or self.stopping or self.reloading:
                 break
             if loop == "wait":
-                label = f"profile {self.profile_name}" if self.profile_name else "configured routes"
-                why = (f"no work matching {label}; another loop is active"
-                       if self.profile_cfg.filtered else "nothing ready; another loop holds the issues in progress")
+                why = ("no work matching the configured routes; another loop is active"
+                       if self.dispatch.routed else "nothing ready; another loop holds the issues in progress")
                 self.pause(self.wait, why)
             elif loop is None and run.limited:
                 reset = max((run.reset or self.now() + 3600) - self.now(), 0) + 60
@@ -1722,33 +1591,23 @@ class Pool:
         return self.status
 
 
-def list_profiles(config=CONFIG, out=sys.stdout):
+def list_offerings(config=CONFIG, out=sys.stdout):
+    """The offerings and the routes loop.toml defines, each route with its candidates in order."""
     text = Path(config).read_text() if Path(config).exists() else ""
-    top_flags, profiles, routes = parse_all(text)
-    if top_flags:
-        shown = "; ".join(f"{k}: {' '.join(v)}" for k, v in top_flags.items() if v)
-        print(f"default (claude): {shown or 'agent defaults'}", file=out)
-    if routes:
-        offered = {spec.name: spec for candidates in routes.values() if candidates for spec in candidates}
-        for spec in offered.values():
-            print(f"offering {fmt_offering(spec)}", file=out)
-        for key, candidates in routes.items():
-            print(f"route {key}: {fmt_candidates(candidates)}", file=out)
-    if not profiles and not routes:
-        print("no [routes] or [profiles.<name>] defined in loop.toml", file=out)
-        return 0
-    for name, cfg in sorted(profiles.items()):
-        agents = ", ".join(f"{k}={fmt_spec(s)}" for k, s in cfg.agents.items())
-        print(f"{name}: kinds={list(cfg.kinds)} stages={list(cfg.stages)} epics={cfg.epics} "
-              f"delegate={sorted(cfg.delegate)} | {agents}", file=out)
+    _, offerings, routes = parse_all(text)
+    for spec in offerings.values():
+        print(f"offering {fmt_offering(spec)}", file=out)
+    for key, candidates in routes.items():
+        print(f"route {key}: {fmt_candidates(candidates)}", file=out)
+    if not routes:
+        print(f"no [routes] in {Path(config).name}: the loop runs plain rounds on its top-level tables", file=out)
     return 0
 
 
-def check_profile(profile, config=CONFIG, out=sys.stdout, loop=None):
-    loop = loop or Loop(config=config, profile=profile, out=out)
+def check(config=CONFIG, out=sys.stdout, loop=None):
+    loop = loop or Loop(config=config, out=out)
     _, _, summary = loop.inspect_work(claim=False)
-    tag = (f"profile {profile}" if profile else
-           ("auto-routed [routes]" if loop.profile_cfg.routed else "unfiltered"))
+    tag = "auto-routed [routes]" if loop.dispatch.routed else "unrouted"
     print(f"=== {tag} ===", file=out)
     print(f"abandoned recoverable: {summary['recovered'] or 'none'} (other live actors: {summary['other_live']})", file=out)
     print(f"matching stages ({len(summary['stages'])}): "
@@ -1768,17 +1627,13 @@ def check_profile(profile, config=CONFIG, out=sys.stdout, loop=None):
 
 def main_loop(args):
     """One loop in this process: a worker of a pool, or a loop run --once."""
-    loop = Loop(wait=args.wait, profile=args.profile, pool=args.worker)
-    if args.profile is not None:
-        text = loop.config.read_text() if loop.config.exists() else ""
-        parse_profile(text, args.profile)
+    loop = Loop(wait=args.wait, pool=args.worker)
     loop.record()
     pidfile = PIDS / str(os.getpid())
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1):
         signal.signal(signum, loop.on_stop)
     signal.signal(signal.SIGHUP, loop.on_reload)
-    prof = f" (profile {args.profile})" if args.profile else ""
-    loop.say("loop", f"actor {loop.actor}{prof}; stop with Ctrl-C or tools/loop.py --stop {os.getpid()}")
+    loop.say("loop", f"actor {loop.actor}; stop with Ctrl-C or tools/loop.py --stop {os.getpid()}")
     try:
         status = loop.drive(once=args.once)
     finally:
@@ -1793,16 +1648,13 @@ def main_loop(args):
 def main_pool(args):
     """The pool of worker loops, in this process; each worker is this script with --worker."""
     text = CONFIG.read_text() if CONFIG.exists() else ""
-    parse_profile(text, args.profile)
+    parse_all(text)
     worker = [sys.executable, str(Path(__file__).resolve()), "--wait", str(args.wait)]
-    if args.profile is not None:
-        worker += ["--profile", args.profile]
     pool = Pool(worker)
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1):
         signal.signal(signum, pool.on_stop)
     signal.signal(signal.SIGHUP, pool.on_reload)
-    prof = f" (profile {args.profile})" if args.profile else ""
-    pool.say(f"pool {pool.pid}{prof}; resize with [pool] jobs in {CONFIG.name}, stop with Ctrl-C or tools/loop.py --stop")
+    pool.say(f"pool {pool.pid}; resize with [pool] jobs in {CONFIG.name}, stop with Ctrl-C or tools/loop.py --stop")
     return pool.run()
 
 
@@ -2173,62 +2025,35 @@ class Tests(unittest.TestCase):
             self.assertEqual(loop.drive(), 0)
             self.assertLess(time.monotonic() - started, 20)
 
-    def test_profiles_parse_claude_and_agy_flags_and_selectors(self):
-        text = textwrap.dedent("""\
-            [round]
-            model = "fable"
-            autocompact = "200k"
-
-            [profiles.carbon]
-            harness = "agy"
-            model = "gemini-4-carbon-high"
-            kinds = ["tool", "sys", "proof", "review"]
-            stages = ["needs-land"]
-            epics = "close"
-            delegate = ["prover", "skeptic", "retry"]
-
-            [profiles.fable]
-            harness = "claude"
-            kinds = ["spec"]
-            stages = ["needs-prover", "escalated"]
-            epics = "none"
-            [profiles.fable.round]
-            model = "fable"
-            effort = "high"
-            autocompact = "200k"
-            [profiles.fable.retry]
-            model = "fable"
-            effort = "xhigh"
-            [profiles.fable.prover]
-            model = "fable"
-            effort = "xhigh"
-            autocompact = "400k"
-            """)
-        self.assertEqual(options(text), {"round": ["--model", "fable", "--autocompact", "200k"]})
-        carbon = parse_profile(text, "carbon")
-        self.assertEqual((carbon.name, carbon.filtered, carbon.kinds, carbon.stages, carbon.epics, carbon.delegate),
-                         ("carbon", True, ("tool", "sys", "proof", "review"), ("needs-land",), "close",
-                          frozenset({"prover", "skeptic", "retry"})))
-        self.assertEqual((carbon.agents["round"].harness, carbon.agents["round"].flags),
-                         ("agy", ["--dangerously-skip-permissions", "--model", "gemini-4-carbon-high"]))
-        fable = parse_profile(text, "fable")
-        self.assertEqual((fable.agents["round"].harness, fable.agents["round"].flags),
-                         ("claude", ["--model", "fable", "--effort", "high", "--autocompact", "200k"]))
-        self.assertEqual(fable.agents["prover"].flags, ["--model", "fable", "--effort", "xhigh", "--autocompact", "400k"])
-        for bad in (
-            '[profiles.x]\nharness = "agy"\nautocompact = "200k"\n',
-            '[profiles.x]\nharness = "agy"\nfallback-model = "opus"\n',
-            '[profiles.x]\nharness = "claude"\nmode = "auto"\n',
-            '[profiles.x]\nharness = "grok"\n',
-            '[profiles.x]\nkinds = ["magic"]\n',
-            '[profiles.x]\nstages = ["needs-magic"]\n',
-            '[profiles.x]\nepics = "some"\n',
-            '[profiles.x]\ndelegate = ["round"]\n',
-        ):
+    def test_list_shows_offerings_and_routes_and_loop_toml_takes_no_profiles(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = Path(folder) / "loop.toml"
+            config.write_text('[round]\nmodel = "fable"\n\n[offerings.carbon]\nharness = "agy"\nmodel = "gemini-4-carbon-high"\n'
+                              'meters = ["gemini-week"]\n\n[offerings.opus]\nmodel = "opus"\nmeters = ["claude-week"]\n\n'
+                              '[routes.default]\ncandidates = ["opus"]\n\n[routes.tool]\ncandidates = ["carbon", "opus"]\n\n'
+                              '[routes.skeptic]\ndisabled = true\n')
+            shown = io.StringIO()
+            self.assertEqual(list_offerings(config, shown), 0)
+            lines = shown.getvalue().splitlines()
+            self.assertEqual(lines[:2], ["offering carbon: agy(--model gemini-4-carbon-high) on gemini-week",
+                                         "offering opus: claude(--model opus) on claude-week"])
+            self.assertIn("route tool: carbon > opus", lines)
+            self.assertIn("route spec: opus", lines)
+            self.assertIn("route skeptic: disabled", lines)
+            self.assertEqual(len(lines), 2 + len(ROUTE_KEYS))
+            config.write_text('[round]\nmodel = "fable"\n')
+            shown = io.StringIO()
+            list_offerings(config, shown)
+            self.assertEqual(shown.getvalue(), "no [routes] in loop.toml: the loop runs plain rounds on its top-level tables\n")
+        self.assertEqual(options('[round]\nmodel = "fable"\nautocompact = "200k"\n'),
+                         {"round": ["--model", "fable", "--autocompact", "200k"]})
+        for bad in ('[profiles.carbon]\nharness = "agy"\n',
+                    '[offerings.x]\nharness = "agy"\nautocompact = "200k"\nmeters = ["gemini-week"]\n',
+                    '[offerings.x]\nharness = "agy"\nfallback-model = "opus"\nmeters = ["gemini-week"]\n',
+                    '[offerings.x]\nmode = "auto"\nmeters = ["claude-week"]\n',
+                    '[offerings.x]\nharness = "grok"\nmeters = ["claude-week"]\n'):
             with self.assertRaises(ValueError, msg=bad):
-                parse_profile(bad, "x")
-        with self.assertRaises(ValueError):
-            parse_profile(text, "missing")
+                parse_dispatch(bad)
 
     def test_agy_stream_events_report_tools_text_steps_usage_and_limits(self):
         lines = [
@@ -2273,8 +2098,9 @@ class Tests(unittest.TestCase):
                 "print(json.dumps({'event': 'result', 'result': {'status': 'SUCCESS', 'response': 'Loop: stop\\n', 'num_turns': 1, 'usage': {}}}))\n"
             )
             fake_agy.chmod(0o755)
-            loop, _ = self.driver(folder, agy=str(fake_agy), profile="carbon")
-            (folder / "loop.toml").write_text('[profiles.carbon]\nharness = "agy"\nmodel = "gemini-4-carbon-high"\neffort = "high"\n')
+            loop, _ = self.driver(folder, agy=str(fake_agy))
+            (folder / "loop.toml").write_text('[offerings.carbon]\nharness = "agy"\nmodel = "gemini-4-carbon-high"\neffort = "high"\n'
+                                              'meters = ["gemini-week"]\n[routes.tool]\ncandidates = ["carbon"]\n')
             (folder / "ready.json").write_text('[{"id": "atmo-1.2", "title": "Fix tool", "issue_type": "task", "priority": 1, "labels": ["kind:tool"]}]')
             self.assertEqual(loop.drive(once=True), 0)
             [call] = self.log(folder, "agy")
@@ -2287,14 +2113,14 @@ class Tests(unittest.TestCase):
     def test_zero_token_precheck_skips_llm_when_no_work_matches_and_recovers_abandoned_leaves(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
-            loop, clock = self.driver(folder, "Loop: stop\n", profile="carbon", wait=300)
-            (folder / "loop.toml").write_text('[profiles.carbon]\nkinds = ["tool"]\nepics = "none"\n')
+            loop, clock = self.driver(folder, "Loop: stop\n", wait=300)
+            (folder / "loop.toml").write_text(self.OFFERINGS + '[routes.tool]\ncandidates = ["sonnet"]\n')
             (folder / "ready.json").write_text('[{"id": "atmo-1.9", "title": "Prove kernel spec", "issue_type": "task", "priority": 1, "labels": ["kind:spec"]}]')
             self.assertEqual(loop.drive(), 0)
             self.assertEqual(self.log(folder, "claude"), [])
             self.assertEqual(clock[0], 0.0)
 
-            # While a peer loop is alive, the idle profile waits instead of exiting, then stops once signalled.
+            # While a peer loop is alive, the idle loop waits instead of exiting, then stops once signalled.
             peer = subprocess.Popen([sys.executable, "-c", "import time; print('up', flush=True); time.sleep(60)", "/x/tools/loop.py"],
                                     stdout=subprocess.PIPE, text=True)
             try:
@@ -2322,7 +2148,7 @@ class Tests(unittest.TestCase):
             bd_calls = self.log(folder, "bd")
             self.assertIn(["update", "atmo-1.5", "-s", "open", "--assignee", ""], bd_calls)
 
-    def test_profile_claims_matching_leaf_by_inference_and_runs_epic_close_without_stealing_other_leaves(self):
+    def test_routes_claim_matching_leaf_by_inference_and_run_epic_close_without_stealing_other_leaves(self):
         by_id = {
             "atmo-1": {"id": "atmo-1", "issue_type": "epic", "title": "Star", "description": "Tier 1, Tier 2, Tier 3"},
             "atmo-1.1": {"id": "atmo-1.1", "parent": "atmo-1", "issue_type": "epic", "title": "Kernel", "description": "Tier 1."},
@@ -2335,8 +2161,9 @@ class Tests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
-            loop, _ = self.driver(folder, "Loop: continue\n", "Loop: continue\n", profile="carbon")
-            (folder / "loop.toml").write_text('[profiles.carbon]\nkinds = ["tool"]\nepics = "close"\n')
+            loop, _ = self.driver(folder, "Loop: continue\n", "Loop: continue\n")
+            (folder / "loop.toml").write_text(self.OFFERINGS + '[routes.tool]\ncandidates = ["sonnet"]\n'
+                                              '[routes.epic-close]\ncandidates = ["sonnet"]\n')
             (folder / "ready.json").write_text(json.dumps([
                 {"id": "atmo-1.1.2", "parent": "atmo-1.1", "title": "Endpoint spec", "issue_type": "task", "priority": 0, "labels": ["kind:spec"]},
                 {"id": "atmo-1.2.1", "parent": "atmo-1.2", "title": "Status script", "issue_type": "task", "priority": 2, "labels": ["kind:tool"]},
@@ -2359,30 +2186,25 @@ class Tests(unittest.TestCase):
             self.assertEqual(loop.drive(once=True), 0)
             self.assertIn("Epic round only", self.log(folder, "claude")[1][-2])
 
-    def test_delegated_hand_offs_stamp_stage_labels_and_specialist_profile_runs_them(self):
+    def test_disabled_hand_off_routes_stamp_stage_labels_and_a_loop_routing_them_runs_them(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
-            toml = textwrap.dedent("""\
-                [profiles.carbon]
-                kinds = ["proof", "review"]
-                stages = ["needs-land"]
-                epics = "none"
-                delegate = ["prover", "skeptic", "retry"]
-
-                [profiles.fable]
-                kinds = []
-                stages = ["needs-prover", "escalated"]
-                epics = "none"
-                [profiles.fable.retry]
-                model = "fable"
-                effort = "xhigh"
-                [profiles.fable.prover]
-                model = "fable"
-                effort = "xhigh"
-                """)
-            (folder / "loop.toml").write_text(toml)
+            (folder / "loop.toml").write_text(self.OFFERINGS + textwrap.dedent("""\
+                [routes.proof]
+                candidates = ["sonnet"]
+                [routes.review]
+                candidates = ["sonnet"]
+                [routes.needs-land]
+                candidates = ["sonnet"]
+                [routes.prover]
+                disabled = true
+                [routes.skeptic]
+                disabled = true
+                [routes.retry]
+                disabled = true
+                """))
             carbon, _ = self.driver(folder, "Prover: atmo-1.1\nLoop: continue\n", "Skeptic: atmo-1.2\nLoop: continue\n",
-                                    "Retry: atmo-1.3\nLoop: continue\n", profile="carbon")
+                                    "Retry: atmo-1.3\nLoop: continue\n")
             for issue_id, lbl in (("atmo-1.1", "kind:proof"), ("atmo-1.2", "review"), ("atmo-1.3", "kind:proof")):
                 (folder / "ready.json").write_text(json.dumps([{"id": issue_id, "title": "x", "issue_type": "task", "priority": 1, "labels": [lbl]}]))
                 self.assertEqual(carbon.drive(once=True), 0)
@@ -2391,8 +2213,17 @@ class Tests(unittest.TestCase):
             self.assertIn(["update", "atmo-1.2", "--add-label", "stage:needs-skeptic", "-s", "open", "--assignee", ""], bd_calls)
             self.assertIn(["update", "atmo-1.3", "--add-label", "stage:escalated", "-s", "open", "--assignee", ""], bd_calls)
 
-            fable, _ = self.driver(folder, "Verified 10, 0 errors.", "Loop: continue\n", profile="fable")
-            (folder / "loop.toml").write_text(toml)
+            (folder / "loop.toml").write_text(self.OFFERINGS + textwrap.dedent("""\
+                [offerings.fable-xhigh]
+                model = "fable"
+                effort = "xhigh"
+                meters = ["claude-week", "claude-fable"]
+                [routes.prover]
+                candidates = ["fable-xhigh"]
+                [routes.retry]
+                candidates = ["fable-xhigh"]
+                """))
+            fable, _ = self.driver(folder, "Verified 10, 0 errors.", "Loop: continue\n")
             (folder / "ready.json").write_text(json.dumps([
                 {"id": "atmo-1.1", "title": "x", "issue_type": "task", "priority": 1, "labels": ["kind:proof", "stage:needs-prover"]}
             ]))
@@ -2491,8 +2322,8 @@ class Tests(unittest.TestCase):
         update_state(folder, change)
 
     def test_routes_list_candidate_offerings_in_order_and_refuse_an_unknown_name_or_a_single_spec(self):
-        cfg = parse_profile(self.ROUTES, None)
-        self.assertTrue(cfg.routed and cfg.filtered)
+        cfg = parse_dispatch(self.ROUTES)
+        self.assertTrue(cfg.routed)
         self.assertEqual([spec.name for spec in cfg.routes["tool"]], ["carbon", "sonnet", "opus"])
         self.assertEqual([spec.name for spec in cfg.routes["spec"]], ["fable", "opus"])
         carbon, sonnet, _ = cfg.routes["tool"]
@@ -2501,12 +2332,13 @@ class Tests(unittest.TestCase):
         self.assertEqual((sonnet.harness, sonnet.flags, sonnet.meters), ("claude", ["--model", "sonnet", "--effort", "high"], ("claude-week",)))
         self.assertEqual(cfg.routes["prover"][0].flags, ["--model", "fable", "--effort", "xhigh", "--autocompact", "400k"])
         self.assertEqual(cfg.routes["prover"][0].meters, ("claude-week", "claude-fable"))
-        self.assertEqual((cfg.kinds, cfg.delegate, cfg.epics), (WORK_KINDS, frozenset(), "all"))
+        self.assertTrue(all(cfg.routes[key] for key in ROUTE_KEYS))
 
-        disabled = parse_profile(self.ROUTES + "[routes.epic-split]\ndisabled = true\n[routes.arch]\ndisabled = true\n", None)
+        disabled = parse_dispatch(self.ROUTES + "[routes.epic-split]\ndisabled = true\n[routes.arch]\ndisabled = true\n")
         self.assertIsNone(disabled.routes["epic-split"])
-        self.assertNotIn("arch", disabled.kinds)
-        self.assertIsNone(parse_profile(self.OFFERINGS + '[routes.tool]\ncandidates = ["sonnet"]\n', None).routes["sys"])
+        self.assertIsNone(disabled.routes["arch"])
+        self.assertIsNone(parse_dispatch(self.OFFERINGS + '[routes.tool]\ncandidates = ["sonnet"]\n').routes["sys"])
+        self.assertFalse(parse_dispatch(self.OFFERINGS).routed)
 
         for bad in (self.OFFERINGS + '[routes.tool]\ncandidates = ["sonnet", "haiku"]\n',
                     '[routes.tool]\ncandidates = ["sonnet"]\n',
@@ -2522,7 +2354,7 @@ class Tests(unittest.TestCase):
                     '[offerings.carbon]\nharness = "agy"\nmeters = ["claude-week"]\n',
                     '[offerings.opus]\nmodel = "opus"\nturns = "9"\nmeters = ["claude-week"]\n'):
             with self.assertRaises(ValueError, msg=bad):
-                parse_profile(bad, None)
+                parse_dispatch(bad)
 
         # A loop that reads a route naming an unknown offering reports it and keeps routing on the last good file.
         with tempfile.TemporaryDirectory() as folder:
@@ -2593,7 +2425,7 @@ class Tests(unittest.TestCase):
 
                 def flush(self):
                     pass
-            check_profile(None, config=folder / "loop.toml", out=Lines(), loop=loop)
+            check(config=folder / "loop.toml", out=Lines(), loop=loop)
             text = "".join(shown)
             self.assertIn("waiting on cooldowns (1)", text)
             self.assertIn("atmo-1.1 [tool]: carbon cooled on gemini-5h until", text)
@@ -3142,8 +2974,7 @@ class Tests(unittest.TestCase):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--profile", help="run the named [profiles.<name>] configuration from loop.toml")
-    parser.add_argument("--list-profiles", action="store_true", help="list profiles in loop.toml and exit")
+    parser.add_argument("--list-profiles", action="store_true", help="list the offerings and routes in loop.toml and exit")
     parser.add_argument("--check", action="store_true", help="show matching ready work at zero token cost and exit")
     parser.add_argument("--once", action="store_true", help="run one round and its hand-off, then stop")
     parser.add_argument("--wait", type=float, default=WAIT, help="seconds to wait on 'Loop: wait'")
@@ -3157,9 +2988,9 @@ def main():
     if args.test:
         unittest.main(argv=[sys.argv[0]], verbosity=1)
     if args.list_profiles:
-        return list_profiles()
+        return list_offerings()
     if args.check:
-        return check_profile(args.profile)
+        return check()
     if args.stop and args.reload:
         parser.error("--stop and --reload are each their own command")
     if args.stop:

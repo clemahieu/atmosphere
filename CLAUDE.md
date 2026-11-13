@@ -51,7 +51,7 @@ A change that breaks a rule or adds kernel spanning is a decision only the human
 
 ## Rounds, commits and the stack
 
-Work happens in rounds. `/round` runs one; `tools/loop.py` (auto-routing across harnesses and model difficulties from `[routes]` in `loop.toml`, or running a single slice with `--profile <name>`; `design/loops-select-by-work-kind-and-stage/`), or `/loop /round` in a session, runs them until everything open is blocked on the human. Several loops run at once, each its own actor: one `tools/loop.py` keeps a pool of `[pool] jobs` worker loops, resized live from `loop.toml`, each `loop-<pid>` for every session it runs, and a session under `/loop /round` is `claude-<pid>` from a hook at session start; a round recovers an issue held by its own actor or by a loop that ended, leaves another live loop's alone, claims atomically, and lands without a lock. The procedure is `.claude/agents/round.md`, which `/round` runs in a fresh subagent. The rules:
+Work happens in rounds. `/round` runs one; `tools/loop.py` (routing each kind of work to the first free offering its `[routes]` entry in `loop.toml` lists; `design/loops-select-by-work-kind-and-stage/`), or `/loop /round` in a session, runs them until everything open is blocked on the human. Several loops run at once, each its own actor: one `tools/loop.py` keeps a pool of `[pool] jobs` worker loops, resized live from `loop.toml`, each `loop-<pid>` for every session it runs, and a session under `/loop /round` is `claude-<pid>` from a hook at session start; a round recovers an issue held by its own actor or by a loop that ended, leaves another live loop's alone, claims atomically, and lands without a lock. The procedure is `.claude/agents/round.md`, which `/round` runs in a fresh subagent. The rules:
 
 - A round takes the next ready issue and discards it (close with the reason), redefines it (rewrite the outcome and the acceptance criteria), splits it (one issue per independent change, dependencies only where one blocks another) or implements it (one discrete change, one tested commit, merge to main, push, remove the worktree, close). A round that redefines goes on to implement the issue it rewrote, and a round that splits goes on to implement the first piece, while the context that understood them is at hand; a round lands one implementation at most. Only implement commits.
 - A round writes the tool its work needs, when a check is slow, an output is hard to read or a step is repeated by hand: under `tools/`, tested at tier 3, as its own commit ahead of the change that uses it. A tool does not change what the gate requires.
@@ -101,7 +101,7 @@ tools/board.py          # boot dom0 on the Orange Pi under KVM and hold the run 
 Not part of the gate:
 
 ```
-tools/loop.py           # run rounds until the loop stops; loop.toml [routes] auto-selects harness and model per work kind and stage (--profile runs one slice; --check shows matching ready work)
+tools/loop.py           # run rounds until the loop stops; loop.toml [routes] selects harness and model per work kind and stage (--check shows matching ready work, --list-profiles the offerings and routes)
 tools/reviews.py        # the finished epics, in the order an epic round takes them, each with what it needs
 tools/review-evidence.py EPIC      # before a review goes to the skeptic: the commits and logs recorded under its epic that are missing, gone from main or older than it
 tools/bead-status.py    # serve the state of the Beads tree as a page at http://127.0.0.1:8377/
