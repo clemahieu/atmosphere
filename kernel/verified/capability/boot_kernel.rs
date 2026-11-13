@@ -322,17 +322,6 @@ impl CapKernel {
             mem_valid(kernel_root),
             boot_tlb(tlb),
             boot_iotlb(iotlb),
-            old(self).cores.wf(),
-            old(self).iommus.acked.wf(),
-            old(self).stale_epoch.wf(),
-            old(self).zeroing.cursor.wf(),
-            old(self).zeroing.active_2m.wf(),
-            old(self).zeroing.active_1g.wf(),
-            old(self).blocks.pages.wf(),
-            old(self).blocks.regions_2m.wf(),
-            old(self).blocks.regions_1g.wf(),
-            old(self).blocks.count_2m.wf(),
-            old(self).blocks.count_1g.wf(),
             root % PAGE_SZ == 0,
             root + PAGE_SZ <= NODE_SPACE,
             root_perm.addr() == root,
@@ -343,15 +332,15 @@ impl CapKernel {
             iommus_present.wf(),
             iommu_commands.wf(iommus_present@),
             process % PROCESS_BYTES == 0,
-            old(self).blocks.tracks_addr_run(process, 8),
+            process / PAGE_SZ + 8 <= NUM_PAGES,
             leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
-            old(self).blocks.tracks_addr_run(leaf, 2),
+            leaf / PAGE_SZ + 2 <= NUM_PAGES,
             frames % LEAF_BYTES == 0,
             frames != NO_LEAF,
-            old(self).blocks.tracks_addr_run(frames, 2),
+            frames / PAGE_SZ + 2 <= NUM_PAGES,
             t % THREAD_BYTES == 0,
-            old(self).blocks.tracks_addr_run(t, 2),
+            t / PAGE_SZ + 2 <= NUM_PAGES,
             process + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= process,
             process + PROCESS_BYTES <= frames || frames + LEAF_BYTES <= process,
             process + PROCESS_BYTES <= t || t + THREAD_BYTES <= process,
@@ -367,7 +356,7 @@ impl CapKernel {
                 ==> !in_root_blocks(process, leaf, frames, t, j) && j != root / PAGE_SZ,
             image_runs_wf(image@),
             forall|j: int| #[trigger] image_region(image@, region_2m(j)) ==> {
-                &&& old(self).blocks.tracks(j)
+                &&& 0 <= j < NUM_PAGES
                 &&& !in_root_blocks(process, leaf, frames, t, j)
                 &&& !in_runs(free@, free@.len() as int, j)
                 &&& j != root / PAGE_SZ

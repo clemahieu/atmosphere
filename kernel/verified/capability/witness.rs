@@ -23,7 +23,8 @@
 //! A creator can take back what it gave a process it controls: it claims a capability out of the
 //! process's table into its own. And it can set and read the registers of a thread it has not started,
 //! through the thread's control capability.
-//! Beside those, boot can start the root: core 0 loads the root's space and enters its thread.
+//! Beside those, boot can build the capability kernel from no prior state of `self`, and start the
+//! root: core 0 loads the root's space and enters its thread.
 //! And an IOMMU's flush leaves the frames, the threads and the view as they were.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
@@ -854,6 +855,145 @@ proof fn lemma_slot_kept_two(pre: CapKernel, post: CapKernel, root: usize, i: us
 }
 
 impl CapKernel {
+    /// From no prior state of `self`, boot's one verified step builds the capability kernel and its
+    /// root process from the pages and models the trust boundary hands over: one page initialised as
+    /// the list's synthetic root, the root's process, its two leaves and its thread, one free run and
+    /// the cores' and IOMMUs' boot register and TLB models, with `kernel_root` outside every block.
+    #[verifier::spinoff_prover]
+    pub fn witness_kernel_init(
+        &mut self,
+        pages: Tracked<Map<usize, PagePerm4k>>,
+        registers: Tracked<Map<int, crate::arch::BaseRegister>>,
+        tlb: Tracked<crate::arch::TlbModel>,
+        iotlb: Tracked<crate::arch::IotlbModel>,
+    ) -> (ret: Option<(usize, usize)>)
+        requires
+            forall|i: usize| 2 <= i <= 17 ==> #[trigger] holds(pages@, i),
+            boot_registers(registers@, PAGE_SZ),
+            boot_tlb(tlb@),
+            boot_iotlb(iotlb@),
+        ensures
+            ret is Some,
+            final(self).wf(),
+    {
+        hide(CapKernel::wf);
+        let kernel_root: usize = PAGE_SZ;
+        let leaf: usize = 2 * PAGE_SZ;
+        let frames: usize = 4 * PAGE_SZ;
+        let t: usize = 6 * PAGE_SZ;
+        let process: usize = 8 * PAGE_SZ;
+        let root: usize = 16 * PAGE_SZ;
+        let free: [(usize, usize); 1] = [(17, 1)];
+        let image: [ImageRun; 0] = [];
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let tracked mut raw_pages = pages.get();
+        let tracked root_page;
+        let tracked boot_pages;
+        proof {
+            assert(holds(pages@, 16usize));
+            root_page = raw_pages.tracked_remove(16usize);
+            let keep = raw_pages.dom().filter(|i: usize| 2 <= i <= 15 || i == 17);
+            boot_pages = raw_pages.tracked_remove_keys(keep);
+            assert forall|i: usize| in_root_blocks(process, leaf, frames, t, i as int)
+                || in_runs(free@, free@.len() as int, i as int)
+                implies #[trigger] holds(boot_pages, i) by {
+                if in_runs(free@, free@.len() as int, i as int) {
+                    let a = choose|a: int| 0 <= a < free@.len() as int && #[trigger] in_run_at(free@, a, i as int);
+                    assert(a == 0);
+                    assert(i == 17usize);
+                } else {
+                    assert(2 <= i <= 15);
+                }
+                assert(holds(pages@, i));
+                assert(keep.contains(i));
+            }
+            assert forall|j: usize| #[trigger] boot_pages.contains_key(j) implies boot_pages[j].addr() == j * PAGE_SZ by {
+                assert(keep.contains(j));
+                assert(holds(pages@, j));
+            }
+            assert forall|j: usize| image_region(image@, region_2m(j as int)) implies #[trigger] boot_pages.contains_key(j) by {
+                assert(image@.len() == 0);
+            }
+        }
+        let root_perm = init_node_page(root, Tracked(root_page), Tracked(&mut steps));
+        let kernel_entries = crate::array::Array::<usize, KERNEL_MEM_END_L4INDEX>::new(0);
+        let iommus_present = crate::array::Array::<bool, NUM_IOMMUS>::new(false);
+        let iommu_commands = CommandBuffers {
+            buffers: crate::array::Array::<CommandBuffer, NUM_IOMMUS>::new(
+                CommandBuffer { mmio: 0, ring: 0, len: 0, tail: 0, completion: 0 },
+            ),
+            pages: Tracked(Map::tracked_empty()),
+            registers: Tracked(Map::tracked_empty()),
+        };
+        proof {
+            reveal(CommandBuffers::wf);
+            assert(crate::util::page_ptr_util_u::mem_valid(PAGE_SZ)) by (compute_only);
+            assert(free@ =~= seq![(17usize, 1usize)]);
+            assert(image@ =~= Seq::<ImageRun>::empty());
+            assert(image_phys(image@) =~= Seq::<(usize, usize)>::empty());
+            assert forall|j: int| #[trigger] in_runs(free@, free@.len() as int, j)
+                implies !in_root_blocks(process, leaf, frames, t, j) && j != root / PAGE_SZ by {
+                let a = choose|a: int| 0 <= a < free@.len() as int && #[trigger] in_run_at(free@, a, j);
+                assert(a == 0);
+                assert(j == 17);
+            }
+            assert forall|j: int| #[trigger] image_region(image@, region_2m(j)) implies {
+                &&& 0 <= j < NUM_PAGES
+                &&& !in_root_blocks(process, leaf, frames, t, j)
+                &&& !in_runs(free@, free@.len() as int, j)
+                &&& j != root / PAGE_SZ
+            } by {
+                assert(image@.len() == 0);
+            }
+            assert(!in_runs(free@, free@.len() as int, (kernel_root / PAGE_SZ) as int)) by {
+                if in_runs(free@, free@.len() as int, (kernel_root / PAGE_SZ) as int) {
+                    let a = choose|a: int| 0 <= a < free@.len() as int && #[trigger] in_run_at(free@, a, (kernel_root / PAGE_SZ) as int);
+                    assert(a == 0);
+                }
+            }
+            assert(!image_region(image@, region_2m((kernel_root / PAGE_SZ) as int)));
+        }
+        let out = self.kernel_init(
+            root,
+            root_perm,
+            kernel_entries,
+            iommus_present,
+            iommu_commands,
+            process,
+            leaf,
+            frames,
+            t,
+            &free,
+            &image,
+            Tracked(boot_pages),
+            kernel_root,
+            registers,
+            tlb,
+            iotlb,
+        );
+        proof {
+            assert(free@.drop_last() =~= Seq::<(usize, usize)>::empty());
+            assert(runs_blocks(Seq::<(usize, usize)>::empty(), MAX_ORDER as nat) == Seq::<(nat, nat)>::empty());
+            assert(runs_blocks(free@, MAX_ORDER as nat) =~= run_blocks(17, 1, MAX_ORDER as nat));
+            lemma_run_blocks(17, 1, MAX_ORDER as nat);
+            let bs = runs_blocks(free@, MAX_ORDER as nat);
+            assert(in_run(17, 1, 17));
+            assert(bs.len() > 0);
+            assert(bs.len() <= ROOT_UNTYPED_SLOTS);
+            let first = page_block_payload(bs[0]);
+            lemma_pow2_pos(first.order as nat);
+            assert(block_bytes(first.order) >= 0);
+            lemma_div_pos_is_pos(block_bytes(first.order), TABLE_PAGE_BYTES as int);
+            assert(untyped_tables(first) >= 0);
+            assert(image_blocks(image@) == Seq::<(nat, nat)>::empty());
+            assert(image_virt_wf(image@));
+            assert(image_tables_bound(image@) == 0);
+            assert(out is Some);
+        }
+        out
+    }
+
     /// From the state boot leaves, the steps kernel/src takes before it enters the root's thread: core 0
     /// loads the root's space and points its base register at the space's root under the tag the load
     /// gave; then it points the register back at `kernel_root`, the root boot was given and every core

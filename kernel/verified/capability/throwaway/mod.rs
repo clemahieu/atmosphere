@@ -9,6 +9,7 @@ pub mod dead_device_space_freed;
 pub mod dead_table_page_freed;
 pub mod destroyed_thread_freed;
 pub mod device_frame_reused_after_iommu_flush;
+pub mod kernel_init;
 pub mod nested_frame_mapped;
 pub mod process_binds_a_device;
 pub mod process_block_retyped;

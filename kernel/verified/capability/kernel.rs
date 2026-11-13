@@ -2076,17 +2076,6 @@ impl CapKernel {
             boot_registers(registers, kernel_root),
             boot_tlb(tlb),
             boot_iotlb(iotlb),
-            old(self).cores.wf(),
-            old(self).iommus.acked.wf(),
-            old(self).stale_epoch.wf(),
-            old(self).zeroing.cursor.wf(),
-            old(self).zeroing.active_2m.wf(),
-            old(self).zeroing.active_1g.wf(),
-            old(self).blocks.pages.wf(),
-            old(self).blocks.regions_2m.wf(),
-            old(self).blocks.regions_1g.wf(),
-            old(self).blocks.count_2m.wf(),
-            old(self).blocks.count_1g.wf(),
             root % PAGE_SZ == 0,
             root + PAGE_SZ <= NODE_SPACE,
             perm.addr() == root,
@@ -2126,14 +2115,27 @@ impl CapKernel {
         self.frames = Tracked(Map::tracked_empty());
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
+        self.zeroing.cursor.init();
+        self.zeroing.active_2m.init();
+        self.zeroing.active_1g.init();
         self.zeroing.init(Tracked(&mut steps));
         self.holders = Ghost(IMap::empty());
         self.devices = Devices::new(root);
         self.threads = Threads::new();
         self.processes = Processes::new();
+        self.blocks.pages.init();
+        self.blocks.regions_2m.init();
+        self.blocks.regions_1g.init();
+        self.blocks.count_2m.init();
+        self.blocks.count_1g.init();
         self.blocks.init(Tracked(&mut steps));
+        self.cores.init();
         init_cores(&mut self.cores);
+        self.stale_epoch.pages.init();
+        self.stale_epoch.two.init();
+        self.stale_epoch.one.init();
         self.stale_epoch.zero();
+        self.iommus.acked.init();
         self.iommus.zero();
         self.iommus.tlb = Tracked(iotlb);
         self.iommus.present = iommus_present;

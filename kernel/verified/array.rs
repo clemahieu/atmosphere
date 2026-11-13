@@ -57,6 +57,16 @@ impl<A, const N: usize> Array<A, N> {
 }
 
 impl<A, const N: usize> Array<A, N> {
+    /// Align the ghost sequence with the array before overwriting its elements in place.
+    pub(crate) fn init(&mut self)
+        ensures
+            final(self).wf(),
+    {
+        proof {
+            self.seq = Ghost(self.ar@);
+        }
+    }
+
     pub fn set(&mut self, i: usize, out: A)
         requires
             0 <= i < N,
