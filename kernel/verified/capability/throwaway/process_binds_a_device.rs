@@ -63,11 +63,12 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
         info: DeviceInfo,
     )
         requires
-            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             info.iommu < NUM_IOMMUS,
@@ -76,7 +77,7 @@ impl CapKernel {
         ensures
             false,
     {
-        self.witness_process_binds_a_device(root, process, leaf, frames, t, free, image, untyped, frame, present, base, info);
+        self.witness_process_binds_a_device(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, info);
     }
 }
 

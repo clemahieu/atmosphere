@@ -208,6 +208,7 @@ impl CapKernel {
         untyped: usize,
         frame: usize,
         present: Seq<bool>,
+        kernel_root: usize,
     ) -> bool {
         let bs = runs_blocks(free, MAX_ORDER as nat);
         let b = tree_of(&self.table_pages, &self.spaces);
@@ -277,6 +278,7 @@ impl CapKernel {
         &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF
         &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
             ==> #[trigger] self.root_table_block(process, cursor_block(first.base, j))
+        &&& self.spaces.kernel_root@ == kernel_root
         &&& self.spaces.kernel_root@ % PAGE_SZ == 0
         &&& mem_valid(self.spaces.kernel_root@)
     }
@@ -386,8 +388,7 @@ impl CapKernel {
                 ||| !image_virt_wf(image@)
                 ||| image_tables_bound(image@) > untyped_tables(page_block_payload(bs[0]))
             }),
-            ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame, iommus_present@),
-            ret is Some ==> final(self).spaces.kernel_root@ == kernel_root,
+            ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame, iommus_present@, kernel_root),
     {
         hide(CapKernel::wf);
         self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb), Tracked(iotlb));
@@ -762,9 +763,10 @@ impl CapKernel {
         untyped: usize,
         frame: usize,
         present: Seq<bool>,
+        kernel_root: usize,
     )
         requires
-            self.booted(root, process, leaf, frames, t, free, image, untyped, frame, present),
+            self.booted(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root),
         ensures
             self.sealed(process),
     {

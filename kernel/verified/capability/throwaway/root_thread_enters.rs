@@ -63,13 +63,14 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
     )
         requires
-            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
         ensures
             false,
     {
-        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present);
+        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root);
     }
 }
 

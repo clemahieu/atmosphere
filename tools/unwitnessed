@@ -11,13 +11,8 @@ kernel/verified/capability/console.rs	print	returns
 kernel/verified/capability/delete.rs	delete	Some
 kernel/verified/capability/derive.rs	derive	true
 kernel/verified/capability/device.rs	add_devices	true
-kernel/verified/capability/device.rs	bind_device	true
-kernel/verified/capability/device.rs	unbind_device_at	true
-kernel/verified/capability/device_space.rs	map_device	true
-kernel/verified/capability/guest_space.rs	map_nested	true
 kernel/verified/capability/inspect.rs	inspect	STATUS_OK
 kernel/verified/capability/inspect.rs	inspect	STATUS_AGAIN
-kernel/verified/capability/kernel.rs	acknowledge	returns
 kernel/verified/capability/map.rs	link_at	true
 kernel/verified/capability/map.rs	map_at	true
 kernel/verified/capability/moving.rs	move_cap	true
@@ -25,7 +20,6 @@ kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some
 kernel/verified/capability/power.rs	power_off	returns
 kernel/verified/capability/probe.rs	probe_at	Some
-kernel/verified/capability/process.rs	retype_process	true
 kernel/verified/capability/reclaim.rs	reclaim_frame	Again
 kernel/verified/capability/reclaim.rs	reclaim_frame	Freed
 kernel/verified/capability/reclaim.rs	reclaim_frame	Unlinked
@@ -42,10 +36,6 @@ kernel/verified/capability/revoke.rs	revoke	Done
 kernel/verified/capability/revoke.rs	revoke	Again
 kernel/verified/capability/revoke.rs	revoke	Exhausted
 kernel/verified/capability/space.rs	retype_table_page	true
-kernel/verified/capability/space.rs	retype_space	true
-kernel/verified/capability/switch.rs	switch_thread	returns
-kernel/verified/capability/thread.rs	retype_thread	true
-kernel/verified/capability/thread.rs	write_registers	true
 kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again
 kernel/verified/capability/thread.rs	check_current	true

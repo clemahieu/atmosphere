@@ -63,11 +63,12 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
         l4: usize,
     )
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
@@ -75,7 +76,7 @@ impl CapKernel {
         ensures
             false,
     {
-        self.witness_root_maps_a_frame_into_its_own_space(root, process, leaf, frames, t, free, image, untyped, frame, present, base, l4);
+        self.witness_root_maps_a_frame_into_its_own_space(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, l4);
     }
 }
 

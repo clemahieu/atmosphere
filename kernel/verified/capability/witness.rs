@@ -875,8 +875,7 @@ impl CapKernel {
         kernel_root: usize,
     )
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
-            old(self).spaces.kernel_root@ == kernel_root,
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
         ensures
             final(self).wf(),
             final(self).cores@[0].space is None,
@@ -943,9 +942,10 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
     )
         requires
-            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
         ensures
             final(self).wf(),
             final(self).cores@[0].space == Some(process),
@@ -993,9 +993,10 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
     ) -> (ret: SuspendStep)
         requires
-            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
         ensures
             ret is Suspended,
             final(self).wf(),
@@ -1061,10 +1062,11 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
     )
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
@@ -1082,10 +1084,9 @@ impl CapKernel {
             assert(s0.cores@[0].generation == 1);
             assert(s0.cores@[0].next_pcid == 1);
         }
-        let ok = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
         let ghost s1 = *self;
         proof {
-            assert(ok);
             assert(s1.cores == s0.cores);
             assert(witness_alive(s1, process));
             assert(witness_alive(s1, base));
@@ -1151,10 +1152,9 @@ impl CapKernel {
         registers: Registers,
     )
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
-            old(self).spaces.kernel_root@ == kernel_root,
         ensures
             final(self).wf(),
             final(self).cores@[0].current_thread == Some((base + 10 * PAGE_SZ) as usize),
@@ -1167,11 +1167,10 @@ impl CapKernel {
     {
         hide(CapKernel::wf);
         let ghost s0 = *self;
-        let ok = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, Ghost(kernel_root), base);
         let thread = base + 10 * PAGE_SZ;
         let ghost s1 = *self;
         proof {
-            assert(ok);
             assert(s1.cores == s0.cores);
             assert(s1.cores@[0].generation == 1);
             assert(s1.cores@[0].next_pcid == 1);
@@ -1272,14 +1271,19 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: bool)
+    ) -> (ret: (bool, bool, bool, bool, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
-            ret,
+            ret.0,
+            ret.1,
+            ret.2,
+            ret.3,
+            ret.4,
             ({
                 let first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
                 let u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
@@ -1872,7 +1876,7 @@ impl CapKernel {
                 assert(witness_block(s5, b3, first));
             }
         }
-        ok1 && ok2 && ok3 && ok4 && ok5
+        (ok1, ok2, ok3, ok4, ok5)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -1894,15 +1898,16 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: (bool, bool, ReclaimStep, ReclaimStep))
+    ) -> (ret: (bool, Option<Payload>, ReclaimStep, ReclaimStep))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
             ret.0,
-            ret.1,
+            ret.1 is Some,
             ret.2 is Slice,
             ret.3 is Freed,
             final(self).wf(),
@@ -1911,7 +1916,7 @@ impl CapKernel {
             !final(self).threads.records@.contains_key((base + 10 * PAGE_SZ) as usize),
     {
         hide(CapKernel::wf);
-        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
         let ghost r0 = *self;
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
         let b2 = base + PROCESS_BYTES;
@@ -1920,7 +1925,6 @@ impl CapKernel {
         let ghost nt = (b2 + 2) as usize;
         let ghost child = (bl + 1) as usize;
         proof {
-            assert(ok0);
             lemma2_to64();
             assert(block_bytes(3) == PROCESS_BYTES);
             assert(base % PROCESS_BYTES == 0);
@@ -2040,7 +2044,7 @@ impl CapKernel {
             assert(ok4 is Freed);
             assert(r3.thread_freed(*self, 0, process, ROOT_UNTYPED_SLOT, bt));
         }
-        (ok1, ok2.is_some(), ok3, ok4)
+        (ok1, ok2, ok3, ok4)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -2064,14 +2068,16 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: bool)
+    ) -> (ret: (bool, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
-            ret,
+            ret.0,
+            ret.1,
             ({
                 let thread = (base + 10 * PAGE_SZ) as usize;
                 let bl = (base + 12 * PAGE_SZ) as usize;
@@ -2084,7 +2090,7 @@ impl CapKernel {
                 &&& final(self).sealed(base)
             }),
     {
-        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
         let ghost s1 = *self;
         let ghost np = (base + 8 * PAGE_SZ + 1) as usize;
         let ghost nt = (base + 8 * PAGE_SZ + 2) as usize;
@@ -2165,7 +2171,7 @@ impl CapKernel {
             s3.lemma_slot(base, WITNESS_SEALED_PROCESS_SLOT);
             lemma_sealed_held_once(s3, base, pn, thread, tn);
         }
-        ok0 && ok1 && ok2
+        (ok1, ok2)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -2188,10 +2194,11 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
     ) -> (ret: bool)
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
@@ -2211,7 +2218,7 @@ impl CapKernel {
                 &&& witness_alive(*final(self), base)
             }),
     {
-        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
         let ghost s1 = *self;
         let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
@@ -2246,15 +2253,15 @@ impl CapKernel {
             assert(s2.list.parent@[claimed] == u);
             assert(s2.list.is_child(u, claimed));
         }
-        ok0 && ok1
+        ok1
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
     /// of two free ones past those boot's tables took from the first untyped: build a process at `base`
     /// with an Inactive thread bound to it, as witness_process_holds_capability does; write `frame` as
     /// the thread's registers through the thread capability with control in slot 258, then read them
-    /// back through it. The write succeeds exactly when the frame's program counter is a user address,
-    /// and then the read returns the frame as the write made it a user frame. The use is a creator
+    /// back through it. With the frame's program counter a user address, the write succeeds and the read
+    /// returns the frame as the write made it a user frame. The use is a creator
     /// setting a thread's registers before it starts, and a handler reading a stopped thread's.
     pub fn witness_thread_registers(
         &mut self,
@@ -2268,20 +2275,22 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
         registers: Registers,
     ) -> (ret: (bool, Option<Registers>))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            user_rip(registers.spec_pc()),
         ensures
-            ret.0 == user_rip(registers.spec_pc()),
+            ret.0,
             ret.1 is Some,
-            ret.0 ==> ret.1 == Some(user_frame(registers)),
+            ret.1 == Some(user_frame(registers)),
             final(self).wf(),
     {
-        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
         let ghost s1 = *self;
         let ghost thread = (base + 10 * PAGE_SZ) as usize;
         let ghost nt = (base + 8 * PAGE_SZ + 2) as usize;
@@ -2295,18 +2304,15 @@ impl CapKernel {
         let ok1 = self.write_registers(process, WITNESS_THREAD_SLOT, registers);
         let ghost s2 = *self;
         proof {
-            if ok1 {
-                assert(Self::frame_written(s1, s2, thread, user_frame(registers)));
-                assert(s2.threads.records@[thread].value().state is Inactive);
-            } else {
-                assert(s2 == s1);
-            }
+            assert(ok1);
+            assert(Self::frame_written(s1, s2, thread, user_frame(registers)));
+            assert(s2.threads.records@[thread].value().state is Inactive);
             assert(s2.tables == s1.tables && s2.list == s1.list && s2.processes == s1.processes);
             assert(s2.root_live(process));
             assert(s2.can_set_registers(process, WITNESS_THREAD_SLOT));
         }
         let read = self.read_registers(process, WITNESS_THREAD_SLOT);
-        (ok0 && ok1, read)
+        (ok1, read)
     }
 
     /// From the end of the spawn witness, as the root: destroy the process through its capability in
@@ -2338,17 +2344,16 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         base: usize,
         kernel_root: usize,
-    ) -> (ret: (bool, bool, ReclaimStep, bool, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool))
+    ) -> (ret: (bool, Option<Payload>, ReclaimStep, Option<Payload>, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
-            old(self).spaces.kernel_root@ == kernel_root,
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
             ret.0,
-            ret.1,
+            ret.1 is Some,
             ret.2 is Slice,
-            ret.3,
+            ret.3 is Some,
             ret.4 is Unlinked,
             ret.5 is Slice,
             ret.6 is Freed,
@@ -2362,7 +2367,7 @@ impl CapKernel {
             witness_alive(*final(self), base),
     {
         hide(CapKernel::wf);
-        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, Ghost(kernel_root), base);
         let ghost r0 = *self;
         let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
@@ -2373,7 +2378,6 @@ impl CapKernel {
         let ghost nt = (b2 + 2) as usize;
         let ghost child = (bl + 1) as usize;
         proof {
-            assert(ok0);
             lemma2_to64();
             assert(block_bytes(3) == PROCESS_BYTES);
             assert(base % PROCESS_BYTES == 0);
@@ -2914,7 +2918,7 @@ impl CapKernel {
             assert(ok9);
             assert(np == base + 8 * PAGE_SZ + 1);
         }
-        (ok1, ok2.is_some(), ok3, ok4.is_some(), ok5, ok6, ok7, ok8a, ok8b, ok8, ok9)
+        (ok1, ok2, ok3, ok4, ok5, ok6, ok7, ok8a, ok8b, ok8, ok9)
     }
 
     /// From the end of the spawn witness, as the root, with a third free order-3 block past the two the
@@ -2942,28 +2946,32 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: (ReclaimStep, ReclaimStep, bool, Ghost<CapKernel>, Ghost<CapKernel>))
+    ) -> (ret: (ReclaimStep, ReclaimStep, bool, Option<Payload>, Option<Payload>, bool, Ghost<CapKernel>, Ghost<CapKernel>))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 3 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
             ret.0 is Slice,
             ret.1 is Freed,
             ret.2,
-            ret.3@.process_is_dead(base),
-            tree_of(&ret.3@.table_pages, &ret.3@.spaces).names_child(base, KERNEL_MEM_END_L4INDEX),
-            ret.3@.process_space_cut(ret.4@, process, ROOT_UNTYPED_SLOT, base),
-            tree_of(&ret.4@.table_pages, &ret.4@.spaces).record((base + 2 * PROCESS_BYTES) as usize).parent is None,
-            forall|e: usize| !#[trigger] tree_of(&ret.4@.table_pages, &ret.4@.spaces).names_child(base, e),
+            ret.3 is Some,
+            ret.4 is Some,
+            ret.5,
+            ret.6@.process_is_dead(base),
+            tree_of(&ret.6@.table_pages, &ret.6@.spaces).names_child(base, KERNEL_MEM_END_L4INDEX),
+            ret.6@.process_space_cut(ret.7@, process, ROOT_UNTYPED_SLOT, base),
+            tree_of(&ret.7@.table_pages, &ret.7@.spaces).record((base + 2 * PROCESS_BYTES) as usize).parent is None,
+            forall|e: usize| !#[trigger] tree_of(&ret.7@.table_pages, &ret.7@.spaces).names_child(base, e),
             final(self).wf(),
             final(self).view().holds(process, (base + 8 * PAGE_SZ + 1) as usize),
             final(self).payload_of((base + 8 * PAGE_SZ + 1) as usize) == process_of(base),
             witness_alive(*final(self), base),
     {
         hide(CapKernel::wf);
-        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
         let ghost h0 = *self;
         let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
         let ghost itb = image_tables_bound(image@);
@@ -2980,7 +2988,6 @@ impl CapKernel {
         let ghost dc = h0.list.nodes@[child as int].depth;
         let ghost ta = tree_of(&h0.table_pages, &h0.spaces);
         proof {
-            assert(ok0);
             lemma2_to64();
             assert(block_bytes(3) == PROCESS_BYTES);
             assert(base % PROCESS_BYTES == 0);
@@ -3559,7 +3566,7 @@ impl CapKernel {
             assert(ok9);
             assert(np == base + 8 * PAGE_SZ + 1);
         }
-        (ok8a, ok8, ok1 && ok2.is_some() && ok4.is_some() && ok9, Ghost(r7), Ghost(r8))
+        (ok8a, ok8, ok1, ok2, ok4, ok9, Ghost(r7), Ghost(r8))
     }
 
     /// Gives entry e of table t of space s a child table at the given level: the order-3 block at the
@@ -3894,14 +3901,20 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: bool)
+    ) -> (ret: (bool, bool, bool, bool, bool, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 9 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
-            ret,
+            ret.0,
+            ret.1,
+            ret.2,
+            ret.3,
+            ret.4,
+            ret.5,
             ({
                 let tree = tree_of(&final(self).table_pages, &final(self).spaces);
                 let q = (base + 5 * PROCESS_BYTES) as usize;
@@ -4453,7 +4466,7 @@ impl CapKernel {
                 }
             }
         }
-        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8
+        (ok1, ok2, ok4, ok6, ok7, ok8)
     }
 
     /// From the state boot leaves, as the root at `process`, with the nine free blocks of
@@ -4475,14 +4488,15 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: bool)
+    ) -> (ret: RevokeStep)
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 9 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
-            ret,
+            ret is Done,
             ({
                 let tree = tree_of(&final(self).table_pages, &final(self).spaces);
                 let q = (base + 5 * PROCESS_BYTES) as usize;
@@ -4499,7 +4513,7 @@ impl CapKernel {
             }),
     {
         hide(CapKernel::wf);
-        let shared = self.witness_root_maps_one_frame_into_two_processes(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let _ = self.witness_root_maps_one_frame_into_two_processes(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
         let ghost s8 = *self;
         let ghost nf = (base + PROCESS_BYTES + 3) as usize;
         let ghost g = ((base + 10 * PAGE_SZ) / PAGE_SZ as int) as usize;
@@ -4571,10 +4585,7 @@ impl CapKernel {
                 assert(walk_finds(tree, q, path, g));
             }
         }
-        match done {
-            RevokeStep::Done => shared,
-            _ => false,
-        }
+        done
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -4598,17 +4609,20 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
         l4: usize,
-    ) -> (ret: bool)
+    ) -> (ret: (bool, bool, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
             !image_l4(image@, l4),
         ensures
-            ret,
+            ret.0,
+            ret.1,
+            ret.2,
             ({
                 let tree = tree_of(&final(self).table_pages, &final(self).spaces);
                 let path = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
@@ -4841,7 +4855,7 @@ impl CapKernel {
             assert(space_mapping(a4, process).contains_key(path));
             assert(space_mapping(a4, process)[path] == entry);
         }
-        ok1 && ok2 && ok3 && ok4
+        (ok1, ok3, ok4)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first of
@@ -4865,14 +4879,18 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: bool)
+    ) -> (ret: (bool, bool, bool, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 5 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
-            ret,
+            ret.0,
+            ret.1,
+            ret.2,
+            ret.3,
             final(self).wf(),
             final(self).spaces.records@[(base + 4 * PROCESS_BYTES) as usize].value().kind == SpaceKind::Nested,
             space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), (base + 4 * PROCESS_BYTES) as usize)
@@ -5116,7 +5134,7 @@ impl CapKernel {
                     assert(0usize % guest_range_bytes(false) == 0);
                     assert(false);
                 }
-                return false;
+                return (false, false, false, false);
             },
         };
         proof {
@@ -5146,7 +5164,7 @@ impl CapKernel {
             assert(space_mapping(tree_of(&s5.table_pages, &s5.spaces), sp)[path]
                 == frame_map_entry(fp as usize, FRAME_RIGHTS, false));
         }
-        ok1 && ok2 && ok3 && ok4 && ok5
+        (ok1, ok2, ok4, ok5)
     }
 
     /// From the state boot leaves, when boot was given IOMMU `iommu` as present, as the root at
@@ -5175,11 +5193,12 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
         iommu: Ghost<int>,
-    ) -> (ret: (ReclaimStep, ReclaimStep, bool))
+    ) -> (ret: (ReclaimStep, ReclaimStep, bool, bool, bool, bool, RevokeStep, Option<Payload>, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 5 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             0 <= iommu@ < NUM_IOMMUS,
@@ -5188,6 +5207,12 @@ impl CapKernel {
             ret.0 is Again,
             ret.1 is Freed,
             ret.2,
+            ret.3,
+            ret.4,
+            ret.5,
+            ret.6 is Done,
+            ret.7 is Some,
+            ret.8,
             final(self).wf(),
     {
         hide(CapKernel::wf);
@@ -5451,7 +5476,7 @@ impl CapKernel {
                     assert(0usize % device_range_bytes(false) == 0);
                     assert(false);
                 }
-                return (ReclaimStep::Refused, ReclaimStep::Refused, false);
+                return (ReclaimStep::Refused, ReclaimStep::Refused, false, false, false, false, RevokeStep::Refused, None, false);
             },
         };
         let ghost m = mapping_node(c2, 0);
@@ -5761,7 +5786,7 @@ impl CapKernel {
         proof {
             assert(ok7);
         }
-        (r1, r2, ok1 && ok2 && ok3 && ok4 && ok5 && ok6.is_some() && ok7)
+        (r1, r2, ok1, ok2, ok4, ok5, done, ok6, ok7)
     }
 
     /// From the state boot leaves, when boot was given the IOMMU the device sits behind as present, as the root
@@ -5791,18 +5816,26 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
         info: DeviceInfo,
-    ) -> (ret: bool)
+    ) -> (ret: (bool, bool, bool, bool, bool, bool, bool, bool))
         requires
-            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             info.iommu < NUM_IOMMUS,
             info.number < IOMMU_DEVICES,
             present@[info.iommu as int],
         ensures
-            ret,
+            ret.0,
+            ret.1,
+            ret.2,
+            ret.3,
+            ret.4,
+            ret.5,
+            ret.6,
+            ret.7,
             ({
                 let first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
                 let b1 = (base + PROCESS_BYTES) as usize;
@@ -6348,7 +6381,7 @@ impl CapKernel {
             }
             assert(witness_block(s8, bs2, first));
         }
-        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8
+        (ok1, ok2, ok3, ok4, ok5, ok6, ok7, ok8)
     }
 
     /// From the state boot leaves, when boot was given the IOMMU the device sits behind as present, as the
@@ -6374,18 +6407,22 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
         info: DeviceInfo,
-    ) -> (ret: bool)
+    ) -> (ret: (bool, bool, bool, bool))
         requires
-            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             info.iommu < NUM_IOMMUS,
             info.number < IOMMU_DEVICES,
             present@[info.iommu as int],
         ensures
-            ret,
+            ret.0,
+            ret.1,
+            ret.2,
+            ret.3,
             ({
                 let bl = (base + PROCESS_BYTES + 2 * PAGE_SZ) as usize;
                 let bs = (base + 2 * PROCESS_BYTES) as usize;
@@ -6406,7 +6443,7 @@ impl CapKernel {
     {
         hide(CapKernel::wf);
         let ghost s0 = *self;
-        let ok1 = self.witness_process_binds_a_device(root, process, leaf, frames, t, free, image, untyped, frame, present, base, info);
+        let _ = self.witness_process_binds_a_device(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, info);
         let ghost s1 = *self;
         let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
@@ -6598,7 +6635,7 @@ impl CapKernel {
             assert(witness_alive(s6, base));
             assert(s6.spaces.records@[bs2].value().kind is Device);
         }
-        ok1 && ok2 && ok3 && ok4 && ok5
+        (ok2, ok3, ok4, ok5)
     }
 
     /// Retypes the 2M block at big as a frame into index to of the table at root, under the untyped at
@@ -6630,7 +6667,30 @@ impl CapKernel {
     {
         let ghost s0 = *self;
         let ghost mut mid = *self;
-        let mut done = false;
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let mut step = self.retype_large_frame(root, from, to, big, 9, Tracked(&mut steps));
+        let mut done = match step {
+            RetypeStep::Refused => {
+                proof {
+                    assert(false);
+                }
+                false
+            },
+            RetypeStep::Again => {
+                proof {
+                    assert(Self::large_frame_zeroing(s0, *self, root, from, to, big, 9));
+                }
+                false
+            },
+            RetypeStep::Done => {
+                proof {
+                    mid = s0;
+                    assert(self.tables.roots == s0.tables.roots);
+                }
+                true
+            },
+        };
         while !done
             invariant
                 self.wf(),
@@ -6642,6 +6702,8 @@ impl CapKernel {
                 self.iommus == s0.iommus,
                 self.tables.roots@.contains_key(root),
                 self.root_live(root),
+                done == (step is Done),
+                !(step is Refused),
                 !done ==> {
                     &&& self.list == s0.list
                     &&& self.tables == s0.tables
@@ -6660,7 +6722,7 @@ impl CapKernel {
             let ghost pre = *self;
             // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
             let tracked mut steps = Steps::fresh();
-            let step = self.retype_large_frame(root, from, to, big, 9, Tracked(&mut steps));
+            step = self.retype_large_frame(root, from, to, big, 9, Tracked(&mut steps));
             match step {
                 RetypeStep::Refused => {
                     proof {
@@ -6682,7 +6744,7 @@ impl CapKernel {
                 },
             }
         }
-        (RetypeStep::Done, Ghost(mid))
+        (step, Ghost(mid))
     }
 
     /// From the state boot leaves, as the root at `process`, with the 64 order-3 blocks from the jb-th
@@ -6708,21 +6770,24 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         big: usize,
         jb: Ghost<int>,
-    ) -> (ret: (RetypeStep, ReclaimStep, RetypeStep, Ghost<(CapKernel, CapKernel)>))
+    ) -> (ret: (bool, RetypeStep, Option<Payload>, ReclaimStep, RetypeStep, Ghost<(CapKernel, CapKernel)>))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) <= jb@,
             jb@ + 65 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             big == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, jb@),
             big as int % block_bytes(9) == 0,
         ensures
-            ret.0 is Done,
-            ret.1 is Freed,
-            ret.2 is Done,
-            ret.3@.0.region_is_dead(Large::Two, big / PAGE_SZ / PAGES_PER_2M),
-            ret.3@.0.large_frame_freed(ret.3@.1, 0, process, ROOT_UNTYPED_SLOT, big, 9),
+            ret.0,
+            ret.1 is Done,
+            ret.2 is Some,
+            ret.3 is Freed,
+            ret.4 is Done,
+            ret.5@.0.region_is_dead(Large::Two, big / PAGE_SZ / PAGES_PER_2M),
+            ret.5@.0.large_frame_freed(ret.5@.1, 0, process, ROOT_UNTYPED_SLOT, big, 9),
             final(self).wf(),
             final(self).slot_holds(process, WITNESS_LARGE_FRAME_SLOT, (big + 64 * PROCESS_BYTES + 1) as usize, large_frame_of(big, 9)),
             block_typed(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)),
@@ -6939,7 +7004,7 @@ impl CapKernel {
             assert(m4.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf);
             lemma_large_retyped_slot(m4, s5, process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, nf, big);
         }
-        (ok2, ok4, ok5, Ghost((s3, s4)))
+        (ok1, ok2, ok3, ok4, ok5, Ghost((s3, s4)))
     }
 
     /// Every core acknowledges the flush epoch and every present IOMMU flushes, so every acknowledgement
@@ -7124,11 +7189,12 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         base: usize,
         info: DeviceInfo,
-    ) -> (ret: (ReclaimStep, ReclaimStep, ReclaimStep, bool))
+    ) -> (ret: (ReclaimStep, ReclaimStep, ReclaimStep, bool, bool, bool, bool, bool, bool, bool, Option<Payload>, bool))
         requires
-            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 3 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             info.iommu < NUM_IOMMUS,
@@ -7139,6 +7205,14 @@ impl CapKernel {
             ret.1 is Again,
             ret.2 is Freed,
             ret.3,
+            ret.4,
+            ret.5,
+            ret.6,
+            ret.7,
+            ret.8,
+            ret.9,
+            ret.10 is Some,
+            ret.11,
             final(self).wf(),
             final(self).slot_holds(process, WITNESS_SPACE_SLOT, (base + PROCESS_BYTES + 2) as usize, space_of(base)),
     {
@@ -7681,7 +7755,7 @@ impl CapKernel {
             assert(s12.tables.has_slot(&s12.list, process, WITNESS_SPACE_SLOT));
             assert(s12.tables.node_of(process, WITNESS_SPACE_SLOT) == ns);
         }
-        (r1, r2, r3, ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8.is_some() && ok9)
+        (r1, r2, r3, ok1, ok2, ok3, ok4, ok5, ok6, ok7, ok8, ok9)
     }
 
     /// Retypes the free order-3 block at `base` as a table page of `level`, under the untyped at index
@@ -7720,12 +7794,13 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         big: usize,
         jb: Ghost<int>,
         l4: usize,
-    ) -> (ret: bool)
+    ) -> (ret: (bool, RetypeStep, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) <= jb@,
             jb@ + 68 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             big == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, jb@),
@@ -7733,7 +7808,9 @@ impl CapKernel {
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
             !image_l4(image@, l4),
         ensures
-            ret,
+            ret.0,
+            ret.1 is Done,
+            ret.2,
             dead_table_mapped(
                 *final(self),
                 process,
@@ -8051,7 +8128,7 @@ impl CapKernel {
             assert(s3.processes == s2.processes);
             assert(s4.processes == s3.processes);
         }
-        ok1 && ok2 && ok4
+        (ok1, ok3, ok4)
     }
 
     /// The teardown of witness_dead_table_page_freed, from what dead_table_ready says of the state map_large
@@ -8366,12 +8443,13 @@ impl CapKernel {
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
         big: usize,
         jb: Ghost<int>,
         l4: usize,
-    ) -> (ret: (ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool, Ghost<(CapKernel, CapKernel, CapKernel, CapKernel, CapKernel, CapKernel)>))
+    ) -> (ret: (ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool, bool, RetypeStep, bool, Ghost<(CapKernel, CapKernel, CapKernel, CapKernel, CapKernel, CapKernel)>))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) <= jb@,
             jb@ + 68 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             big == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, jb@),
@@ -8385,8 +8463,11 @@ impl CapKernel {
             ret.3 is Again,
             ret.4 is Freed,
             ret.5,
+            ret.6,
+            ret.7 is Done,
+            ret.8,
             ({
-                let (s4, su, sc, sp, sa, s5) = ret.6@;
+                let (s4, su, sc, sp, sa, s5) = ret.9@;
                 let c1 = (big + 66 * PROCESS_BYTES) as usize;
                 &&& s4.table_page_unlinked(su, process, ROOT_UNTYPED_SLOT, c1)
                 &&& su.table_children_cut(sc, process, ROOT_UNTYPED_SLOT, c1)
@@ -8400,7 +8481,7 @@ impl CapKernel {
     {
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
         let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
-        let ok = self.witness_dead_table_page_setup(root, process, leaf, frames, t, free, image, untyped, frame, present, big, jb, l4);
+        let (s_ok1, s_ok3, s_ok4) = self.witness_dead_table_page_setup(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, big, jb, l4);
         let ghost sm = *self;
         proof {
             assert(process_spaces_wf(&sm.spaces, &sm.processes));
@@ -8421,7 +8502,7 @@ impl CapKernel {
         let c1 = big + 66 * PROCESS_BYTES;
         let (r1, r2, r3, r4, r5, ok5, states) = self.witness_dead_table_page_teardown(process, c1, Ghost(u), Ghost(first), Ghost(big));
         let ghost (su, sc, sp, sa, s5) = states@;
-        (r1, r2, r3, r4, r5, ok && ok5, Ghost((s4, su, sc, sp, sa, s5)))
+        (r1, r2, r3, r4, r5, ok5, s_ok1, s_ok3, s_ok4, Ghost((s4, su, sc, sp, sa, s5)))
     }
 
     /// An IOMMU's flush changes nothing a process can see: its frames' bytes, the threads and the
