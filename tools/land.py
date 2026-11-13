@@ -30,7 +30,11 @@ nobody vouches for, debt whatever class its line states, and adding one lowers w
 which is the human's to allow (CLAUDE.md, Testability). So before the gate the list on the branch is
 compared with the list on the base, by path, item and attribute: such an item the base does not hold,
 new or turned from an assumed specification, stops the landing and is named, unless --approve names
-it, once the human's answer is on the question the change waits on. The committer is not the adversary (design/committer-is-not-the-adversary/), so
+it, once the human's answer is on the question the change waits on. A line of tools/unwitnessed is
+a way an operation succeeds that no witness reaches, and adding one lowers what the proof shows from
+below, which is the human's to allow the same way (design/witness-per-way-an-operation-succeeds/):
+a line the base's list does not hold stops the landing and is named, as path:operation:way, unless
+--approve names it. The committer is not the adversary (design/committer-is-not-the-adversary/), so
 this is a tripwire, not a lock.
 
 Exit status:
@@ -41,9 +45,10 @@ Exit status:
   4  the base fails the gate by itself; main is broken and the change is not judged
   5  the change is cleared to land and did not reach origin: the merge or the push kept failing
   6  the gate fails and no gate has judged the base: fix the change, or settle it with --judge-base
-  7  not gated: the change adds an external_body or exec_allows_no_decreases_clause item the human has not approved
+  7  not gated: the change adds an external_body or exec_allows_no_decreases_clause item, or a line of
+     tools/unwitnessed, the human has not approved
 
-usage: tools/land.py [--onto BRANCH] [--gate COMMAND] [--approve PATH:ITEM:ATTRIBUTE]...
+usage: tools/land.py [--onto BRANCH] [--gate COMMAND] [--approve PATH:ITEM:ATTRIBUTE | PATH:OPERATION:WAY]...
        tools/land.py --judge-base [--onto BRANCH] [--gate COMMAND]    (exits 1 or 4)
        tools/land.py --test    (this script's own tests)
 """
@@ -68,6 +73,9 @@ GATE = "tools/gate.py"
 # for: every item but an assumed specification, which names who does.
 EXEMPTIONS = "tools/external-body-list"
 UNVOUCHED = ("external_body", "exec_allows_no_decreases_clause")
+# The list of every way an operation succeeds that no witness reaches, which the gate holds equal to
+# the witness inventory: path, operation, way.
+UNWITNESSED = "tools/unwitnessed"
 # How often the rebase and the fast-forward are tried while other landings move main.
 MERGE_TRIES = 30
 PUSH_TRIES = 3
@@ -205,29 +213,37 @@ def needs_no_gate(worktree, base):
     return bool(changed) and all(map(unread, changed)) and not any(map(held_everywhere, kept))
 
 
+def listed(worktree, commit, path):
+    """The lines of a list at a commit, its comments left out, each as its fields; none when the
+    commit holds no such list."""
+    shown = subprocess.run(
+        ["git", "-C", str(worktree), "show", f"{commit}:{path}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+    )
+    return [line.split("\t") for line in shown.stdout.splitlines() if line and not line.startswith("#")]
+
+
 def unvouched(worktree, commit):
     """The items of the exemption list at a commit that nobody vouches for, as path:item:attribute."""
-    listed = subprocess.run(
-        ["git", "-C", str(worktree), "show", f"{commit}:{EXEMPTIONS}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
-    )
-    items = set()
-    for line in listed.stdout.splitlines():
-        if line and not line.startswith("#"):
-            path, item, attribute = line.split("\t")[:3]
-            if attribute in UNVOUCHED:
-                items.add(f"{path}:{item}:{attribute}")
-    return items
+    return {f"{path}:{item}:{attribute}" for path, item, attribute, *_ in listed(worktree, commit, EXEMPTIONS)
+            if attribute in UNVOUCHED}
+
+
+def unwitnessed(worktree, commit):
+    """The lines of the unwitnessed list at a commit, as path:operation:way."""
+    return {":".join(fields) for fields in listed(worktree, commit, UNWITNESSED)}
 
 
 def unapproved(worktree, base, approved):
-    """The unvouched items the change adds, new or turned from an assumed specification, that the
-    human has not approved, each said; the approved ones are said too."""
-    added = unvouched(worktree, "HEAD") - unvouched(worktree, base)
-    for item in sorted(added & approved):
+    """What the change adds that the human has not approved, each said: an unvouched item, new or
+    turned from an assumed specification, and a line of the unwitnessed list. The approved ones are
+    said too."""
+    added = {item: f"an unvouched item {EXEMPTIONS}" for item in unvouched(worktree, "HEAD") - unvouched(worktree, base)}
+    added.update((line, f"a line {UNWITNESSED}") for line in unwitnessed(worktree, "HEAD") - unwitnessed(worktree, base))
+    for item in sorted(added.keys() & approved):
         say(f"approved by the human: {item}")
-    missing = sorted(added - approved)
+    missing = sorted(added.keys() - approved)
     for item in missing:
-        say(f"not approved: {item} is an unvouched item {EXEMPTIONS} on {base} does not hold")
+        say(f"not approved: {item} is {added[item]} on {base} does not hold")
     if missing:
         say("adding one is a decision only the human can make: file the question, and land with --approve for each item once its answer is on it")
     return missing
@@ -584,6 +600,57 @@ class Tests(unittest.TestCase):
                 self.assertEqual(result.returncode, LANDED, result.stdout)
                 self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
 
+    def unwitnessed(self, where, *units):
+        """Commits an unwitnessed list holding a header and these units, each path, operation, way."""
+        return self.commit(where, UNWITNESSED, "".join(f"{line}\n" for line in ("# header", *("\t".join(unit) for unit in units))))
+
+    SLICE, UNMAP, START = ("k/retype.rs", "retype", "Slice"), ("k/unmap.rs", "unmap_at", "Some"), ("k/thread.rs", "start", "true")
+
+    def test_a_branch_that_adds_a_line_to_the_unwitnessed_list_is_refused_until_the_flag_names_it(self):
+        self.unwitnessed(self.main, self.SLICE)
+        self.git(self.task, "reset", "-q", "--hard", "main")
+        change = self.unwitnessed(self.task, self.SLICE, self.UNMAP, self.START)
+        result = self.land()
+        self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
+        self.assertIn("land: not approved: k/unmap.rs:unmap_at:Some is a line tools/unwitnessed on", result.stdout)
+        self.assertIn("land: not approved: k/thread.rs:start:true is a line tools/unwitnessed on", result.stdout)
+        self.assertNotIn("k/retype.rs:retype:Slice", result.stdout)
+        self.assertFalse((self.root / "gates").exists())
+        # Approving one of two lines does not approve the other.
+        result = self.land("true", "--approve", "k/unmap.rs:unmap_at:Some")
+        self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
+        self.assertIn("land: approved by the human: k/unmap.rs:unmap_at:Some", result.stdout)
+        self.assertNotEqual(self.git(self.main, "rev-parse", "main"), change)
+        result = self.land("true", "--approve", "k/unmap.rs:unmap_at:Some", "--approve", "k/thread.rs:start:true")
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+
+    def test_a_branch_that_removes_or_reorders_lines_of_the_unwitnessed_list_lands_with_no_flag(self):
+        self.unwitnessed(self.main, self.SLICE, self.UNMAP, self.START)
+        for name, units in (("reorders", (self.START, self.SLICE, self.UNMAP)), ("removes one", (self.START, self.UNMAP)),
+                            ("removes every line", ())):
+            with self.subTest(name=name):
+                self.git(self.task, "reset", "-q", "--hard", "main")
+                change = self.unwitnessed(self.task, *units)
+                result = self.land()
+                self.assertEqual(result.returncode, LANDED, result.stdout)
+                self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+
+    def test_a_branch_that_changes_a_line_s_way_adds_a_line(self):
+        self.unwitnessed(self.main, self.SLICE)
+        self.git(self.task, "reset", "-q", "--hard", "main")
+        self.unwitnessed(self.task, ("k/retype.rs", "retype", "Unlinked"))
+        result = self.land()
+        self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
+        self.assertIn("land: not approved: k/retype.rs:retype:Unlinked", result.stdout)
+
+    def test_a_list_on_a_base_that_has_none_is_every_line_added(self):
+        change = self.unwitnessed(self.task, self.SLICE)
+        self.assertEqual(self.land().returncode, UNAPPROVED)
+        result = self.land("true", "--approve", "k/retype.rs:retype:Slice")
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+
     def test_a_worktree_with_uncommitted_changes_is_not_run(self):
         self.commit(self.task, "a")
         (self.task / "stray").write_text("x")
@@ -599,13 +666,15 @@ class Tests(unittest.TestCase):
 
 
 def main():
-    parser = argparse.ArgumentParser(usage="tools/land.py [--judge-base] [--onto BRANCH] [--gate COMMAND] [--approve PATH:ITEM:ATTRIBUTE]... | --test")
+    parser = argparse.ArgumentParser(
+        usage="tools/land.py [--judge-base] [--onto BRANCH] [--gate COMMAND] [--approve PATH:ITEM:ATTRIBUTE | PATH:OPERATION:WAY]... | --test")
     parser.add_argument("--onto", default="main", help="the branch landed on, whose worktree is its sibling (default main)")
     parser.add_argument("--gate", default=GATE, help=f"the gate, a shell command run in the worktree (default {GATE!r})")
     parser.add_argument("--judge-base", action="store_true", help="gate the base the change stands on instead of the change")
     parser.add_argument(
         "--approve", action="append", default=[], metavar="PATH:ITEM:ATTRIBUTE",
-        help=f"an external_body or exec_allows_no_decreases_clause item of {EXEMPTIONS} the change adds, which the human approved; once per item",
+        help=f"an external_body or exec_allows_no_decreases_clause item of {EXEMPTIONS}, or a line of {UNWITNESSED} as "
+             "PATH:OPERATION:WAY, that the change adds and the human approved; once per item",
     )
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()

@@ -1,7 +1,9 @@
 # Every way an operation of a tier-1 component succeeds that no witness reaches from what boot
 # ensures, as tools/witness-inventory.py finds them (design/witness-per-way-an-operation-succeeds/).
 # The gate's unwitnessed step fails unless these lines are exactly the inventory's lines whose
-# witness is none. A change that witnesses a way removes its line in the same commit.
+# witness is none. A change that witnesses a way removes its line in the same commit. Adding a line
+# lowers what the proof shows from below, so it is a decision only the human can make:
+# tools/land.py refuses a landing that adds one unless --approve names it, as path:operation:way.
 # Fields, separated by tabs: path from the repository root, operation, way.
 #
 kernel/verified/capability/boot.rs	boot_root_process	returns

@@ -366,7 +366,8 @@ def unwitnessed(gate):
     the units the inventory finds with no witness, each an operation and one way it succeeds, are
     exactly the lines of tools/unwitnessed. So a way that loses its witness and an operation that
     lands without one fail it, as does a line left behind by the change that witnessed its way, and
-    the list's length is the number unwitnessed (design/witness-per-way-an-operation-succeeds/)."""
+    the list's length is the number unwitnessed. tools/land.py lets the list grow only with the
+    human's approval (design/witness-per-way-an-operation-succeeds/)."""
     run_check(gate, WITNESS_INVENTORY, "--test")
     rows = [line.split("\t") for line in check_output(gate, WITNESS_INVENTORY).splitlines() if "\t" in line]
     found = Counter("\t".join(row[:3]) for row in rows if row[3] == "none")
