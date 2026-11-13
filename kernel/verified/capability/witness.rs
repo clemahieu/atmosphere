@@ -762,6 +762,70 @@ proof fn lemma_child_kept(pre: Tree, post: Tree, c: usize, x: usize)
     lemma_has(post.seq@, x);
 }
 
+/// A node with a child is shallower than the deepest depth: the child is one deeper and no deeper than
+/// that.
+proof fn lemma_parent_shallow(t: Tree, c: usize, x: usize)
+    requires
+        t.wf(),
+        t.is_child(c, x),
+    ensures
+        t.nodes@[c as int].depth < MAX_DEPTH,
+{
+    let k = choose|k: int| 0 <= k < t.seq@.len() && t.seq@[k] == x;
+    assert(k != 0);
+    assert(t.parent@.contains_key(t.seq@[k]));
+}
+
+/// Across steps that keep every parent and bring no node to life, a node with no child after lost each
+/// of the children it had before, kids among them: each left the list, so the list is shorter by at
+/// least their number.
+proof fn lemma_children_gone(pre: Tree, post: Tree, c: usize, kids: Set<usize>)
+    requires
+        pre.wf(),
+        post.wf(),
+        post.parent == pre.parent,
+        forall|x: int| #![trigger post.nodes@[x]] 0 <= x < NODE_SPACE && post.nodes@[x].live ==> pre.nodes@[x].live,
+        forall|x: usize| #[trigger] kids.contains(x) ==> pre.is_child(c, x),
+        forall|x: usize| !#[trigger] post.is_child(c, x),
+    ensures
+        post.seq@.len() + kids.len() <= pre.seq@.len(),
+{
+    let a = pre.seq@.to_set();
+    let b = post.seq@.to_set();
+    reveal(nodup);
+    pre.seq@.unique_seq_to_set();
+    post.seq@.unique_seq_to_set();
+    assert(b.subset_of(a)) by {
+        assert forall|y: usize| b.contains(y) implies a.contains(y) by {
+            lemma_listed_live(post, y);
+            assert(post.nodes@[y as int].live);
+            assert(pre.nodes@[y as int].live);
+            assert(has(pre.seq@, y));
+            lemma_has(pre.seq@, y);
+        }
+    }
+    assert(kids.subset_of(a)) by {
+        assert forall|y: usize| kids.contains(y) implies a.contains(y) by {
+            assert(pre.is_child(c, y));
+        }
+    }
+    assert(b.disjoint(kids)) by {
+        assert forall|y: usize| b.contains(y) implies !kids.contains(y) by {
+            if kids.contains(y) {
+                assert(pre.is_child(c, y));
+                let k = choose|k: int| 0 <= k < pre.seq@.len() && pre.seq@[k] == y;
+                assert(k != 0);
+                assert(pre.parent@.contains_key(pre.seq@[k]));
+                assert(!post.parent@.contains_key(post.seq@[0]));
+                assert(post.is_child(c, y));
+            }
+        }
+    }
+    vstd::set_lib::lemma_set_disjoint_lens(b, kids);
+    assert((b + kids).subset_of(a));
+    vstd::set_lib::lemma_len_subset(b + kids, a);
+}
+
 /// A live node in a leaf's page is listed and not first, since the first node lies outside every leaf:
 /// so it is its parent's child, one deeper, and no deeper than the deepest.
 proof fn lemma_owned_listed(k: CapKernel, x: usize)
@@ -4908,6 +4972,247 @@ impl CapKernel {
                 assert(walk(tree, q, path) == walk(a8, q, path));
                 assert(walk_finds(tree, q, path, g));
             }
+        }
+        done
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: retype a leaf into root entry 2 of
+    /// the root's table at the block's third and fourth pages, derive REVOKE_BUDGET + 1 untyped
+    /// capabilities over the block from the root's first untyped into slots 1 up to 65 of that leaf,
+    /// then revoke the first untyped. Its children alone outnumber one revoke's budget, so the revoke
+    /// stops with some of its run left, its epoch at most a budget past boot's and far from the limit:
+    /// the capability stays, with children.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_revokes_more_than_a_budget(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: RevokeStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret is Again,
+            ({
+                let u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+                &&& final(self).wf()
+                &&& final(self).is_cap(u)
+                &&& !final(self).list.childless(u)
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let ghost itb = image_tables_bound(image@);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        proof {
+            lemma2_to64();
+            lemma_tables_bound_nonneg(image@);
+            // The root's first untyped and its record.
+            assert(0 < untyped@);
+            assert(s0.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s0.list.nodes@[u as int].depth == 1);
+            assert(s0.tables.is_cap(&s0.list, u));
+            assert(s0.tables.caps_wf(&s0.list)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(cap_wf(first));
+            assert(payload_wf(first));
+            assert(first.kind is Untyped && first.rights == UNTYPED_RIGHTS);
+            assert(UNTYPED_RIGHTS & right_bit(Right::Retype) != 0) by (compute_only);
+            let pn = (leaf@ + 1) as usize;
+            assert(s0.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)));
+            s0.lemma_process_cap(pn);
+            s0.lemma_process_space(pn);
+            assert(s0.processes.records@.contains_key(process));
+            assert(!s0.processes.records@[process].value().dead);
+            assert(witness_root(s0, process, u, first));
+            // The free block.
+            assert(s0.root_untyped(process) == u);
+            lemma_pow2_pos(first.order as nat);
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((itb + 1) * PROCESS_BYTES <= block_bytes(first.order));
+            assert(first.base + block_bytes(first.order) <= NODE_SPACE);
+            assert(base == first.base + itb * PROCESS_BYTES);
+            assert(cursor_block(first.base, itb) == cursor_block(base, 0));
+            assert(s0.root_table_block(process, cursor_block(first.base, itb)));
+            assert(witness_block(s0, cursor_block(base, 0), first));
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
+            assert(cursor_block(base, 0) == base);
+            assert(witness_block(s0, base, first));
+            assert(base % PROCESS_BYTES == 0);
+            lemma_block_page(base, 0);
+            lemma_block_page(base, 2);
+            assert(base + PROCESS_BYTES <= NODE_SPACE);
+        }
+        // The leaf takes the block's third and fourth pages.
+        let lb = base + 2 * PAGE_SZ;
+        proof {
+            assert(lb / PAGE_SZ == base / PAGE_SZ + 2);
+            assert(lb % PAGE_SZ == 0);
+            assert(lb as int % (2 * PAGE_SZ) as int == 0);
+            assert(block_within(lb, 1, first));
+            assert(s0.blocks.tracks_addr_run(lb, 2));
+            assert(lb != NO_LEAF);
+        }
+
+        // A leaf for the root, in root entry 2 of its own table.
+        let at = Position { through: None, index: 2 };
+        proof {
+            assert(s0.destination_at(process, None) == Some(process));
+            assert(s0.tables.leaf(process, 2) == NO_LEAF);
+            assert(s0.can_retype_under(process, ROOT_UNTYPED_SLOT, lb, 1));
+            assert(s0.blocks.small_free((lb / PAGE_SZ) as int, 1)) by {
+                assert forall|k: int| 0 <= k < order_pages(1) implies #[trigger] s0.blocks.pages@[lb / PAGE_SZ + k].kind is Free by {
+                    assert(s0.blocks.pages@[base / PAGE_SZ + (2 + k)].kind is Free);
+                }
+                // The block is free, so no large block covers its pages.
+                assert(!s0.blocks.covered((lb / PAGE_SZ) as int));
+            }
+            assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb, Tracked(&mut steps));
+        let ghost s1 = *self;
+        proof {
+            assert(ok1);
+            assert(Self::leaf_retyped(s0, s1, process, ROOT_UNTYPED_SLOT, at, lb));
+            assert(s1.tables.leaf(process, 2) == lb);
+            assert(s0.tables.has_slot(&s0.list, process, ROOT_UNTYPED_SLOT));
+            assert(s0.is_cap(u));
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_UNTYPED_SLOT));
+            assert(s1.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(s1.is_cap(u) && s1.payload_of(u) == first && s1.list.nodes@[u as int].depth == 1);
+            assert(s1.processes == s0.processes);
+            assert(s1.flush_epoch == s0.flush_epoch);
+            assert(s0.flush_epoch == 0);
+            assert forall|j: usize| 257 <= j < 322 implies #[trigger] witness_empty(s1, process, j, slot_node(lb, j)) by {
+                assert(index_ok(j) && index_entry(j) == 2);
+                assert(s1.tables.has_slot(&s1.list, process, j));
+                assert(s1.tables.node_of(process, j) == slot_node(lb, j));
+            }
+        }
+
+        // REVOKE_BUDGET + 1 children of the first untyped, each over the free block.
+        let ghost mut kids: Set<usize> = Set::empty();
+        let mut k: usize = 0;
+        proof {
+            assert(UNTYPED_RIGHTS & !UNTYPED_RIGHTS == 0) by (compute_only);
+            assert(UNTYPED_RIGHTS & right_bit(Right::Control) == 0) by (compute_only);
+            assert(block_within(base, 3, first));
+            assert(narrows(child_of(first, UNTYPED_RIGHTS, base, 3), first));
+        }
+        while k < REVOKE_BUDGET + 1
+            invariant
+                0 <= k <= REVOKE_BUDGET + 1,
+                REVOKE_BUDGET == 64,
+                lb % PAGE_SZ == 0,
+                lb + PAGE_SZ <= NODE_SPACE,
+                self.wf(),
+                self.tables.roots == s1.tables.roots,
+                self.tables.roots@.contains_key(process),
+                self.processes.records == s0.processes.records,
+                witness_alive(s0, process),
+                self.flush_epoch == 0,
+                self.slot_holds(process, ROOT_UNTYPED_SLOT, u, first),
+                self.list.nodes@[u as int].depth < MAX_DEPTH,
+                first.kind is Untyped,
+                narrows(child_of(first, UNTYPED_RIGHTS, base, 3), first),
+                forall|j: usize| 257 + k <= j < 322 ==> #[trigger] witness_empty(*self, process, j, slot_node(lb, j)),
+                kids.len() == k,
+                forall|x: usize| #[trigger] kids.contains(x) ==> self.list.is_child(u, x) && lb + 1 <= x < lb + 1 + k,
+            decreases REVOKE_BUDGET + 1 - k,
+        {
+            let ghost s = *self;
+            let j = 257 + k;
+            let ghost child = slot_node(lb, j);
+            let to = Position { through: None, index: j };
+            proof {
+                assert(witness_empty(s, process, j, child));
+                assert(child == lb + 1 + k);
+                assert(s.table_at(process, None) == Some(process));
+                assert(s.root_live(process));
+                assert(!s.cap_dead(u));
+                assert(s.can_derive_between(process, ROOT_UNTYPED_SLOT, process, j, UNTYPED_RIGHTS, base, 3));
+                assert(s.can_derive_at(process, ROOT_UNTYPED_SLOT, to, UNTYPED_RIGHTS, base, 3));
+            }
+            let ok = self.derive(process, ROOT_UNTYPED_SLOT, to, UNTYPED_RIGHTS, base, 3);
+            proof {
+                let s2 = *self;
+                assert(ok);
+                assert(Self::cap_derived_between(s, s2, process, ROOT_UNTYPED_SLOT, process, j, UNTYPED_RIGHTS, base, 3));
+                assert(s2.list.is_child(u, child));
+                assert(Self::derive_step(s, s2, child));
+                assert(s.list.wf() && s2.list.wf()) by {
+                    reveal(CapKernel::wf);
+                }
+                assert(s2.list.parent@ == s.list.parent@.insert(child, u));
+                Self::lemma_slot_stays(s, s2, process, ROOT_UNTYPED_SLOT);
+                assert(u != child);
+                Self::lemma_caps_frame(s, s2, child, child, u);
+                assert(s2.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+                lemma_parent_shallow(s2.list, u, child);
+                assert forall|j2: usize| 257 + (k + 1) <= j2 < 322 implies #[trigger] witness_empty(s2, process, j2, slot_node(lb, j2)) by {
+                    assert(witness_empty(s, process, j2, slot_node(lb, j2)));
+                    Self::lemma_slot_stays(s, s2, process, j2);
+                    assert(slot_node(lb, j2) != child);
+                    assert(s2.list.nodes@[slot_node(lb, j2) as int].live == s.list.nodes@[slot_node(lb, j2) as int].live);
+                }
+                assert forall|x: usize| #[trigger] kids.contains(x) implies s2.list.is_child(u, x) by {
+                    lemma_listed_live(s.list, x);
+                    assert(x != child);
+                    assert(s2.list.nodes@[x as int].live == s.list.nodes@[x as int].live);
+                    lemma_child_kept(s.list, s2.list, u, x);
+                }
+                assert(!kids.contains(child));
+            }
+            proof {
+                kids = kids.insert(child);
+            }
+            k = k + 1;
+        }
+
+        // The revoke of the first untyped: its run holds every one of those children.
+        let ghost s2 = *self;
+        let rat = Position { through: None, index: ROOT_UNTYPED_SLOT };
+        proof {
+            assert(s2.cap_at(process, rat) == Some(u));
+            assert(s2.root_live(process));
+        }
+        let done = self.revoke(process, rat, Tracked(&mut steps));
+        proof {
+            let s3 = *self;
+            assert(!(done is Refused));
+            assert(Self::cap_revoking_at(s2, s3, process, rat));
+            assert(s2.list.wf() && s3.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s2.list.seq@.len() - s3.list.seq@.len() <= REVOKE_BUDGET);
+            // Not done: that would have taken all REVOKE_BUDGET + 1 children, more than its budget.
+            if done is Done {
+                assert(Self::cap_revoked_at(s2, s3, process, rat));
+                assert(run_shrunk(s2.list, s3.list, u));
+                lemma_children_gone(s2.list, s3.list, u, kids);
+            }
+            // Nor stopped on the epoch, which is at most a budget past boot's.
+            assert(s3.flush_epoch <= REVOKE_BUDGET);
+            assert(done is Again);
         }
         done
     }

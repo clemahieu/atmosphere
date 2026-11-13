@@ -826,6 +826,30 @@ impl CapKernel {
     {
     }
 
+    /// A revoke reaches revoke: refused with nothing changed unless the slot's word names a position
+    /// holding a capability; otherwise revoke's Done, ok with the capability's run empty; its Again,
+    /// again with some of the run left; or its Exhausted, refused with the flush epoch at its limit. Each
+    /// of the three took steps of the capability's run alone, at most REVOKE_BUDGET of them.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_revoke(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Revoke),
+        ensures
+            ({
+                let at = spec_position(frame.slot())->0;
+                let c = pre.cap_at(root, at)->0;
+                &&& !pre.allows_revoke(root, frame) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.allows_revoke(root, frame) ==> {
+                    ||| out == status_only(STATUS_OK) && Self::cap_revoked_at(pre, post, root, at)
+                    ||| out == status_only(STATUS_AGAIN) && !post.list.childless(c) && Self::cap_revoking_at(pre, post, root, at)
+                    ||| out == status_only(STATUS_REFUSED) && post.flush_epoch == usize::MAX
+                        && Self::cap_revoking_at(pre, post, root, at)
+                }
+            }),
+    {
+    }
+
     /// An unmap, allowed or refused, leaves the tables, the list's parents and the bound threads as they
     /// were, and changes the kind or the liveness of no node but a mapping node, so no capability.
     pub proof fn lemma_unmapped_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)

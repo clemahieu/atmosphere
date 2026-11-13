@@ -25,8 +25,6 @@ kernel/verified/capability/retype.rs	retype_frame	true
 kernel/verified/capability/retype.rs	retype_leaf	true
 kernel/verified/capability/retype.rs	retype_large_frame	Again
 kernel/verified/capability/retype.rs	retype_large_frame	Done
-kernel/verified/capability/revoke.rs	revoke	Done
-kernel/verified/capability/revoke.rs	revoke	Again
 kernel/verified/capability/revoke.rs	revoke	Exhausted
 kernel/verified/capability/space.rs	retype_table_page	true
 kernel/verified/capability/thread.rs	start	true
