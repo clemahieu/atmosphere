@@ -637,4 +637,181 @@ pub fn witness_back_after_release_span(
     (again, Ghost(steps))
 }
 
+/// Constructs an eager source of `5 * TABLE_PAGES` pages (below `free_capacity`), reserves a
+/// two-block span and backs the first page of each block. The first back links the window's path
+/// and the first block's table and breaks at most one more free block for its frame, so a free block
+/// remains for the second block's table and enough frames beyond it: when `acall` accepts every
+/// step, both backs are granted.
+pub fn witness_back_second_block(
+    space: u64,
+    untyped: u64,
+    window: *mut u8,
+    token: &mut Tracked<Caller>,
+) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
+    requires
+        window@.addr != 0,
+        window@.addr as int % REGION_BYTES as int == 0,
+        window@.addr + WINDOW_BYTES <= usize::MAX,
+        old(token)@.wf(),
+        own_process(old(token)@),
+        names_own_space(old(token)@, space),
+    ensures
+        final(token)@.wf(),
+        acall_steps(old(token)@, final(token)@, r.2@),
+        forall|k: int| 0 <= k < r.2@.len() ==> acall_call_in_window(
+            #[trigger] r.2@[k],
+            space,
+            untyped,
+            0,
+            (5 * TABLE_PAGES) as usize,
+            1,
+            window@.addr,
+            window@.addr as int,
+            (BLOCK_PAGES + 1) as nat,
+        ),
+        r.0 is None ==> r.1 is None,
+        r.1 is None ==> {
+            &&& r.2@.len() > 0
+            &&& acall_ok(r.2@.drop_last())
+            &&& r.2@.last().out.status == STATUS_REFUSED
+        },
+        acall_ok(r.2@) ==> r.1 is Some,
+{
+    let pages: usize = 5 * TABLE_PAGES;
+    let ghost tok0 = token@;
+    proof {
+        assert(1int % LEAF_INDICES as int != 0) by (compute);
+        assert(frame_slot(1, (5 * TABLE_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        assert((5 * TABLE_PAGES) / TABLE_PAGES as int == 5) by (compute);
+        assert(BLOCK_BYTES == PAGE_BYTES * BLOCK_PAGES);
+        assert(PAGE_BYTES < BLOCK_BYTES) by (compute);
+        assert(WINDOW_BYTES == 4 * BLOCK_BYTES) by (compute);
+    }
+    let mut src: Eager = Eager::new(space, untyped, 0, pages, 1, window).unwrap();
+    proof {
+        assert(src.window_fits(0, 2));
+    }
+    let span = src.reserve(token, 2).unwrap();
+    let addr = span.addr();
+    let next = addr + BLOCK_BYTES;
+    proof {
+        assert(addr == window@.addr);
+        let q = addr as int / BLOCK_BYTES as int;
+        lemma_fundamental_div_mod(addr as int, BLOCK_BYTES as int);
+        assert(addr as int == (q * BLOCK_PAGES as int) * PAGE_BYTES as int) by (nonlinear_arith)
+            requires
+                addr as int == BLOCK_BYTES as int * q,
+                BLOCK_BYTES == PAGE_BYTES * BLOCK_PAGES,
+        ;
+        lemma_mod_multiples_basic(q * BLOCK_PAGES as int, PAGE_BYTES as int);
+        assert((next as int) == (q * BLOCK_PAGES as int + BLOCK_PAGES as int) * PAGE_BYTES as int) by (nonlinear_arith)
+            requires
+                addr as int == (q * BLOCK_PAGES as int) * PAGE_BYTES as int,
+                next == addr + BLOCK_BYTES,
+                BLOCK_BYTES == PAGE_BYTES * BLOCK_PAGES,
+        ;
+        lemma_mod_multiples_basic(q * BLOCK_PAGES as int + BLOCK_PAGES as int, PAGE_BYTES as int);
+        assert(span_bytes(2) == 2 * BLOCK_BYTES as int);
+        assert(src@.runs_in(addr as int, addr as int, 1));
+        assert(src@.unbacked(addr as int, addr as int, 1));
+        assert(src.acall_trace() == Seq::<AcallStep>::empty());
+        assert(run_touches_block(addr, addr as int, 1, 0));
+        assert(!run_touches_block(addr, addr as int, 1, 1));
+        assert(!run_touches_block(addr, addr as int, 1, 2));
+        assert(!run_touches_block(addr, addr as int, 1, 3));
+        assert(src.unlinked_tables_on(addr as int, 1) == 3);
+        assert(!src.parks(addr as int));
+        assert(src.parked_pages(addr as int, 0) == 0);
+        assert(src.parked_pages(addr as int, 1) == 0);
+        assert(src.unparked_pages(addr as int, 0) == 0);
+        assert(src.unparked_pages(addr as int, 1) == 1);
+        assert(src.can_back(addr as int, 1));
+    }
+    let ghost reserved = src@;
+    let first = src.back(token, Ghost(addr as int), addr, 1);
+    let ghost steps1 = src.acall_trace();
+    proof {
+        assert(src.acall_trace().skip(0) =~= steps1);
+        assert forall|va: int| #[trigger] run_pages(addr as int, 1).contains(va)
+            implies run_pages(addr as int, (BLOCK_PAGES + 1) as nat).contains(va) by {};
+        assert forall|k: int| 0 <= k < steps1.len() implies acall_call_in_window(
+            #[trigger] steps1[k],
+            space,
+            untyped,
+            0,
+            pages,
+            1,
+            window@.addr,
+            window@.addr as int,
+            (BLOCK_PAGES + 1) as nat,
+        ) by {
+            assert(acall_call_in_window(steps1[k], space, untyped, 0, pages, 1, addr, addr as int, 1));
+            reveal(acall_call_in_window);
+        }
+    }
+    if first.is_none() {
+        return (None, None, Ghost(steps1));
+    }
+    let ghost tok1 = token@;
+    proof {
+        assert(src@.runs_in(addr as int, next as int, 1));
+        assert(!reserved.spans[addr as int].backed.contains(next as int));
+        assert(!run_pages(addr as int, 1).contains(next as int));
+        assert(src@.unbacked(addr as int, next as int, 1));
+        assert(!run_touches_block(addr, next as int, 1, 0));
+        assert(run_touches_block(addr, next as int, 1, 1));
+        assert(!run_touches_block(addr, next as int, 1, 2));
+        assert(!run_touches_block(addr, next as int, 1, 3));
+        assert(src.top_linked());
+        assert(src.middle_linked());
+        assert(!src.block_tabled(1));
+        assert(src.unlinked_tables_on(next as int, 1) == 1);
+        assert(src.free_table_blocks() >= 1);
+        assert(src.free_frames() == 5 * TABLE_PAGES - 3 * TABLE_PAGES - 1);
+        assert(!src.parks(next as int));
+        assert(src.parked_pages(next as int, 0) == 0);
+        assert(src.parked_pages(next as int, 1) == 0);
+        assert(src.unparked_pages(next as int, 0) == 0);
+        assert(src.unparked_pages(next as int, 1) == 1);
+        assert(src.can_back(next as int, 1));
+    }
+    let second = src.back(token, Ghost(addr as int), next, 1);
+    let ghost steps = src.acall_trace();
+    proof {
+        let n1 = steps1.len() as int;
+        let steps2 = steps.skip(n1);
+        assert(steps.take(n1) == steps1);
+        assert(steps =~= steps1 + steps2);
+        lemma_acall_steps_append(tok0, tok1, token@, steps1, steps2);
+        lemma_acall_ok_append(steps1, steps2);
+        if second.is_none() {
+            lemma_acall_refused_after_ok(steps1, steps2);
+        }
+        assert forall|va: int| #[trigger] run_pages(next as int, 1).contains(va)
+            implies run_pages(addr as int, (BLOCK_PAGES + 1) as nat).contains(va) by {
+            assert((BLOCK_PAGES + 1) as int * PAGE_BYTES as int == BLOCK_BYTES as int + PAGE_BYTES as int) by (compute);
+        };
+        assert forall|k: int| 0 <= k < steps.len() implies acall_call_in_window(
+            #[trigger] steps[k],
+            space,
+            untyped,
+            0,
+            pages,
+            1,
+            window@.addr,
+            window@.addr as int,
+            (BLOCK_PAGES + 1) as nat,
+        ) by {
+            if k < n1 {
+                assert(steps[k] == steps1[k]);
+            } else {
+                assert(steps[k] == steps2[k - n1]);
+                assert(acall_call_in_window(steps2[k - n1], space, untyped, 0, pages, 1, addr, next as int, 1));
+                reveal(acall_call_in_window);
+            }
+        }
+    }
+    (first, second, Ghost(steps))
+}
+
 } // verus!

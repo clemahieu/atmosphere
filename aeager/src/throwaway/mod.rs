@@ -6,6 +6,7 @@
 pub mod back;
 pub mod back_after_release_span;
 pub mod back_reuses_released;
+pub mod back_second_block;
 pub mod exercise;
 pub mod new;
 pub mod release;

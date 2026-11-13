@@ -1501,6 +1501,21 @@ spec fn frame_group_step(before: Record, after: Record) -> bool {
         && after.free_groups() + 1 >= before.free_groups())
 }
 
+/// What a back of `pages` pages that was refused spent, from `before` to `after`: the tables it
+/// linked, a `TABLE_PAGES` block each, and, when `acall` refused a step, at most one block more, which
+/// a refused table call spends, or one frame, which a refused retype or unmap spends; a refused map
+/// keeps its frame held, and the pages backed before the refusal are parked. Each page's frame breaks
+/// at most one free block more.
+spec fn refused_spent(before: Record, after: Record, steps: Seq<AcallStep>, pages: nat) -> bool {
+    let linked = before.tables_unlinked() - after.tables_unlinked();
+    &&& 0 <= linked
+    &&& after.free_groups() as int + linked <= before.free_groups() as int
+    &&& before.free_groups() as int <= after.free_groups() as int + linked + pages
+    &&& acall_ok(steps) ==> after.avail_pages() as int + linked * TABLE_PAGES as int == before.avail_pages() as int
+    &&& after.avail_pages() as int + linked * TABLE_PAGES as int <= before.avail_pages() as int
+    &&& before.avail_pages() as int <= after.avail_pages() as int + (linked + 1) * TABLE_PAGES as int
+}
+
 impl Record {
     /// `caller` is a token of the process whose space the record's system calls change, a process that
     /// is its own: the slot at `space` names its own space.
@@ -1796,6 +1811,7 @@ impl Record {
                 },
                 None => {
                     &&& final(self).state@[i as int] == TAKEN
+                    &&& final(self).avail_pages() + 1 == old(self).avail_pages()
                     &&& !acall_ok(r.1@)
                 },
             },
@@ -1842,6 +1858,9 @@ impl Record {
         }
         self.state[i] = TAKEN;
         assert(self.frames() =~= before.frames());
+        proof {
+            lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
+        }
         (None, Ghost(steps))
     }
 
@@ -1893,6 +1912,9 @@ impl Record {
                     ||| {
                         &&& old(self).avail_pages() >= 1
                         &&& !acall_ok(r.1@)
+                        &&& final(self).avail_pages() + 1 == old(self).avail_pages()
+                        &&& final(self).free_groups() <= old(self).free_groups()
+                        &&& old(self).free_groups() <= final(self).free_groups() + 1
                     }
                 },
             },
@@ -1954,9 +1976,7 @@ impl Record {
                 }
                 let res = self.retype_free(caller, i);
                 proof {
-                    if res.0 is Some {
-                        lemma_free_groups_loose_change(old(self).state@, self.state@, ng as int, i as int);
-                    }
+                    lemma_free_groups_loose_change(old(self).state@, self.state@, ng as int, i as int);
                 }
                 return res;
             }
@@ -1990,9 +2010,7 @@ impl Record {
                     }
                     let res = self.retype_free(caller, i);
                     proof {
-                        if res.0 is Some {
-                            lemma_free_groups_break_one(old(self).state@, self.state@, ng as int, i as int);
-                        }
+                        lemma_free_groups_break_one(old(self).state@, self.state@, ng as int, i as int);
                     }
                     return res;
                 }
@@ -2062,6 +2080,10 @@ impl Record {
                 }
                 self.state[i] = TAKEN;
                 assert(self.frames() =~= before.frames().remove(i as int));
+                proof {
+                    lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
+                    lemma_free_groups_nonfree_change(before.state@, self.state@, ng as int, i as int);
+                }
                 return (None, Ghost(steps));
             }
             i += 1;
@@ -2096,9 +2118,7 @@ impl Record {
                 }
                 let res = self.retype_free(caller, i);
                 proof {
-                    if res.0 is Some {
-                        lemma_free_groups_break_one(old(self).state@, self.state@, ng as int, i as int);
-                    }
+                    lemma_free_groups_break_one(old(self).state@, self.state@, ng as int, i as int);
                 }
                 return res;
             }
@@ -2160,6 +2180,8 @@ impl Record {
                 ||| {
                     &&& old(self).free_groups() >= 1
                     &&& !acall_ok(r.1@)
+                    &&& final(self).free_groups() + 1 == old(self).free_groups()
+                    &&& final(self).avail_pages() + TABLE_PAGES as nat == old(self).avail_pages()
                 }
             },
         no_unwind
@@ -2436,6 +2458,8 @@ impl Record {
                         0 <= c < WINDOW_BLOCKS && c != old(self).addr_block(addr)
                             ==> #[trigger] final(self).tabled@[c] == old(self).tabled@[c]
                     &&& final(self).free_groups() + old(self).tables_for_addr(addr) <= old(self).free_groups()
+                    &&& old(self).free_groups() <= final(self).free_groups() + old(self).tables_for_addr(addr) + 1
+                    &&& final(self).tables_unlinked() + old(self).tables_for_addr(addr) as int == old(self).tables_unlinked()
                     &&& final(self).avail_pages() + old(self).tables_for_addr(addr) * TABLE_PAGES as nat + 1
                         == old(self).avail_pages()
                     &&& old(self).free_capacity() >= 1 ==> final(self).free_capacity() == old(self).free_capacity() - 1
@@ -2446,8 +2470,15 @@ impl Record {
                 None => {
                     &&& forall|a: int| #[trigger] final(self).maps(a) ==> old(self).maps(a)
                     &&& (!old(self).can_back_run(addr as int, 1) || !acall_ok(r.1@))
+                    &&& refused_spent(*old(self), *final(self), r.1@, 1)
                 },
             },
+            old(self).top ==> final(self).top,
+            old(self).middle ==> final(self).middle,
+            forall|c: int| 0 <= c < WINDOW_BLOCKS ==> (old(self).tabled@[c] ==> #[trigger] final(self).tabled@[c]),
+            forall|c: int|
+                0 <= c < WINDOW_BLOCKS && c != old(self).addr_block(addr)
+                    ==> #[trigger] final(self).tabled@[c] == old(self).tabled@[c],
             old(self).parks(addr as int) ==> {
                 &&& r.0 is Some
                 &&& r.1@ == Seq::<AcallStep>::empty()
@@ -2576,6 +2607,20 @@ impl Record {
                         ==> #[trigger] final(self).tabled@[c] == old(self).tabled@[c]
             },
             !r.0 ==> (old(self).free_groups() < old(self).tables_for_addr(addr) || !acall_ok(r.1@)),
+            old(self).top ==> final(self).top,
+            old(self).middle ==> final(self).middle,
+            forall|c: int| 0 <= c < WINDOW_BLOCKS ==> (old(self).tabled@[c] ==> #[trigger] final(self).tabled@[c]),
+            forall|c: int|
+                0 <= c < WINDOW_BLOCKS && c != old(self).addr_block(addr)
+                    ==> #[trigger] final(self).tabled@[c] == old(self).tabled@[c],
+            // A path stopped part way keeps the tables it linked; a refused table call spent its block too.
+            !r.0 ==> ({
+                let linked = old(self).tables_unlinked() - final(self).tables_unlinked();
+                let spent = if acall_ok(r.1@) { linked } else { linked + 1 };
+                &&& 0 <= linked
+                &&& final(self).free_groups() as int + spent == old(self).free_groups() as int
+                &&& final(self).avail_pages() as int + spent * TABLE_PAGES as int == old(self).avail_pages() as int
+            }),
             old(self).tables_for_addr(addr) == 0 ==> {
                 &&& r.0
                 &&& *final(self) == *old(self)
@@ -2781,6 +2826,8 @@ impl Record {
                         0 <= c < WINDOW_BLOCKS && c != old(self).addr_block(addr)
                             ==> #[trigger] final(self).tabled@[c] == old(self).tabled@[c]
                     &&& final(self).free_groups() + old(self).tables_for_addr(addr) <= old(self).free_groups()
+                    &&& old(self).free_groups() <= final(self).free_groups() + old(self).tables_for_addr(addr) + 1
+                    &&& final(self).tables_unlinked() + old(self).tables_for_addr(addr) as int == old(self).tables_unlinked()
                     &&& final(self).avail_pages() + old(self).tables_for_addr(addr) * TABLE_PAGES as nat + 1
                         == old(self).avail_pages()
                     &&& old(self).free_capacity() >= 1 ==> final(self).free_capacity() == old(self).free_capacity() - 1
@@ -2791,8 +2838,15 @@ impl Record {
                 None => {
                     &&& forall|a: int| #[trigger] final(self).maps(a) ==> old(self).maps(a)
                     &&& (!old(self).can_back_run(addr as int, 1) || !acall_ok(r.1@))
+                    &&& refused_spent(*old(self), *final(self), r.1@, 1)
                 },
             },
+            old(self).top ==> final(self).top,
+            old(self).middle ==> final(self).middle,
+            forall|c: int| 0 <= c < WINDOW_BLOCKS ==> (old(self).tabled@[c] ==> #[trigger] final(self).tabled@[c]),
+            forall|c: int|
+                0 <= c < WINDOW_BLOCKS && c != old(self).addr_block(addr)
+                    ==> #[trigger] final(self).tabled@[c] == old(self).tabled@[c],
             (old(self).tables_for_addr(addr) == 0 && old(self).avail_pages() == 0) ==> {
                 &&& r.0 is None
                 &&& *final(self) == *old(self)
@@ -3269,10 +3323,22 @@ impl Record {
                         + old(self).tables_for_run(start as int, pages as nat) * TABLE_PAGES as nat
                         + pages as nat
                         == old(self).avail_pages()
+                    &&& final(self).free_groups() + old(self).tables_for_run(start as int, pages as nat) <= old(self).free_groups()
+                    &&& old(self).free_groups() <= final(self).free_groups() + old(self).tables_for_run(start as int, pages as nat) + pages
                     &&& acall_ok(r.1@)
                 },
                 None => {
                     &&& forall|a: int| #[trigger] final(self).maps(a) ==> old(self).maps(a)
+                    &&& old(self).top ==> final(self).top
+                    &&& old(self).middle ==> final(self).middle
+                    &&& forall|b: int| 0 <= b < WINDOW_BLOCKS ==> (
+                        #[trigger] final(self).tabled@[b]
+                            ==> (old(self).tabled@[b] || run_touches_block(old(self).window, start as int, pages as nat, b))
+                    )
+                    &&& forall|b: int| 0 <= b < WINDOW_BLOCKS ==> (old(self).tabled@[b] ==> #[trigger] final(self).tabled@[b])
+                    &&& forall|a: int|
+                        #[trigger] final(self).parks(a) ==> old(self).parks(a) || run_pages(start as int, pages as nat).contains(a)
+                    &&& refused_spent(*old(self), *final(self), r.1@, pages as nat)
                 },
             },
             (forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a)) ==> {
@@ -3349,6 +3415,10 @@ impl Record {
                         <==> (old(self).tabled@[b] || run_touches_block(old(self).window, start as int, k as nat, b))
                 ),
                 self.free_groups() + old(self).tables_for_run(start as int, k as nat) <= old(self).free_groups(),
+                old(self).free_groups() <= self.free_groups() + old(self).tables_for_run(start as int, k as nat) + k,
+                self.tables_unlinked() + old(self).tables_for_run(start as int, k as nat) as int == old(self).tables_unlinked(),
+                old(self).top ==> self.top,
+                old(self).middle ==> self.middle,
                 self.avail_pages()
                     + old(self).tables_for_run(start as int, k as nat) * TABLE_PAGES as nat
                     + k as nat
@@ -3524,6 +3594,35 @@ impl Record {
                             assert(!run_pages(start as int, k as nat).contains(a) && released.maps(a));
                             assert(before.maps(a));
                         }
+                        // The pages backed before the refusal are parked, and what the refused page
+                        // spent adds to what the backed ones did.
+                        lemma_run_within(start as int, k as int, pages as int);
+                        assert forall|a: int| #[trigger] self.parks(a)
+                            implies old(self).parks(a) || run_pages(start as int, pages as nat).contains(a) by {
+                            if !run_pages(start as int, k as nat).contains(a) {
+                                assert(released.parks(a));
+                                assert(before.parks(a));
+                            }
+                        }
+                        lemma_addr_block(old(self).window, addr);
+                        lemma_scale(k as int + 1, pages as int, PAGE_BYTES as int);
+                        assert forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] self.tabled@[b]
+                            implies old(self).tabled@[b] || run_touches_block(old(self).window, start as int, pages as nat, b) by {
+                            lemma_run_touches_snoc(old(self).window, start as int, k as nat, b);
+                            let b0 = before.addr_block(addr);
+                            assert(b0 == old(self).addr_block(addr));
+                            if b != b0 {
+                                assert(released.tabled@[b] == before.tabled@[b]);
+                            }
+                        }
+                        let linked_k = before.tables_unlinked() - released.tables_unlinked();
+                        let tk = old(self).tables_for_run(start as int, k as nat) as int;
+                        lemma_scale(tk, linked_k, TABLE_PAGES as int);
+                        lemma_scale(linked_k, 1, TABLE_PAGES as int);
+                        lemma_scale(tk + linked_k, 1, TABLE_PAGES as int);
+                        lemma_scale(tk, tk + linked_k, TABLE_PAGES as int);
+                        assert(acall_ok(next_steps) == acall_ok(sp));
+                        assert(refused_spent(*old(self), *self, next_steps, pages as nat));
                     }
                     return (None, Ghost(next_steps));
                 },
@@ -3982,9 +4081,23 @@ fn back_fields(
                     + old(record).tables_for_run(start as int, pages as nat) * TABLE_PAGES as nat
                     + pages as nat
                     == old(record).avail_pages()
+                &&& final(record).free_groups() + old(record).tables_for_run(start as int, pages as nat) <= old(record).free_groups()
+                &&& old(record).free_groups() <= final(record).free_groups() + old(record).tables_for_run(start as int, pages as nat) + pages
                 &&& acall_ok(r.1@)
             },
-            None => final(spans).map@ == old(spans).map@,
+            None => {
+                &&& final(spans).map@ == old(spans).map@
+                &&& old(record).top ==> final(record).top
+                &&& old(record).middle ==> final(record).middle
+                &&& forall|b: int| 0 <= b < WINDOW_BLOCKS ==> (
+                    #[trigger] final(record).tabled@[b]
+                        ==> (old(record).tabled@[b] || run_touches_block(old(record).window, start as int, pages as nat, b))
+                )
+                &&& forall|b: int| 0 <= b < WINDOW_BLOCKS ==> (old(record).tabled@[b] ==> #[trigger] final(record).tabled@[b])
+                &&& forall|a: int|
+                    #[trigger] final(record).parks(a) ==> old(record).parks(a) || run_pages(start as int, pages as nat).contains(a)
+                &&& refused_spent(*old(record), *final(record), r.1@, pages as nat)
+            },
         },
         (forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(record).parks(a)) ==> {
             &&& r.0 is Some
@@ -4223,6 +4336,17 @@ impl Eager {
     /// Whether block `b` of the window has its leaf table linked.
     pub closed spec fn block_tabled(&self, b: int) -> bool {
         self.record.tabled@[b]
+    }
+
+    /// Number of the window's tables not linked yet: the level-3 and level-2 tables of its path and
+    /// the leaf table of each block.
+    pub open spec fn unlinked_tables(&self) -> nat {
+        (if self.top_linked() { 0nat } else { 1nat })
+            + (if self.middle_linked() { 0nat } else { 1nat })
+            + (if self.block_tabled(0) { 0nat } else { 1nat })
+            + (if self.block_tabled(1) { 0nat } else { 1nat })
+            + (if self.block_tabled(2) { 0nat } else { 1nat })
+            + (if self.block_tabled(3) { 0nat } else { 1nat })
     }
 
     /// Number of unlinked tables along the path of the `pages`-page run from `start`.
@@ -4581,7 +4705,10 @@ impl SpanSource for Eager {
 
     /// Every `acall` step stays within the source's window, slots and untyped; `back` returns `None` iff
     /// `!can_back(start, pages)` or `acall` refuses the final step; a run whose every page is parked is
-    /// granted with no system call.
+    /// granted with no system call. A grant spends a free `TABLE_PAGES` block per table it links, and
+    /// each frame it takes breaks at most one more. A refusal keeps the tables it linked on the run's
+    /// path and parks the pages it backed before it: it spends a block per table linked, and the step
+    /// `acall` refused, if any, at most one block more, or a frame.
     fn back(&mut self, token: &mut Tracked<Caller>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         ensures
             final(self).space() == old(self).space(),
@@ -4626,9 +4753,31 @@ impl SpanSource for Eager {
                         + old(self).unlinked_tables_on(start as int, pages as nat) * TABLE_PAGES as nat
                         + pages as nat
                         == old(self).free_frames()
+                    &&& final(self).free_table_blocks() + old(self).unlinked_tables_on(start as int, pages as nat)
+                        <= old(self).free_table_blocks()
+                    &&& old(self).free_table_blocks()
+                        <= final(self).free_table_blocks() + old(self).unlinked_tables_on(start as int, pages as nat) + pages as nat
                     &&& forall|a: int|
                         #[trigger] final(self).parks(a)
                             ==> old(self).parks(a) && !run_pages(start as int, pages as nat).contains(a)
+                }
+                &&& r is None ==> {
+                    let linked = old(self).unlinked_tables() as int - final(self).unlinked_tables() as int;
+                    &&& final(self).unlinked_tables() <= old(self).unlinked_tables()
+                    &&& old(self).top_linked() ==> final(self).top_linked()
+                    &&& old(self).middle_linked() ==> final(self).middle_linked()
+                    &&& forall|b: int| 0 <= b < WINDOW_BLOCKS ==> (old(self).block_tabled(b) ==> #[trigger] final(self).block_tabled(b))
+                    &&& forall|b: int| 0 <= b < WINDOW_BLOCKS ==> (
+                        #[trigger] final(self).block_tabled(b)
+                            ==> (old(self).block_tabled(b) || run_touches_block(old(self).window(), start as int, pages as nat, b))
+                    )
+                    &&& forall|a: int|
+                        #[trigger] final(self).parks(a) ==> old(self).parks(a) || run_pages(start as int, pages as nat).contains(a)
+                    &&& final(self).free_table_blocks() as int + linked <= old(self).free_table_blocks() as int
+                    &&& old(self).free_table_blocks() as int <= final(self).free_table_blocks() as int + linked + pages as int
+                    &&& acall_ok(steps) ==> final(self).free_frames() as int + linked * TABLE_PAGES as int == old(self).free_frames() as int
+                    &&& final(self).free_frames() as int + linked * TABLE_PAGES as int <= old(self).free_frames() as int
+                    &&& old(self).free_frames() as int <= final(self).free_frames() as int + (linked + 1) * TABLE_PAGES as int
                 }
                 &&& (forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a)) ==> {
                     &&& steps == Seq::<AcallStep>::empty()
