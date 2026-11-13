@@ -31,6 +31,7 @@ use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::map::*;
 use crate::capability::mapping::*;
+use crate::capability::operation::Outcome;
 use crate::capability::position::*;
 use crate::capability::process::*;
 use crate::capability::reach::*;

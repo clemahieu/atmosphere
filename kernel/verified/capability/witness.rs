@@ -56,6 +56,7 @@ use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::map::*;
 use crate::capability::mapping::*;
+use crate::capability::operation::Outcome;
 use crate::capability::position::*;
 use crate::capability::process::*;
 use crate::capability::reach::*;
@@ -1492,6 +1493,129 @@ impl CapKernel {
             assert(!s4.threads.records@[t].value().dying);
         }
         self.check_current(0, registers, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
+    /// enters it, then core 0 dispatches the invocation in registers, whatever it encodes. The root
+    /// process and its thread are live with no stop pending, so the caller does not have to leave and
+    /// dispatch returns Some: an outcome goes back to the root's thread.
+    pub fn witness_root_dispatches(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        registers: Registers,
+    ) -> (ret: Option<Outcome>)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret is Some,
+            final(self).wf(),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            reveal(current_wf);
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&s0.spaces, &s0.processes));
+            assert(s0.spaces.roots@.contains_key(process));
+            assert(s0.spaces.records@[process].value().kind is Process);
+            assert(!s0.threads.records@[t].value().pending_stop);
+        }
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s0.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.processes == s0.processes);
+            assert(!s3.threads.records@[t].value().pending_stop);
+            assert(!s3.threads.records@[t].value().dying);
+            assert(s3.threads.records@[t].value().process == Some(process));
+            assert(!s3.processes.records@[process].value().dead);
+            assert(!s3.must_leave(0));
+        }
+        self.dispatch(0, registers)
+    }
+
+    /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
+    /// enters it, then core 0 takes the kernel entry for the invocation in registers, whatever it
+    /// encodes: dispatch, then the flush acknowledgement when core 0 is behind. The caller does not
+    /// have to leave, so enter returns Some, and core 0 holds no translation of an unmapped page.
+    pub fn witness_root_enters_the_kernel(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        registers: Registers,
+    ) -> (ret: Option<Outcome>)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret is Some,
+            final(self).wf(),
+            final(self).acked(0) == final(self).flush_epoch,
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            reveal(current_wf);
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&s0.spaces, &s0.processes));
+            assert(s0.spaces.roots@.contains_key(process));
+            assert(s0.spaces.records@[process].value().kind is Process);
+            assert(!s0.threads.records@[t].value().pending_stop);
+        }
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s0.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.processes == s0.processes);
+            assert(!s3.threads.records@[t].value().pending_stop);
+            assert(!s3.threads.records@[t].value().dying);
+            assert(s3.threads.records@[t].value().process == Some(process));
+            assert(!s3.processes.records@[process].value().dead);
+            assert(!s3.must_leave(0));
+        }
+        self.enter(0, registers)
     }
 
     /// From the state boot leaves, with a second process built at `base` as

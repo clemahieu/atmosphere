@@ -10,8 +10,6 @@ kernel/verified/capability/delete.rs	delete	Some
 kernel/verified/capability/derive.rs	derive	true
 kernel/verified/capability/device.rs	add_devices	true
 kernel/verified/capability/moving.rs	move_cap	true
-kernel/verified/capability/operation.rs	dispatch	Some
-kernel/verified/capability/operation.rs	enter	Some
 kernel/verified/capability/retype.rs	retype_frame	true
 kernel/verified/capability/retype.rs	retype_leaf	true
 kernel/verified/capability/space.rs	retype_table_page	true

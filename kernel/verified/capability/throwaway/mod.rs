@@ -23,6 +23,8 @@ pub mod process_moves_a_device_between_spaces;
 pub mod process_space_cut;
 pub mod root_begins_zeroing_a_2m_frame;
 pub mod root_claims_a_capability;
+pub mod root_dispatches;
+pub mod root_enters_the_kernel;
 pub mod root_links_a_table_into_its_own_space;
 pub mod root_maps_a_frame_into_its_own_space;
 pub mod root_maps_one_frame_into_two_processes;
