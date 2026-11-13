@@ -7,9 +7,6 @@
 # Fields, separated by tabs: path from the repository root, operation, way.
 #
 kernel/verified/capability/device.rs	add_devices	true
-kernel/verified/capability/retype.rs	retype_frame	true
-kernel/verified/capability/retype.rs	retype_leaf	true
-kernel/verified/capability/space.rs	retype_table_page	true
 kernel/verified/capability/thread.rs	start	true
 kernel/verified/capability/thread.rs	suspend	Again
 aeager/src/eager.rs	Eager::reserve	Some

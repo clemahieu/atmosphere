@@ -855,6 +855,69 @@ impl CapKernel {
     {
     }
 
+    /// A retype of the 4K frame kind reaches retype_frame: refused with nothing changed unless
+    /// can_retype_frame holds over the untyped in the slot, the slot in argument 3 and the base in
+    /// argument 2, and ok with the frame retyped into that slot as frame_retyped says when it does.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_retype_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Retype),
+            frame.argument(1) == RETYPE_FRAME,
+        ensures
+            ({
+                let from = frame.slot() as usize;
+                let to = frame.argument(3) as usize;
+                let base = frame.argument(2) as usize;
+                &&& !pre.can_retype_frame(root, from, to, base) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_retype_frame(root, from, to, base)
+                    ==> out == status_only(STATUS_OK) && Self::frame_retyped(pre, post, root, from, to, base)
+            }),
+    {
+    }
+
+    /// A retype of the leaf kind reaches retype_leaf: refused with nothing changed unless the word in
+    /// argument 3 decodes to a position and can_retype_leaf holds over the untyped in the slot, that
+    /// position and the base in argument 2; ok with the leaf in the root entry the position names, as
+    /// leaf_retyped says, when it does. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_retype_leaf(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Retype),
+            frame.argument(1) == RETYPE_LEAF,
+        ensures
+            ({
+                let from = frame.slot() as usize;
+                let at = spec_position(frame.argument(3));
+                let base = frame.argument(2) as usize;
+                &&& !(at is Some && pre.can_retype_leaf(root, from, at->0, base)) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& at is Some && pre.can_retype_leaf(root, from, at->0, base)
+                    ==> out == status_only(STATUS_OK) && Self::leaf_retyped(pre, post, root, from, at->0, base)
+            }),
+    {
+    }
+
+    /// A retype of the table page kind reaches retype_table_page: refused with nothing changed unless
+    /// can_retype_table_page holds over the untyped in the slot, the base in argument 2 and the level
+    /// in argument 4, and ok with an unlinked table page of that level at that base, as
+    /// table_page_retyped says, when it does. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_retype_table_page(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Retype),
+            frame.argument(1) == RETYPE_TABLE_PAGE,
+        ensures
+            ({
+                let from = frame.slot() as usize;
+                let base = frame.argument(2) as usize;
+                let level = frame.argument(4) as usize;
+                &&& !pre.can_retype_table_page(root, from, base, level) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_retype_table_page(root, from, base, level)
+                    ==> out == status_only(STATUS_OK) && Self::table_page_retyped(pre, post, root, from, base, level)
+            }),
+    {
+    }
+
     /// A link reaches link_at: refused with nothing changed unless can_link_at holds over the frame's
     /// arguments, and ok with the table page linked as table_linked says when it does.
     /// design/witness-per-way-an-operation-succeeds/.
