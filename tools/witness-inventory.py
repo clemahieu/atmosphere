@@ -998,6 +998,29 @@ class Claims(unittest.TestCase):
     }}""")
             self.assertIsNone(found[("retype", "Done")])
 
+    def test_a_state_creating_witness_whose_requires_names_self_nowhere_counts(self):
+        op = "pub fn kernel_init(&mut self, root: usize) -> (ret: Option<(usize, usize)>) { Some((1, 0)) }"
+        for requires in ("\n        requires\n            root > 0,", ""):
+            found = self.witnessed(f"""
+    pub fn witness_kernel_init(&mut self, root: usize) -> (ret: Option<(usize, usize)>){requires}
+        ensures
+            ret is Some,
+    {{
+        self.kernel_init(root)
+    }}""", operations=op)
+            self.assertEqual(found[("kernel_init", "Some")], "witness_kernel_init")
+        found = self.witnessed("""
+    pub fn witness_kernel_init(&mut self, root: usize) -> (ret: Option<(usize, usize)>)
+        requires
+            old(self).cores.wf(),
+            root > 0,
+        ensures
+            ret is Some,
+    {
+        self.kernel_init(root)
+    }""", operations=op)
+        self.assertIsNone(found[("kernel_init", "Some")])
+
     def test_a_private_witness_is_no_root(self):
         found = self.witnessed(f"""
     fn witness_done(&mut self, root: Ghost<usize>, process: usize) -> (ret: Step){BOOTED}

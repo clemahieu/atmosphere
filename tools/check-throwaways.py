@@ -11,7 +11,8 @@ must refuse it. design/witness-per-way-an-operation-succeeds/, point 5.
 The witnesses are found from the source of each crate tools/verify.py verifies: every exec
 `pub fn witness_<x>` outside a throwaway module. A root witness, the record's point 3, is
 
-  a method   whose requires holds the conjunct `old(self).booted(...)` and names `self` nowhere else;
+  a method   whose requires holds the conjunct `old(self).booted(...)` and names `self` nowhere else,
+             or names `self` nowhere;
   a function whose parameters name no struct or enum its crate declares.
 
 For the root witness `witness_<x>` in `<dir>/<file>.rs` the throwaway is `throwaway_<x>`, alone in
@@ -189,6 +190,8 @@ def not_root(witness, declared):
         taken = sorted(set(re.findall(r"\w+", masked(witness.params))) & declared)
         return f"takes {', '.join(taken)}, which its crate declares" if taken else None
     body = masked(witness.requires)[len("requires"):]
+    if SELF.search(body) is None:
+        return None
     match = BOOTED.search(body)
     if match is None:
         return "its requires has no old(self).booted(...)"
@@ -612,6 +615,78 @@ class Tests(unittest.TestCase):
             ("wf_only", "its requires has no old(self).booted(...)"),
             ("named_twice", "its requires names self outside old(self).booted(...)"),
         ])
+
+    def test_a_method_whose_requires_names_self_nowhere_is_a_root(self):
+        self.witness.write_text("""// SPDX-License-Identifier: MIT
+use vstd::prelude::*;
+
+verus! {
+
+impl CapKernel {
+    pub fn witness_kernel_init(&mut self, root: usize) -> (ret: Option<(usize, usize)>)
+        requires
+            // no prior self state
+            Self::aligned(root),
+            root > 0,
+        ensures
+            ret is Some,
+    {
+        self.kernel_init(root)
+    }
+
+    pub fn witness_bare_init(&mut self) -> (ret: Option<(usize, usize)>)
+        ensures
+            ret is Some,
+    {
+        self.kernel_init(0)
+    }
+
+    pub fn witness_prior_self(&mut self, root: usize) -> (ret: Option<(usize, usize)>)
+        requires
+            old(self).cores.wf(),
+            root > 0,
+        ensures
+            ret is Some,
+    {
+        self.kernel_init(root)
+    }
+}
+
+} // verus!
+""")
+        throwaways, _, listed = plan(self.kernel)
+        self.assertEqual([(witness.name, why) for witness, why in listed], [
+            ("kernel_init", None),
+            ("bare_init", None),
+            ("prior_self", "its requires has no old(self).booted(...)"),
+        ])
+        self.assertEqual([t.name for t in throwaways], ["kernel_init", "bare_init"])
+        self.assertIn(
+            "impl CapKernel {\n"
+            "    pub fn throwaway_kernel_init(&mut self, root: usize)\n"
+            "        requires\n"
+            "            // no prior self state\n"
+            "            Self::aligned(root),\n"
+            "            root > 0,\n"
+            "        ensures\n"
+            "            false,\n"
+            "    {\n"
+            "        self.witness_kernel_init(root);\n"
+            "    }\n"
+            "}\n",
+            throwaways[0].text,
+        )
+        self.assertIn(
+            "impl CapKernel {\n"
+            "    pub fn throwaway_bare_init(&mut self)\n"
+            "        ensures\n"
+            "            false,\n"
+            "    {\n"
+            "        self.witness_bare_init();\n"
+            "    }\n"
+            "}\n",
+            throwaways[1].text,
+        )
 
     def test_a_function_is_a_root_when_it_takes_nothing_its_crate_declares(self):
         _, _, listed = plan(self.user)
