@@ -5,7 +5,7 @@
 use vstd::arithmetic::div_mod::{lemma_fundamental_div_mod, lemma_mod_multiples_basic};
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
-use acall::step::Caller;
+use acall::step::{caller_alone, Caller};
 use aheap::arch::*;
 use aheap::source::*;
 use verified::capability::operation::STATUS_REFUSED;
@@ -14,8 +14,9 @@ use verified::capability::table::TABLE_INDICES;
 use crate::eager::*;
 use crate::exercise::*;
 use crate::glue::{
-    AcallStep, acall_ok, acall_steps, lemma_acall_ok_append, lemma_acall_refused_after_ok,
-    lemma_acall_steps_append, names_own_space, own_process,
+    AcallStep, acall_ok, acall_steps, flush_room, lemma_acall_ok_append, lemma_acall_refused_after_ok,
+    lemma_acall_steps_append, lemma_caller_alone_split, lemma_source_ready_premises,
+    names_own_space, own_process, source_ready,
 };
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
@@ -112,23 +113,21 @@ pub fn witness_release_span(space: u64, untyped: u64, window: *mut u8, token: &m
     (first, again)
 }
 
-/// Reserves a one-block span from a fresh eager source over a region-aligned window and backs its
+/// Reserves a one-block span from a fresh eager source over an unmapped level-4 window and backs its
 /// first page: every `acall` step stays within the source's window, slots and untyped, a refusal comes
-/// only from `acall` refusing the final non-`Inspect` step, and when `acall` accepts every step the
-/// back is granted.
+/// only from `acall` refusing the final non-`Inspect` step, and when no other caller steps between the
+/// calls `back` makes, the back is granted.
+#[verifier::spinoff_prover]
 pub fn witness_back(
     space: u64,
     untyped: u64,
+    memory: u64,
+    slots: u64,
     window: *mut u8,
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
-        window@.addr != 0,
-        window@.addr as int % REGION_BYTES as int == 0,
-        window@.addr + WINDOW_BYTES <= usize::MAX,
-        old(token)@.wf(),
-        own_process(old(token)@),
-        names_own_space(old(token)@, space),
+        source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
         acall_steps(old(token)@, final(token)@, r.1@),
@@ -136,9 +135,9 @@ pub fn witness_back(
             #[trigger] r.1@[k],
             space,
             untyped,
-            0,
-            MAX_PAGES,
-            1,
+            memory,
+            ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+            slots,
             window@.addr,
             window@.addr as int,
             1,
@@ -148,14 +147,15 @@ pub fn witness_back(
             &&& acall_ok(r.1@.drop_last())
             &&& r.1@.last().out.status == STATUS_REFUSED
         },
-        acall_ok(r.1@) ==> r.0 is Some,
+        caller_alone(old(token)@, final(token)@) ==> r.0 is Some,
 {
+    let pages: usize = (2 + WINDOW_BLOCKS) * TABLE_PAGES + 1;
     proof {
-        assert(1int % LEAF_INDICES as int != 0) by (compute);
-        assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
-        assert(MAX_PAGES as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
+        lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        assert(pages <= MAX_PAGES) by (compute);
+        assert(pages as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, 0, MAX_PAGES, 1, window).unwrap();
+    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -184,34 +184,34 @@ pub fn witness_back(
     (got, Ghost(steps))
 }
 
-/// Reserves a one-block span from a fresh eager source over a region-aligned window, backs its first
-/// page, releases it and backs it again: the release parks the page with no system call, so when
-/// `acall` accepts every step of the first back, the second is granted the same page with none.
+/// Reserves a one-block span from a fresh eager source over an unmapped level-4 window, backs its first
+/// page, releases it and backs it again: the release parks the page with no system call, so when no
+/// other caller steps between the calls of the first back, `release` runs and the second back is granted
+/// the same page with no system call.
+#[verifier::spinoff_prover]
 pub fn witness_release(
     space: u64,
     untyped: u64,
+    memory: u64,
+    slots: u64,
     window: *mut u8,
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
-        window@.addr != 0,
-        window@.addr as int % REGION_BYTES as int == 0,
-        window@.addr + WINDOW_BYTES <= usize::MAX,
-        old(token)@.wf(),
-        own_process(old(token)@),
-        names_own_space(old(token)@, space),
+        source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
         acall_steps(old(token)@, final(token)@, r.1@),
-        acall_ok(r.1@) ==> r.0 is Some,
+        caller_alone(old(token)@, final(token)@) ==> r.0 is Some,
         r.0 is Some ==> r.0->0@.is_range(window@.addr as int, PAGE_BYTES as int),
 {
+    let pages: usize = (2 + WINDOW_BLOCKS) * TABLE_PAGES + 1;
     proof {
-        assert(1int % LEAF_INDICES as int != 0) by (compute);
-        assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
-        assert(MAX_PAGES as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
+        lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        assert(pages <= MAX_PAGES) by (compute);
+        assert(pages as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, 0, MAX_PAGES, 1, window).unwrap();
+    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -253,21 +253,19 @@ pub fn witness_release(
 
 /// Constructs an eager source of `3 * TABLE_PAGES + 1` pages (below `free_capacity`), reserves a
 /// one-block span, backs its first page, checks that backing its second page is refused while no frame
-/// remains, releases the first page, and backs the second page: when `acall` accepts every step, the
+/// remains, releases the first page, and backs the second page: when no other caller steps between, the
 /// released frame is unmapped and mapped at the second address.
+#[verifier::spinoff_prover]
 pub fn witness_back_reuses_released(
     space: u64,
     untyped: u64,
+    memory: u64,
+    slots: u64,
     window: *mut u8,
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
-        window@.addr != 0,
-        window@.addr as int % REGION_BYTES as int == 0,
-        window@.addr + WINDOW_BYTES <= usize::MAX,
-        old(token)@.wf(),
-        own_process(old(token)@),
-        names_own_space(old(token)@, space),
+        source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
         acall_steps(old(token)@, final(token)@, r.2@),
@@ -275,9 +273,9 @@ pub fn witness_back_reuses_released(
             #[trigger] r.2@[k],
             space,
             untyped,
-            0,
+            memory,
             (3 * TABLE_PAGES + 1) as usize,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             2,
@@ -288,17 +286,17 @@ pub fn witness_back_reuses_released(
             &&& acall_ok(r.2@.drop_last())
             &&& r.2@.last().out.status == STATUS_REFUSED
         },
-        acall_ok(r.2@) ==> r.1 is Some,
+        caller_alone(old(token)@, final(token)@) ==> r.1 is Some,
 {
     let pages: usize = 3 * TABLE_PAGES + 1;
     let ghost tok0 = token@;
     proof {
-        assert(1int % LEAF_INDICES as int != 0) by (compute);
-        assert(frame_slot(1, (3 * TABLE_PAGES) as int) < TABLE_INDICES) by (compute);
+        lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        assert(pages <= MAX_PAGES) by (compute);
         assert((3 * TABLE_PAGES + 1) / TABLE_PAGES as int == 3) by (compute);
         assert(2 * PAGE_BYTES <= BLOCK_BYTES) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, 0, pages, 1, window).unwrap();
+    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -348,14 +346,14 @@ pub fn witness_back_reuses_released(
             #[trigger] steps1[k],
             space,
             untyped,
-            0,
+            memory,
             pages,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             2,
         ) by {
-            assert(acall_call_in_window(steps1[k], space, untyped, 0, pages, 1, addr, addr as int, 1));
+            assert(acall_call_in_window(steps1[k], space, untyped, memory, pages, slots, addr, addr as int, 1));
             reveal(acall_call_in_window);
         }
     }
@@ -379,6 +377,9 @@ pub fn witness_back_reuses_released(
     }
     let short = src.back(token, Ghost(addr as int), next, 1);
     proof {
+        if caller_alone(tok0, tok1) {
+            assert(src.ready(tok1));
+        }
         let n1 = steps1.len() as int;
         assert(src.acall_trace().take(n1) == steps1);
         assert(src.acall_trace().skip(n1) == Seq::<AcallStep>::empty());
@@ -404,6 +405,10 @@ pub fn witness_back_reuses_released(
         assert(src.unparked_pages(next as int, 1) == 1);
         assert(src.free_frames() == 1);
         assert(src.can_back(next as int, 1));
+        if caller_alone(tok0, tok1) {
+            assert(src.ready(tok1));
+            assert(flush_room(tok1, 1));
+        }
     }
     let reused = src.back(token, Ghost(addr as int), next, 1);
     let ghost steps = src.acall_trace();
@@ -414,6 +419,9 @@ pub fn witness_back_reuses_released(
         assert(steps =~= steps1 + steps2);
         lemma_acall_steps_append(tok0, tok1, token@, steps1, steps2);
         lemma_acall_ok_append(steps1, steps2);
+        if caller_alone(tok0, token@) {
+            lemma_caller_alone_split(tok0, tok1, token@, steps1, steps2);
+        }
         if reused.is_none() {
             lemma_acall_refused_after_ok(steps1, steps2);
         }
@@ -423,9 +431,9 @@ pub fn witness_back_reuses_released(
             #[trigger] steps[k],
             space,
             untyped,
-            0,
+            memory,
             pages,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             2,
@@ -434,7 +442,7 @@ pub fn witness_back_reuses_released(
                 assert(steps[k] == steps1[k]);
             } else {
                 assert(steps[k] == steps2[k - n1]);
-                assert(acall_call_in_window(steps2[k - n1], space, untyped, 0, pages, 1, addr, next as int, 1));
+                assert(acall_call_in_window(steps2[k - n1], space, untyped, memory, pages, slots, addr, next as int, 1));
                 reveal(acall_call_in_window);
             }
         }
@@ -445,21 +453,19 @@ pub fn witness_back_reuses_released(
 /// Constructs an eager source of `3 * TABLE_PAGES + 1` pages (below `free_capacity`), reserves a
 /// one-block span, backs its first page, releases that page, gives up the span with `release_span`,
 /// reserves a one-block span again, and backs its second page: `release_span` keeps the token, the
-/// configuration, the linked tables, the parked and free frames and the `acall` trace, so when `acall`
-/// accepts every step, the final back is granted.
+/// configuration, the linked tables, the parked and free frames and the `acall` trace, so when no other
+/// caller steps between, the final back is granted.
+#[verifier::spinoff_prover]
 pub fn witness_back_after_release_span(
     space: u64,
     untyped: u64,
+    memory: u64,
+    slots: u64,
     window: *mut u8,
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
-        window@.addr != 0,
-        window@.addr as int % REGION_BYTES as int == 0,
-        window@.addr + WINDOW_BYTES <= usize::MAX,
-        old(token)@.wf(),
-        own_process(old(token)@),
-        names_own_space(old(token)@, space),
+        source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
         acall_steps(old(token)@, final(token)@, r.1@),
@@ -467,9 +473,9 @@ pub fn witness_back_after_release_span(
             #[trigger] r.1@[k],
             space,
             untyped,
-            0,
+            memory,
             (3 * TABLE_PAGES + 1) as usize,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             2,
@@ -479,18 +485,18 @@ pub fn witness_back_after_release_span(
             &&& acall_ok(r.1@.drop_last())
             &&& r.1@.last().out.status == STATUS_REFUSED
         },
-        acall_ok(r.1@) ==> r.0 is Some,
+        caller_alone(old(token)@, final(token)@) ==> r.0 is Some,
         r.0 is Some ==> r.0->0@.is_range((window@.addr + PAGE_BYTES) as int, PAGE_BYTES as int),
 {
     let pages: usize = 3 * TABLE_PAGES + 1;
     let ghost tok0 = token@;
     proof {
-        assert(1int % LEAF_INDICES as int != 0) by (compute);
-        assert(frame_slot(1, (3 * TABLE_PAGES) as int) < TABLE_INDICES) by (compute);
+        lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        assert(pages <= MAX_PAGES) by (compute);
         assert((3 * TABLE_PAGES + 1) / TABLE_PAGES as int == 3) by (compute);
         assert(2 * PAGE_BYTES <= BLOCK_BYTES) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, 0, pages, 1, window).unwrap();
+    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -533,14 +539,14 @@ pub fn witness_back_after_release_span(
             #[trigger] steps1[k],
             space,
             untyped,
-            0,
+            memory,
             pages,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             2,
         ) by {
-            assert(acall_call_in_window(steps1[k], space, untyped, 0, pages, 1, addr, addr as int, 1));
+            assert(acall_call_in_window(steps1[k], space, untyped, memory, pages, slots, addr, addr as int, 1));
             reveal(acall_call_in_window);
         }
     }
@@ -599,6 +605,10 @@ pub fn witness_back_after_release_span(
         assert(src.unparked_pages(next as int, 1) == 1);
         assert(src.free_frames() == 1);
         assert(src.can_back(next as int, 1));
+        if caller_alone(tok0, tok1) {
+            assert(src.ready(tok1));
+            assert(flush_room(tok1, 1));
+        }
     }
     let again = src.back(token, Ghost(addr2 as int), next, 1);
     let ghost steps = src.acall_trace();
@@ -609,6 +619,9 @@ pub fn witness_back_after_release_span(
         assert(steps =~= steps1 + steps2);
         lemma_acall_steps_append(tok0, tok1, token@, steps1, steps2);
         lemma_acall_ok_append(steps1, steps2);
+        if caller_alone(tok0, token@) {
+            lemma_caller_alone_split(tok0, tok1, token@, steps1, steps2);
+        }
         if again.is_none() {
             lemma_acall_refused_after_ok(steps1, steps2);
         }
@@ -618,9 +631,9 @@ pub fn witness_back_after_release_span(
             #[trigger] steps[k],
             space,
             untyped,
-            0,
+            memory,
             pages,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             2,
@@ -629,7 +642,7 @@ pub fn witness_back_after_release_span(
                 assert(steps[k] == steps1[k]);
             } else {
                 assert(steps[k] == steps2[k - n1]);
-                assert(acall_call_in_window(steps2[k - n1], space, untyped, 0, pages, 1, addr2, next as int, 1));
+                assert(acall_call_in_window(steps2[k - n1], space, untyped, memory, pages, slots, addr2, next as int, 1));
                 reveal(acall_call_in_window);
             }
         }
@@ -640,21 +653,19 @@ pub fn witness_back_after_release_span(
 /// Constructs an eager source of `5 * TABLE_PAGES` pages (below `free_capacity`), reserves a
 /// two-block span and backs the first page of each block. The first back links the window's path
 /// and the first block's table and breaks at most one more free block for its frame, so a free block
-/// remains for the second block's table and enough frames beyond it: when `acall` accepts every
-/// step, both backs are granted.
+/// remains for the second block's table and enough frames beyond it: when no other caller steps
+/// between, both backs are granted.
+#[verifier::spinoff_prover]
 pub fn witness_back_second_block(
     space: u64,
     untyped: u64,
+    memory: u64,
+    slots: u64,
     window: *mut u8,
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
-        window@.addr != 0,
-        window@.addr as int % REGION_BYTES as int == 0,
-        window@.addr + WINDOW_BYTES <= usize::MAX,
-        old(token)@.wf(),
-        own_process(old(token)@),
-        names_own_space(old(token)@, space),
+        source_ready(old(token)@, space, untyped, memory, (5 * TABLE_PAGES) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
         acall_steps(old(token)@, final(token)@, r.2@),
@@ -662,9 +673,9 @@ pub fn witness_back_second_block(
             #[trigger] r.2@[k],
             space,
             untyped,
-            0,
+            memory,
             (5 * TABLE_PAGES) as usize,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             (BLOCK_PAGES + 1) as nat,
@@ -675,19 +686,20 @@ pub fn witness_back_second_block(
             &&& acall_ok(r.2@.drop_last())
             &&& r.2@.last().out.status == STATUS_REFUSED
         },
-        acall_ok(r.2@) ==> r.1 is Some,
+        caller_alone(old(token)@, final(token)@) ==> r.0 is Some,
+        caller_alone(old(token)@, final(token)@) ==> r.1 is Some,
 {
     let pages: usize = 5 * TABLE_PAGES;
     let ghost tok0 = token@;
     proof {
-        assert(1int % LEAF_INDICES as int != 0) by (compute);
-        assert(frame_slot(1, (5 * TABLE_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        assert(pages <= MAX_PAGES) by (compute);
         assert((5 * TABLE_PAGES) / TABLE_PAGES as int == 5) by (compute);
         assert(BLOCK_BYTES == PAGE_BYTES * BLOCK_PAGES);
         assert(PAGE_BYTES < BLOCK_BYTES) by (compute);
         assert(WINDOW_BYTES == 4 * BLOCK_BYTES) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, 0, pages, 1, window).unwrap();
+    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
     proof {
         assert(src.window_fits(0, 2));
     }
@@ -738,14 +750,14 @@ pub fn witness_back_second_block(
             #[trigger] steps1[k],
             space,
             untyped,
-            0,
+            memory,
             pages,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             (BLOCK_PAGES + 1) as nat,
         ) by {
-            assert(acall_call_in_window(steps1[k], space, untyped, 0, pages, 1, addr, addr as int, 1));
+            assert(acall_call_in_window(steps1[k], space, untyped, memory, pages, slots, addr, addr as int, 1));
             reveal(acall_call_in_window);
         }
     }
@@ -774,6 +786,10 @@ pub fn witness_back_second_block(
         assert(src.unparked_pages(next as int, 0) == 0);
         assert(src.unparked_pages(next as int, 1) == 1);
         assert(src.can_back(next as int, 1));
+        if caller_alone(tok0, tok1) {
+            assert(src.ready(tok1));
+            assert(flush_room(tok1, 1));
+        }
     }
     let second = src.back(token, Ghost(addr as int), next, 1);
     let ghost steps = src.acall_trace();
@@ -784,6 +800,9 @@ pub fn witness_back_second_block(
         assert(steps =~= steps1 + steps2);
         lemma_acall_steps_append(tok0, tok1, token@, steps1, steps2);
         lemma_acall_ok_append(steps1, steps2);
+        if caller_alone(tok0, token@) {
+            lemma_caller_alone_split(tok0, tok1, token@, steps1, steps2);
+        }
         if second.is_none() {
             lemma_acall_refused_after_ok(steps1, steps2);
         }
@@ -795,9 +814,9 @@ pub fn witness_back_second_block(
             #[trigger] steps[k],
             space,
             untyped,
-            0,
+            memory,
             pages,
-            1,
+            slots,
             window@.addr,
             window@.addr as int,
             (BLOCK_PAGES + 1) as nat,
@@ -806,7 +825,7 @@ pub fn witness_back_second_block(
                 assert(steps[k] == steps1[k]);
             } else {
                 assert(steps[k] == steps2[k - n1]);
-                assert(acall_call_in_window(steps2[k - n1], space, untyped, 0, pages, 1, addr, next as int, 1));
+                assert(acall_call_in_window(steps2[k - n1], space, untyped, memory, pages, slots, addr, next as int, 1));
                 reveal(acall_call_in_window);
             }
         }

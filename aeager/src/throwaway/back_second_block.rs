@@ -8,7 +8,7 @@
 use vstd::arithmetic::div_mod::{lemma_fundamental_div_mod, lemma_mod_multiples_basic};
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
-use acall::step::Caller;
+use acall::step::{caller_alone, Caller};
 use aheap::arch::*;
 use aheap::source::*;
 use verified::capability::operation::STATUS_REFUSED;
@@ -16,8 +16,9 @@ use verified::capability::table::TABLE_INDICES;
 use crate::eager::*;
 use crate::exercise::*;
 use crate::glue::{
-    AcallStep, acall_ok, acall_steps, lemma_acall_ok_append, lemma_acall_refused_after_ok,
-    lemma_acall_steps_append, names_own_space, own_process,
+    AcallStep, acall_ok, acall_steps, flush_room, lemma_acall_ok_append, lemma_acall_refused_after_ok,
+    lemma_acall_steps_append, lemma_caller_alone_split, lemma_source_ready_premises,
+    names_own_space, own_process, source_ready,
 };
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
@@ -28,20 +29,17 @@ use crate::witness::*;
 pub fn throwaway_back_second_block(
     space: u64,
     untyped: u64,
+    memory: u64,
+    slots: u64,
     window: *mut u8,
     token: &mut Tracked<Caller>,
 )
     requires
-        window@.addr != 0,
-        window@.addr as int % REGION_BYTES as int == 0,
-        window@.addr + WINDOW_BYTES <= usize::MAX,
-        old(token)@.wf(),
-        own_process(old(token)@),
-        names_own_space(old(token)@, space),
+        source_ready(old(token)@, space, untyped, memory, (5 * TABLE_PAGES) as usize, slots, window@.addr),
     ensures
         false,
 {
-    witness_back_second_block(space, untyped, window, token);
+    witness_back_second_block(space, untyped, memory, slots, window, token);
 }
 
 } // verus!

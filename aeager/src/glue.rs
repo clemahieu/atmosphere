@@ -31,33 +31,55 @@ use acall::step::*;
 #[cfg(verus_keep_ghost)]
 use aheap::arch::*;
 #[cfg(verus_keep_ghost)]
+use verified::capability::block::order_pages;
+#[cfg(verus_keep_ghost)]
 use verified::capability::reach::Right;
 #[cfg(verus_keep_ghost)]
-use verified::capability::caller::{frame_view, view_frame, view_writes_space};
+use verified::capability::caller::{frame_view, view_frame, view_retypes, view_writes_space};
 #[cfg(verus_keep_ghost)]
 use verified::capability::view::right_bit;
 use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
-use verified::capability::refs::{block_dead, block_ref, block_refs, block_typed, blocks_refs_changed, BlockRef};
+use verified::capability::refs::{
+    block_dead, block_ref, block_refs, block_typed, blocks_refs_changed, BlockRef,
+};
 #[cfg(verus_keep_ghost)]
-use verified::capability::link::tree_of;
+use verified::capability::link::{
+    child_entry, lemma_table_addr_valid, lemma_table_bound, linked, table_links_wf, tree_of, TableTree,
+};
 #[cfg(verus_keep_ghost)]
-use verified::capability::map::{address_path, frame_map_entry, names_entry, LOWER_HALF_END};
+use verified::capability::map::{
+    address_path, entry_written, frame_map_entry, names_entry, walk_table, LOWER_HALF_END,
+};
 #[cfg(verus_keep_ghost)]
-use verified::capability::mapping::{space_mapping, SpacePath};
+use verified::capability::mapping::{entries_cleared, space_mapping, step, SpacePath};
 #[cfg(verus_keep_ghost)]
 use verified::capability::rely::same_cap;
 #[cfg(verus_keep_ghost)]
+use verified::capability::retype::FRAME_RIGHTS;
+#[cfg(verus_keep_ghost)]
 use verified::define::NUM_CPUS;
 #[cfg(verus_keep_ghost)]
-use verified::capability::table::block_bytes;
+use verified::capability::list::{MAX_DEPTH, NODE_SPACE};
 #[cfg(verus_keep_ghost)]
-use verified::define::{ENTRIES, PAGE_SZ, SIZE_1G, SIZE_2M, SIZE_512G};
+use verified::capability::space::{
+    fresh_table, holds_kernel, SpaceKind, TableParent, TABLE_NODE_PAGES, TABLE_PAGE_BYTES,
+};
+#[cfg(verus_keep_ghost)]
+use verified::capability::table::{block_bytes, index_entry, index_slot, NO_LEAF, TABLE_INDICES};
+#[cfg(verus_keep_ghost)]
+use verified::define::{ENTRIES, KERNEL_MEM_END_L4INDEX, PAGE_SZ, SIZE_1G, SIZE_2M, SIZE_512G};
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::spec_position;
 use verified::capability::operation::*;
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::POSITION_INDEX_MASK;
+
+#[cfg(verus_keep_ghost)]
+use crate::eager::{
+    frame_slot, lemma_frame_slot, occupied, untyped_page, window_block, FREE, HELD, LEAF_INDICES,
+    MAPPED, MAX_PAGES, PARKED, REGION_BYTES, TABLE_PAGES, TAKEN, WINDOW_BLOCKS, WINDOW_BYTES,
+};
 
 verus! {
 
@@ -108,12 +130,18 @@ impl AcallStep {
     }
 }
 
-/// `steps` is a sequence of valid `acall::memory` steps taking `pre` to `post`: each enters from a state
-/// the rely relates to the one before it, `pre`'s kernel for the first and the last step's `post` for
-/// the others, since other callers' steps may come between.
+/// `steps` is a sequence of valid `acall::memory` steps taking `pre` to `post`: `post`'s history extends
+/// `pre`'s with each step's `(pre, post)` pair, and each enters from a state the rely relates to the one
+/// before it, `pre`'s kernel for the first and the last step's `post` for the others, since other
+/// callers' steps may come between.
 #[verifier::opaque]
 pub open spec fn acall_steps(pre: Caller, post: Caller, steps: Seq<AcallStep>) -> bool {
+    let n = pre.history().len() as int;
     &&& post.root() == pre.root()
+    &&& post.history().len() == n + steps.len()
+    &&& post.history().take(n) == pre.history()
+    &&& forall|k: int| 0 <= k < steps.len() ==>
+        post.history().skip(n)[k] == ((#[trigger] steps[k]).pre, steps[k].post)
     &&& if steps.len() == 0 {
         post.kernel() == pre.kernel()
     } else {
@@ -137,12 +165,20 @@ pub open spec fn acall_ok(steps: Seq<AcallStep>) -> bool {
     forall|k: int| 0 <= k < steps.len() ==> (#[trigger] steps[k]).out.status == STATUS_OK
 }
 
+/// No other caller stepped between the steps of `steps` starting from `init`: the first step entered
+/// directly from `init`, and each later step entered directly from the post-state of the step before it.
+pub open spec fn acall_alone(init: CapKernel, steps: Seq<AcallStep>) -> bool {
+    forall|k: int| 0 <= k < steps.len() ==>
+        (#[trigger] steps[k]).pre == (if k == 0 { init } else { steps[k - 1].post })
+}
+
 /// No step takes a caller to itself.
 pub proof fn lemma_acall_steps_none(c: Caller)
     ensures
         acall_steps(c, c, Seq::<AcallStep>::empty()),
 {
     reveal(acall_steps);
+    assert(c.history().take(c.history().len() as int) =~= c.history());
 }
 
 /// One valid step of `pre`'s process, entering from a state the rely relates to `pre`'s kernel and
@@ -150,6 +186,7 @@ pub proof fn lemma_acall_steps_none(c: Caller)
 pub proof fn lemma_acall_steps_one(pre: Caller, post: Caller, step: AcallStep)
     requires
         post.root() == pre.root(),
+        post.history() == pre.history().push((step.pre, step.post)),
         CapKernel::rely(pre.kernel(), step.pre, pre.root()),
         step.post == post.kernel(),
         step.root == pre.root(),
@@ -158,7 +195,10 @@ pub proof fn lemma_acall_steps_one(pre: Caller, post: Caller, step: AcallStep)
         acall_steps(pre, post, seq![step]),
 {
     reveal(acall_steps);
+    let n = pre.history().len() as int;
     let s = seq![step];
+    assert(post.history().take(n) =~= pre.history());
+    assert(post.history().skip(n) =~= seq![(step.pre, step.post)]);
     assert(s[0] == step && s.last() == step);
 }
 
@@ -172,7 +212,34 @@ pub proof fn lemma_acall_steps_append(a: Caller, b: Caller, c: Caller, s1: Seq<A
         acall_steps(a, c, s1 + s2),
 {
     reveal(acall_steps);
+    let na = a.history().len() as int;
+    let nb = b.history().len() as int;
     let s = s1 + s2;
+    assert(nb == na + s1.len());
+    assert(c.history().take(na) =~= a.history()) by {
+        assert(c.history().take(nb) == b.history());
+        assert(b.history().take(na) == a.history());
+        assert forall|i: int| 0 <= i < na implies #[trigger] c.history().take(na)[i] == a.history()[i] by {
+            assert(c.history()[i] == c.history().take(nb)[i]);
+            assert(b.history()[i] == b.history().take(na)[i]);
+        }
+    }
+    assert forall|k: int| 0 <= k < s.len() implies
+        c.history().skip(na)[k] == ((#[trigger] s[k]).pre, s[k].post) by {
+        if k < s1.len() {
+            assert(s[k] == s1[k]);
+            assert(b.history().skip(na)[k] == (s1[k].pre, s1[k].post));
+            assert(c.history().skip(na)[k] == c.history()[na + k]);
+            assert(c.history()[na + k] == c.history().take(nb)[na + k]);
+            assert(b.history()[na + k] == b.history().skip(na)[k]);
+        } else {
+            let m = k - s1.len();
+            assert(s[k] == s2[m]);
+            assert(c.history().skip(nb)[m] == (s2[m].pre, s2[m].post));
+            assert(c.history().skip(na)[k] == c.history()[na + k]);
+            assert(c.history().skip(nb)[m] == c.history()[nb + m]);
+        }
+    }
     if s1.len() == 0 {
         assert(s =~= s2);
     } else if s2.len() == 0 {
@@ -207,6 +274,215 @@ pub proof fn lemma_acall_steps_append(a: Caller, b: Caller, c: Caller, s1: Seq<A
             }
         }
     }
+}
+
+/// Over a valid `acall_steps` sequence, `caller_alone` on the caller token is `acall_alone` on `steps`.
+pub proof fn lemma_caller_alone_iff(pre: Caller, post: Caller, steps: Seq<AcallStep>)
+    requires
+        acall_steps(pre, post, steps),
+    ensures
+        caller_alone(pre, post) <==> acall_alone(pre.kernel(), steps),
+{
+    reveal(acall_steps);
+    let n = pre.history().len() as int;
+    let added = post.history().skip(n);
+    assert(added.len() == steps.len());
+    if steps.len() > 0 {
+        assert(added.last() == added[steps.len() - 1]);
+        assert(steps.last() == steps[steps.len() - 1]);
+        assert(added[steps.len() - 1] == (steps[steps.len() - 1].pre, steps[steps.len() - 1].post));
+    }
+    if caller_alone(pre, post) {
+        assert forall|k: int| 0 <= k < steps.len() implies
+            (#[trigger] steps[k]).pre == (if k == 0 { pre.kernel() } else { steps[k - 1].post }) by {
+            assert(added[k] == (steps[k].pre, steps[k].post));
+            assert(added[k].0 == (if k == 0 { pre.kernel() } else { added[k - 1].1 }));
+            if k > 0 {
+                assert(added[k - 1] == (steps[k - 1].pre, steps[k - 1].post));
+            }
+        }
+    }
+    if acall_alone(pre.kernel(), steps) {
+        assert forall|k: int| 0 <= k < added.len() implies
+            (#[trigger] added[k]).0 == (if k == 0 { pre.kernel() } else { added[k - 1].1 }) by {
+            assert(added[k] == (steps[k].pre, steps[k].post));
+            assert(steps[k].pre == (if k == 0 { pre.kernel() } else { steps[k - 1].post }));
+            if k > 0 {
+                assert(added[k - 1] == (steps[k - 1].pre, steps[k - 1].post));
+            }
+        }
+    }
+}
+
+/// What a valid `acall_steps` sequence that no other caller stepped between says of its steps: each is
+/// a valid step of `pre`'s process, the first entered directly from `pre`'s kernel state and each later
+/// one from the state the step before it left, and the last left `post`'s.
+pub proof fn lemma_acall_steps_alone(pre: Caller, post: Caller, steps: Seq<AcallStep>)
+    requires
+        acall_steps(pre, post, steps),
+        caller_alone(pre, post),
+    ensures
+        acall_alone(pre.kernel(), steps),
+        forall|k: int| 0 <= k < steps.len() ==> {
+            &&& (#[trigger] steps[k]).root == pre.root()
+            &&& steps[k].valid()
+            &&& steps[k].pre == (if k == 0 { pre.kernel() } else { steps[k - 1].post })
+        },
+        steps.len() > 0 ==> steps[steps.len() - 1].post == post.kernel(),
+        steps.len() == 0 ==> post.kernel() == pre.kernel(),
+{
+    lemma_caller_alone_iff(pre, post, steps);
+    reveal(acall_steps);
+    if steps.len() > 0 {
+        assert(steps.last() == steps[steps.len() - 1]);
+    }
+}
+
+/// `caller_alone` across two concatenated `acall_steps` sequences implies `caller_alone` on each half.
+pub proof fn lemma_caller_alone_split(a: Caller, b: Caller, c: Caller, s1: Seq<AcallStep>, s2: Seq<AcallStep>)
+    requires
+        acall_steps(a, b, s1),
+        acall_steps(b, c, s2),
+        caller_alone(a, c),
+    ensures
+        caller_alone(a, b),
+        caller_alone(b, c),
+{
+    lemma_acall_steps_append(a, b, c, s1, s2);
+    lemma_caller_alone_iff(a, c, s1 + s2);
+    reveal(acall_steps);
+    let s = s1 + s2;
+    assert forall|k: int| 0 <= k < s1.len() implies
+        (#[trigger] s1[k]).pre == (if k == 0 { a.kernel() } else { s1[k - 1].post }) by {
+        assert(s1[k] == s[k]);
+        assert(s[k].pre == (if k == 0 { a.kernel() } else { s[k - 1].post }));
+        if k > 0 {
+            assert(s1[k - 1] == s[k - 1]);
+        }
+    }
+    assert forall|m: int| 0 <= m < s2.len() implies
+        (#[trigger] s2[m]).pre == (if m == 0 { b.kernel() } else { s2[m - 1].post }) by {
+        let k = s1.len() + m;
+        assert(s2[m] == s[k]);
+        assert(s[k].pre == (if k == 0 { a.kernel() } else { s[k - 1].post }));
+        if m == 0 {
+            if s1.len() > 0 {
+                assert(s1.last() == s1[s1.len() - 1]);
+                assert(s[k - 1] == s1[s1.len() - 1]);
+            }
+        } else {
+            assert(s[k - 1] == s2[m - 1]);
+        }
+    }
+    lemma_caller_alone_iff(a, b, s1);
+    lemma_caller_alone_iff(b, c, s2);
+}
+
+/// What a fresh `Eager::new(space, untyped, memory, pages, slots, window)` asks of the kernel state `k`
+/// for the caller whose table is at `root`, so that every system call its `back` makes is accepted when
+/// no other caller steps between: the caller's process is live, sealed and recorded, with a process
+/// space; `space` names a writable capability to that space; `untyped` names an untyped capability with
+/// the retype right, at least two levels above `MAX_DEPTH`, covering `pages` free tracked pages from
+/// `TABLE_PAGES`-aligned `memory`; each frame slot `frame_slot(slots, i)` lies in a present leaf of
+/// `root` and is empty; `window` starts a non-kernel lower-half level-4 entry whose entry in `root`'s
+/// space is empty; and `flush_epoch` has room for `MAX_PAGES` unmaps.
+pub open spec fn kernel_source_ready(
+    k: CapKernel,
+    root: usize,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+) -> bool {
+    let v = k.table_view(root);
+    let tree = tree_of(&k.table_pages, &k.spaces);
+    &&& k.wf()
+    &&& k.sealed(root)
+    &&& k.processes.records@.contains_key(root)
+    &&& !k.processes.records@[root].value().dead
+    &&& !k.blocks.pages@[(root / PAGE_SZ) as int].dead
+    &&& k.spaces.roots@.contains_key(root)
+    &&& k.spaces.records@[root].value().kind == SpaceKind::Process
+    &&& k.flush_epoch as int + MAX_PAGES as int <= usize::MAX as int
+    &&& pages <= MAX_PAGES
+    &&& slots < TABLE_INDICES as u64
+    &&& slots as int % LEAF_INDICES as int != 0
+    &&& pages > 0 ==> frame_slot(slots as int, pages - 1) < TABLE_INDICES
+    &&& memory as int % (TABLE_PAGES * PAGE_BYTES) as int == 0
+    &&& memory + pages * PAGE_BYTES <= u64::MAX
+    &&& window != 0
+    &&& window as int % SIZE_512G as int == 0
+    &&& window + WINDOW_BYTES <= LOWER_HALF_END as usize
+    &&& v.contains_key(space as usize)
+    &&& view_writes_space(v[space as usize])
+    &&& v[space as usize].base == root
+    &&& v.contains_key(untyped as usize)
+    &&& v[untyped as usize].kind is Untyped
+    &&& v[untyped as usize].rights & right_bit(Right::Retype) != 0
+    &&& v[untyped as usize].base <= memory as usize
+    &&& memory as int + pages as int * PAGE_SZ as int
+        <= v[untyped as usize].base as int + block_bytes(v[untyped as usize].order)
+    &&& k.list.nodes@[k.tables.node_of(root, untyped as usize) as int].depth + 1 < MAX_DEPTH
+    &&& forall|i: int| 0 <= i < pages ==> k.empty_slot(root, (#[trigger] frame_slot(slots as int, i)) as usize)
+    &&& forall|i: int| 0 <= i < pages ==> {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k.blocks.tracks(p)
+        &&& (#[trigger] k.blocks.pages@[memory as int / PAGE_SZ as int + i]).kind is Free
+        &&& !k.blocks.covered(p)
+    }
+    &&& tree.entry(root, address_path(window as u64).l4).is_empty()
+}
+
+/// `token`'s kernel state satisfies `kernel_source_ready` for `(space, untyped, memory, pages, slots, window)`.
+pub open spec fn source_ready(
+    token: Caller,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+) -> bool {
+    kernel_source_ready(token.kernel(), token.root(), space, untyped, memory, pages, slots, window)
+}
+
+/// `source_ready` implies `Eager::new`'s bounds and `own_process` / `names_own_space` on `token`.
+pub proof fn lemma_source_ready_premises(
+    token: Caller,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+)
+    requires
+        source_ready(token, space, untyped, memory, pages, slots, window),
+    ensures
+        token.wf(),
+        own_process(token),
+        names_own_space(token, space),
+        flush_room(token, MAX_PAGES as nat),
+        window != 0,
+        window as int % REGION_BYTES as int == 0,
+        window + WINDOW_BYTES <= usize::MAX,
+{
+    use vstd::arithmetic::div_mod::{lemma_fundamental_div_mod, lemma_mod_multiples_basic};
+    assert(SIZE_512G as int == (ENTRIES as int) * (REGION_BYTES as int)) by {
+        assert(SIZE_512G == ENTRIES * SIZE_1G);
+        assert(REGION_BYTES == SIZE_1G);
+    }
+    let q = window as int / SIZE_512G as int;
+    lemma_fundamental_div_mod(window as int, SIZE_512G as int);
+    assert(window as int == (q * ENTRIES as int) * (REGION_BYTES as int)) by (nonlinear_arith)
+        requires
+            window as int == SIZE_512G as int * q,
+            SIZE_512G as int == (ENTRIES as int) * (REGION_BYTES as int),
+    ;
+    lemma_mod_multiples_basic(q * ENTRIES as int, REGION_BYTES as int);
+    assert(LOWER_HALF_END <= usize::MAX as u64);
 }
 
 /// Concatenating two accepted step sequences is accepted, and vice versa.
@@ -1067,6 +1343,8 @@ pub(crate) fn map_page(
         },
         acall_steps(old(caller)@, final(caller)@, r.1@),
         1 <= r.1@.len() <= 2,
+        r.0 is Some ==> r.1@.len() == 2,
+        r.1@[0].out.status == STATUS_OK ==> r.1@.len() == 2,
         r.1@[0].call == (AcallCall::Inspect { at: frame }),
         r.1@.len() == 2 ==> r.1@[1].call == (AcallCall::Map { slot: space, va: address as u64, level: PAGE_LEVEL, from: frame, page: 0 }),
     no_unwind
@@ -1346,6 +1624,3016 @@ pub(crate) fn unmap_page(
         lemma_acall_steps_one(pre, caller@, step);
     }
     (out.status == STATUS_OK, Ghost(step))
+}
+
+/// Whether `token`'s kernel state has room for at least `n` flush-epoch increments without reaching
+/// `usize::MAX`.
+pub open spec fn flush_room(token: Caller, n: nat) -> bool {
+    token.kernel().flush_epoch as int + n as int <= usize::MAX as int
+}
+
+/// Whether some page `0 <= i < pages` in `(state, owner)` is mapped or parked at `va`.
+pub(crate) open spec fn window_entry_occupied(
+    pages: usize,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+    va: usize,
+) -> bool {
+    exists|i: int| 0 <= i < pages && occupied(#[trigger] state[i]) && owner[i] == va
+}
+
+/// Inductive kernel-state readiness for an eager source whose configuration is
+/// `(space, untyped, memory, pages, slots, window)` and whose record holds `(top, middle, tabled, state, owner)`.
+#[verifier::opaque]
+pub(crate) open spec fn source_state_ready(
+    k: CapKernel,
+    root: usize,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+) -> bool {
+    let v = k.table_view(root);
+    let tree = tree_of(&k.table_pages, &k.spaces);
+    let l4 = address_path(window as u64).l4;
+    &&& k.wf()
+    &&& k.processes.records@.contains_key(root)
+    &&& !k.processes.records@[root].value().dead
+    &&& !k.blocks.pages@[(root / PAGE_SZ) as int].dead
+    &&& k.spaces.roots@.contains_key(root)
+    &&& k.spaces.records@[root].value().kind == SpaceKind::Process
+    &&& pages <= MAX_PAGES
+    &&& state.len() == MAX_PAGES
+    &&& owner.len() == MAX_PAGES
+    &&& tabled.len() == WINDOW_BLOCKS
+    &&& slots < TABLE_INDICES as u64
+    &&& slots as int % LEAF_INDICES as int != 0
+    &&& pages > 0 ==> frame_slot(slots as int, pages - 1) < TABLE_INDICES
+    &&& memory as int % (TABLE_PAGES * PAGE_BYTES) as int == 0
+    &&& memory + pages * PAGE_BYTES <= u64::MAX
+    &&& window != 0
+    &&& window as int % SIZE_512G as int == 0
+    &&& window + WINDOW_BYTES <= LOWER_HALF_END as usize
+    &&& v.contains_key(space as usize)
+    &&& view_writes_space(v[space as usize])
+    &&& v[space as usize].base == root
+    &&& v.contains_key(untyped as usize)
+    &&& v[untyped as usize].kind is Untyped
+    &&& v[untyped as usize].rights & right_bit(Right::Retype) != 0
+    &&& v[untyped as usize].base <= memory as usize
+    &&& memory as int + pages as int * PAGE_SZ as int
+        <= v[untyped as usize].base as int + block_bytes(v[untyped as usize].order)
+    &&& k.list.nodes@[k.tables.node_of(root, untyped as usize) as int].depth + 1 < MAX_DEPTH
+    &&& forall|i: int| 0 <= i < pages && #[trigger] state[i] == FREE ==> {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& k.blocks.tracks(p)
+        &&& k.blocks.pages@[p].kind is Free
+        &&& !k.blocks.covered(p)
+    }
+    &&& forall|i: int| 0 <= i < pages && (#[trigger] state[i] == HELD || occupied(state[i])) ==> {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        &&& v.contains_key(s)
+        &&& v[s] == frame_view(untyped_page(memory, i) as usize, 0, k.tables.node_of(root, untyped as usize))
+        &&& k.list.nodes@[k.tables.node_of(root, s) as int].depth < MAX_DEPTH
+        &&& k.blocks.tracks(memory as int / PAGE_SZ as int + i)
+        &&& block_ref(&k.blocks, p) == BlockRef::Small(p)
+        &&& k.blocks.pages@[p as int].kind is Base
+        &&& k.blocks.pages@[p as int].object is Frame
+        &&& frame_refs(k, p) == if occupied(state[i]) { 2usize } else { 1usize }
+        &&& !k.blocks.pages@[p as int].dead
+    }
+    &&& forall|i: int| 0 <= i < pages && occupied(#[trigger] state[i]) ==> {
+        &&& window <= owner[i]
+        &&& owner[i] < window + WINDOW_BYTES
+        &&& owner[i] as int % PAGE_BYTES as int == 0
+        &&& top
+        &&& middle
+        &&& tabled[((owner[i] - window) as int / BLOCK_BYTES as int)]
+    }
+    &&& forall|i: int, j: int|
+        0 <= i < pages && 0 <= j < pages && i != j
+            && occupied(#[trigger] state[i]) && occupied(#[trigger] state[j])
+            ==> owner[i] != owner[j]
+    &&& (!top ==> !middle && forall|b: int| 0 <= b < WINDOW_BLOCKS ==> !#[trigger] tabled[b])
+    &&& (!middle ==> forall|b: int| 0 <= b < WINDOW_BLOCKS ==> !#[trigger] tabled[b])
+    &&& (!top ==> tree.entry(root, l4).is_empty())
+    &&& (top ==> {
+        let t3 = step(tree, root, l4)->0;
+        &&& step(tree, root, l4) is Some
+        &&& (!middle ==> tree.entry(t3, 0).is_empty())
+        &&& (middle ==> {
+            let t2 = step(tree, t3, 0)->0;
+            &&& step(tree, t3, 0) is Some
+            &&& forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] tabled[b] ==> {
+                &&& step(tree, t2, b as usize) is Some
+                &&& forall|e: usize| #![trigger tree.entry(step(tree, t2, b as usize)->0, e)] e < ENTRIES ==> {
+                    let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                    &&& window_entry_occupied(pages, state, owner, va)
+                        ==> tree.entry(step(tree, t2, b as usize)->0, e).perm.present
+                    &&& !window_entry_occupied(pages, state, owner, va)
+                        ==> tree.entry(step(tree, t2, b as usize)->0, e).is_empty()
+                }
+            }
+            &&& forall|b: int| 0 <= b < WINDOW_BLOCKS && !#[trigger] tabled[b]
+                ==> tree.entry(t2, b as usize).is_empty()
+        })
+    })
+}
+
+/// Path indices and `names_entry` facts for a 512G-aligned non-zero lower-half window and its blocks.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_window_path(window: usize)
+    requires
+        window != 0,
+        window as int % SIZE_512G as int == 0,
+        window + WINDOW_BYTES <= LOWER_HALF_END as usize,
+    ensures
+        names_entry(window as u64, 4),
+        names_entry(window as u64, 3),
+        KERNEL_MEM_END_L4INDEX <= address_path(window as u64).l4 < ENTRIES,
+        !holds_kernel(SpaceKind::Process, address_path(window as u64).l4),
+        address_path(window as u64).l3 == 0,
+        forall|b: int| 0 <= b < WINDOW_BLOCKS ==> {
+            let vb = (#[trigger] window_block(window, b)) as u64;
+            &&& window_block(window, b) >= 0
+            &&& window_block(window, b) < LOWER_HALF_END as int
+            &&& names_entry(vb, 2)
+            &&& address_path(vb).l4 == address_path(window as u64).l4
+            &&& address_path(vb).l3 == 0
+            &&& address_path(vb).l2 == b as usize
+        },
+{
+    use vstd::arithmetic::div_mod::*;
+    let e = ENTRIES as int;
+    assert(PAGE_BYTES == PAGE_SZ);
+    assert(BLOCK_BYTES == SIZE_2M);
+    assert(SIZE_2M == PAGE_SZ * ENTRIES);
+    assert(SIZE_1G == SIZE_2M * ENTRIES);
+    assert(SIZE_512G == SIZE_1G * ENTRIES);
+    assert(LOWER_HALF_END as int == SIZE_512G as int * (e / 2));
+    assert(WINDOW_BLOCKS == 4);
+    assert(WINDOW_BYTES == 4 * BLOCK_BYTES);
+    assert(KERNEL_MEM_END_L4INDEX == 1);
+
+    let q = window as int / SIZE_512G as int;
+    lemma_fundamental_div_mod(window as int, SIZE_512G as int);
+    assert(window as int == SIZE_512G as int * q);
+    assert(q >= 1) by (nonlinear_arith)
+        requires
+            window > 0,
+            window as int == SIZE_512G as int * q,
+            SIZE_512G > 0,
+    ;
+    assert(q < e / 2) by (nonlinear_arith)
+        requires
+            window + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            LOWER_HALF_END as int == SIZE_512G as int * (e / 2),
+            window as int == SIZE_512G as int * q,
+            WINDOW_BYTES > 0,
+            SIZE_512G > 0,
+    ;
+    lemma_small_mod(q as nat, e as nat);
+    assert((window as u64 / SIZE_512G as u64) as int == q);
+    assert(address_path(window as u64).l4 == q as usize);
+
+    assert(window as int == SIZE_1G as int * (e * q)) by (nonlinear_arith)
+        requires
+            window as int == SIZE_512G as int * q,
+            SIZE_512G == SIZE_1G * ENTRIES,
+            e == ENTRIES as int,
+    ;
+    lemma_mod_multiples_basic(e * q, SIZE_1G as int);
+    lemma_div_by_multiple(e * q, SIZE_1G as int);
+    lemma_mod_multiples_basic(q, e);
+    assert((e * q) == q * e) by (nonlinear_arith);
+    assert(address_path(window as u64).l3 == 0);
+    assert((window as u64) % (SIZE_512G as u64) == 0);
+    assert((window as u64) % (SIZE_1G as u64) == 0);
+
+    assert forall|b: int| 0 <= b < WINDOW_BLOCKS implies {
+        let vb = (#[trigger] window_block(window, b)) as u64;
+        &&& window_block(window, b) >= 0
+        &&& window_block(window, b) < LOWER_HALF_END as int
+        &&& names_entry(vb, 2)
+        &&& address_path(vb).l4 == address_path(window as u64).l4
+        &&& address_path(vb).l3 == 0
+        &&& address_path(vb).l2 == b as usize
+    } by {
+        let wbi = window_block(window, b);
+        assert(0 <= b * (SIZE_2M as int) < 4 * (SIZE_2M as int)) by (nonlinear_arith)
+            requires
+                0 <= b < 4,
+                SIZE_2M > 0,
+        ;
+        assert(4 * (SIZE_2M as int) < SIZE_1G as int);
+        assert((SIZE_1G as int) < (SIZE_512G as int));
+        assert(wbi < window as int + WINDOW_BYTES as int) by (nonlinear_arith)
+            requires
+                wbi == window as int + b * (BLOCK_BYTES as int),
+                BLOCK_BYTES == SIZE_2M,
+                WINDOW_BYTES == 4 * BLOCK_BYTES,
+                b < 4,
+                SIZE_2M > 0,
+        ;
+        let vb = wbi as u64;
+        assert(vb as int == wbi);
+        assert(wbi == (SIZE_512G as int) * q + b * (SIZE_2M as int)) by (nonlinear_arith)
+            requires
+                wbi == window as int + b * (BLOCK_BYTES as int),
+                BLOCK_BYTES == SIZE_2M,
+                window as int == (SIZE_512G as int) * q,
+        ;
+        assert((SIZE_512G as int) * q == q * (SIZE_512G as int)) by (nonlinear_arith);
+        lemma_div_multiples_vanish_fancy(q, b * (SIZE_2M as int), SIZE_512G as int);
+        assert((vb / SIZE_512G as u64) as int == q);
+        assert(address_path(vb).l4 == q as usize);
+
+        assert(wbi == (e * q) * (SIZE_1G as int) + b * (SIZE_2M as int)) by (nonlinear_arith)
+            requires
+                wbi == window as int + b * (BLOCK_BYTES as int),
+                BLOCK_BYTES == SIZE_2M,
+                window as int == SIZE_1G as int * (e * q),
+        ;
+        lemma_div_multiples_vanish_fancy(e * q, b * (SIZE_2M as int), SIZE_1G as int);
+        assert((vb / SIZE_1G as u64) as int == e * q);
+        assert(e * q == q * e) by (nonlinear_arith);
+        lemma_mod_multiples_basic(q, e);
+        assert(address_path(vb).l3 == 0);
+
+        let k2 = e * (e * q) + b;
+        assert(wbi == k2 * (SIZE_2M as int)) by (nonlinear_arith)
+            requires
+                wbi == (e * q) * (SIZE_1G as int) + b * (SIZE_2M as int),
+                SIZE_1G == SIZE_2M * ENTRIES,
+                e == ENTRIES as int,
+                k2 == e * (e * q) + b,
+        ;
+        lemma_mod_multiples_basic(k2, SIZE_2M as int);
+        lemma_div_by_multiple(k2, SIZE_2M as int);
+        assert((vb % SIZE_2M as u64) == 0);
+        assert((vb / SIZE_2M as u64) as int == k2);
+        assert(k2 == (e * q) * e + b) by (nonlinear_arith)
+            requires k2 == e * (e * q) + b;
+        lemma_mod_multiples_vanish(e * q, b, e);
+        lemma_small_mod(b as nat, e as nat);
+        assert(address_path(vb).l2 == b as usize);
+    }
+}
+
+/// Path indices and block/entry decomposition for a page-aligned address `va` inside `window`.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_window_va_path(window: usize, va: usize)
+    requires
+        window != 0,
+        window as int % SIZE_512G as int == 0,
+        window + WINDOW_BYTES <= LOWER_HALF_END as usize,
+        window <= va < window + WINDOW_BYTES,
+        va as int % PAGE_BYTES as int == 0,
+    ensures
+        ({
+            let b = (va - window) as int / BLOCK_BYTES as int;
+            let e = (va as int - window_block(window, b)) / PAGE_BYTES as int;
+            &&& 0 <= b < WINDOW_BLOCKS
+            &&& 0 <= e < ENTRIES
+            &&& names_entry(va as u64, 1)
+            &&& va as int == window_block(window, b) + e * (PAGE_BYTES as int)
+            &&& address_path(va as u64) == (SpacePath {
+                l4: address_path(window as u64).l4,
+                l3: 0,
+                l2: b as usize,
+                l1: e as usize,
+            })
+        }),
+{
+    use vstd::arithmetic::div_mod::*;
+    lemma_window_path(window);
+    let en = ENTRIES as int;
+    assert(PAGE_BYTES == PAGE_SZ);
+    assert(BLOCK_BYTES == SIZE_2M);
+    assert(SIZE_2M == PAGE_SZ * ENTRIES);
+    assert(SIZE_1G == SIZE_2M * ENTRIES);
+    assert(SIZE_512G == SIZE_1G * ENTRIES);
+    assert(WINDOW_BLOCKS == 4);
+    assert(WINDOW_BYTES == 4 * BLOCK_BYTES);
+
+    let off = (va - window) as int;
+    lemma_div_pos_is_pos(off, SIZE_2M as int);
+    lemma_multiply_divide_lt(off, SIZE_2M as int, 4);
+    lemma_fundamental_div_mod(off, SIZE_2M as int);
+    lemma_mod_bound(off, SIZE_2M as int);
+    let b = off / (SIZE_2M as int);
+    let rem = off % (SIZE_2M as int);
+    assert(0 <= b < 4);
+    assert(va as int == window_block(window, b) + rem) by (nonlinear_arith)
+        requires
+            off == va as int - window as int,
+            off == (SIZE_2M as int) * b + rem,
+            window_block(window, b) == window as int + b * (BLOCK_BYTES as int),
+            BLOCK_BYTES == SIZE_2M,
+    ;
+
+    let q = window as int / SIZE_512G as int;
+    lemma_fundamental_div_mod(window as int, SIZE_512G as int);
+    let qw = va as int / PAGE_SZ as int;
+    lemma_fundamental_div_mod(va as int, PAGE_SZ as int);
+    assert(va as int == (PAGE_SZ as int) * qw);
+
+    let wb_pages = en * (en * (en * q)) + en * b;
+    assert(window_block(window, b) == (PAGE_SZ as int) * wb_pages) by (nonlinear_arith)
+        requires
+            window as int == (SIZE_512G as int) * q,
+            window_block(window, b) == window as int + b * (BLOCK_BYTES as int),
+            BLOCK_BYTES == SIZE_2M,
+            SIZE_2M == PAGE_SZ * ENTRIES,
+            SIZE_1G == SIZE_2M * ENTRIES,
+            SIZE_512G == SIZE_1G * ENTRIES,
+            en == ENTRIES as int,
+            wb_pages == en * (en * (en * q)) + en * b,
+    ;
+    let e = qw - wb_pages;
+    assert(rem == (PAGE_SZ as int) * e) by (nonlinear_arith)
+        requires
+            va as int == window_block(window, b) + rem,
+            va as int == (PAGE_SZ as int) * qw,
+            window_block(window, b) == (PAGE_SZ as int) * wb_pages,
+            e == qw - wb_pages,
+    ;
+    assert(0 <= e < en) by (nonlinear_arith)
+        requires
+            0 <= rem < SIZE_2M as int,
+            rem == (PAGE_SZ as int) * e,
+            SIZE_2M == PAGE_SZ * ENTRIES,
+            en == ENTRIES as int,
+            PAGE_SZ > 0,
+    ;
+    assert(rem == e * (PAGE_SZ as int)) by (nonlinear_arith)
+        requires rem == (PAGE_SZ as int) * e;
+    lemma_div_by_multiple(e, PAGE_SZ as int);
+    assert((va as int - window_block(window, b)) / (PAGE_BYTES as int) == e);
+    assert((va as u64) % (PAGE_SZ as u64) == 0);
+    assert(names_entry(va as u64, 1));
+
+    lemma_path_page(va as u64);
+    let p = address_path(va as u64);
+    assert(p.l1 < ENTRIES && p.l2 < ENTRIES && p.l3 < ENTRIES && p.l4 < ENTRIES) by {
+        lemma_mod_bound((va as u64 / PAGE_SZ as u64) as int, en);
+        lemma_mod_bound((va as u64 / SIZE_2M as u64) as int, en);
+        lemma_mod_bound((va as u64 / SIZE_1G as u64) as int, en);
+        lemma_mod_bound((va as u64 / SIZE_512G as u64) as int, en);
+    }
+    let l4w = address_path(window as u64).l4 as int;
+    assert(l4w == q);
+    assert(qw == en * (en * (en * l4w + 0) + b) + e) by (nonlinear_arith)
+        requires
+            e == qw - wb_pages,
+            wb_pages == en * (en * (en * q)) + en * b,
+            l4w == q,
+    ;
+    assert(qw == en * (en * (en * (p.l4 as int) + (p.l3 as int)) + (p.l2 as int)) + (p.l1 as int)) by (nonlinear_arith)
+        requires
+            va as int == (PAGE_SZ as int) * qw,
+            va as int == (PAGE_SZ as int) * (en * (en * (en * (p.l4 as int) + (p.l3 as int)) + (p.l2 as int)) + (p.l1 as int)),
+            PAGE_SZ > 0,
+    ;
+    assert(p.l1 as int == e && p.l2 as int == b && p.l3 == 0 && p.l4 as int == l4w) by (nonlinear_arith)
+        requires
+            en == ENTRIES as int,
+            0 <= e < en,
+            0 <= b < 4,
+            0 <= l4w < en,
+            0 <= p.l1 < en,
+            0 <= p.l2 < en,
+            0 <= p.l3 < en,
+            0 <= p.l4 < en,
+            en * (en * (en * l4w + 0) + b) + e
+                == en * (en * (en * (p.l4 as int) + (p.l3 as int)) + (p.l2 as int)) + (p.l1 as int),
+    ;
+}
+
+/// Inverse of `lemma_window_va_path`: entry `e` of block `b` of `window` is a page-aligned address in `window`
+/// with block `b`, entry `e`, and path `(l4, 0, b, e)`.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_window_block_entry_va(window: usize, b: int, e: usize)
+    requires
+        window != 0,
+        window as int % SIZE_512G as int == 0,
+        window + WINDOW_BYTES <= LOWER_HALF_END as usize,
+        0 <= b < WINDOW_BLOCKS,
+        e < ENTRIES,
+    ensures
+        ({
+            let va_int = window_block(window, b) + (e as int) * (PAGE_BYTES as int);
+            let va = va_int as usize;
+            &&& window <= va_int < window + WINDOW_BYTES
+            &&& va as int == va_int
+            &&& va as int % PAGE_BYTES as int == 0
+            &&& (va - window) as int / BLOCK_BYTES as int == b
+            &&& (va as int - window_block(window, b)) / PAGE_BYTES as int == e as int
+            &&& address_path(va as u64) == (SpacePath {
+                l4: address_path(window as u64).l4,
+                l3: 0,
+                l2: b as usize,
+                l1: e,
+            })
+        }),
+{
+    use vstd::arithmetic::div_mod::*;
+    lemma_window_path(window);
+    assert(PAGE_BYTES == PAGE_SZ);
+    assert(BLOCK_BYTES == SIZE_2M);
+    assert(SIZE_2M == PAGE_SZ * ENTRIES);
+    assert(WINDOW_BLOCKS == 4);
+    assert(WINDOW_BYTES == 4 * BLOCK_BYTES);
+
+    let va_int = window_block(window, b) + (e as int) * (PAGE_BYTES as int);
+    assert(0 <= (e as int) * (PAGE_SZ as int) < SIZE_2M as int) by (nonlinear_arith)
+        requires
+            0 <= e < ENTRIES,
+            SIZE_2M == PAGE_SZ * ENTRIES,
+            PAGE_SZ > 0,
+    ;
+    assert(window as int <= va_int < window as int + WINDOW_BYTES as int) by (nonlinear_arith)
+        requires
+            va_int == window as int + b * (SIZE_2M as int) + (e as int) * (PAGE_SZ as int),
+            0 <= b < 4,
+            0 <= (e as int) * (PAGE_SZ as int) < SIZE_2M as int,
+            WINDOW_BYTES == 4 * SIZE_2M,
+            SIZE_2M > 0,
+    ;
+    let va = va_int as usize;
+    assert(va as int == va_int);
+
+    let wb = window_block(window, b) as u64;
+    assert(names_entry(wb, 2));
+    assert((wb as int) % (SIZE_2M as int) == 0);
+    lemma_fundamental_div_mod(wb as int, SIZE_2M as int);
+    let qb = (wb as int) / (SIZE_2M as int);
+    assert(va_int == ((ENTRIES as int) * qb + (e as int)) * (PAGE_SZ as int)) by (nonlinear_arith)
+        requires
+            va_int == (wb as int) + (e as int) * (PAGE_SZ as int),
+            wb as int == (SIZE_2M as int) * qb,
+            SIZE_2M == PAGE_SZ * ENTRIES,
+    ;
+    lemma_mod_multiples_basic((ENTRIES as int) * qb + (e as int), PAGE_SZ as int);
+    assert(va as int % PAGE_BYTES as int == 0);
+
+    let off = (va - window) as int;
+    assert(off == b * (SIZE_2M as int) + (e as int) * (PAGE_SZ as int));
+    lemma_div_multiples_vanish_fancy(b, (e as int) * (PAGE_SZ as int), SIZE_2M as int);
+    assert(off / (BLOCK_BYTES as int) == b);
+
+    lemma_window_va_path(window, va);
+}
+
+/// `kernel_source_ready` on a fresh record `(top = false, middle = false, tabled = [false; 4], state = [FREE; ..])`
+/// establishes `source_state_ready` and `flush_room(token, MAX_PAGES as nat)`.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_fresh_source_state_ready(
+    token: Caller,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    tabled: Seq<bool>,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+)
+    requires
+        source_ready(token, space, untyped, memory, pages, slots, window),
+        state.len() == MAX_PAGES,
+        owner.len() == MAX_PAGES,
+        tabled.len() == WINDOW_BLOCKS,
+        forall|b: int| 0 <= b < WINDOW_BLOCKS ==> !#[trigger] tabled[b],
+        forall|i: int| 0 <= i < pages ==> #[trigger] state[i] == FREE,
+    ensures
+        source_state_ready(
+            token.kernel(),
+            token.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            false,
+            false,
+            tabled,
+            state,
+            owner,
+        ),
+        flush_room(token, MAX_PAGES as nat),
+{
+    reveal(source_state_ready);
+    let k = token.kernel();
+    let root = token.root();
+    assert forall|i: int| 0 <= i < pages && #[trigger] state[i] == FREE implies {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& k.blocks.tracks(p)
+        &&& k.blocks.pages@[p].kind is Free
+        &&& !k.blocks.covered(p)
+    } by {
+        let _ = frame_slot(slots as int, i);
+        let _ = k.blocks.pages@[memory as int / PAGE_SZ as int + i];
+    }
+    assert forall|i: int| 0 <= i < pages implies {
+        &&& !(#[trigger] state[i] == HELD || occupied(state[i]))
+        &&& !occupied(state[i])
+    } by {
+        assert(state[i] == FREE);
+    }
+}
+
+/// The capability at `space` naming the live caller's own space is not dead.
+proof fn lemma_own_space_cap_live(k: CapKernel, root: usize, space: u64)
+    requires
+        k.wf(),
+        k.processes.records@.contains_key(root),
+        !k.processes.records@[root].value().dead,
+        k.table_view(root).contains_key(space as usize),
+        view_writes_space(k.table_view(root)[space as usize]),
+        k.table_view(root)[space as usize].base == root,
+    ensures
+        !k.cap_dead(k.tables.node_of(root, space as usize)),
+{
+    k.lemma_table_view(root, space as usize);
+}
+
+/// Two distinct slot indices in `root` that both hold slots in `k` name distinct capability-list nodes.
+proof fn lemma_distinct_slots_distinct_nodes(k: CapKernel, root: usize, i: usize, j: usize)
+    requires
+        k.wf(),
+        k.tables.has_slot(&k.list, root, i),
+        k.tables.has_slot(&k.list, root, j),
+        i != j,
+    ensures
+        k.tables.node_of(root, i) != k.tables.node_of(root, j),
+{
+    k.lemma_slot(root, i);
+    k.lemma_slot(root, j);
+    if k.tables.node_of(root, i) == k.tables.node_of(root, j) {
+        k.tables.lemma_entry(root, index_entry(i));
+        k.tables.lemma_entry(root, index_entry(j));
+        assert(index_entry(i) == index_entry(j));
+        assert(index_slot(i) == index_slot(j));
+        assert(i == 128 * (i / 128) + i % 128) by (nonlinear_arith);
+        assert(j == 128 * (j / 128) + j % 128) by (nonlinear_arith);
+    }
+}
+
+/// Physical address and page-alignment facts for page `idx` of a `TABLE_PAGES`-page-aligned untyped.
+proof fn lemma_untyped_page_facts(k: CapKernel, memory: u64, pages: usize, idx: int)
+    requires
+        memory as int % (TABLE_PAGES * PAGE_BYTES) as int == 0,
+        memory + pages * PAGE_BYTES <= u64::MAX,
+        0 <= idx < pages,
+        k.blocks.tracks(memory as int / PAGE_SZ as int + idx),
+    ensures
+        untyped_page(memory, idx) >= 0,
+        untyped_page(memory, idx) < NODE_SPACE as int,
+        (untyped_page(memory, idx) as usize) as int == untyped_page(memory, idx),
+        ((untyped_page(memory, idx) as usize) as u64) as int == untyped_page(memory, idx),
+        (untyped_page(memory, idx) as usize) % PAGE_SZ == 0,
+        ((untyped_page(memory, idx) as usize) / PAGE_SZ) as int == memory as int / PAGE_SZ as int + idx,
+        untyped_page(memory, idx) / PAGE_SZ as int == memory as int / PAGE_SZ as int + idx,
+{
+    use vstd::arithmetic::div_mod::*;
+    assert(PAGE_BYTES == PAGE_SZ);
+    assert(TABLE_PAGES == 8);
+    let q8 = memory as int / (8 * PAGE_SZ as int);
+    lemma_fundamental_div_mod(memory as int, 8 * PAGE_SZ as int);
+    assert(memory as int == (8 * q8) * (PAGE_SZ as int)) by (nonlinear_arith)
+        requires memory as int == (8 * PAGE_SZ as int) * q8;
+    lemma_div_by_multiple(8 * q8, PAGE_SZ as int);
+    let p = memory as int / PAGE_SZ as int + idx;
+    assert(untyped_page(memory, idx) == p * (PAGE_SZ as int)) by (nonlinear_arith)
+        requires
+            untyped_page(memory, idx) == memory as int + idx * (PAGE_BYTES as int),
+            PAGE_BYTES == PAGE_SZ,
+            memory as int == (8 * q8) * (PAGE_SZ as int),
+            memory as int / (PAGE_SZ as int) == 8 * q8,
+            p == memory as int / (PAGE_SZ as int) + idx,
+    ;
+    assert((verified::define::NUM_PAGES as int) * (PAGE_SZ as int) <= NODE_SPACE as int);
+    vstd::arithmetic::mul::lemma_mul_strict_inequality(p, verified::define::NUM_PAGES as int, PAGE_SZ as int);
+    vstd::arithmetic::mul::lemma_mul_nonnegative(p, PAGE_SZ as int);
+    assert(0 <= p * (PAGE_SZ as int) < NODE_SPACE as int);
+    lemma_mod_multiples_basic(p, PAGE_SZ as int);
+    lemma_div_by_multiple(p, PAGE_SZ as int);
+}
+
+/// Under `caller_alone` and `source_state_ready` with `state[idx] == FREE`, `retype_frame` succeeds and
+/// preserves `source_state_ready` with `state.update(idx, HELD)`.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_ready_retype_frame(
+    pre: Caller,
+    post: Caller,
+    step_out: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+    idx: usize,
+)
+    requires
+        pre.wf(),
+        post.wf(),
+        post.root() == pre.root(),
+        acall_steps(pre, post, seq![step_out]),
+        caller_alone(pre, post),
+        idx < pages,
+        state[idx as int] == FREE,
+        step_out.call == (AcallCall::Retype {
+            untyped,
+            kind: RETYPE_FRAME,
+            base: untyped_page(memory, idx as int) as u64,
+            word: frame_slot(slots as int, idx as int) as u64,
+            level: 0,
+        }),
+        source_state_ready(
+            pre.kernel(),
+            pre.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state,
+            owner,
+        ),
+    ensures
+        step_out.out.status == STATUS_OK,
+        post.kernel().flush_epoch == pre.kernel().flush_epoch,
+        source_state_ready(
+            post.kernel(),
+            post.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state.update(idx as int, HELD),
+            owner,
+        ),
+{
+    reveal(source_state_ready);
+    reveal(CapKernel::retype_frame_contract_fields);
+    vstd::arithmetic::power2::lemma2_to64();
+    lemma_acall_steps_alone(pre, post, seq![step_out]);
+    assert(seq![step_out][0] == step_out);
+    reveal(AcallStep::valid);
+    assert(step_out.valid());
+    let k0 = pre.kernel();
+    let k1 = post.kernel();
+    let root = pre.root();
+    assert(step_out.pre == k0 && step_out.post == k1 && step_out.root == root);
+
+    lemma_untyped_page_facts(k0, memory, pages, idx as int);
+    let base = untyped_page(memory, idx as int) as usize;
+    let p_idx = (base / PAGE_SZ) as int;
+    lemma_frame_slot(slots as int, idx as int, (pages - 1) as int);
+    let to_int = frame_slot(slots as int, idx as int);
+    let to = to_int as usize;
+    assert((to_int as u64) as usize == to);
+
+    let v0 = k0.table_view(root);
+    assert(block_bytes(0) == PAGE_SZ as int);
+    assert(order_pages(0) == 1);
+    assert(v0[untyped as usize].base <= base) by {
+        assert(idx as int * (PAGE_BYTES as int) >= 0) by (nonlinear_arith)
+            requires idx >= 0, PAGE_BYTES > 0;
+    }
+    assert(base as int + block_bytes(0) <= v0[untyped as usize].base as int + block_bytes(v0[untyped as usize].order)) by {
+        assert((idx as int + 1) * (PAGE_SZ as int) <= (pages as int) * (PAGE_SZ as int)) by (nonlinear_arith)
+            requires (idx as int) + 1 <= pages as int, PAGE_SZ > 0;
+    }
+    assert(view_retypes(v0[untyped as usize], base, 0));
+    assert(k0.retype_under_allowed(root, untyped as usize, base, 0));
+    assert(k0.empty_slot(root, to));
+    assert(k0.blocks.tracks_addr_run(base, 1));
+    assert forall|m: int| 0 <= m < order_pages(0) implies #[trigger] k0.blocks.pages@[p_idx + m].kind is Free by {
+        assert(m == 0);
+        assert(state[idx as int] == FREE);
+    }
+    assert(k0.small_block_free(base, 0));
+    assert(k0.retype_allowed(root, RETYPE_FRAME, untyped as usize, base, to as u64, 0));
+    assert(step_out.out.status == STATUS_OK);
+
+    let parent = k0.tables.node_of(root, untyped as usize);
+    let state1 = state.update(idx as int, HELD);
+    let v1 = k1.table_view(root);
+    assert(v1 == v0.insert(to, frame_view(base, 0, parent)));
+
+    // `space` and `untyped` slots are unchanged because `to` was empty in `v0`.
+    assert(!v0.contains_key(to)) by {
+        k0.lemma_table_view(root, to);
+    }
+    assert(space as usize != to && untyped as usize != to);
+    assert(k1.tables.node_of(root, untyped as usize) == parent);
+    k0.lemma_table_view(root, untyped as usize);
+    assert(k0.tables.is_cap(&k0.list, parent));
+    assert(k1.list.nodes@[parent as int].depth == k0.list.nodes@[parent as int].depth);
+
+    // `root`'s block was `Base`, not `Free`, so `kept_but_run` leaves it live.
+    k0.lemma_table_base(root);
+    assert((root / PAGE_SZ) as int != p_idx);
+    assert(k1.blocks.pages@[(root / PAGE_SZ) as int] == k0.blocks.pages@[(root / PAGE_SZ) as int]);
+
+    assert forall|i: int| 0 <= i < pages && #[trigger] state1[i] == FREE implies {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k1.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& k1.blocks.tracks(p)
+        &&& k1.blocks.pages@[p].kind is Free
+        &&& !k1.blocks.covered(p)
+    } by {
+        assert(i != idx as int);
+        assert(state[i] == FREE);
+        let p = memory as int / PAGE_SZ as int + i;
+        assert(p != p_idx);
+        assert(k1.blocks.pages@[p] == k0.blocks.pages@[p]);
+        if i < idx as int {
+            lemma_frame_slot(slots as int, i, idx as int);
+        } else {
+            lemma_frame_slot(slots as int, idx as int, i);
+        }
+        lemma_frame_slot(slots as int, i, (pages - 1) as int);
+        let si = frame_slot(slots as int, i) as usize;
+        assert(si != to);
+        assert(k0.tables.has_slot(&k0.list, root, si));
+        lemma_distinct_slots_distinct_nodes(k0, root, si, to);
+        assert(k1.empty_slot(root, si));
+    }
+
+    assert forall|i: int| 0 <= i < pages && (#[trigger] state1[i] == HELD || occupied(state1[i])) implies {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        &&& v1.contains_key(s)
+        &&& v1[s] == frame_view(untyped_page(memory, i) as usize, 0, k1.tables.node_of(root, untyped as usize))
+        &&& k1.list.nodes@[k1.tables.node_of(root, s) as int].depth < MAX_DEPTH
+        &&& k1.blocks.tracks(memory as int / PAGE_SZ as int + i)
+        &&& block_ref(&k1.blocks, p) == BlockRef::Small(p)
+        &&& k1.blocks.pages@[p as int].kind is Base
+        &&& k1.blocks.pages@[p as int].object is Frame
+        &&& frame_refs(k1, p) == if occupied(state1[i]) { 2usize } else { 1usize }
+        &&& !k1.blocks.pages@[p as int].dead
+    } by {
+        lemma_frame_slot(slots as int, i, (pages - 1) as int);
+        let s = frame_slot(slots as int, i) as usize;
+        if i == idx as int {
+            assert(s == to);
+            assert(!occupied(state1[i]));
+            assert(v1[to] == frame_view(base, 0, parent));
+            let br = block_ref(&k1.blocks, base / PAGE_SZ);
+            assert(br == BlockRef::Small(base / PAGE_SZ));
+            assert(block_typed(&k1.blocks, br));
+            assert(!block_dead(&k1.blocks, br));
+            assert(block_refs(&k1.blocks, br) == 1);
+            assert(k1.blocks.pages@[(base / PAGE_SZ) as int].kind is Base);
+            assert(k1.blocks.pages@[(base / PAGE_SZ) as int].object is Frame);
+            assert(k1.tables.node_of(root, to) == k0.tables.node_of(root, to));
+        } else {
+            assert(state[i] == state1[i]);
+            assert(state[i] == HELD || occupied(state[i]));
+            if i < idx as int {
+                lemma_frame_slot(slots as int, i, idx as int);
+            } else {
+                lemma_frame_slot(slots as int, idx as int, i);
+            }
+            assert(s != to);
+            assert(v0.contains_key(s));
+            assert(v1[s] == v0[s]);
+            k0.lemma_table_view(root, s);
+            let ns = k0.tables.node_of(root, s);
+            assert(k0.tables.is_cap(&k0.list, ns));
+            assert(k1.tables.node_of(root, s) == ns);
+            assert(k1.list.nodes@[ns as int].depth == k0.list.nodes@[ns as int].depth);
+            lemma_slot_page(k0, root, s);
+            lemma_untyped_page_facts(k0, memory, pages, i);
+            let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+            assert((untyped_page(memory, i) as usize) / PAGE_SZ == p);
+            assert(p as int == memory as int / PAGE_SZ as int + i);
+            assert(slot_page(k0, root, s) == p);
+            assert(p as int != p_idx);
+            assert(k1.blocks.pages@[p as int] == k0.blocks.pages@[p as int]);
+            assert((0usize as int) * PAGE_SZ < block_bytes(v0[s].order));
+            assert(view_frame(v0[s], 0) == p);
+            assert(block_ref(&k1.blocks, view_frame(v0[s], 0)) == block_ref(&k0.blocks, view_frame(v0[s], 0)));
+            assert(frame_refs(k1, p) == frame_refs(k0, p));
+        }
+    }
+
+    assert forall|i: int| 0 <= i < pages && occupied(#[trigger] state1[i]) implies {
+        &&& window <= owner[i]
+        &&& owner[i] < window + WINDOW_BYTES
+        &&& owner[i] as int % PAGE_BYTES as int == 0
+        &&& top
+        &&& middle
+        &&& tabled[((owner[i] - window) as int / BLOCK_BYTES as int)]
+    } by {
+        assert(i != idx as int);
+        assert(occupied(state[i]));
+    }
+
+    assert forall|i: int, j: int|
+        0 <= i < pages && 0 <= j < pages && i != j
+            && occupied(#[trigger] state1[i]) && occupied(#[trigger] state1[j])
+            implies owner[i] != owner[j] by {
+        assert(i != idx as int && j != idx as int);
+        assert(occupied(state[i]) && occupied(state[j]));
+    }
+
+    if top && middle {
+        let tree0 = tree_of(&k0.table_pages, &k0.spaces);
+        let tree1 = tree_of(&k1.table_pages, &k1.spaces);
+        assert(tree1 == tree0);
+        let t3 = step(tree0, root, address_path(window as u64).l4)->0;
+        let t2 = step(tree0, t3, 0)->0;
+        assert forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] tabled[b] implies {
+            &&& step(tree1, t2, b as usize) is Some
+            &&& forall|e: usize| #![trigger tree1.entry(step(tree1, t2, b as usize)->0, e)] e < ENTRIES ==> {
+                let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                &&& window_entry_occupied(pages, state1, owner, va)
+                    ==> tree1.entry(step(tree1, t2, b as usize)->0, e).perm.present
+                &&& !window_entry_occupied(pages, state1, owner, va)
+                    ==> tree1.entry(step(tree1, t2, b as usize)->0, e).is_empty()
+            }
+        } by {
+            let t1 = step(tree0, t2, b as usize)->0;
+            assert forall|e: usize| #![trigger tree1.entry(t1, e)] e < ENTRIES implies {
+                let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                &&& window_entry_occupied(pages, state1, owner, va) ==> tree1.entry(t1, e).perm.present
+                &&& !window_entry_occupied(pages, state1, owner, va) ==> tree1.entry(t1, e).is_empty()
+            } by {
+                let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                let _ = tree0.entry(t1, e);
+                if window_entry_occupied(pages, state1, owner, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state1[j]) && owner[j] == va;
+                    assert(j != idx as int);
+                    assert(occupied(state[j]));
+                    assert(window_entry_occupied(pages, state, owner, va));
+                }
+                if window_entry_occupied(pages, state, owner, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state[j]) && owner[j] == va;
+                    assert(j != idx as int);
+                    assert(occupied(state1[j]));
+                    assert(window_entry_occupied(pages, state1, owner, va));
+                }
+            }
+        }
+    }
+}
+
+/// Under `caller_alone` and `source_state_ready` with a free order-3 group `group`, `retype_table_page`
+/// at `1 <= level - 1 <= 3` is accepted.
+pub(crate) proof fn lemma_ready_retype_table_ok(
+    pre: Caller,
+    mid: Caller,
+    s1: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state_before: Seq<u8>,
+    owner: Seq<usize>,
+    group: usize,
+    level: u64,
+)
+    requires
+        pre.wf(),
+        mid.wf(),
+        mid.root() == pre.root(),
+        acall_steps(pre, mid, seq![s1]),
+        caller_alone(pre, mid),
+        2 <= level <= 4,
+        group + TABLE_PAGES <= pages,
+        group as int % TABLE_PAGES as int == 0,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_before[group as int + k] == FREE,
+        s1.call == (AcallCall::Retype {
+            untyped,
+            kind: RETYPE_TABLE_PAGE,
+            base: untyped_page(memory, group as int) as u64,
+            word: 0,
+            level: (level - 1) as u64,
+        }),
+        source_state_ready(
+            pre.kernel(),
+            pre.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state_before,
+            owner,
+        ),
+    ensures
+        s1.out.status == STATUS_OK,
+        mid.kernel().flush_epoch == pre.kernel().flush_epoch,
+{
+    lemma_ready_retype_table_contract(
+        pre, mid, s1, space, untyped, memory, pages, slots, window, top, middle, tabled,
+        state_before, owner, group, level,
+    );
+}
+
+/// Under `caller_alone` and `source_state_ready` with a free order-3 group `group`, `retype_table_page`
+/// at `1 <= level - 1 <= 3` is accepted, and its contract relates the two kernel states: the caller's
+/// view is as it was, the untyped covers the group's block, and the block is a fresh table page of the
+/// level.
+#[verifier::spinoff_prover]
+proof fn lemma_ready_retype_table_contract(
+    pre: Caller,
+    mid: Caller,
+    s1: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state_before: Seq<u8>,
+    owner: Seq<usize>,
+    group: usize,
+    level: u64,
+)
+    requires
+        pre.wf(),
+        mid.wf(),
+        mid.root() == pre.root(),
+        acall_steps(pre, mid, seq![s1]),
+        caller_alone(pre, mid),
+        2 <= level <= 4,
+        group + TABLE_PAGES <= pages,
+        group as int % TABLE_PAGES as int == 0,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_before[group as int + k] == FREE,
+        s1.call == (AcallCall::Retype {
+            untyped,
+            kind: RETYPE_TABLE_PAGE,
+            base: untyped_page(memory, group as int) as u64,
+            word: 0,
+            level: (level - 1) as u64,
+        }),
+        source_state_ready(
+            pre.kernel(),
+            pre.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state_before,
+            owner,
+        ),
+    ensures
+        s1.out.status == STATUS_OK,
+        mid.kernel().flush_epoch == pre.kernel().flush_epoch,
+        ({
+            let child = untyped_page(memory, group as int) as usize;
+            let k0 = pre.kernel();
+            let km = mid.kernel();
+            &&& child as u64 == untyped_page(memory, group as int) as u64
+            &&& km.wf()
+            &&& view_retypes(k0.table_view(pre.root())[untyped as usize], child, 3)
+            &&& km.table_view(pre.root()) == k0.table_view(pre.root())
+            &&& CapKernel::retype_table_contract_fields(k0, km, child)
+            &&& km.table_pages.maps@.contains_key(child)
+            &&& km.table_pages.records@[child].value() == fresh_table((level - 1) as usize)
+        }),
+{
+    reveal(source_state_ready);
+    reveal(CapKernel::retype_table_contract_fields);
+    use vstd::arithmetic::div_mod::*;
+    vstd::arithmetic::power2::lemma2_to64();
+    lemma_acall_steps_alone(pre, mid, seq![s1]);
+    assert(seq![s1][0] == s1);
+    reveal(AcallStep::valid);
+    assert(s1.valid());
+
+    let k0 = pre.kernel();
+    let root = pre.root();
+    assert(s1.pre == k0 && s1.post == mid.kernel() && s1.root == root);
+
+    assert(state_before[group as int + 0] == FREE);
+    assert(state_before[group as int + 7] == FREE);
+    lemma_untyped_page_facts(k0, memory, pages, group as int);
+    lemma_untyped_page_facts(k0, memory, pages, group as int + 7);
+    let base = untyped_page(memory, group as int) as usize;
+    let p_grp = (base / PAGE_SZ) as int;
+
+    assert(PAGE_BYTES == PAGE_SZ);
+    assert(TABLE_PAGES == 8);
+    assert(block_bytes(3) == 8 * PAGE_SZ as int);
+    assert(order_pages(3) == 8);
+
+    let qm = memory as int / (8 * PAGE_SZ as int);
+    let qg = group as int / 8;
+    lemma_fundamental_div_mod(memory as int, 8 * PAGE_SZ as int);
+    lemma_fundamental_div_mod(group as int, 8);
+    assert(base as int == (qm + qg) * (8 * PAGE_SZ as int)) by (nonlinear_arith)
+        requires
+            base as int == memory as int + (group as int) * (PAGE_SZ as int),
+            memory as int == (8 * PAGE_SZ as int) * qm,
+            group as int == 8 * qg,
+    ;
+    lemma_mod_multiples_basic(qm + qg, 8 * PAGE_SZ as int);
+    assert(base as int % block_bytes(3) == 0);
+
+    let v0 = k0.table_view(root);
+    assert(v0[untyped as usize].base <= base) by {
+        assert((group as int) * (PAGE_SZ as int) >= 0) by (nonlinear_arith)
+            requires group >= 0, PAGE_SZ > 0;
+    }
+    assert(base as int + block_bytes(3) <= v0[untyped as usize].base as int + block_bytes(v0[untyped as usize].order)) by {
+        assert((group as int + 8) * (PAGE_SZ as int) <= (pages as int) * (PAGE_SZ as int)) by (nonlinear_arith)
+            requires group + 8 <= pages, PAGE_SZ > 0;
+    }
+    assert(8 * PAGE_SZ as int <= block_bytes(v0[untyped as usize].order)) by {
+        assert(8 * (PAGE_SZ as int) <= (pages as int) * (PAGE_SZ as int)) by (nonlinear_arith)
+            requires 8 <= pages, PAGE_SZ > 0;
+    }
+    if v0[untyped as usize].order < 3 {
+        assert(v0[untyped as usize].order == 0 || v0[untyped as usize].order == 1 || v0[untyped as usize].order == 2);
+        assert(block_bytes(v0[untyped as usize].order) <= 4 * PAGE_SZ as int);
+        assert(false);
+    }
+    assert(view_retypes(v0[untyped as usize], base, 3));
+    assert(k0.retype_under_allowed(root, untyped as usize, base, 3));
+
+    assert(k0.blocks.tracks(p_grp + 7));
+    assert(k0.blocks.tracks_addr_run(base, 8));
+    assert(!k0.blocks.covered(p_grp));
+    assert forall|m: int| 0 <= m < order_pages(3) implies #[trigger] k0.blocks.pages@[p_grp + m].kind is Free by {
+        assert(p_grp + m == memory as int / PAGE_SZ as int + (group as int + m));
+        assert(state_before[group as int + m] == FREE);
+    }
+    assert(k0.small_block_free(base, 3));
+    assert(k0.retype_allowed(root, RETYPE_TABLE_PAGE, untyped as usize, base, 0, (level - 1) as usize));
+    assert(s1.out.status == STATUS_OK);
+    assert((untyped_page(memory, group as int) as u64) as usize == base);
+    assert(((level - 1) as u64) as usize == (level - 1) as usize);
+    assert(mid.kernel().table_view(root) == k0.table_view(root));
+}
+
+/// Distinct block entries `b1 != b2` of a level-2 table `t2` name distinct level-1 child tables.
+proof fn lemma_distinct_children(k: CapKernel, t: usize, i: usize, j: usize)
+    requires
+        k.wf(),
+        step(tree_of(&k.table_pages, &k.spaces), t, i) is Some,
+        step(tree_of(&k.table_pages, &k.spaces), t, j) is Some,
+        i != j,
+    ensures
+        step(tree_of(&k.table_pages, &k.spaces), t, i)->0 != step(tree_of(&k.table_pages, &k.spaces), t, j)->0,
+{
+    let tree = tree_of(&k.table_pages, &k.spaces);
+    reveal(table_links_wf);
+    let _ = tree.entry(t, i);
+    let _ = tree.entry(t, j);
+    let ci = step(tree, t, i)->0;
+    let cj = step(tree, t, j)->0;
+    assert(tree.record(ci).parent == Some(TableParent { table: t, entry: i }));
+    assert(tree.record(cj).parent == Some(TableParent { table: t, entry: j }));
+}
+
+/// Equal `maps` and `roots` domains preserve `is_page`, `is_root`, and `is_table`.
+proof fn lemma_same_tree_domains(a: TableTree, b: TableTree)
+    requires
+        b.maps.dom() == a.maps.dom(),
+        b.roots.dom() == a.roots.dom(),
+    ensures
+        forall|t: usize| #[trigger] b.is_page(t) == a.is_page(t),
+        forall|t: usize| #[trigger] b.is_root(t) == a.is_root(t),
+        forall|t: usize| #[trigger] b.is_table(t) == a.is_table(t),
+{
+    assert forall|t: usize| #[trigger] b.is_page(t) == a.is_page(t) by {
+        assert(b.maps.dom().contains(t) == a.maps.dom().contains(t));
+    }
+    assert forall|t: usize| #[trigger] b.is_root(t) == a.is_root(t) by {
+        assert(b.roots.dom().contains(t) == a.roots.dom().contains(t));
+    }
+    assert forall|t: usize| #[trigger] b.is_table(t) == a.is_table(t) by {
+        assert(b.is_page(t) == a.is_page(t));
+        assert(b.is_root(t) == a.is_root(t));
+    }
+}
+
+/// The table page a source has retyped at `child` and not linked yet, in `k`: a live table page of
+/// `level` with a fresh record and every entry empty.
+pub(crate) open spec fn table_page_unlinked(k: CapKernel, child: usize, level: usize) -> bool {
+    let tree = tree_of(&k.table_pages, &k.spaces);
+    &&& tree.is_page(child)
+    &&& tree.record(child) == fresh_table(level)
+    &&& !k.blocks.pages@[(child / PAGE_SZ) as int].dead
+    &&& forall|i: usize| i < ENTRIES ==> #[trigger] k.table_pages.maps@[child].value()[i].is_empty()
+}
+
+/// Under `caller_alone` and `source_state_ready` with a free order-3 group `group`, `retype_table_page`
+/// at `level - 1` is accepted and leaves `source_state_ready` with `group .. group + 8` marked `TAKEN`
+/// and the window's tables as they were, the group's block an unlinked table page that the untyped still
+/// covers.
+pub(crate) proof fn lemma_ready_table_retyped(
+    pre: Caller,
+    mid: Caller,
+    s1: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state_before: Seq<u8>,
+    state_after: Seq<u8>,
+    owner: Seq<usize>,
+    group: usize,
+    level: u64,
+)
+    requires
+        pre.wf(),
+        mid.wf(),
+        mid.root() == pre.root(),
+        acall_steps(pre, mid, seq![s1]),
+        caller_alone(pre, mid),
+        2 <= level <= 4,
+        group + TABLE_PAGES <= pages,
+        group as int % TABLE_PAGES as int == 0,
+        state_after.len() == MAX_PAGES,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_before[group as int + k] == FREE,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_after[group as int + k] == TAKEN,
+        forall|u: int|
+            0 <= u < MAX_PAGES && !(group as int <= u < group as int + TABLE_PAGES as int)
+                ==> #[trigger] state_after[u] == state_before[u],
+        s1.call == (AcallCall::Retype {
+            untyped,
+            kind: RETYPE_TABLE_PAGE,
+            base: untyped_page(memory, group as int) as u64,
+            word: 0,
+            level: (level - 1) as u64,
+        }),
+        source_state_ready(
+            pre.kernel(),
+            pre.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state_before,
+            owner,
+        ),
+    ensures
+        s1.out.status == STATUS_OK,
+        mid.kernel().flush_epoch == pre.kernel().flush_epoch,
+        source_state_ready(
+            mid.kernel(),
+            mid.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state_after,
+            owner,
+        ),
+        table_page_unlinked(mid.kernel(), untyped_page(memory, group as int) as usize, (level - 1) as usize),
+        view_retypes(
+            mid.kernel().table_view(mid.root())[untyped as usize],
+            untyped_page(memory, group as int) as usize,
+            3,
+        ),
+        (untyped_page(memory, group as int) as usize) as u64 == untyped_page(memory, group as int) as u64,
+{
+    lemma_ready_retype_table_contract(
+        pre, mid, s1, space, untyped, memory, pages, slots, window, top, middle, tabled,
+        state_before, owner, group, level,
+    );
+    lemma_table_retyped_ready(
+        pre.kernel(), mid.kernel(), pre.root(), space, untyped, memory, pages, slots, window, top, middle,
+        tabled, state_before, state_after, owner, group, (level - 1) as usize,
+    );
+}
+
+/// What a `retype_table_page` at `child` leaves as it was, as `retype_table_contract_fields` says it:
+/// the tables, the spaces, the processes, the large regions, every tracked page outside the eight of
+/// the block, every empty slot and every capability's depth.
+proof fn lemma_retype_table_kept(k0: CapKernel, km: CapKernel, child: usize)
+    requires
+        CapKernel::retype_table_contract_fields(k0, km, child),
+    ensures
+        km.tables == k0.tables,
+        km.spaces == k0.spaces,
+        km.processes == k0.processes,
+        km.blocks.regions_2m@ == k0.blocks.regions_2m@,
+        km.blocks.regions_1g@ == k0.blocks.regions_1g@,
+        !km.blocks.pages@[(child / PAGE_SZ) as int].dead,
+        forall|p: int|
+            k0.blocks.tracks(p) && !((child / PAGE_SZ) as int <= p < (child / PAGE_SZ) as int + TABLE_PAGES as int)
+                ==> #[trigger] km.blocks.pages@[p] == k0.blocks.pages@[p],
+        forall|t: usize, j: usize| #[trigger] k0.empty_slot(t, j) ==> km.empty_slot(t, j),
+        forall|x: usize| #[trigger] k0.tables.is_cap(&k0.list, x)
+            ==> km.list.nodes@[x as int].depth == k0.list.nodes@[x as int].depth,
+{
+    reveal(CapKernel::retype_table_contract_fields);
+    assert(order_pages(3) == TABLE_PAGES as int);
+}
+
+/// A `retype_table_page` at `child`, which was no table, leaves every table's entries as they were and
+/// naming the children they named, and the new table page's entries empty.
+proof fn lemma_retype_table_tree(k0: CapKernel, km: CapKernel, child: usize)
+    requires
+        CapKernel::retype_table_contract_fields(k0, km, child),
+        !tree_of(&k0.table_pages, &k0.spaces).is_table(child),
+    ensures
+        forall|t: usize, i: usize| tree_of(&k0.table_pages, &k0.spaces).is_table(t)
+            ==> #[trigger] tree_of(&km.table_pages, &km.spaces).entry(t, i)
+                == tree_of(&k0.table_pages, &k0.spaces).entry(t, i),
+        forall|t: usize, i: usize| tree_of(&k0.table_pages, &k0.spaces).is_table(t)
+            ==> #[trigger] tree_of(&km.table_pages, &km.spaces).names_child(t, i)
+                == tree_of(&k0.table_pages, &k0.spaces).names_child(t, i),
+        forall|i: usize| i < ENTRIES ==> #[trigger] km.table_pages.maps@[child].value()[i].is_empty(),
+{
+    reveal(CapKernel::retype_table_contract_fields);
+    let tree0 = tree_of(&k0.table_pages, &k0.spaces);
+    let treem = tree_of(&km.table_pages, &km.spaces);
+    assert forall|t: usize| #[trigger] tree0.is_table(t) implies {
+        &&& treem.is_page(t) == tree0.is_page(t)
+        &&& treem.is_root(t) == tree0.is_root(t)
+        &&& treem.record(t) == tree0.record(t)
+        &&& forall|i: usize| #[trigger] treem.entry(t, i) == tree0.entry(t, i)
+    } by {
+        assert(t != child);
+    }
+    assert forall|t: usize, i: usize| tree0.is_table(t)
+        implies #[trigger] treem.names_child(t, i) == tree0.names_child(t, i) by {
+        assert(treem.entry(t, i) == tree0.entry(t, i));
+        assert(treem.child_slot(t, i) == tree0.child_slot(t, i));
+    }
+}
+
+/// The frame slots and pages of a source, as `source_state_ready` holds them in `k`.
+pub(crate) open spec fn frames_ready(
+    k: CapKernel,
+    root: usize,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    state: Seq<u8>,
+) -> bool {
+    let v = k.table_view(root);
+    &&& forall|i: int| 0 <= i < pages && #[trigger] state[i] == FREE ==> {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& k.blocks.tracks(p)
+        &&& k.blocks.pages@[p].kind is Free
+        &&& !k.blocks.covered(p)
+    }
+    &&& forall|i: int| 0 <= i < pages && (#[trigger] state[i] == HELD || occupied(state[i])) ==> {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        &&& v.contains_key(s)
+        &&& v[s] == frame_view(untyped_page(memory, i) as usize, 0, k.tables.node_of(root, untyped as usize))
+        &&& k.list.nodes@[k.tables.node_of(root, s) as int].depth < MAX_DEPTH
+        &&& k.blocks.tracks(memory as int / PAGE_SZ as int + i)
+        &&& block_ref(&k.blocks, p) == BlockRef::Small(p)
+        &&& k.blocks.pages@[p as int].kind is Base
+        &&& k.blocks.pages@[p as int].object is Frame
+        &&& frame_refs(k, p) == if occupied(state[i]) { 2usize } else { 1usize }
+        &&& !k.blocks.pages@[p as int].dead
+    }
+}
+
+/// A `retype_table_page` of the free group `group .. group + 8` of a source leaves every other frame
+/// slot and page of the source as `frames_ready` held it.
+#[verifier::spinoff_prover]
+proof fn lemma_retyped_frames_kept(
+    k0: CapKernel,
+    km: CapKernel,
+    root: usize,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    state_before: Seq<u8>,
+    state_after: Seq<u8>,
+    group: usize,
+)
+    requires
+        CapKernel::retype_table_contract_fields(k0, km, untyped_page(memory, group as int) as usize),
+        km.table_view(root) == k0.table_view(root),
+        pages <= MAX_PAGES,
+        memory as int % (TABLE_PAGES * PAGE_BYTES) as int == 0,
+        memory + pages * PAGE_BYTES <= u64::MAX,
+        group + TABLE_PAGES <= pages,
+        frames_ready(k0, root, untyped, memory, pages, slots, state_before),
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_before[group as int + k] == FREE,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_after[group as int + k] == TAKEN,
+        forall|u: int|
+            0 <= u < MAX_PAGES && !(group as int <= u < group as int + TABLE_PAGES as int)
+                ==> #[trigger] state_after[u] == state_before[u],
+    ensures
+        frames_ready(km, root, untyped, memory, pages, slots, state_after),
+{
+    assert(state_before[group as int + 0] == FREE);
+    lemma_untyped_page_facts(k0, memory, pages, group as int);
+    let child = untyped_page(memory, group as int) as usize;
+    let p_grp = (child / PAGE_SZ) as int;
+    assert(p_grp == memory as int / PAGE_SZ as int + group as int);
+    lemma_retype_table_kept(k0, km, child);
+    let vm = km.table_view(root);
+
+    assert forall|i: int| 0 <= i < pages && #[trigger] state_after[i] == FREE implies {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& km.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& km.blocks.tracks(p)
+        &&& km.blocks.pages@[p].kind is Free
+        &&& !km.blocks.covered(p)
+    } by {
+        if group as int <= i < group as int + TABLE_PAGES as int {
+            assert(state_after[group as int + (i - group as int)] == TAKEN);
+            assert(false);
+        }
+        assert(state_before[i] == FREE);
+        let p = memory as int / PAGE_SZ as int + i;
+        assert(km.blocks.pages@[p] == k0.blocks.pages@[p]);
+    }
+
+    assert forall|i: int| 0 <= i < pages && (#[trigger] state_after[i] == HELD || occupied(state_after[i])) implies {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        &&& vm.contains_key(s)
+        &&& vm[s] == frame_view(untyped_page(memory, i) as usize, 0, km.tables.node_of(root, untyped as usize))
+        &&& km.list.nodes@[km.tables.node_of(root, s) as int].depth < MAX_DEPTH
+        &&& km.blocks.tracks(memory as int / PAGE_SZ as int + i)
+        &&& block_ref(&km.blocks, p) == BlockRef::Small(p)
+        &&& km.blocks.pages@[p as int].kind is Base
+        &&& km.blocks.pages@[p as int].object is Frame
+        &&& frame_refs(km, p) == if occupied(state_after[i]) { 2usize } else { 1usize }
+        &&& !km.blocks.pages@[p as int].dead
+    } by {
+        if group as int <= i < group as int + TABLE_PAGES as int {
+            assert(state_after[group as int + (i - group as int)] == TAKEN);
+            assert(false);
+        }
+        assert(state_before[i] == state_after[i]);
+        let s = frame_slot(slots as int, i) as usize;
+        lemma_untyped_page_facts(k0, memory, pages, i);
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        assert(p as int == memory as int / PAGE_SZ as int + i);
+        k0.lemma_table_view(root, s);
+        let ns = k0.tables.node_of(root, s);
+        assert(k0.tables.is_cap(&k0.list, ns));
+        assert(km.list.nodes@[ns as int].depth == k0.list.nodes@[ns as int].depth);
+        assert(km.blocks.pages@[p as int] == k0.blocks.pages@[p as int]);
+        assert(block_ref(&km.blocks, p) == block_ref(&k0.blocks, p));
+        assert(frame_refs(km, p) == frame_refs(k0, p));
+    }
+}
+
+/// A `retype_table_page` of the free group `group .. group + 8` of a ready source, as its contract
+/// relates `k0` to `km`, leaves the source ready with the group marked `TAKEN` and the window's tables
+/// as they were, the group's block an unlinked table page of `level`.
+#[verifier::spinoff_prover]
+proof fn lemma_table_retyped_ready(
+    k0: CapKernel,
+    km: CapKernel,
+    root: usize,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state_before: Seq<u8>,
+    state_after: Seq<u8>,
+    owner: Seq<usize>,
+    group: usize,
+    level: usize,
+)
+    requires
+        source_state_ready(k0, root, space, untyped, memory, pages, slots, window, top, middle, tabled, state_before, owner),
+        km.wf(),
+        km.table_view(root) == k0.table_view(root),
+        CapKernel::retype_table_contract_fields(k0, km, untyped_page(memory, group as int) as usize),
+        km.table_pages.maps@.contains_key(untyped_page(memory, group as int) as usize),
+        km.table_pages.records@[untyped_page(memory, group as int) as usize].value() == fresh_table(level),
+        group + TABLE_PAGES <= pages,
+        state_after.len() == MAX_PAGES,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_before[group as int + k] == FREE,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_after[group as int + k] == TAKEN,
+        forall|u: int|
+            0 <= u < MAX_PAGES && !(group as int <= u < group as int + TABLE_PAGES as int)
+                ==> #[trigger] state_after[u] == state_before[u],
+    ensures
+        source_state_ready(km, root, space, untyped, memory, pages, slots, window, top, middle, tabled, state_after, owner),
+        table_page_unlinked(km, untyped_page(memory, group as int) as usize, level),
+{
+    reveal(source_state_ready);
+    assert(state_before[group as int + 0] == FREE);
+    lemma_untyped_page_facts(k0, memory, pages, group as int);
+    let child = untyped_page(memory, group as int) as usize;
+    let p_grp = (child / PAGE_SZ) as int;
+    assert(p_grp == memory as int / PAGE_SZ as int + group as int);
+    lemma_retype_table_kept(k0, km, child);
+
+    let tree0 = tree_of(&k0.table_pages, &k0.spaces);
+    let treem = tree_of(&km.table_pages, &km.spaces);
+
+    // Every table of `tree0` had a `Base` page, whereas the group's pages were `Free` in `k0`, so
+    // `child` was no table and `root`'s page is outside the group.
+    assert(tree0.is_table(root));
+    k0.lemma_table_base(root);
+    let p_root = (root / PAGE_SZ) as int;
+    if p_grp <= p_root < p_grp + TABLE_PAGES as int {
+        assert(state_before[group as int + (p_root - p_grp)] == FREE);
+        assert(k0.blocks.pages@[memory as int / PAGE_SZ as int + (group as int + (p_root - p_grp))].kind is Free);
+        assert(false);
+    }
+    assert(km.blocks.pages@[p_root] == k0.blocks.pages@[p_root]);
+    if tree0.is_table(child) {
+        k0.lemma_table_base(child);
+        assert(k0.blocks.pages@[memory as int / PAGE_SZ as int + group as int].kind is Free);
+        assert(false);
+    }
+    lemma_retype_table_tree(k0, km, child);
+
+    // The untyped's capability is where it was, at the depth it had.
+    k0.lemma_table_view(root, untyped as usize);
+    let nu = k0.tables.node_of(root, untyped as usize);
+    assert(k0.tables.is_cap(&k0.list, nu));
+    assert(km.list.nodes@[nu as int].depth == k0.list.nodes@[nu as int].depth);
+
+    assert(frames_ready(k0, root, untyped, memory, pages, slots, state_before));
+    lemma_retyped_frames_kept(k0, km, root, untyped, memory, pages, slots, state_before, state_after, group);
+
+    assert forall|i: int| 0 <= i < pages && occupied(#[trigger] state_after[i]) implies {
+        &&& window <= owner[i]
+        &&& owner[i] < window + WINDOW_BYTES
+        &&& owner[i] as int % PAGE_BYTES as int == 0
+        &&& top
+        &&& middle
+        &&& tabled[((owner[i] - window) as int / BLOCK_BYTES as int)]
+    } by {
+        if group as int <= i < group as int + TABLE_PAGES as int {
+            assert(state_after[group as int + (i - group as int)] == TAKEN);
+            assert(false);
+        }
+        assert(occupied(state_before[i]));
+    }
+
+    assert forall|i: int, j: int|
+        0 <= i < pages && 0 <= j < pages && i != j
+            && occupied(#[trigger] state_after[i]) && occupied(#[trigger] state_after[j])
+            implies owner[i] != owner[j] by {
+        if group as int <= i < group as int + TABLE_PAGES as int {
+            assert(state_after[group as int + (i - group as int)] == TAKEN);
+            assert(false);
+        }
+        if group as int <= j < group as int + TABLE_PAGES as int {
+            assert(state_after[group as int + (j - group as int)] == TAKEN);
+            assert(false);
+        }
+        assert(occupied(state_before[i]) && occupied(state_before[j]));
+    }
+
+    // The window's tables are tables of `tree0`, so `treem` holds them as they were.
+    assert(window_tables_ready(tree0, root, window, pages, top, middle, tabled, state_before, owner));
+    lemma_retyped_window_tables(k0, treem, root, window, pages, top, middle, tabled, state_before, state_after, owner, group);
+    assert(window_tables_ready(treem, root, window, pages, top, middle, tabled, state_after, owner));
+    assert(frames_ready(km, root, untyped, memory, pages, slots, state_after));
+}
+
+/// The window's tables of a source, as `source_state_ready` holds them in `tree`.
+pub(crate) open spec fn window_tables_ready(
+    tree: TableTree,
+    root: usize,
+    window: usize,
+    pages: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+) -> bool {
+    let l4 = address_path(window as u64).l4;
+    &&& (!top ==> tree.entry(root, l4).is_empty())
+    &&& (top ==> {
+        let t3 = step(tree, root, l4)->0;
+        &&& step(tree, root, l4) is Some
+        &&& (!middle ==> tree.entry(t3, 0).is_empty())
+        &&& (middle ==> {
+            let t2 = step(tree, t3, 0)->0;
+            &&& step(tree, t3, 0) is Some
+            &&& forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] tabled[b] ==> {
+                &&& step(tree, t2, b as usize) is Some
+                &&& forall|e: usize| #![trigger tree.entry(step(tree, t2, b as usize)->0, e)] e < ENTRIES ==> {
+                    let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                    &&& window_entry_occupied(pages, state, owner, va)
+                        ==> tree.entry(step(tree, t2, b as usize)->0, e).perm.present
+                    &&& !window_entry_occupied(pages, state, owner, va)
+                        ==> tree.entry(step(tree, t2, b as usize)->0, e).is_empty()
+                }
+            }
+            &&& forall|b: int| 0 <= b < WINDOW_BLOCKS && !#[trigger] tabled[b]
+                ==> tree.entry(t2, b as usize).is_empty()
+        })
+    })
+}
+
+/// A retype that leaves every table of `k0`'s tree as it was in `treem`, and takes the free group
+/// `group .. group + 8` that no page of the window maps, leaves the window's tables ready.
+#[verifier::spinoff_prover]
+proof fn lemma_retyped_window_tables(
+    k0: CapKernel,
+    treem: TableTree,
+    root: usize,
+    window: usize,
+    pages: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state_before: Seq<u8>,
+    state_after: Seq<u8>,
+    owner: Seq<usize>,
+    group: usize,
+)
+    requires
+        k0.wf(),
+        tree_of(&k0.table_pages, &k0.spaces).is_table(root),
+        forall|t: usize, i: usize| tree_of(&k0.table_pages, &k0.spaces).is_table(t)
+            ==> #[trigger] treem.entry(t, i) == tree_of(&k0.table_pages, &k0.spaces).entry(t, i),
+        forall|t: usize, i: usize| tree_of(&k0.table_pages, &k0.spaces).is_table(t)
+            ==> #[trigger] treem.names_child(t, i) == tree_of(&k0.table_pages, &k0.spaces).names_child(t, i),
+        window != 0,
+        window as int % SIZE_512G as int == 0,
+        window + WINDOW_BYTES <= LOWER_HALF_END as usize,
+        pages <= MAX_PAGES,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_before[group as int + k] == FREE,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_after[group as int + k] == TAKEN,
+        forall|u: int|
+            0 <= u < MAX_PAGES && !(group as int <= u < group as int + TABLE_PAGES as int)
+                ==> #[trigger] state_after[u] == state_before[u],
+        window_tables_ready(tree_of(&k0.table_pages, &k0.spaces), root, window, pages, top, middle, tabled, state_before, owner),
+    ensures
+        window_tables_ready(treem, root, window, pages, top, middle, tabled, state_after, owner),
+{
+    let tree0 = tree_of(&k0.table_pages, &k0.spaces);
+    lemma_window_path(window);
+    let l4 = address_path(window as u64).l4;
+    assert(treem.entry(root, l4) == tree0.entry(root, l4));
+    if top {
+        k0.lemma_child_facts(root, l4);
+        let t3 = step(tree0, root, l4)->0;
+        assert(tree0.is_table(t3));
+        assert(treem.names_child(root, l4) == tree0.names_child(root, l4));
+        assert(step(treem, root, l4) == Some(t3));
+        assert(treem.entry(t3, 0) == tree0.entry(t3, 0));
+        if middle {
+            k0.lemma_child_facts(t3, 0);
+            let t2 = step(tree0, t3, 0)->0;
+            assert(tree0.is_table(t2));
+            assert(treem.names_child(t3, 0) == tree0.names_child(t3, 0));
+            assert(step(treem, t3, 0) == Some(t2));
+            assert forall|b: int| 0 <= b < WINDOW_BLOCKS && !#[trigger] tabled[b]
+                implies treem.entry(t2, b as usize).is_empty() by {
+                assert(treem.entry(t2, b as usize) == tree0.entry(t2, b as usize));
+            }
+            assert forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] tabled[b] implies {
+                &&& step(treem, t2, b as usize) is Some
+                &&& forall|e: usize| #![trigger treem.entry(step(treem, t2, b as usize)->0, e)] e < ENTRIES ==> {
+                    let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                    &&& window_entry_occupied(pages, state_after, owner, va)
+                        ==> treem.entry(step(treem, t2, b as usize)->0, e).perm.present
+                    &&& !window_entry_occupied(pages, state_after, owner, va)
+                        ==> treem.entry(step(treem, t2, b as usize)->0, e).is_empty()
+                }
+            } by {
+                k0.lemma_child_facts(t2, b as usize);
+                let t1 = step(tree0, t2, b as usize)->0;
+                assert(tree0.is_table(t1));
+                assert(treem.names_child(t2, b as usize) == tree0.names_child(t2, b as usize));
+                assert(treem.entry(t2, b as usize) == tree0.entry(t2, b as usize));
+                assert(step(treem, t2, b as usize) == Some(t1));
+                assert forall|e: usize| #![trigger treem.entry(t1, e)] e < ENTRIES implies {
+                    let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                    &&& window_entry_occupied(pages, state_after, owner, va) ==> treem.entry(t1, e).perm.present
+                    &&& !window_entry_occupied(pages, state_after, owner, va) ==> treem.entry(t1, e).is_empty()
+                } by {
+                    let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                    let _ = tree0.entry(t1, e);
+                    assert(treem.entry(t1, e) == tree0.entry(t1, e));
+                    if window_entry_occupied(pages, state_after, owner, va) {
+                        let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state_after[j]) && owner[j] == va;
+                        if group as int <= j < group as int + TABLE_PAGES as int {
+                            assert(state_after[group as int + (j - group as int)] == TAKEN);
+                            assert(false);
+                        }
+                        assert(occupied(state_before[j]));
+                        assert(window_entry_occupied(pages, state_before, owner, va));
+                    }
+                    if window_entry_occupied(pages, state_before, owner, va) {
+                        let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state_before[j]) && owner[j] == va;
+                        if group as int <= j < group as int + TABLE_PAGES as int {
+                            assert(state_before[group as int + (j - group as int)] == FREE);
+                            assert(false);
+                        }
+                        assert(occupied(state_after[j]));
+                        assert(window_entry_occupied(pages, state_after, owner, va));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Under `caller_alone` and `source_state_ready`, the `link` of an unlinked table page at `child`, one
+/// level below `level` and covered by the untyped, at an unlinked path entry `(address, level)` is
+/// accepted and establishes `source_state_ready` with that path entry marked linked.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_ready_table_linked(
+    mid: Caller,
+    post: Caller,
+    s2: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+    child: usize,
+    address: usize,
+    level: u64,
+)
+    requires
+        mid.wf(),
+        post.wf(),
+        post.root() == mid.root(),
+        acall_steps(mid, post, seq![s2]),
+        caller_alone(mid, post),
+        2 <= level <= 4,
+        (level == 4 && !top && address == window)
+            || (level == 3 && top && !middle && address == window)
+            || (level == 2 && top && middle && exists|b: int|
+                0 <= b < WINDOW_BLOCKS && !tabled[b] && address as int == #[trigger] window_block(window, b)),
+        s2.call == (AcallCall::Link {
+            slot: space,
+            va: address as u64,
+            level,
+            from: untyped,
+            child: child as u64,
+        }),
+        source_state_ready(
+            mid.kernel(),
+            mid.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state,
+            owner,
+        ),
+        table_page_unlinked(mid.kernel(), child, (level - 1) as usize),
+        view_retypes(mid.kernel().table_view(mid.root())[untyped as usize], child, 3),
+    ensures
+        s2.out.status == STATUS_OK,
+        post.kernel().flush_epoch == mid.kernel().flush_epoch,
+        ({
+            let next_top = if level == 4 { true } else { top };
+            let next_middle = if level == 3 { true } else { middle };
+            let next_tabled = if level == 2 {
+                tabled.update((address - window) as int / BLOCK_BYTES as int, true)
+            } else {
+                tabled
+            };
+            source_state_ready(
+                post.kernel(),
+                post.root(),
+                space,
+                untyped,
+                memory,
+                pages,
+                slots,
+                window,
+                next_top,
+                next_middle,
+                next_tabled,
+                state,
+                owner,
+            )
+        }),
+{
+    reveal(source_state_ready);
+    reveal(CapKernel::link_contract_fields);
+    use vstd::arithmetic::div_mod::*;
+    lemma_acall_steps_alone(mid, post, seq![s2]);
+    assert(seq![s2][0] == s2);
+    reveal(AcallStep::valid);
+    assert(s2.valid());
+
+    let km = mid.kernel();
+    let k2 = post.kernel();
+    let root = mid.root();
+    assert(s2.pre == km && s2.post == k2 && s2.root == root);
+    assert((child as u64) as usize == child);
+
+    lemma_window_path(window);
+    let l4 = address_path(window as u64).l4;
+    let treem = tree_of(&km.table_pages, &km.spaces);
+    let tree2 = tree_of(&k2.table_pages, &k2.spaces);
+
+    // `root` is its space's root and `child` a table page with no space yet, so no table the walk from
+    // `root` reaches is `child`.
+    assert(treem.is_root(root));
+    km.lemma_table_base(root);
+    assert(!treem.is_page(root));
+    assert(treem.is_page(child));
+    km.lemma_table_base(child);
+    assert(child != root);
+    assert(treem.record(child).space is None);
+    lemma_table_bound(child);
+    lemma_table_addr_valid(child);
+    assert(((child + TABLE_NODE_PAGES * PAGE_SZ) as usize - TABLE_NODE_PAGES * PAGE_SZ) as usize == child);
+
+    let vm = km.table_view(root);
+    lemma_own_space_cap_live(km, root, space);
+
+    if level == 4 {
+        assert(km.link_parent(root, address as u64, 4) == Some(TableParent { table: root, entry: l4 }));
+        assert(treem.child_slot(root, l4));
+        assert(km.link_fits(root, address as u64, 4, child));
+    } else if level == 3 {
+        km.lemma_child_facts(root, l4);
+        let t3 = step(treem, root, l4)->0;
+        km.lemma_table_base(t3);
+        assert(km.link_parent(root, address as u64, 3) == Some(TableParent { table: t3, entry: 0 }));
+        assert(treem.child_slot(t3, 0));
+        assert(km.link_fits(root, address as u64, 3, child));
+    } else {
+        let b_blk = choose|b: int| 0 <= b < WINDOW_BLOCKS && !tabled[b] && address as int == #[trigger] window_block(window, b);
+        let _ = window_block(window, b_blk);
+        assert((address - window) as int / BLOCK_BYTES as int == b_blk) by {
+            assert(address - window == b_blk * (BLOCK_BYTES as int));
+            lemma_div_by_multiple(b_blk, BLOCK_BYTES as int);
+        }
+        km.lemma_child_facts(root, l4);
+        let t3 = step(treem, root, l4)->0;
+        km.lemma_table_base(t3);
+        km.lemma_child_facts(t3, 0);
+        let t2 = step(treem, t3, 0)->0;
+        km.lemma_table_base(t2);
+        assert(km.link_parent(root, address as u64, 2) == Some(TableParent { table: t2, entry: b_blk as usize }));
+        assert(treem.child_slot(t2, b_blk as usize));
+        assert(km.link_fits(root, address as u64, 2, child));
+    }
+
+    assert(km.link_allowed(root, space as usize, address as u64, level, untyped as usize, child));
+    assert(s2.out.status == STATUS_OK);
+
+    // Post-link state `k2`: its blocks, list, tables, processes and views are `km`'s.
+    let place = km.link_parent(root, address as u64, level)->0;
+    assert(linked(treem, tree2, place.table, place.entry, child, root));
+    lemma_same_tree_domains(treem, tree2);
+    let v2 = k2.table_view(root);
+    assert(v2 == vm);
+    assert(k2.spaces.roots@.contains_key(root)) by {
+        assert(tree2.is_root(root) == treem.is_root(root));
+    }
+    assert(k2.spaces.records@[root].value().kind == SpaceKind::Process) by {
+        assert(treem.is_root(root));
+        assert(tree2.space_records[root].value().kind == treem.space_records[root].value().kind);
+    }
+
+    let next_top = if level == 4 { true } else { top };
+    let next_middle = if level == 3 { true } else { middle };
+    let next_tabled = if level == 2 {
+        tabled.update((address - window) as int / BLOCK_BYTES as int, true)
+    } else {
+        tabled
+    };
+
+    assert forall|i: int| 0 <= i < pages && #[trigger] state[i] == FREE implies {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k2.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& k2.blocks.tracks(p)
+        &&& k2.blocks.pages@[p].kind is Free
+        &&& !k2.blocks.covered(p)
+    } by {
+        let si = frame_slot(slots as int, i) as usize;
+        assert(km.empty_slot(root, si));
+    }
+
+    assert forall|i: int| 0 <= i < pages && (#[trigger] state[i] == HELD || occupied(state[i])) implies {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        &&& v2.contains_key(s)
+        &&& v2[s] == frame_view(untyped_page(memory, i) as usize, 0, k2.tables.node_of(root, untyped as usize))
+        &&& k2.list.nodes@[k2.tables.node_of(root, s) as int].depth < MAX_DEPTH
+        &&& k2.blocks.tracks(memory as int / PAGE_SZ as int + i)
+        &&& block_ref(&k2.blocks, p) == BlockRef::Small(p)
+        &&& k2.blocks.pages@[p as int].kind is Base
+        &&& k2.blocks.pages@[p as int].object is Frame
+        &&& frame_refs(k2, p) == if occupied(state[i]) { 2usize } else { 1usize }
+        &&& !k2.blocks.pages@[p as int].dead
+    } by {
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        assert(frame_refs(k2, p) == frame_refs(km, p));
+    }
+
+    assert forall|i: int| 0 <= i < pages && occupied(#[trigger] state[i]) implies {
+        &&& window <= owner[i]
+        &&& owner[i] < window + WINDOW_BYTES
+        &&& owner[i] as int % PAGE_BYTES as int == 0
+        &&& next_top
+        &&& next_middle
+        &&& next_tabled[((owner[i] - window) as int / BLOCK_BYTES as int)]
+    } by {
+        // An occupied page's block has its table, so the link is of another block's table.
+        let x = (owner[i] - window) as int / BLOCK_BYTES as int;
+        assert(top && middle && tabled[x]);
+        assert(level == 2);
+        assert(WINDOW_BYTES == WINDOW_BLOCKS * BLOCK_BYTES);
+        assert(0 <= x < WINDOW_BLOCKS);
+    }
+
+    // Tree structure after `linked`:
+    if level == 4 {
+        assert(linked(treem, tree2, root, l4, child, root));
+        assert(tree2.is_root(root) && !tree2.is_page(root));
+        assert(tree2.record(root).level == treem.record(root).level);
+        assert(tree2.child_slot(root, l4));
+        assert(tree2.entry(root, l4) == child_entry(child));
+        assert(tree2.names_child(root, l4));
+        assert(step(tree2, root, l4) == Some(child));
+        assert(tree2.entry(child, 0) == treem.entry(child, 0));
+        assert(km.table_pages.maps@[child].value()[0].is_empty());
+        assert(treem.entry(child, 0).is_empty());
+    } else if level == 3 {
+        km.lemma_child_facts(root, l4);
+        let t3 = step(treem, root, l4)->0;
+        km.lemma_table_base(t3);
+        assert(treem.is_table(t3));
+        assert(t3 != child && root != t3);
+        assert(linked(treem, tree2, t3, 0, child, root));
+        assert(tree2.record(root).level == treem.record(root).level);
+        assert(tree2.record(t3).level == treem.record(t3).level);
+        assert(tree2.entry(root, l4) == treem.entry(root, l4));
+        assert(tree2.child_slot(root, l4));
+        assert(tree2.names_child(root, l4));
+        assert(step(tree2, root, l4) == Some(t3));
+        assert(tree2.child_slot(t3, 0));
+        assert(tree2.entry(t3, 0) == child_entry(child));
+        assert(tree2.names_child(t3, 0));
+        assert(step(tree2, t3, 0) == Some(child));
+        assert forall|b: int| 0 <= b < WINDOW_BLOCKS && !#[trigger] next_tabled[b]
+            implies tree2.entry(child, b as usize).is_empty() by {
+            assert(tree2.entry(child, b as usize) == treem.entry(child, b as usize));
+            assert(km.table_pages.maps@[child].value()[b as usize].is_empty());
+        }
+    } else {
+        let b_blk = (address - window) as int / BLOCK_BYTES as int;
+        let b_ch = choose|b: int| 0 <= b < WINDOW_BLOCKS && !tabled[b] && address as int == #[trigger] window_block(window, b);
+        assert(b_blk == b_ch) by {
+            assert(address - window == b_ch * (BLOCK_BYTES as int));
+            lemma_div_by_multiple(b_ch, BLOCK_BYTES as int);
+        }
+        km.lemma_child_facts(root, l4);
+        let t3 = step(treem, root, l4)->0;
+        km.lemma_table_base(t3);
+        km.lemma_child_facts(t3, 0);
+        let t2 = step(treem, t3, 0)->0;
+        km.lemma_table_base(t2);
+        assert(treem.is_table(t3) && treem.is_table(t2));
+        assert(t3 != child && t2 != child && root != t3 && root != t2 && t3 != t2);
+        assert(linked(treem, tree2, t2, b_blk as usize, child, root));
+        assert(tree2.record(root).level == treem.record(root).level);
+        assert(tree2.record(t3).level == treem.record(t3).level);
+        assert(tree2.record(t2).level == treem.record(t2).level);
+        assert(tree2.entry(root, l4) == treem.entry(root, l4));
+        assert(tree2.child_slot(root, l4) && tree2.names_child(root, l4));
+        assert(step(tree2, root, l4) == Some(t3));
+        assert(tree2.entry(t3, 0) == treem.entry(t3, 0));
+        assert(tree2.child_slot(t3, 0) && tree2.names_child(t3, 0));
+        assert(step(tree2, t3, 0) == Some(t2));
+
+        assert forall|b: int| 0 <= b < WINDOW_BLOCKS && !#[trigger] next_tabled[b]
+            implies tree2.entry(t2, b as usize).is_empty() by {
+            assert(b != b_blk);
+            assert(!tabled[b]);
+            assert(tree2.entry(t2, b as usize) == treem.entry(t2, b as usize));
+        }
+
+        assert forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] next_tabled[b] implies {
+            &&& step(tree2, t2, b as usize) is Some
+            &&& forall|e: usize| #![trigger tree2.entry(step(tree2, t2, b as usize)->0, e)] e < ENTRIES ==> {
+                let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                &&& window_entry_occupied(pages, state, owner, va)
+                    ==> tree2.entry(step(tree2, t2, b as usize)->0, e).perm.present
+                &&& !window_entry_occupied(pages, state, owner, va)
+                    ==> tree2.entry(step(tree2, t2, b as usize)->0, e).is_empty()
+            }
+        } by {
+            if b == b_blk {
+                assert(tree2.child_slot(t2, b as usize));
+                assert(tree2.entry(t2, b as usize) == child_entry(child));
+                assert(tree2.names_child(t2, b as usize));
+                assert(step(tree2, t2, b as usize) == Some(child));
+                assert forall|e: usize| #![trigger tree2.entry(child, e)] e < ENTRIES implies {
+                    let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                    &&& window_entry_occupied(pages, state, owner, va) ==> tree2.entry(child, e).perm.present
+                    &&& !window_entry_occupied(pages, state, owner, va) ==> tree2.entry(child, e).is_empty()
+                } by {
+                    lemma_window_block_entry_va(window, b, e);
+                    let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                    if window_entry_occupied(pages, state, owner, va) {
+                        let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state[j]) && owner[j] == va;
+                        assert(tabled[((owner[j] - window) as int / BLOCK_BYTES as int)]);
+                        assert(false);
+                    }
+                    assert(tree2.entry(child, e) == treem.entry(child, e));
+                    assert(km.table_pages.maps@[child].value()[e].is_empty());
+                }
+            } else {
+                assert(tabled[b]);
+                km.lemma_child_facts(t2, b as usize);
+                let t1 = step(treem, t2, b as usize)->0;
+                km.lemma_table_base(t1);
+                assert(treem.is_table(t1));
+                assert(t1 != child && t1 != t2);
+                assert(tree2.entry(t2, b as usize) == treem.entry(t2, b as usize));
+                assert(tree2.child_slot(t2, b as usize) && tree2.names_child(t2, b as usize));
+                assert(step(tree2, t2, b as usize) == Some(t1));
+                assert forall|e: usize| #![trigger tree2.entry(t1, e)] e < ENTRIES implies {
+                    let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                    &&& window_entry_occupied(pages, state, owner, va) ==> tree2.entry(t1, e).perm.present
+                    &&& !window_entry_occupied(pages, state, owner, va) ==> tree2.entry(t1, e).is_empty()
+                } by {
+                    let _ = treem.entry(t1, e);
+                    assert(tree2.entry(t1, e) == treem.entry(t1, e));
+                }
+            }
+        }
+    }
+}
+
+/// Under `caller_alone` and `source_state_ready`, `retype_table_page` followed by `link` of a free order-3
+/// group `group` at an unlinked path entry `(address, level)` succeeds and establishes `source_state_ready`
+/// with that path entry marked linked and `group .. group + 8` marked `TAKEN`.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_ready_table_group(
+    pre: Caller,
+    mid: Caller,
+    post: Caller,
+    s1: AcallStep,
+    s2: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state_before: Seq<u8>,
+    state_after: Seq<u8>,
+    owner: Seq<usize>,
+    group: usize,
+    address: usize,
+    level: u64,
+)
+    requires
+        pre.wf(),
+        mid.wf(),
+        post.wf(),
+        mid.root() == pre.root(),
+        post.root() == pre.root(),
+        acall_steps(pre, mid, seq![s1]),
+        acall_steps(mid, post, seq![s2]),
+        caller_alone(pre, mid),
+        caller_alone(mid, post),
+        2 <= level <= 4,
+        group + TABLE_PAGES <= pages,
+        group as int % TABLE_PAGES as int == 0,
+        state_after.len() == MAX_PAGES,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_before[group as int + k] == FREE,
+        forall|k: int| 0 <= k < TABLE_PAGES as int ==> #[trigger] state_after[group as int + k] == TAKEN,
+        forall|u: int|
+            0 <= u < MAX_PAGES && !(group as int <= u < group as int + TABLE_PAGES as int)
+                ==> #[trigger] state_after[u] == state_before[u],
+        (level == 4 && !top && address == window)
+            || (level == 3 && top && !middle && address == window)
+            || (level == 2 && top && middle && exists|b: int|
+                0 <= b < WINDOW_BLOCKS && !tabled[b] && address as int == #[trigger] window_block(window, b)),
+        s1.call == (AcallCall::Retype {
+            untyped,
+            kind: RETYPE_TABLE_PAGE,
+            base: untyped_page(memory, group as int) as u64,
+            word: 0,
+            level: (level - 1) as u64,
+        }),
+        s2.call == (AcallCall::Link {
+            slot: space,
+            va: address as u64,
+            level,
+            from: untyped,
+            child: untyped_page(memory, group as int) as u64,
+        }),
+        source_state_ready(
+            pre.kernel(),
+            pre.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state_before,
+            owner,
+        ),
+    ensures
+        s1.out.status == STATUS_OK,
+        s2.out.status == STATUS_OK,
+        post.kernel().flush_epoch == pre.kernel().flush_epoch,
+        ({
+            let next_top = if level == 4 { true } else { top };
+            let next_middle = if level == 3 { true } else { middle };
+            let next_tabled = if level == 2 {
+                tabled.update((address - window) as int / BLOCK_BYTES as int, true)
+            } else {
+                tabled
+            };
+            source_state_ready(
+                post.kernel(),
+                post.root(),
+                space,
+                untyped,
+                memory,
+                pages,
+                slots,
+                window,
+                next_top,
+                next_middle,
+                next_tabled,
+                state_after,
+                owner,
+            )
+        }),
+{
+    lemma_ready_table_retyped(
+        pre, mid, s1, space, untyped, memory, pages, slots, window, top, middle, tabled,
+        state_before, state_after, owner, group, level,
+    );
+    lemma_ready_table_linked(
+        mid, post, s2, space, untyped, memory, pages, slots, window, top, middle, tabled,
+        state_after, owner, untyped_page(memory, group as int) as usize, address, level,
+    );
+}
+
+/// `blocks_refs_changed` preserves `covered` on every tracked page.
+proof fn lemma_refs_changed_covered(
+    a: &verified::capability::block::BlockTable,
+    b: &verified::capability::block::BlockTable,
+    br: BlockRef,
+    refs: usize,
+    dead: bool,
+    p: int,
+)
+    requires
+        blocks_refs_changed(a, b, br, refs, dead),
+        a.tracks(p),
+    ensures
+        b.covered(p) == a.covered(p),
+{
+    use verified::capability::block::{NUM_1G, NUM_2M};
+    use verified::define::{NUM_PAGES, PAGES_PER_1G, PAGES_PER_2M};
+    let r2 = verified::capability::block::region_2m(p);
+    let r1 = verified::capability::block::region_1g(p);
+    assert(NUM_PAGES as int == (PAGES_PER_2M as int) * (NUM_2M as int));
+    assert(NUM_PAGES as int == (PAGES_PER_1G as int) * (NUM_1G as int));
+    vstd::arithmetic::div_mod::lemma_multiply_divide_lt(p, PAGES_PER_2M as int, NUM_2M as int);
+    vstd::arithmetic::div_mod::lemma_multiply_divide_lt(p, PAGES_PER_1G as int, NUM_1G as int);
+    vstd::arithmetic::div_mod::lemma_div_pos_is_pos(p, PAGES_PER_2M as int);
+    vstd::arithmetic::div_mod::lemma_div_pos_is_pos(p, PAGES_PER_1G as int);
+    assert(0 <= r2 < NUM_2M as int);
+    assert(0 <= r1 < NUM_1G as int);
+    assert(b.regions_2m@[r2].typed == a.regions_2m@[r2].typed);
+    assert(b.regions_1g@[r1].typed == a.regions_1g@[r1].typed);
+}
+
+/// Under `caller_alone` and `source_state_ready` with `state[idx] == HELD`, `top && middle && tabled[b]`,
+/// and `!window_entry_occupied(pages, state, owner, addr)`, `map_page`'s steps are accepted and establish
+/// `source_state_ready` with `state.update(idx, MAPPED)` and `owner.update(idx, addr)`.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_ready_map_page(
+    pre: Caller,
+    post: Caller,
+    steps: Seq<AcallStep>,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    tabled: Seq<bool>,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+    idx: usize,
+    addr: usize,
+)
+    requires
+        pre.wf(),
+        post.wf(),
+        post.root() == pre.root(),
+        acall_steps(pre, post, steps),
+        caller_alone(pre, post),
+        1 <= steps.len() <= 2,
+        steps[0].out.status == STATUS_OK ==> steps.len() == 2,
+        steps[0].call == (AcallCall::Inspect { at: frame_slot(slots as int, idx as int) as u64 }),
+        steps.len() == 2 ==> steps[1].call == (AcallCall::Map {
+            slot: space,
+            va: addr as u64,
+            level: PAGE_LEVEL,
+            from: frame_slot(slots as int, idx as int) as u64,
+            page: 0,
+        }),
+        idx < pages,
+        state[idx as int] == HELD,
+        window <= addr < window + WINDOW_BYTES,
+        addr as int % PAGE_BYTES as int == 0,
+        tabled[((addr - window) as int / BLOCK_BYTES as int)],
+        !window_entry_occupied(pages, state, owner, addr),
+        source_state_ready(
+            pre.kernel(),
+            pre.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            true,
+            true,
+            tabled,
+            state,
+            owner,
+        ),
+    ensures
+        steps.len() == 2,
+        acall_ok(steps),
+        post.kernel().flush_epoch == pre.kernel().flush_epoch,
+        source_state_ready(
+            post.kernel(),
+            post.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            true,
+            true,
+            tabled,
+            state.update(idx as int, MAPPED),
+            owner.update(idx as int, addr),
+        ),
+{
+    reveal(source_state_ready);
+    reveal(CapKernel::inspect_contract_fields);
+    reveal(CapKernel::map_contract_fields);
+    use vstd::arithmetic::div_mod::*;
+    vstd::arithmetic::power2::lemma2_to64();
+    lemma_acall_steps_alone(pre, post, steps);
+    reveal(AcallStep::valid);
+
+    let k0 = pre.kernel();
+    let k2 = post.kernel();
+    let root = pre.root();
+    assert(steps[0].pre == k0 && steps[0].root == root);
+    assert(steps[0].valid());
+
+    lemma_frame_slot(slots as int, idx as int, (pages - 1) as int);
+    let from_int = frame_slot(slots as int, idx as int);
+    let from = from_int as usize;
+    let from_u64 = from_int as u64;
+    assert(from_u64 <= POSITION_INDEX_MASK);
+    lemma_own_position(from_u64);
+    assert(k0.view_table_at(root, None) == Some(root));
+    assert(k0.table_view(root).contains_key(from));
+    assert(k0.inspect_allowed(root, spec_position(from_u64)));
+    assert(steps[0].out.status == STATUS_OK);
+    assert(steps.len() == 2);
+
+    let k1 = steps[0].post;
+    assert(steps[1].pre == k1 && steps[1].post == k2 && steps[1].root == root);
+    assert(steps[1].valid());
+
+    // `k1` is identical to `k0` on all capability/space/block/process/epoch state.
+    let v1 = k1.table_view(root);
+    assert(v1 == k0.table_view(root));
+    let tree0 = tree_of(&k0.table_pages, &k0.spaces);
+    let tree1 = tree_of(&k1.table_pages, &k1.spaces);
+    let tree2 = tree_of(&k2.table_pages, &k2.spaces);
+    assert(tree1 == tree0);
+
+    lemma_window_path(window);
+    lemma_window_va_path(window, addr);
+    let l4 = address_path(window as u64).l4;
+    let b_blk = (addr - window) as int / BLOCK_BYTES as int;
+    let e_idx = ((addr as int - window_block(window, b_blk)) / PAGE_BYTES as int) as usize;
+    let path = address_path(addr as u64);
+    assert(path == SpacePath { l4, l3: 0, l2: b_blk as usize, l1: e_idx });
+    assert(((window_block(window, b_blk) + (e_idx as int) * (PAGE_BYTES as int)) as usize) == addr);
+
+    let t3 = step(tree1, root, l4)->0;
+    let t2 = step(tree1, t3, 0)->0;
+    let t1 = step(tree1, t2, b_blk as usize)->0;
+    k1.lemma_table_base(root);
+    k1.lemma_child_facts(root, l4);
+    k1.lemma_child_facts(t3, 0);
+    k1.lemma_child_facts(t2, b_blk as usize);
+    k1.lemma_table_base(t3);
+    k1.lemma_table_base(t2);
+    k1.lemma_table_base(t1);
+    assert(walk_table(tree1, root, path) == Some(t1));
+    assert(!k1.blocks.pages@[(t1 / PAGE_SZ) as int].dead);
+    assert(tree1.entry(t1, e_idx).is_empty());
+    assert(k1.map_fits(root, addr as u64, 1));
+
+    lemma_own_space_cap_live(k1, root, space);
+    assert(block_bytes(0) == PAGE_SZ as int);
+    assert(v1[from] == frame_view(untyped_page(memory, idx as int) as usize, 0, k1.tables.node_of(root, untyped as usize)));
+    assert(v1[from].rights == 7u32);
+    assert(right_bit(Right::Read) == 1u32);
+    assert(7u32 & 1u32 != 0) by (bit_vector);
+    assert(v1[from].rights & right_bit(Right::Read) != 0);
+    lemma_slot_page(k1, root, from);
+    lemma_untyped_page_facts(k1, memory, pages, idx as int);
+    let p_idx = (untyped_page(memory, idx as int) / PAGE_SZ as int) as usize;
+    assert((untyped_page(memory, idx as int) as usize) / PAGE_SZ == p_idx);
+    assert(view_frame(v1[from], 0) == p_idx);
+    let br = block_ref(&k1.blocks, p_idx);
+    assert(br == BlockRef::Small(p_idx));
+    assert(!occupied(state[idx as int]));
+    assert(frame_refs(k1, p_idx) == 1usize);
+    assert(block_refs(&k1.blocks, br) == 1usize);
+    assert(!block_dead(&k1.blocks, br));
+    assert(k1.map_allowed(root, space as usize, addr as u64, PAGE_LEVEL, from, 0));
+    assert(steps[1].out.status == STATUS_OK);
+    assert forall|m: int| 0 <= m < steps.len() implies (#[trigger] steps[m]).out.status == STATUS_OK by {
+        assert(m == 0 || m == 1);
+    }
+
+    let state2 = state.update(idx as int, MAPPED);
+    let owner2 = owner.update(idx as int, addr);
+    let v2 = k2.table_view(root);
+    assert(v2 == v1);
+    assert(blocks_refs_changed(&k1.blocks, &k2.blocks, br, 2usize, false));
+
+    // `root`'s block is a `Space`/`Process` object, whereas `p_idx` is `Frame`, so `root / PAGE_SZ != p_idx`.
+    assert(!k2.blocks.pages@[(root / PAGE_SZ) as int].dead) by {
+        assert(verified::capability::space::space_wf(&k1.list, &k1.spaces, &k1.blocks, root));
+        assert(k1.blocks.pages@[p_idx as int].object is Frame);
+        assert(k1.blocks.pages@[(root / PAGE_SZ) as int].kind is Base);
+        assert(!(k1.blocks.pages@[(root / PAGE_SZ) as int].object is Frame));
+        let rbr = BlockRef::Small(root / PAGE_SZ);
+        assert(block_typed(&k1.blocks, rbr));
+        assert(rbr != br);
+        assert(block_dead(&k2.blocks, rbr) == block_dead(&k1.blocks, rbr));
+    }
+
+    let nu = k1.tables.node_of(root, untyped as usize);
+    k1.lemma_table_view(root, untyped as usize);
+    assert(k1.tables.is_cap(&k1.list, nu));
+    assert(k2.list.nodes@[nu as int].depth == k1.list.nodes@[nu as int].depth);
+
+    assert forall|i: int| 0 <= i < pages && #[trigger] state2[i] == FREE implies {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k2.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& k2.blocks.tracks(p)
+        &&& k2.blocks.pages@[p].kind is Free
+        &&& !k2.blocks.covered(p)
+    } by {
+        assert(i != idx as int);
+        assert(state[i] == FREE);
+        let si = frame_slot(slots as int, i) as usize;
+        assert(k1.tables.has_slot(&k1.list, root, si));
+        let p = memory as int / PAGE_SZ as int + i;
+        assert(k2.blocks.pages@[p].kind == k1.blocks.pages@[p].kind);
+        lemma_refs_changed_covered(&k1.blocks, &k2.blocks, br, 2usize, false, p);
+    }
+
+    assert forall|i: int| 0 <= i < pages && (#[trigger] state2[i] == HELD || occupied(state2[i])) implies {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        &&& v2.contains_key(s)
+        &&& v2[s] == frame_view(untyped_page(memory, i) as usize, 0, k2.tables.node_of(root, untyped as usize))
+        &&& k2.list.nodes@[k2.tables.node_of(root, s) as int].depth < MAX_DEPTH
+        &&& k2.blocks.tracks(memory as int / PAGE_SZ as int + i)
+        &&& block_ref(&k2.blocks, p) == BlockRef::Small(p)
+        &&& k2.blocks.pages@[p as int].kind is Base
+        &&& k2.blocks.pages@[p as int].object is Frame
+        &&& frame_refs(k2, p) == if occupied(state2[i]) { 2usize } else { 1usize }
+        &&& !k2.blocks.pages@[p as int].dead
+    } by {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        k1.lemma_table_view(root, s);
+        let ns = k1.tables.node_of(root, s);
+        assert(k1.tables.is_cap(&k1.list, ns));
+        assert(k2.list.nodes@[ns as int].depth == k1.list.nodes@[ns as int].depth);
+        if i == idx as int {
+            assert(p == p_idx);
+            assert(occupied(state2[i]));
+            assert(block_ref(&k2.blocks, p_idx) == br);
+            assert(frame_refs(k2, p_idx) == 2usize);
+            assert(!block_dead(&k2.blocks, br));
+            assert(k2.blocks.pages@[p_idx as int].kind == k1.blocks.pages@[p_idx as int].kind);
+            assert(k2.blocks.pages@[p_idx as int].object == k1.blocks.pages@[p_idx as int].object);
+        } else {
+            assert(state[i] == state2[i]);
+            lemma_slot_page(k1, root, s);
+            lemma_untyped_page_facts(k1, memory, pages, i);
+            assert((untyped_page(memory, i) as usize) / PAGE_SZ == p);
+            assert(p as int == memory as int / PAGE_SZ as int + i);
+            assert(p_idx as int == memory as int / PAGE_SZ as int + idx as int);
+            assert(p != p_idx);
+            assert(slot_page(k1, root, s) == p);
+            let x = block_ref(&k1.blocks, p);
+            assert(x == BlockRef::Small(p));
+            assert(block_typed(&k1.blocks, x));
+            assert(x != br);
+            assert(block_ref(&k2.blocks, p) == x);
+            assert(block_refs(&k2.blocks, x) == block_refs(&k1.blocks, x));
+            assert(block_dead(&k2.blocks, x) == block_dead(&k1.blocks, x));
+            assert(k2.blocks.pages@[p as int].kind == k1.blocks.pages@[p as int].kind);
+            assert(k2.blocks.pages@[p as int].object == k1.blocks.pages@[p as int].object);
+        }
+    }
+
+    assert forall|i: int| 0 <= i < pages && occupied(#[trigger] state2[i]) implies {
+        &&& window <= owner2[i]
+        &&& owner2[i] < window + WINDOW_BYTES
+        &&& owner2[i] as int % PAGE_BYTES as int == 0
+        &&& tabled[((owner2[i] - window) as int / BLOCK_BYTES as int)]
+    } by {
+        if i != idx as int {
+            assert(occupied(state[i]) && owner2[i] == owner[i]);
+        }
+    }
+
+    assert forall|i: int, j: int|
+        0 <= i < pages && 0 <= j < pages && i != j
+            && occupied(#[trigger] state2[i]) && occupied(#[trigger] state2[j])
+            implies owner2[i] != owner2[j] by {
+        if i == idx as int {
+            assert(occupied(state[j]) && owner2[j] == owner[j]);
+            if owner[j] == addr {
+                assert(window_entry_occupied(pages, state, owner, addr));
+                assert(false);
+            }
+        } else if j == idx as int {
+            assert(occupied(state[i]) && owner2[i] == owner[i]);
+            if owner[i] == addr {
+                assert(window_entry_occupied(pages, state, owner, addr));
+                assert(false);
+            }
+        } else {
+            assert(occupied(state[i]) && occupied(state[j]));
+        }
+    }
+
+    // Tree structure under `entry_written(tree1, tree2, t1, e_idx)`:
+    assert(entry_written(tree1, tree2, t1, e_idx));
+    lemma_same_tree_domains(tree1, tree2);
+    assert forall|u: usize| #[trigger] tree2.record(u).level == tree1.record(u).level by {
+        if u != t1 {
+            assert(tree2.record(u) == tree1.record(u));
+        }
+    }
+    assert(root != t1 && t3 != t1 && t2 != t1);
+    assert(tree2.entry(root, l4) == tree1.entry(root, l4));
+    assert(tree2.child_slot(root, l4) && tree2.names_child(root, l4));
+    assert(step(tree2, root, l4) == Some(t3));
+    assert(tree2.entry(t3, 0) == tree1.entry(t3, 0));
+    assert(tree2.child_slot(t3, 0) && tree2.names_child(t3, 0));
+    assert(step(tree2, t3, 0) == Some(t2));
+
+    assert forall|b: int| 0 <= b < WINDOW_BLOCKS && !#[trigger] tabled[b]
+        implies tree2.entry(t2, b as usize).is_empty() by {
+        assert(tree2.entry(t2, b as usize) == tree1.entry(t2, b as usize));
+    }
+
+    assert forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] tabled[b] implies {
+        &&& step(tree2, t2, b as usize) is Some
+        &&& forall|e: usize| #![trigger tree2.entry(step(tree2, t2, b as usize)->0, e)] e < ENTRIES ==> {
+            let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+            &&& window_entry_occupied(pages, state2, owner2, va)
+                ==> tree2.entry(step(tree2, t2, b as usize)->0, e).perm.present
+            &&& !window_entry_occupied(pages, state2, owner2, va)
+                ==> tree2.entry(step(tree2, t2, b as usize)->0, e).is_empty()
+        }
+    } by {
+        k1.lemma_child_facts(t2, b as usize);
+        let tb = step(tree1, t2, b as usize)->0;
+        k1.lemma_table_base(tb);
+        assert(tb != t2);
+        assert(tree2.entry(t2, b as usize) == tree1.entry(t2, b as usize));
+        assert(tree2.child_slot(t2, b as usize) && tree2.names_child(t2, b as usize));
+        assert(step(tree2, t2, b as usize) == Some(tb));
+        if b != b_blk {
+            lemma_distinct_children(k1, t2, b as usize, b_blk as usize);
+            assert(tb != t1);
+        }
+        assert forall|e: usize| #![trigger tree2.entry(tb, e)] e < ENTRIES implies {
+            let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+            &&& window_entry_occupied(pages, state2, owner2, va) ==> tree2.entry(tb, e).perm.present
+            &&& !window_entry_occupied(pages, state2, owner2, va) ==> tree2.entry(tb, e).is_empty()
+        } by {
+            lemma_window_block_entry_va(window, b, e);
+            let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+            if b == b_blk && e == e_idx {
+                assert(tb == t1 && va == addr);
+                assert(occupied(state2[idx as int]) && owner2[idx as int] == addr);
+                assert(window_entry_occupied(pages, state2, owner2, va));
+                assert(tree2.entry(t1, e_idx).perm.present);
+            } else {
+                assert(!(tb == t1 && e == e_idx));
+                assert(va != addr) by {
+                    if va == addr {
+                        assert((va - window) as int / BLOCK_BYTES as int == b);
+                        assert(b == b_blk);
+                        assert((va as int - window_block(window, b)) / PAGE_BYTES as int == e as int);
+                        assert(e == e_idx);
+                    }
+                }
+                let _ = tree1.entry(tb, e);
+                assert(tree2.entry(tb, e) == tree1.entry(tb, e));
+                if window_entry_occupied(pages, state2, owner2, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state2[j]) && owner2[j] == va;
+                    assert(j != idx as int);
+                    assert(occupied(state[j]) && owner[j] == va);
+                    assert(window_entry_occupied(pages, state, owner, va));
+                }
+                if window_entry_occupied(pages, state, owner, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state[j]) && owner[j] == va;
+                    assert(j != idx as int);
+                    assert(occupied(state2[j]) && owner2[j] == va);
+                    assert(window_entry_occupied(pages, state2, owner2, va));
+                }
+            }
+        }
+    }
+}
+
+/// Under `caller_alone`, `flush_room(pre, 1)`, `frames_held`, and `source_state_ready` with
+/// `state[idx] == PARKED` and `owner[idx] == addr`, `unmap_page` succeeds, increments `flush_epoch` by 1,
+/// and establishes `source_state_ready` with `state.update(idx, HELD)`.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_ready_unmap_page(
+    pre: Caller,
+    post: Caller,
+    step_out: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+    frames: Map<int, (usize, Option<usize>)>,
+    idx: usize,
+    addr: usize,
+)
+    requires
+        pre.wf(),
+        post.wf(),
+        post.root() == pre.root(),
+        acall_steps(pre, post, seq![step_out]),
+        caller_alone(pre, post),
+        flush_room(pre, 1),
+        frames_held(pre.kernel(), pre.root(), frames),
+        frames.contains_key(idx as int),
+        frames[idx as int] == (frame_slot(slots as int, idx as int) as usize, Some(addr)),
+        idx < pages,
+        state[idx as int] == PARKED,
+        owner[idx as int] == addr,
+        step_out.call == (AcallCall::Unmap { slot: space, va: addr as u64, level: PAGE_LEVEL }),
+        source_state_ready(
+            pre.kernel(),
+            pre.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state,
+            owner,
+        ),
+    ensures
+        step_out.out.status == STATUS_OK,
+        post.kernel().flush_epoch == pre.kernel().flush_epoch + 1,
+        source_state_ready(
+            post.kernel(),
+            post.root(),
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state.update(idx as int, HELD),
+            owner,
+        ),
+{
+    reveal(source_state_ready);
+    reveal(CapKernel::unmap_contract_fields);
+    use vstd::arithmetic::div_mod::*;
+    vstd::arithmetic::power2::lemma2_to64();
+    lemma_acall_steps_alone(pre, post, seq![step_out]);
+    assert(seq![step_out][0] == step_out);
+    reveal(AcallStep::valid);
+    assert(step_out.valid());
+
+    let k0 = pre.kernel();
+    let k1 = post.kernel();
+    let root = pre.root();
+    assert(step_out.pre == k0 && step_out.post == k1 && step_out.root == root);
+
+    assert(occupied(state[idx as int]));
+    assert(top && middle);
+    lemma_window_path(window);
+    lemma_window_va_path(window, addr);
+    let l4 = address_path(window as u64).l4;
+    let b_blk = (addr - window) as int / BLOCK_BYTES as int;
+    let e_idx = ((addr as int - window_block(window, b_blk)) / PAGE_BYTES as int) as usize;
+    let path = address_path(addr as u64);
+    assert(path == SpacePath { l4, l3: 0, l2: b_blk as usize, l1: e_idx });
+    assert(((window_block(window, b_blk) + (e_idx as int) * (PAGE_BYTES as int)) as usize) == addr);
+    assert(tabled[b_blk]);
+
+    let tree0 = tree_of(&k0.table_pages, &k0.spaces);
+    let tree1 = tree_of(&k1.table_pages, &k1.spaces);
+    let t3 = step(tree0, root, l4)->0;
+    let t2 = step(tree0, t3, 0)->0;
+    let t1 = step(tree0, t2, b_blk as usize)->0;
+    k0.lemma_table_base(root);
+    k0.lemma_child_facts(root, l4);
+    k0.lemma_table_base(t3);
+    k0.lemma_child_facts(t3, 0);
+    k0.lemma_table_base(t2);
+    k0.lemma_child_facts(t2, b_blk as usize);
+    k0.lemma_table_base(t1);
+    assert(walk_table(tree0, root, path) == Some(t1));
+    assert(window_entry_occupied(pages, state, owner, addr));
+    let _ = tree0.entry(t1, e_idx);
+    assert(tree0.entry(t1, e_idx).perm.present);
+    assert(k0.unmap_fits(root, addr as u64));
+    lemma_own_space_cap_live(k0, root, space);
+    assert(k0.unmap_allowed(root, space as usize, addr as u64, PAGE_LEVEL));
+    assert(step_out.out.status == STATUS_OK);
+
+    let from = frame_slot(slots as int, idx as int) as usize;
+    let v0 = k0.table_view(root);
+    let v1 = k1.table_view(root);
+    assert(v1 == v0);
+    assert(v0.contains_key(from));
+    lemma_slot_page(k0, root, from);
+    lemma_untyped_page_facts(k0, memory, pages, idx as int);
+    let p_idx = (untyped_page(memory, idx as int) / PAGE_SZ as int) as usize;
+    assert((untyped_page(memory, idx as int) as usize) / PAGE_SZ == p_idx);
+    assert(slot_page(k0, root, from) == p_idx);
+    assert(frame_held(k0, root, frames[idx as int]));
+    assert(space_mapping(tree0, root)[path].addr / PAGE_SZ == p_idx);
+    let br = block_ref(&k0.blocks, p_idx);
+    assert(br == BlockRef::Small(p_idx));
+    assert(frame_refs(k0, p_idx) == 2usize);
+    assert(block_refs(&k0.blocks, br) == 2usize);
+    assert(!block_dead(&k0.blocks, br));
+    assert(blocks_refs_changed(&k0.blocks, &k1.blocks, br, 1usize, false));
+
+    assert(!k1.blocks.pages@[(root / PAGE_SZ) as int].dead) by {
+        assert(verified::capability::space::space_wf(&k0.list, &k0.spaces, &k0.blocks, root));
+        assert(k0.blocks.pages@[p_idx as int].object is Frame);
+        assert(k0.blocks.pages@[(root / PAGE_SZ) as int].kind is Base);
+        assert(!(k0.blocks.pages@[(root / PAGE_SZ) as int].object is Frame));
+        let rbr = BlockRef::Small(root / PAGE_SZ);
+        assert(block_typed(&k0.blocks, rbr));
+        assert(rbr != br);
+        assert(block_dead(&k1.blocks, rbr) == block_dead(&k0.blocks, rbr));
+    }
+
+    k0.lemma_table_view(root, untyped as usize);
+    k0.lemma_slot(root, untyped as usize);
+    let nu = k0.tables.node_of(root, untyped as usize);
+    k0.lemma_slot_bound(nu);
+    assert(k1.list.nodes@[nu as int].depth == k0.list.nodes@[nu as int].depth);
+
+    let state1 = state.update(idx as int, HELD);
+    assert forall|i: int| 0 <= i < pages && #[trigger] state1[i] == FREE implies {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k1.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& k1.blocks.tracks(p)
+        &&& k1.blocks.pages@[p].kind is Free
+        &&& !k1.blocks.covered(p)
+    } by {
+        assert(i != idx as int);
+        assert(state[i] == FREE);
+        let si = frame_slot(slots as int, i) as usize;
+        assert(k0.tables.has_slot(&k0.list, root, si));
+        let p = memory as int / PAGE_SZ as int + i;
+        assert(k1.blocks.pages@[p].kind == k0.blocks.pages@[p].kind);
+        lemma_refs_changed_covered(&k0.blocks, &k1.blocks, br, 1usize, false, p);
+    }
+
+    assert forall|i: int| 0 <= i < pages && (#[trigger] state1[i] == HELD || occupied(state1[i])) implies {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        &&& v1.contains_key(s)
+        &&& v1[s] == frame_view(untyped_page(memory, i) as usize, 0, k1.tables.node_of(root, untyped as usize))
+        &&& k1.list.nodes@[k1.tables.node_of(root, s) as int].depth < MAX_DEPTH
+        &&& k1.blocks.tracks(memory as int / PAGE_SZ as int + i)
+        &&& block_ref(&k1.blocks, p) == BlockRef::Small(p)
+        &&& k1.blocks.pages@[p as int].kind is Base
+        &&& k1.blocks.pages@[p as int].object is Frame
+        &&& frame_refs(k1, p) == if occupied(state1[i]) { 2usize } else { 1usize }
+        &&& !k1.blocks.pages@[p as int].dead
+    } by {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        k0.lemma_table_view(root, s);
+        k0.lemma_slot(root, s);
+        let ns = k0.tables.node_of(root, s);
+        k0.lemma_slot_bound(ns);
+        assert(k1.list.nodes@[ns as int].depth == k0.list.nodes@[ns as int].depth);
+        if i == idx as int {
+            assert(p == p_idx);
+            assert(!occupied(state1[i]));
+            assert(block_ref(&k1.blocks, p_idx) == br);
+            assert(frame_refs(k1, p_idx) == 1usize);
+            assert(!block_dead(&k1.blocks, br));
+            assert(k1.blocks.pages@[p_idx as int].kind == k0.blocks.pages@[p_idx as int].kind);
+            assert(k1.blocks.pages@[p_idx as int].object == k0.blocks.pages@[p_idx as int].object);
+        } else {
+            assert(state[i] == state1[i]);
+            lemma_slot_page(k0, root, s);
+            lemma_untyped_page_facts(k0, memory, pages, i);
+            assert((untyped_page(memory, i) as usize) / PAGE_SZ == p);
+            assert(p as int == memory as int / PAGE_SZ as int + i);
+            assert(p_idx as int == memory as int / PAGE_SZ as int + idx as int);
+            assert(p != p_idx);
+            assert(slot_page(k0, root, s) == p);
+            let x = block_ref(&k0.blocks, p);
+            assert(x == BlockRef::Small(p));
+            assert(block_typed(&k0.blocks, x));
+            assert(x != br);
+            assert(block_ref(&k1.blocks, p) == x);
+            assert(block_refs(&k1.blocks, x) == block_refs(&k0.blocks, x));
+            assert(block_dead(&k1.blocks, x) == block_dead(&k0.blocks, x));
+            assert(k1.blocks.pages@[p as int].kind == k0.blocks.pages@[p as int].kind);
+            assert(k1.blocks.pages@[p as int].object == k0.blocks.pages@[p as int].object);
+        }
+    }
+
+    assert forall|i: int| 0 <= i < pages && occupied(#[trigger] state1[i]) implies {
+        &&& window <= owner[i]
+        &&& owner[i] < window + WINDOW_BYTES
+        &&& owner[i] as int % PAGE_BYTES as int == 0
+        &&& top
+        &&& middle
+        &&& tabled[((owner[i] - window) as int / BLOCK_BYTES as int)]
+    } by {
+        assert(i != idx as int);
+        assert(occupied(state[i]));
+    }
+
+    assert forall|i: int, j: int|
+        0 <= i < pages && 0 <= j < pages && i != j
+            && occupied(#[trigger] state1[i]) && occupied(#[trigger] state1[j])
+            implies owner[i] != owner[j] by {
+        assert(i != idx as int && j != idx as int);
+        assert(occupied(state[i]) && occupied(state[j]));
+    }
+
+    reveal(entries_cleared);
+    lemma_same_tree_domains(tree0, tree1);
+    assert forall|u: usize| #[trigger] tree1.record(u) == tree0.record(u) by {
+        assert(tree1.is_page(u) == tree0.is_page(u));
+    }
+    assert(root != t1 && t3 != t1 && t2 != t1);
+    assert(tree1.entry(root, l4) == tree0.entry(root, l4));
+    assert(tree1.child_slot(root, l4) && tree1.names_child(root, l4));
+    assert(step(tree1, root, l4) == Some(t3));
+    assert(tree1.entry(t3, 0) == tree0.entry(t3, 0));
+    assert(tree1.child_slot(t3, 0) && tree1.names_child(t3, 0));
+    assert(step(tree1, t3, 0) == Some(t2));
+
+    assert forall|b: int| 0 <= b < WINDOW_BLOCKS && !#[trigger] tabled[b]
+        implies tree1.entry(t2, b as usize).is_empty() by {
+        assert(tree1.entry(t2, b as usize) == tree0.entry(t2, b as usize));
+    }
+
+    assert forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] tabled[b] implies {
+        &&& step(tree1, t2, b as usize) is Some
+        &&& forall|e: usize| #![trigger tree1.entry(step(tree1, t2, b as usize)->0, e)] e < ENTRIES ==> {
+            let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+            &&& window_entry_occupied(pages, state1, owner, va)
+                ==> tree1.entry(step(tree1, t2, b as usize)->0, e).perm.present
+            &&& !window_entry_occupied(pages, state1, owner, va)
+                ==> tree1.entry(step(tree1, t2, b as usize)->0, e).is_empty()
+        }
+    } by {
+        k0.lemma_child_facts(t2, b as usize);
+        let tb = step(tree0, t2, b as usize)->0;
+        k0.lemma_table_base(tb);
+        assert(tb != t2);
+        assert(tree1.entry(t2, b as usize) == tree0.entry(t2, b as usize));
+        assert(tree1.child_slot(t2, b as usize) && tree1.names_child(t2, b as usize));
+        assert(step(tree1, t2, b as usize) == Some(tb));
+        if b != b_blk {
+            lemma_distinct_children(k0, t2, b as usize, b_blk as usize);
+            assert(tb != t1);
+        }
+        assert forall|e: usize| #![trigger tree1.entry(tb, e)] e < ENTRIES implies {
+            let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+            &&& window_entry_occupied(pages, state1, owner, va) ==> tree1.entry(tb, e).perm.present
+            &&& !window_entry_occupied(pages, state1, owner, va) ==> tree1.entry(tb, e).is_empty()
+        } by {
+            lemma_window_block_entry_va(window, b, e);
+            let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+            if b == b_blk && e == e_idx {
+                assert(tb == t1 && va == addr);
+                assert(tree1.entry(t1, e_idx).is_empty());
+                if window_entry_occupied(pages, state1, owner, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state1[j]) && owner[j] == va;
+                    assert(j != idx as int);
+                    assert(occupied(state[j]) && occupied(state[idx as int]));
+                    assert(owner[j] != owner[idx as int]);
+                    assert(false);
+                }
+            } else {
+                assert(!(tb == t1 && e == e_idx));
+                assert(va != addr) by {
+                    if va == addr {
+                        assert((va - window) as int / BLOCK_BYTES as int == b);
+                        assert(b == b_blk);
+                        assert((va as int - window_block(window, b)) / PAGE_BYTES as int == e as int);
+                        assert(e == e_idx);
+                    }
+                }
+                let _ = tree0.entry(tb, e);
+                assert(tree1.entry(tb, e) == tree0.entry(tb, e));
+                if window_entry_occupied(pages, state1, owner, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state1[j]) && owner[j] == va;
+                    assert(j != idx as int);
+                    assert(occupied(state[j]));
+                    assert(window_entry_occupied(pages, state, owner, va));
+                }
+                if window_entry_occupied(pages, state, owner, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state[j]) && owner[j] == va;
+                    assert(j != idx as int);
+                    assert(occupied(state1[j]));
+                    assert(window_entry_occupied(pages, state1, owner, va));
+                }
+            }
+        }
+    }
+}
+
+/// Toggling a page between `MAPPED` and `PARKED` at the same owner address leaves `occupied` unchanged
+/// on every page and therefore preserves `source_state_ready`.
+#[verifier::spinoff_prover]
+pub(crate) proof fn lemma_ready_park_toggle(
+    k: CapKernel,
+    root: usize,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state: Seq<u8>,
+    owner: Seq<usize>,
+    idx: usize,
+    new_st: u8,
+)
+    requires
+        idx < pages,
+        occupied(state[idx as int]),
+        occupied(new_st),
+        source_state_ready(k, root, space, untyped, memory, pages, slots, window, top, middle, tabled, state, owner),
+    ensures
+        source_state_ready(
+            k,
+            root,
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            top,
+            middle,
+            tabled,
+            state.update(idx as int, new_st),
+            owner,
+        ),
+{
+    reveal(source_state_ready);
+    let state1 = state.update(idx as int, new_st);
+    assert forall|i: int| 0 <= i < pages && #[trigger] state1[i] == FREE implies {
+        let p = memory as int / PAGE_SZ as int + i;
+        &&& k.empty_slot(root, frame_slot(slots as int, i) as usize)
+        &&& k.blocks.tracks(p)
+        &&& k.blocks.pages@[p].kind is Free
+        &&& !k.blocks.covered(p)
+    } by {
+        assert(i != idx as int);
+        assert(state[i] == FREE);
+    }
+    assert forall|i: int| 0 <= i < pages && (#[trigger] state1[i] == HELD || occupied(state1[i])) implies {
+        let s = frame_slot(slots as int, i) as usize;
+        let p = (untyped_page(memory, i) / PAGE_SZ as int) as usize;
+        &&& k.table_view(root).contains_key(s)
+        &&& k.table_view(root)[s] == frame_view(untyped_page(memory, i) as usize, 0, k.tables.node_of(root, untyped as usize))
+        &&& k.list.nodes@[k.tables.node_of(root, s) as int].depth < MAX_DEPTH
+        &&& k.blocks.tracks(memory as int / PAGE_SZ as int + i)
+        &&& block_ref(&k.blocks, p) == BlockRef::Small(p)
+        &&& k.blocks.pages@[p as int].kind is Base
+        &&& k.blocks.pages@[p as int].object is Frame
+        &&& frame_refs(k, p) == if occupied(state1[i]) { 2usize } else { 1usize }
+        &&& !k.blocks.pages@[p as int].dead
+    } by {
+        if i == idx as int {
+            assert(occupied(state[idx as int]));
+        } else {
+            assert(state[i] == state1[i]);
+        }
+    }
+    assert forall|i: int| 0 <= i < pages && occupied(#[trigger] state1[i]) implies {
+        &&& window <= owner[i]
+        &&& owner[i] < window + WINDOW_BYTES
+        &&& owner[i] as int % PAGE_BYTES as int == 0
+        &&& top
+        &&& middle
+        &&& tabled[((owner[i] - window) as int / BLOCK_BYTES as int)]
+    } by {
+        if i != idx as int {
+            assert(occupied(state[i]));
+        } else {
+            assert(occupied(state[idx as int]));
+        }
+    }
+    assert forall|i: int, j: int|
+        0 <= i < pages && 0 <= j < pages && i != j
+            && occupied(#[trigger] state1[i]) && occupied(#[trigger] state1[j])
+            implies owner[i] != owner[j] by {
+        assert(occupied(state[i]) && occupied(state[j]));
+    }
+    if top && middle {
+        let tree = tree_of(&k.table_pages, &k.spaces);
+        let t3 = step(tree, root, address_path(window as u64).l4)->0;
+        let t2 = step(tree, t3, 0)->0;
+        assert forall|b: int| 0 <= b < WINDOW_BLOCKS && #[trigger] tabled[b] implies {
+            &&& step(tree, t2, b as usize) is Some
+            &&& forall|e: usize| #![trigger tree.entry(step(tree, t2, b as usize)->0, e)] e < ENTRIES ==> {
+                let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                &&& window_entry_occupied(pages, state1, owner, va)
+                    ==> tree.entry(step(tree, t2, b as usize)->0, e).perm.present
+                &&& !window_entry_occupied(pages, state1, owner, va)
+                    ==> tree.entry(step(tree, t2, b as usize)->0, e).is_empty()
+            }
+        } by {
+            let t1 = step(tree, t2, b as usize)->0;
+            assert forall|e: usize| #![trigger tree.entry(t1, e)] e < ENTRIES implies {
+                let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                &&& window_entry_occupied(pages, state1, owner, va) ==> tree.entry(t1, e).perm.present
+                &&& !window_entry_occupied(pages, state1, owner, va) ==> tree.entry(t1, e).is_empty()
+            } by {
+                let va = (window_block(window, b) + (e as int) * (PAGE_BYTES as int)) as usize;
+                let _ = tree.entry(t1, e);
+                if window_entry_occupied(pages, state1, owner, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state1[j]) && owner[j] == va;
+                    assert(occupied(state[j]));
+                    assert(window_entry_occupied(pages, state, owner, va));
+                }
+                if window_entry_occupied(pages, state, owner, va) {
+                    let j = choose|j: int| 0 <= j < pages && occupied(#[trigger] state[j]) && owner[j] == va;
+                    assert(occupied(state1[j]));
+                    assert(window_entry_occupied(pages, state1, owner, va));
+                }
+            }
+        }
+    }
+}
+
+/// If `Caller` `b` equals `a` (same kernel and history), readiness on `a` is readiness on `b`.
+pub(crate) proof fn lemma_same_kernel_ready(
+    k: CapKernel,
+    root: usize,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    top: bool,
+    middle: bool,
+    tabled: Seq<bool>,
+    state1: Seq<u8>,
+    state2: Seq<u8>,
+    owner1: Seq<usize>,
+    owner2: Seq<usize>,
+)
+    requires
+        state1 =~= state2,
+        owner1 =~= owner2,
+        source_state_ready(k, root, space, untyped, memory, pages, slots, window, top, middle, tabled, state1, owner1),
+    ensures
+        source_state_ready(k, root, space, untyped, memory, pages, slots, window, top, middle, tabled, state2, owner2),
+{
+    reveal(source_state_ready);
+    assert(state1 == state2 && owner1 == owner2);
 }
 
 } // verus!

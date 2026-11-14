@@ -26,6 +26,8 @@ use vstd::iset::ISet;
 use vstd::raw_ptr::*;
 
 use acall::step::Caller;
+#[cfg(verus_keep_ghost)]
+use acall::step::caller_alone;
 use aheap::arch::*;
 use aheap::source::*;
 #[cfg(verus_keep_ghost)]
@@ -76,7 +78,7 @@ pub open spec fn frame_slot(slots: int, i: int) -> int {
 }
 
 /// From a slot, which is no leaf's hidden node, frame slots rise with the page and none is a hidden node.
-proof fn lemma_frame_slot(slots: int, i: int, j: int)
+pub(crate) proof fn lemma_frame_slot(slots: int, i: int, j: int)
     requires
         slots >= 0,
         slots % LEAF_INDICES as int != 0,
@@ -473,25 +475,25 @@ proof fn lemma_run_touches_snoc(window: usize, start: int, k: nat, b: int)
 }
 
 /// A page of the untyped nothing has retyped.
-const FREE: u8 = 0;
+pub(crate) const FREE: u8 = 0;
 
 /// A page retyped as a frame whose capability the source holds, mapped nowhere: a map of it was refused,
 /// or it was parked and unmapped.
-const HELD: u8 = 1;
+pub(crate) const HELD: u8 = 1;
 
 /// A page retyped as a frame and mapped at the address the record names.
-const MAPPED: u8 = 2;
+pub(crate) const MAPPED: u8 = 2;
 
 /// A page the source does not use again: a table page's, or one whose retype or unmap was refused.
-const TAKEN: u8 = 3;
+pub(crate) const TAKEN: u8 = 3;
 
 /// A page retyped as a frame and mapped at the address the record names, in no run: its run was
 /// released, and the record holds the permission to its bytes until that address is backed again.
-const PARKED: u8 = 4;
+pub(crate) const PARKED: u8 = 4;
 
 /// Whether a page in `state` is mapped at the address the record names, its permission handed out or
 /// parked.
-spec fn occupied(state: u8) -> bool {
+pub(crate) open spec fn occupied(state: u8) -> bool {
     state == MAPPED || state == PARKED
 }
 
@@ -1517,6 +1519,35 @@ spec fn refused_spent(before: Record, after: Record, steps: Seq<AcallStep>, page
 }
 
 impl Record {
+    /// Whether the record is in the fresh state `Record::new` produces: no table linked and every page
+    /// of the untyped `FREE`.
+    spec fn fresh(&self) -> bool {
+        &&& !self.top
+        &&& !self.middle
+        &&& forall|b: int| 0 <= b < WINDOW_BLOCKS ==> !#[trigger] self.tabled@[b]
+        &&& forall|i: int| 0 <= i < self.pages ==> #[trigger] self.state@[i] == FREE
+    }
+
+    /// Whether `caller`'s kernel state satisfies `source_state_ready` for this record's configuration,
+    /// linked tables and page states.
+    spec fn ready(&self, caller: Caller) -> bool {
+        source_state_ready(
+            caller.kernel(),
+            caller.root(),
+            self.space,
+            self.untyped,
+            self.memory,
+            self.pages,
+            self.slots,
+            self.window,
+            self.top,
+            self.middle,
+            self.tabled@,
+            self.state@,
+            self.owner@,
+        )
+    }
+
     /// `caller` is a token of the process whose space the record's system calls change, a process that
     /// is its own: the slot at `space` names its own space.
     spec fn serves(&self, caller: Caller) -> bool {
@@ -1774,6 +1805,7 @@ impl Record {
     }
 
     /// Retypes free page `i` as a frame into its slot.
+    #[verifier::spinoff_prover]
     fn retype_free(&mut self, caller: &mut Tracked<Caller>, i: usize) -> (r: (Option<usize>, Ghost<Seq<AcallStep>>))
         requires
             old(self).inv(),
@@ -1815,12 +1847,18 @@ impl Record {
                     &&& !acall_ok(r.1@)
                 },
             },
+            (old(self).ready(old(caller)@) && caller_alone(old(caller)@, final(caller)@)) ==> {
+                &&& r.0 == Some(i)
+                &&& final(self).ready(final(caller)@)
+                &&& final(caller)@.kernel().flush_epoch == old(caller)@.kernel().flush_epoch
+            },
         no_unwind
     {
         hide(CapKernel::wf);
         let base = self.page(i);
         let slot = self.slot(i);
         let ghost before = *self;
+        let ghost c0 = caller@;
         proof {
             assert forall|u: int| #[trigger] before.frames().contains_key(u) implies before.frames()[u].0 != slot as usize by {
                 reveal(slots_ok);
@@ -1853,6 +1891,42 @@ impl Record {
             proof {
                 assert(self.frames() =~= before.frames().insert(i as int, (slot as usize, None)));
                 lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
+                if before.ready(c0) && caller_alone(c0, caller@) {
+                    lemma_ready_retype_frame(
+                        c0,
+                        caller@,
+                        s,
+                        before.space,
+                        before.untyped,
+                        before.memory,
+                        before.pages,
+                        before.slots,
+                        before.window,
+                        before.top,
+                        before.middle,
+                        before.tabled@,
+                        before.state@,
+                        before.owner@,
+                        i,
+                    );
+                    lemma_same_kernel_ready(
+                        caller@.kernel(),
+                        caller@.root(),
+                        self.space,
+                        self.untyped,
+                        self.memory,
+                        self.pages,
+                        self.slots,
+                        self.window,
+                        self.top,
+                        self.middle,
+                        self.tabled@,
+                        before.state@.update(i as int, HELD),
+                        self.state@,
+                        before.owner@,
+                        self.owner@,
+                    );
+                }
             }
             return (Some(i), Ghost(steps));
         }
@@ -1860,6 +1934,26 @@ impl Record {
         assert(self.frames() =~= before.frames());
         proof {
             lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
+            if before.ready(c0) && caller_alone(c0, caller@) {
+                lemma_ready_retype_frame(
+                    c0,
+                    caller@,
+                    s,
+                    before.space,
+                    before.untyped,
+                    before.memory,
+                    before.pages,
+                    before.slots,
+                    before.window,
+                    before.top,
+                    before.middle,
+                    before.tabled@,
+                    before.state@,
+                    before.owner@,
+                    i,
+                );
+                assert(false);
+            }
         }
         (None, Ghost(steps))
     }
@@ -1868,6 +1962,7 @@ impl Record {
     /// free group beyond the unlinked window tables retyped as a frame, else a parked page unmapped,
     /// else a free page from a remaining group retyped. None when no page is available or the kernel
     /// refused the retype or the unmap.
+    #[verifier::spinoff_prover]
     fn frame(&mut self, caller: &mut Tracked<Caller>) -> (r: (Option<usize>, Ghost<Seq<AcallStep>>))
         requires
             old(self).inv(),
@@ -1917,6 +2012,16 @@ impl Record {
                         &&& old(self).free_groups() <= final(self).free_groups() + 1
                     }
                 },
+            },
+            (old(self).ready(old(caller)@)
+                && (flush_room(old(caller)@, 1) || forall|a: int| !#[trigger] old(self).parks(a))
+                && caller_alone(old(caller)@, final(caller)@)) ==> {
+                &&& acall_ok(r.1@)
+                &&& old(self).avail_pages() >= 1 ==> r.0 is Some
+                &&& final(self).ready(final(caller)@)
+                &&& final(caller)@.kernel().flush_epoch as int <= old(caller)@.kernel().flush_epoch as int + 1
+                &&& (forall|a: int| !#[trigger] old(self).parks(a))
+                    ==> final(caller)@.kernel().flush_epoch == old(caller)@.kernel().flush_epoch
             },
         no_unwind
     {
@@ -2052,9 +2157,11 @@ impl Record {
                     lemma_avail_at_least_one(self.state@, self.pages as int, i as int);
                 }
                 let ghost before = *self;
+                let ghost c0 = caller@;
+                let addr = self.owner[i];
                 let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
                 assert(self.frames() =~= before.frames());
-                let (unmapped, Ghost(s)) = unmap_page(caller, self.space, self.owner[i], Tracked(perm), Ghost(before.frames()), Ghost(i as int));
+                let (unmapped, Ghost(s)) = unmap_page(caller, self.space, addr, Tracked(perm), Ghost(before.frames()), Ghost(i as int));
                 let ghost steps = seq![s];
                 proof {
                     assert(occupied(before.state@[i as int]));
@@ -2075,6 +2182,48 @@ impl Record {
                         assert(self.frames() =~= before.frames().insert(i as int, (before.frames()[i as int].0, None)));
                         lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
                         lemma_free_groups_nonfree_change(before.state@, self.state@, ng as int, i as int);
+                        if before.ready(c0)
+                            && (flush_room(c0, 1) || forall|a: int| !#[trigger] old(self).parks(a))
+                            && caller_alone(c0, caller@)
+                        {
+                            assert(old(self).parks(addr as int));
+                            lemma_ready_unmap_page(
+                                c0,
+                                caller@,
+                                s,
+                                before.space,
+                                before.untyped,
+                                before.memory,
+                                before.pages,
+                                before.slots,
+                                before.window,
+                                before.top,
+                                before.middle,
+                                before.tabled@,
+                                before.state@,
+                                before.owner@,
+                                before.frames(),
+                                i,
+                                addr,
+                            );
+                            lemma_same_kernel_ready(
+                                caller@.kernel(),
+                                caller@.root(),
+                                self.space,
+                                self.untyped,
+                                self.memory,
+                                self.pages,
+                                self.slots,
+                                self.window,
+                                self.top,
+                                self.middle,
+                                self.tabled@,
+                                before.state@.update(i as int, HELD),
+                                self.state@,
+                                before.owner@,
+                                self.owner@,
+                            );
+                        }
                     }
                     return (Some(i), Ghost(steps));
                 }
@@ -2083,6 +2232,32 @@ impl Record {
                 proof {
                     lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
                     lemma_free_groups_nonfree_change(before.state@, self.state@, ng as int, i as int);
+                    if before.ready(c0)
+                        && (flush_room(c0, 1) || forall|a: int| !#[trigger] old(self).parks(a))
+                        && caller_alone(c0, caller@)
+                    {
+                        assert(old(self).parks(addr as int));
+                        lemma_ready_unmap_page(
+                            c0,
+                            caller@,
+                            s,
+                            before.space,
+                            before.untyped,
+                            before.memory,
+                            before.pages,
+                            before.slots,
+                            before.window,
+                            before.top,
+                            before.middle,
+                            before.tabled@,
+                            before.state@,
+                            before.owner@,
+                            before.frames(),
+                            i,
+                            addr,
+                        );
+                        assert(false);
+                    }
                 }
                 return (None, Ghost(steps));
             }
@@ -2136,6 +2311,7 @@ impl Record {
     /// Retypes the lowest free order-3 block of the untyped as a table page of the level below
     /// `level`, and links it at the entry of `level` that `address` names. Whether both were done,
     /// and the steps taken.
+    #[verifier::spinoff_prover]
     fn table(&mut self, caller: &mut Tracked<Caller>, address: usize, level: u64) -> (r: (bool, Ghost<Seq<AcallStep>>))
         requires
             old(self).inv(),
@@ -2183,6 +2359,37 @@ impl Record {
                     &&& final(self).free_groups() + 1 == old(self).free_groups()
                     &&& final(self).avail_pages() + TABLE_PAGES as nat == old(self).avail_pages()
                 }
+            },
+            (old(self).ready(old(caller)@)
+                && caller_alone(old(caller)@, final(caller)@)
+                && ((level == 4 && !old(self).top && address == old(self).window)
+                    || (level == 3 && old(self).top && !old(self).middle && address == old(self).window)
+                    || (level == 2 && old(self).top && old(self).middle && exists|b: int|
+                        0 <= b < WINDOW_BLOCKS && !old(self).tabled@[b]
+                            && address as int == #[trigger] window_block(old(self).window, b)))) ==> {
+                &&& acall_ok(r.1@)
+                &&& old(self).free_groups() >= 1 ==> r.0
+                &&& final(caller)@.kernel().flush_epoch == old(caller)@.kernel().flush_epoch
+                &&& r.0 ==> source_state_ready(
+                    final(caller)@.kernel(),
+                    final(caller)@.root(),
+                    final(self).space,
+                    final(self).untyped,
+                    final(self).memory,
+                    final(self).pages,
+                    final(self).slots,
+                    final(self).window,
+                    if level == 4 { true } else { old(self).top },
+                    if level == 3 { true } else { old(self).middle },
+                    if level == 2 {
+                        old(self).tabled@.update((address - old(self).window) as int / BLOCK_BYTES as int, true)
+                    } else {
+                        old(self).tabled@
+                    },
+                    final(self).state@,
+                    final(self).owner@,
+                )
+                &&& !r.0 ==> final(self).ready(final(caller)@)
             },
         no_unwind
     {
@@ -2242,6 +2449,7 @@ impl Record {
                         self.keeps_mapped(old(self)),
                         self.avail_pages() + k as nat == old(self).avail_pages(),
                         k > 0 ==> self.state@[group as int] == TAKEN,
+                        forall|m: int| 0 <= m < k ==> #[trigger] self.state@[group as int + m] == TAKEN,
                         forall|u: int|
                             0 <= u < MAX_PAGES && !(group <= u < group + k)
                                 ==> #[trigger] self.state@[u] == old(self).state@[u],
@@ -2274,12 +2482,34 @@ impl Record {
                     self.state[group + k] = TAKEN;
                     proof {
                         assert(self.frames() =~= before.frames());
+                        assert(self.state@[group as int + k as int] == TAKEN);
                         lemma_avail_update(before.state@, self.state@, self.pages as int, (group + k) as int);
                     }
                     k += 1;
                 }
                 proof {
                     assert(!group_free_in(self.state@, g as int));
+                    assert forall|m: int| 0 <= m < TABLE_PAGES as int implies #[trigger] old(self).state@[group as int + m] == FREE by {
+                        let base = g as int * TABLE_PAGES as int;
+                        assert(group as int == base);
+                        if m == 0 {
+                            assert(old(self).state@[base] == FREE);
+                        } else if m == 1 {
+                            assert(old(self).state@[base + 1] == FREE);
+                        } else if m == 2 {
+                            assert(old(self).state@[base + 2] == FREE);
+                        } else if m == 3 {
+                            assert(old(self).state@[base + 3] == FREE);
+                        } else if m == 4 {
+                            assert(old(self).state@[base + 4] == FREE);
+                        } else if m == 5 {
+                            assert(old(self).state@[base + 5] == FREE);
+                        } else if m == 6 {
+                            assert(old(self).state@[base + 6] == FREE);
+                        } else {
+                            assert(old(self).state@[base + 7] == FREE);
+                        }
+                    }
                     assert forall|j: int|
                         0 <= j < (ng as int) * TABLE_PAGES && !(g * TABLE_PAGES <= j < (g + 1) * TABLE_PAGES)
                         implies #[trigger] self.state@[j] == old(self).state@[j] by {
@@ -2290,6 +2520,7 @@ impl Record {
                     }
                     lemma_free_groups_update_one(old(self).state@, self.state@, ng as int, g as int);
                 }
+                let ghost c0 = caller@;
                 let base = self.page(group);
                 let (retyped, Ghost(s1)) = retype_table_page(caller, self.untyped, base, level - 1, Ghost(self.frames()));
                 proof {
@@ -2303,6 +2534,27 @@ impl Record {
                     proof {
                         assert(steps[0] == s1 && steps.last() == s1);
                         assert(steps.drop_last() =~= Seq::<AcallStep>::empty());
+                        if old(self).ready(c0) && caller_alone(c0, caller@) {
+                            lemma_ready_retype_table_ok(
+                                c0,
+                                caller@,
+                                s1,
+                                old(self).space,
+                                old(self).untyped,
+                                old(self).memory,
+                                old(self).pages,
+                                old(self).slots,
+                                old(self).window,
+                                old(self).top,
+                                old(self).middle,
+                                old(self).tabled@,
+                                old(self).state@,
+                                old(self).owner@,
+                                group,
+                                level,
+                            );
+                            assert(false);
+                        }
                     }
                     return (false, Ghost(steps));
                 }
@@ -2351,6 +2603,39 @@ impl Record {
                         } else {
                             assert(steps[j] == s2);
                         }
+                    }
+                    if old(self).ready(c0)
+                        && caller_alone(c0, caller@)
+                        && ((level == 4 && !old(self).top && address == old(self).window)
+                            || (level == 3 && old(self).top && !old(self).middle && address == old(self).window)
+                            || (level == 2 && old(self).top && old(self).middle && exists|b: int|
+                                0 <= b < WINDOW_BLOCKS && !old(self).tabled@[b]
+                                    && address as int == #[trigger] window_block(old(self).window, b)))
+                    {
+                        lemma_caller_alone_split(c0, mid, caller@, seq![s1], seq![s2]);
+                        lemma_ready_table_group(
+                            c0,
+                            mid,
+                            caller@,
+                            s1,
+                            s2,
+                            old(self).space,
+                            old(self).untyped,
+                            old(self).memory,
+                            old(self).pages,
+                            old(self).slots,
+                            old(self).window,
+                            old(self).top,
+                            old(self).middle,
+                            old(self).tabled@,
+                            old(self).state@,
+                            self.state@,
+                            self.owner@,
+                            group,
+                            address,
+                            level,
+                        );
+                        assert(linked);
                     }
                 }
                 return (linked, Ghost(steps));
@@ -2412,6 +2697,7 @@ impl Record {
     /// its path lacks, takes a frame and maps it there. The permission to the page's bytes, or none
     /// when a page is mapped there already or anything was refused. A page parked at `addr` backs it
     /// again with no system call, so that back is granted and leaves every other parked page parked.
+    #[verifier::spinoff_prover]
     fn back_page(
         &mut self,
         caller: &mut Tracked<Caller>,
@@ -2492,6 +2778,16 @@ impl Record {
                 &&& final(caller)@ == old(caller)@
                 &&& r.1@ == Seq::<AcallStep>::empty()
             },
+            (old(self).ready(old(caller)@)
+                && (flush_room(old(caller)@, 1) || forall|a: int| !#[trigger] old(self).parks(a))
+                && caller_alone(old(caller)@, final(caller)@)) ==> {
+                &&& acall_ok(r.1@)
+                &&& old(self).can_back_run(addr as int, 1) ==> r.0 is Some
+                &&& final(self).ready(final(caller)@)
+                &&& final(caller)@.kernel().flush_epoch as int <= old(caller)@.kernel().flush_epoch as int + 1
+                &&& (forall|a: int| !#[trigger] old(self).parks(a))
+                    ==> final(caller)@.kernel().flush_epoch == old(caller)@.kernel().flush_epoch
+            },
         no_unwind
     {
         // The kernel's invariant stays folded: the body only hands it from one call to the next.
@@ -2563,6 +2859,42 @@ impl Record {
                 implies self.can_back_run(addr + PAGE_BYTES as int, (rem - 1) as nat) by {
                 lemma_tables_for_run_step(before, *self, addr, rem);
             }
+            if before.ready(caller@) {
+                lemma_ready_park_toggle(
+                    caller@.kernel(),
+                    caller@.root(),
+                    before.space,
+                    before.untyped,
+                    before.memory,
+                    before.pages,
+                    before.slots,
+                    before.window,
+                    before.top,
+                    before.middle,
+                    before.tabled@,
+                    before.state@,
+                    before.owner@,
+                    i,
+                    MAPPED,
+                );
+                lemma_same_kernel_ready(
+                    caller@.kernel(),
+                    caller@.root(),
+                    self.space,
+                    self.untyped,
+                    self.memory,
+                    self.pages,
+                    self.slots,
+                    self.window,
+                    self.top,
+                    self.middle,
+                    self.tabled@,
+                    before.state@.update(i as int, MAPPED),
+                    self.state@,
+                    before.owner@,
+                    self.owner@,
+                );
+            }
         }
         (Some(Tracked(perm)), Ghost(Seq::empty()))
     }
@@ -2570,6 +2902,7 @@ impl Record {
     /// Links the tables the path to `addr` lacks, at each level the record has not linked yet; false
     /// when no free table block remains or a link was refused. Every occupied page keeps its state and
     /// address.
+    #[verifier::spinoff_prover]
     fn path_tables(&mut self, caller: &mut Tracked<Caller>, addr: usize) -> (r: (bool, Ghost<Seq<AcallStep>>))
         requires
             old(self).inv(),
@@ -2627,6 +2960,12 @@ impl Record {
                 &&& final(caller)@ == old(caller)@
                 &&& r.1@ == Seq::<AcallStep>::empty()
             },
+            (old(self).ready(old(caller)@) && caller_alone(old(caller)@, final(caller)@)) ==> {
+                &&& acall_ok(r.1@)
+                &&& old(self).free_groups() >= old(self).tables_for_addr(addr) ==> r.0
+                &&& final(self).ready(final(caller)@)
+                &&& final(caller)@.kernel().flush_epoch == old(caller)@.kernel().flush_epoch
+            },
         no_unwind
     {
         // The kernel's invariant stays folded: the body only hands it from one call to the next.
@@ -2673,6 +3012,10 @@ impl Record {
             assert(self.avail_pages() + n_top * TABLE_PAGES as nat == start.avail_pages());
             assert(self.tables_unlinked() + n_top as int == start.tables_unlinked());
             assert(acall_ok(steps) && step_seq_well_ended(steps));
+            assert((start.ready(c0) && caller_alone(c0, caller@)) ==> {
+                &&& self.ready(caller@)
+                &&& caller@.kernel().flush_epoch == c0.kernel().flush_epoch
+            });
         }
         if !self.middle {
             let ghost before = *self;
@@ -2704,6 +3047,9 @@ impl Record {
             if !linked {
                 proof {
                     lemma_acall_ok_append(prev, s);
+                    if start.ready(c0) && caller_alone(c0, caller@) {
+                        lemma_caller_alone_split(c0, cmid, caller@, prev, s);
+                    }
                 }
                 return (false, Ghost(steps));
             }
@@ -2713,6 +3059,9 @@ impl Record {
                 lemma_acall_ok_append(prev, s);
                 assert(self.frames() =~= after_table.frames());
                 assert(self.tables_unlinked() == before.tables_unlinked() - 1);
+                if start.ready(c0) && caller_alone(c0, caller@) {
+                    lemma_caller_alone_split(c0, cmid, caller@, prev, s);
+                }
             }
         }
         proof {
@@ -2724,6 +3073,10 @@ impl Record {
             assert(self.avail_pages() + (n_top + n_mid) * TABLE_PAGES as nat == start.avail_pages());
             assert(self.tables_unlinked() + (n_top + n_mid) as int == start.tables_unlinked());
             assert(acall_ok(steps) && step_seq_well_ended(steps));
+            assert((start.ready(c0) && caller_alone(c0, caller@)) ==> {
+                &&& self.ready(caller@)
+                &&& caller@.kernel().flush_epoch == c0.kernel().flush_epoch
+            });
         }
         if !self.tabled[block] {
             let ghost before = *self;
@@ -2759,6 +3112,9 @@ impl Record {
             if !linked {
                 proof {
                     lemma_acall_ok_append(prev, s);
+                    if start.ready(c0) && caller_alone(c0, caller@) {
+                        lemma_caller_alone_split(c0, cmid, caller@, prev, s);
+                    }
                 }
                 return (false, Ghost(steps));
             }
@@ -2769,6 +3125,13 @@ impl Record {
                 assert(self.frames() =~= after_table.frames());
                 assert(self.blocks_untabled() == before.blocks_untabled() - 1);
                 assert(self.tables_unlinked() == before.tables_unlinked() - 1);
+                if start.ready(c0) && caller_alone(c0, caller@) {
+                    lemma_caller_alone_split(c0, cmid, caller@, prev, s);
+                    lemma_div_by_multiple(block as int, BLOCK_BYTES as int);
+                    assert(((window + block * BLOCK_BYTES) - before.window) as int / BLOCK_BYTES as int == block as int);
+                    assert(self.tabled@ =~= after_table.tabled@.update(block as int, true));
+                    assert(self.tabled@ == after_table.tabled@.update(block as int, true));
+                }
             }
         }
         proof {
@@ -2779,6 +3142,7 @@ impl Record {
 
     /// Links the tables the path to `addr` lacks, takes a frame and maps it at `addr`, where no page
     /// is mapped or parked. The permission to the page's bytes, or none when anything was refused.
+    #[verifier::spinoff_prover]
     fn map_new(
         &mut self,
         caller: &mut Tracked<Caller>,
@@ -2852,6 +3216,16 @@ impl Record {
                 &&& *final(self) == *old(self)
                 &&& final(caller)@ == old(caller)@
                 &&& r.1@ == Seq::<AcallStep>::empty()
+            },
+            (old(self).ready(old(caller)@)
+                && (flush_room(old(caller)@, 1) || forall|a: int| !#[trigger] old(self).parks(a))
+                && caller_alone(old(caller)@, final(caller)@)) ==> {
+                &&& acall_ok(r.1@)
+                &&& old(self).can_back_run(addr as int, 1) ==> r.0 is Some
+                &&& final(self).ready(final(caller)@)
+                &&& final(caller)@.kernel().flush_epoch as int <= old(caller)@.kernel().flush_epoch as int + 1
+                &&& (forall|a: int| !#[trigger] old(self).parks(a))
+                    ==> final(caller)@.kernel().flush_epoch == old(caller)@.kernel().flush_epoch
             },
         no_unwind
     {
@@ -2951,6 +3325,22 @@ impl Record {
                     if start.tables_for_addr(addr) == 0 && start.avail_pages() == 0 {
                         assert(s12 =~= Seq::<AcallStep>::empty());
                     }
+                    if start.ready(c0)
+                        && (flush_room(c0, 1) || forall|a: int| !#[trigger] start.parks(a))
+                        && caller_alone(c0, caller@)
+                    {
+                        lemma_caller_alone_split(c0, c1, caller@, s1, s2);
+                        lemma_keeps_no_new_parked(before, start);
+                        if forall|a: int| !#[trigger] start.parks(a) {
+                            assert forall|a: int| !#[trigger] before.parks(a) by {
+                                if before.parks(a) {
+                                    assert(start.parks(a));
+                                }
+                            }
+                        } else {
+                            assert(flush_room(c1, 1));
+                        }
+                    }
                 }
                 return (None, Ghost(s12));
             },
@@ -2975,6 +3365,11 @@ impl Record {
                     assert(occupied(held.state@[j]));
                     assert(live.contains(addr));
                 }
+            }
+            if window_entry_occupied(held.pages, held.state@, held.owner@, addr) {
+                let j = choose|j: int| 0 <= j < held.pages && occupied(#[trigger] held.state@[j]) && held.owner@[j] == addr;
+                assert(live.contains(addr));
+                assert(false);
             }
         }
         let (mapped, Ghost(s3)) = map_page(caller, self.space, addr, slot, provenance, Ghost(live), Ghost(held.frames()), Ghost(i as int));
@@ -3067,6 +3462,56 @@ impl Record {
                         assert(held.parks(a));
                     }
                     lemma_map_new_step(start, before, held, *self, addr);
+                    if start.ready(c0)
+                        && (flush_room(c0, 1) || forall|a: int| !#[trigger] start.parks(a))
+                        && caller_alone(c0, caller@)
+                    {
+                        lemma_caller_alone_split(c0, c2, caller@, s12, s3);
+                        lemma_caller_alone_split(c0, c1, c2, s1, s2);
+                        lemma_keeps_no_new_parked(before, start);
+                        if forall|a: int| !#[trigger] start.parks(a) {
+                            assert forall|a: int| !#[trigger] before.parks(a) by {
+                                if before.parks(a) {
+                                    assert(start.parks(a));
+                                }
+                            }
+                        } else {
+                            assert(flush_room(c1, 1));
+                        }
+                        lemma_ready_map_page(
+                            c2,
+                            caller@,
+                            s3,
+                            held.space,
+                            held.untyped,
+                            held.memory,
+                            held.pages,
+                            held.slots,
+                            held.window,
+                            held.tabled@,
+                            held.state@,
+                            held.owner@,
+                            i,
+                            addr,
+                        );
+                        lemma_same_kernel_ready(
+                            caller@.kernel(),
+                            caller@.root(),
+                            self.space,
+                            self.untyped,
+                            self.memory,
+                            self.pages,
+                            self.slots,
+                            self.window,
+                            true,
+                            true,
+                            self.tabled@,
+                            held.state@.update(i as int, MAPPED),
+                            self.state@,
+                            held.owner@.update(i as int, addr),
+                            self.owner@,
+                        );
+                    }
                 }
                 (Some(perm), Ghost(steps))
             },
@@ -3075,6 +3520,40 @@ impl Record {
                     lemma_keeps_no_new_mapped(*self, start);
                     lemma_keeps_no_new_parked(*self, start);
                     lemma_acall_ok_append(s12, s3);
+                    if start.ready(c0)
+                        && (flush_room(c0, 1) || forall|a: int| !#[trigger] start.parks(a))
+                        && caller_alone(c0, caller@)
+                    {
+                        lemma_caller_alone_split(c0, c2, caller@, s12, s3);
+                        lemma_caller_alone_split(c0, c1, c2, s1, s2);
+                        lemma_keeps_no_new_parked(before, start);
+                        if forall|a: int| !#[trigger] start.parks(a) {
+                            assert forall|a: int| !#[trigger] before.parks(a) by {
+                                if before.parks(a) {
+                                    assert(start.parks(a));
+                                }
+                            }
+                        } else {
+                            assert(flush_room(c1, 1));
+                        }
+                        lemma_ready_map_page(
+                            c2,
+                            caller@,
+                            s3,
+                            held.space,
+                            held.untyped,
+                            held.memory,
+                            held.pages,
+                            held.slots,
+                            held.window,
+                            held.tabled@,
+                            held.state@,
+                            held.owner@,
+                            i,
+                            addr,
+                        );
+                        assert(false);
+                    }
                 }
                 (None, Ghost(steps))
             },
@@ -3104,6 +3583,7 @@ impl Record {
             forall|a: int| #[trigger] final(self).maps(a) ==> a != addr && old(self).maps(a),
             forall|a: int| #[trigger] old(self).parks(a) ==> final(self).parks(a),
             forall|a: int| #[trigger] final(self).parks(a) ==> a == addr || old(self).parks(a),
+            forall|c: Caller| #[trigger] old(self).ready(c) ==> final(self).ready(c),
         no_unwind
     {
         let mut i: usize = 0;
@@ -3162,6 +3642,42 @@ impl Record {
                     assert(before.state@[j] == PARKED && before.owner@[j] == a);
                 }
             }
+            assert forall|c: Caller| #[trigger] before.ready(c) implies self.ready(c) by {
+                lemma_ready_park_toggle(
+                    c.kernel(),
+                    c.root(),
+                    before.space,
+                    before.untyped,
+                    before.memory,
+                    before.pages,
+                    before.slots,
+                    before.window,
+                    before.top,
+                    before.middle,
+                    before.tabled@,
+                    before.state@,
+                    before.owner@,
+                    i,
+                    PARKED,
+                );
+                lemma_same_kernel_ready(
+                    c.kernel(),
+                    c.root(),
+                    self.space,
+                    self.untyped,
+                    self.memory,
+                    self.pages,
+                    self.slots,
+                    self.window,
+                    self.top,
+                    self.middle,
+                    self.tabled@,
+                    before.state@.update(i as int, PARKED),
+                    self.state@,
+                    before.owner@,
+                    self.owner@,
+                );
+            }
         }
     }
 
@@ -3190,6 +3706,7 @@ impl Record {
             forall|a: int| #[trigger] final(self).maps(a) ==> !run_pages(start as int, pages as nat).contains(a) && old(self).maps(a),
             forall|a: int| #[trigger] old(self).parks(a) ==> final(self).parks(a),
             forall|a: int| #[trigger] final(self).parks(a) ==> old(self).parks(a) || run_pages(start as int, pages as nat).contains(a),
+            forall|c: Caller| #[trigger] old(self).ready(c) ==> final(self).ready(c),
         no_unwind
     {
         let tracked mut rest = perm.get();
@@ -3219,6 +3736,7 @@ impl Record {
                 forall|a: int| #[trigger] self.maps(a) ==> !run_pages(start as int, k as nat).contains(a) && old(self).maps(a),
                 forall|a: int| #[trigger] old(self).parks(a) ==> self.parks(a),
                 forall|a: int| #[trigger] self.parks(a) ==> old(self).parks(a) || run_pages(start as int, k as nat).contains(a),
+                forall|c: Caller| #[trigger] old(self).ready(c) ==> self.ready(c),
             decreases pages - k,
         {
             proof {
@@ -3263,6 +3781,9 @@ impl Record {
                         }
                     }
                 }
+                assert forall|c: Caller| #[trigger] old(self).ready(c) implies self.ready(c) by {
+                    assert(before.ready(c));
+                }
             }
             k += 1;
             assert(rest.dom() =~= Set::range(start + k * PAGE_BYTES, start + pages * PAGE_BYTES));
@@ -3272,6 +3793,7 @@ impl Record {
     /// Backs the run of `pages` pages from `start` a page at a time: the permission to its bytes, or
     /// none, with each page backed so far given back, when a page was refused. A run whose every page
     /// is parked is granted.
+    #[verifier::spinoff_prover]
     fn back_run(
         &mut self,
         caller: &mut Tracked<Caller>,
@@ -3357,6 +3879,16 @@ impl Record {
                 &&& old(self).can_back_run(start as int, pages as nat)
                 &&& r.0 is Some ==> final(self).free_capacity() == old(self).free_capacity() - pages as int
             },
+            (old(self).ready(old(caller)@)
+                && (flush_room(old(caller)@, pages as nat) || forall|a: int| !#[trigger] old(self).parks(a))
+                && caller_alone(old(caller)@, final(caller)@)) ==> {
+                &&& acall_ok(r.1@)
+                &&& old(self).can_back_run(start as int, pages as nat) ==> r.0 is Some
+                &&& final(self).ready(final(caller)@)
+                &&& final(caller)@.kernel().flush_epoch as int <= old(caller)@.kernel().flush_epoch as int + pages as int
+                &&& (forall|a: int| !#[trigger] old(self).parks(a))
+                    ==> final(caller)@.kernel().flush_epoch == old(caller)@.kernel().flush_epoch
+            },
         no_unwind
     {
         // The kernel's invariant stays folded: the body only hands it from one call to the next.
@@ -3434,6 +3966,14 @@ impl Record {
                             ==> self.parks(a)
                 },
                 old(self).free_capacity() >= pages as int ==> self.free_capacity() == old(self).free_capacity() - k as int,
+                (old(self).ready(c0)
+                    && (flush_room(c0, pages as nat) || forall|a: int| !#[trigger] old(self).parks(a))
+                    && caller_alone(c0, caller@)) ==> {
+                    &&& self.ready(caller@)
+                    &&& caller@.kernel().flush_epoch as int <= c0.kernel().flush_epoch as int + k as int
+                    &&& (forall|a: int| !#[trigger] old(self).parks(a))
+                        ==> caller@.kernel().flush_epoch == c0.kernel().flush_epoch
+                },
             decreases pages - k,
         {
             proof {
@@ -3543,6 +4083,21 @@ impl Record {
                         assert forall|a: int| #[trigger] self.parks(a) implies old(self).parks(a) by {
                             assert(before.parks(a));
                         }
+                        if old(self).ready(c0)
+                            && (flush_room(c0, pages as nat) || forall|a: int| !#[trigger] old(self).parks(a))
+                            && caller_alone(c0, caller@)
+                        {
+                            lemma_caller_alone_split(c0, cmid, caller@, prev, sp);
+                            if forall|a: int| !#[trigger] old(self).parks(a) {
+                                assert forall|a: int| !#[trigger] before.parks(a) by {
+                                    if before.parks(a) {
+                                        assert(old(self).parks(a));
+                                    }
+                                }
+                            } else {
+                                assert(flush_room(cmid, 1));
+                            }
+                        }
                     }
                     k += 1;
                     assert(run.dom() =~= Set::range(start as int, start + k * PAGE_BYTES));
@@ -3580,10 +4135,32 @@ impl Record {
                             assert(before.tables_for_addr(start) == 0);
                             assert(next_steps =~= Seq::<AcallStep>::empty());
                         }
+                        if old(self).ready(c0)
+                            && (flush_room(c0, pages as nat) || forall|a: int| !#[trigger] old(self).parks(a))
+                            && caller_alone(c0, caller@)
+                        {
+                            lemma_caller_alone_split(c0, cmid, caller@, prev, sp);
+                            if forall|a: int| !#[trigger] old(self).parks(a) {
+                                assert forall|a: int| !#[trigger] before.parks(a) by {
+                                    if before.parks(a) {
+                                        assert(old(self).parks(a));
+                                    }
+                                }
+                            } else {
+                                assert(flush_room(cmid, 1));
+                            }
+                        }
                     }
                     let ghost released = *self;
                     self.release_run(start, k, Tracked(run));
                     proof {
+                        if old(self).ready(c0)
+                            && (flush_room(c0, pages as nat) || forall|a: int| !#[trigger] old(self).parks(a))
+                            && caller_alone(c0, caller@)
+                        {
+                            assert(released.ready(caller@));
+                            assert(self.ready(caller@));
+                        }
                         assert forall|a: int| #[trigger] old(self).maps(a) implies self.maps(a) by {
                             assert(released.maps(a));
                             if run_pages(start as int, k as nat).contains(a) {
@@ -4024,6 +4601,7 @@ proof fn lemma_released_span_backed(spans: Map<int, Span>, record: Record, span:
 /// Backs the run of `pages` pages from `start` in the record and, when the back is granted, marks its
 /// pages backed in the span at `span`, as one step, so that the pages the spans hold backed stay the
 /// pages the record maps. `view` is the source's view, whose spans these are.
+#[verifier::spinoff_prover]
 fn back_fields(
     spans: &mut Spans,
     record: &mut Record,
@@ -4114,6 +4692,16 @@ fn back_fields(
         old(record).free_capacity() >= pages as int ==> {
             &&& old(record).can_back_run(start as int, pages as nat)
             &&& r.0 is Some ==> final(record).free_capacity() == old(record).free_capacity() - pages as int
+        },
+        (old(record).ready(old(caller)@)
+            && (flush_room(old(caller)@, pages as nat) || forall|a: int| !#[trigger] old(record).parks(a))
+            && caller_alone(old(caller)@, final(caller)@)) ==> {
+            &&& acall_ok(r.1@)
+            &&& old(record).can_back_run(start as int, pages as nat) ==> r.0 is Some
+            &&& final(record).ready(final(caller)@)
+            &&& final(caller)@.kernel().flush_epoch as int <= old(caller)@.kernel().flush_epoch as int + pages as int
+            &&& (forall|a: int| !#[trigger] old(record).parks(a))
+                ==> final(caller)@.kernel().flush_epoch == old(caller)@.kernel().flush_epoch
         },
     no_unwind
 {
@@ -4212,6 +4800,7 @@ fn release_fields(
         forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(record).parks(a),
         forall|a: int| #[trigger] old(record).parks(a) ==> final(record).parks(a),
         forall|a: int| #[trigger] final(record).parks(a) ==> old(record).parks(a) || run_pages(start as int, pages as nat).contains(a),
+        forall|c: Caller| #[trigger] old(record).ready(c) ==> final(record).ready(c),
     no_unwind
 {
     let ghost before = *record;
@@ -4446,6 +5035,19 @@ impl Eager {
         self.record.parks(addr)
     }
 
+    /// Whether the source is in the state `new` constructs before any `back`: no window table linked
+    /// yet and every untyped page still free.
+    pub closed spec fn fresh(&self) -> bool {
+        self.record.fresh()
+    }
+
+    /// Whether `token`'s kernel state has the untyped's free pages free, the retyped frames in their
+    /// slots at their expected reference counts, and the window's table tree matching the source's
+    /// linked tables and occupied pages.
+    pub closed spec fn ready(&self, token: Caller) -> bool {
+        self.record.ready(token)
+    }
+
     /// Whether `new` accepts `memory`, `pages`, `slots` and `window`: at most `MAX_PAGES` pages fitting
     /// in physical addresses from `memory`, `slots` a slot with every frame slot of the `pages` pages in
     /// the table, and `window` a non-null region-aligned address with room for the window after it.
@@ -4494,7 +5096,11 @@ impl Eager {
                         ==> source.free_capacity() == pages as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int
                     &&& pages < (2 + WINDOW_BLOCKS) * TABLE_PAGES ==> source.free_capacity() < 0
                     &&& source.acall_trace() == Seq::<AcallStep>::empty()
+                    &&& source.fresh()
                     &&& forall|token: Caller| #[trigger] source.holds(token)
+                    &&& forall|token: Caller|
+                        source_ready(token, space, untyped, memory, pages, slots, window@.addr)
+                            ==> #[trigger] source.ready(token)
                 },
                 None => !Self::new_ok(memory, pages, slots, window),
             },
@@ -4606,6 +5212,22 @@ impl Eager {
                         MAX_PAGES > 0,
                 ;
             }
+            assert forall|token: Caller|
+                source_ready(token, space, untyped, memory, pages, slots, window@.addr)
+                implies #[trigger] source.ready(token) by {
+                lemma_fresh_source_state_ready(
+                    token,
+                    space,
+                    untyped,
+                    memory,
+                    pages,
+                    slots,
+                    addr,
+                    source.record.tabled@,
+                    source.record.state@,
+                    source.record.owner@,
+                );
+            }
         }
         Some(source)
     }
@@ -4645,6 +5267,8 @@ impl SpanSource for Eager {
             forall|b: int| 0 <= b < WINDOW_BLOCKS ==> #[trigger] final(self).block_tabled(b) == old(self).block_tabled(b),
             forall|a: int| #[trigger] final(self).parks(a) == old(self).parks(a),
             final(self).acall_trace() == old(self).acall_trace(),
+            final(self).fresh() == old(self).fresh(),
+            forall|c: Caller| #[trigger] final(self).ready(c) == old(self).ready(c),
             match r {
                 Some(base) => {
                     let first = (base@.addr - old(self).window()) / BLOCK_BYTES as int;
@@ -4708,7 +5332,10 @@ impl SpanSource for Eager {
     /// granted with no system call. A grant spends a free `TABLE_PAGES` block per table it links, and
     /// each frame it takes breaks at most one more. A refusal keeps the tables it linked on the run's
     /// path and parks the pages it backed before it: it spends a block per table linked, and the step
-    /// `acall` refused, if any, at most one block more, or a frame.
+    /// `acall` refused, if any, at most one block more, or a frame. On a fresh source under
+    /// `source_ready`, or any `ready` source with `flush_room` (or no parked page), with `caller_alone`
+    /// across the call, every `acall` step is accepted and `ready` is preserved.
+    #[verifier::spinoff_prover]
     fn back(&mut self, token: &mut Tracked<Caller>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         ensures
             final(self).space() == old(self).space(),
@@ -4794,6 +5421,7 @@ impl SpanSource for Eager {
                     &&& final(self).middle_linked() == old(self).middle_linked()
                     &&& forall|b: int| 0 <= b < WINDOW_BLOCKS ==> #[trigger] final(self).block_tabled(b) == old(self).block_tabled(b)
                     &&& forall|a: int| #[trigger] final(self).parks(a) == old(self).parks(a)
+                    &&& forall|c: Caller| #[trigger] final(self).ready(c) == old(self).ready(c)
                 }
                 &&& old(self).free_capacity() >= pages as int ==> {
                     &&& old(self).can_back(start as int, pages as nat)
@@ -4805,6 +5433,33 @@ impl SpanSource for Eager {
                     }
                     &&& acall_ok(steps) ==> r is Some
                 }
+                &&& (old(self).ready(old(token)@)
+                    && (flush_room(old(token)@, pages as nat) || forall|a: int| !#[trigger] old(self).parks(a))
+                    && caller_alone(old(token)@, final(token)@)) ==> {
+                    &&& acall_ok(steps)
+                    &&& final(self).ready(final(token)@)
+                    &&& final(token)@.kernel().flush_epoch as int
+                        <= old(token)@.kernel().flush_epoch as int + pages as int
+                    &&& (forall|a: int| !#[trigger] old(self).parks(a))
+                        ==> final(token)@.kernel().flush_epoch == old(token)@.kernel().flush_epoch
+                    &&& old(self).can_back(start as int, pages as nat) ==> r is Some
+                }
+                &&& (old(self).fresh()
+                    && source_ready(
+                        old(token)@,
+                        old(self).space(),
+                        old(self).untyped(),
+                        old(self).memory(),
+                        old(self).pages(),
+                        old(self).slots(),
+                        old(self).window(),
+                    )
+                    && caller_alone(old(token)@, final(token)@)) ==> {
+                    &&& acall_ok(steps)
+                    &&& final(self).ready(final(token)@)
+                    &&& final(token)@.kernel().flush_epoch == old(token)@.kernel().flush_epoch
+                    &&& old(self).can_back(start as int, pages as nat) ==> r is Some
+                }
             }),
     {
         proof {
@@ -4814,6 +5469,47 @@ impl SpanSource for Eager {
                 == old(self).record.tables_for_run(start as int, pages as nat));
             assert(old(self).can_back(start as int, pages as nat)
                 <==> old(self).record.can_back_run(start as int, pages as nat));
+            if forall|a: int| !#[trigger] old(self).parks(a) {
+                assert forall|a: int| !#[trigger] old(self).record.parks(a) by {
+                    assert(!old(self).parks(a));
+                }
+            }
+            if old(self).fresh()
+                && source_ready(
+                    old(token)@,
+                    old(self).space(),
+                    old(self).untyped(),
+                    old(self).memory(),
+                    old(self).pages(),
+                    old(self).slots(),
+                    old(self).window(),
+                )
+            {
+                lemma_fresh_source_state_ready(
+                    old(token)@,
+                    old(self).record.space,
+                    old(self).record.untyped,
+                    old(self).record.memory,
+                    old(self).record.pages,
+                    old(self).record.slots,
+                    old(self).record.window,
+                    old(self).record.tabled@,
+                    old(self).record.state@,
+                    old(self).record.owner@,
+                );
+                assert forall|a: int| !#[trigger] old(self).record.parks(a) by {
+                    if old(self).record.parks(a) {
+                        let j = choose|j: int|
+                            0 <= j < old(self).record.pages
+                                && #[trigger] old(self).record.state@[j] == PARKED
+                                && old(self).record.owner@[j] == a;
+                        assert(old(self).record.state@[j] == FREE);
+                    }
+                }
+                assert forall|a: int| !#[trigger] old(self).parks(a) by {
+                    assert(!old(self).record.parks(a));
+                }
+            }
         }
         let ghost before = self@;
         let ghost old_trace = self.trace@;
@@ -4874,6 +5570,7 @@ impl SpanSource for Eager {
             forall|a: int|
                 #[trigger] final(self).parks(a)
                     <==> (old(self).parks(a) || run_pages(start as int, pages as nat).contains(a)),
+            forall|c: Caller| #[trigger] old(self).ready(c) ==> final(self).ready(c),
     {
         proof {
             use_type_invariant(&*self);
@@ -4902,6 +5599,8 @@ impl SpanSource for Eager {
             forall|b: int| 0 <= b < WINDOW_BLOCKS ==> #[trigger] final(self).block_tabled(b) == old(self).block_tabled(b),
             forall|a: int| #[trigger] final(self).parks(a) == old(self).parks(a),
             final(self).acall_trace() == old(self).acall_trace(),
+            final(self).fresh() == old(self).fresh(),
+            forall|c: Caller| #[trigger] final(self).ready(c) == old(self).ready(c),
     {
         proof {
             use_type_invariant(&*self);

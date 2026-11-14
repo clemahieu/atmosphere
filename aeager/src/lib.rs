@@ -24,10 +24,12 @@ mod throwaway;
 #[cfg(verus_keep_ghost)]
 mod witness;
 
+#[cfg(verus_keep_ghost)]
+pub use acall::step::caller_alone;
 pub use eager::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 #[cfg(verus_keep_ghost)]
 pub use eager::{acall_call_in_window, acall_setup_call, run_touches_block, untyped_page, window_block};
 pub use exercise::{exercise, Exercised};
 pub use glue::{AcallCall, AcallStep};
 #[cfg(verus_keep_ghost)]
-pub use glue::{acall_ok, acall_steps};
+pub use glue::{acall_ok, acall_steps, flush_room, kernel_source_ready, source_ready};
