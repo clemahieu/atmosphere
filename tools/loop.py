@@ -356,10 +356,14 @@ class Run:
 
 
 def weighted(usage):
-    """Plan-weighted tokens: uncached input at 1, cache writes at 1.25, cache reads at 0.1, output and thinking at 5."""
+    """Plan-weighted tokens: uncached input at 1, cache writes at 1.25, cache reads at 0.1, output and thinking at 5.
+
+    An agy result names cache_read_tokens and thinking_tokens. Its input_tokens is the uncached input
+    and the reads are apart: total_tokens is input_tokens + output_tokens, so the reads are not subtracted.
+    Claude and Grok name cache_read_input_tokens, and their input_tokens is already the uncached input."""
     if "cache_read_tokens" in usage or "thinking_tokens" in usage:
         cached = usage.get("cache_read_tokens", 0)
-        uncached = max(usage.get("input_tokens", 0) - cached, 0)
+        uncached = usage.get("input_tokens", 0)
         out = usage.get("output_tokens", 0) + usage.get("thinking_tokens", 0)
         return uncached + 0.1 * cached + 5 * out
     return (usage.get("input_tokens", 0) + 1.25 * usage.get("cache_creation_input_tokens", 0)
@@ -2518,6 +2522,18 @@ class Tests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad):
                 parse_dispatch(bad)
 
+    def test_weighted_counts_an_agy_sessions_input_as_uncached_and_a_claude_one_on_its_own(self):
+        # agy's result reports input_tokens without the cache reads: total_tokens is input plus
+        # output, and the reads are larger than the input, so subtracting them counts that input as zero.
+        agy = {"input_tokens": 1000, "output_tokens": 20, "thinking_tokens": 10,
+               "cache_read_tokens": 5000, "total_tokens": 1020}
+        self.assertEqual(agy["total_tokens"], agy["input_tokens"] + agy["output_tokens"])
+        self.assertGreater(agy["cache_read_tokens"], agy["input_tokens"])
+        self.assertEqual(weighted(agy), 1000 + 0.1 * 5000 + 5 * (20 + 10))
+        claude = {"input_tokens": 100, "cache_creation_input_tokens": 40,
+                  "cache_read_input_tokens": 1000, "output_tokens": 2}
+        self.assertEqual(weighted(claude), 100 + 1.25 * 40 + 0.1 * 1000 + 5 * 2)
+
     def test_agy_stream_events_report_tools_text_steps_usage_and_limits(self):
         lines = [
             json.dumps({"event": "init", "conversation_id": "c1", "init": {"model": "gemini-4-carbon-high"}}),
@@ -2536,7 +2552,7 @@ class Tests(unittest.TestCase):
         shown = []
         run = follow(lines, shown.append)
         self.assertEqual((run.report, run.error, run.turns, run.weighted, run.limited),
-                         ("Landed cleanly.\nLoop: continue\n", False, 1, 1000 + 400 + 5 * 150, False))
+                         ("Landed cleanly.\nLoop: continue\n", False, 1, 5000 + 0.1 * 4000 + 5 * 150, False))
         self.assertEqual(shown, ["run_command: Land branch", "says: Landed cleanly."])
 
         timeout_lines = [json.dumps({"event": "result", "result": {
@@ -3260,7 +3276,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(loop.drive(once=True), 0)
             self.assertEqual(read_sessions(folder), [
                 self.row(loop, issue="atmo-1.1", work_kind="tool", route="tool", offering="carbon", harness="agy",
-                         model="gemini-4-carbon-high", started=100.0, turns=7, weighted=690.0, loop="continue",
+                         model="gemini-4-carbon-high", started=100.0, turns=7, weighted=1090.0, loop="continue",
                          prover="atmo-1.1"),
                 self.row(loop, session="prover", issue="atmo-1.1", work_kind="tool", route="prover", offering="fable",
                          model="fable", effort="xhigh", started=100.0)])
