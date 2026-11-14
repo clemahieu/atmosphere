@@ -1669,6 +1669,92 @@ impl CapKernel {
     }
 
     /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
+    /// enters it, then a kernel entry on core 0 charges it, the counter reading first, core 0 enters
+    /// the kernel for the invocation in registers, whatever it encodes but a suspend, which may move the
+    /// thread off its core, and a second entry charges it, the counter reading second. A read of the
+    /// thread's consumed time and of core 0's last reading before them gives consumed and since, and
+    /// one after them gives after: the thread was charged both entries' cycles, the operation between
+    /// them kept its consumed time whatever it did, and after is the sum. design/cpu-time-as-capability/.
+    pub fn witness_charge_around_entry(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        registers: Registers,
+        first: u64,
+        second: u64,
+    ) -> (ret: (u64, u64, u64))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            crate::capability::operation::spec_operation(registers.operation_number())
+                != Some(crate::capability::operation::Operation::Suspend),
+        ensures
+            final(self).wf(),
+            final(self).cores@[0].current_thread == Some(t),
+            final(self).cores@[0].since == second,
+            ret.2 == charged(charged(ret.0, ret.1, first), first, second),
+            ret.2 == final(self).threads.records@[t].value().consumed,
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
+        }
+        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root);
+        let ghost s1 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            reveal(current_wf);
+            assert(s1.cores@[0].current_thread == Some(t));
+            assert(runs(s1.cores@, 0, t));
+            assert(s1.threads.records@.contains_key(t));
+            assert(s1.processes == s0.processes);
+            assert(!s1.threads.records@[t].value().pending_stop);
+            assert(!s1.threads.records@[t].value().dying);
+            assert(s1.threads.records@[t].value().process == Some(process));
+            assert(!s1.processes.records@[process].value().dead);
+        }
+        let consumed = self.thread_consumed(t);
+        let since = self.cores.get(0).since;
+        self.charge(0, first);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.cores@[0].current_thread == Some(t));
+            assert(s2.threads.records@[t].value().consumed == charged(consumed, since, first));
+            assert(!s2.must_leave(0));
+        }
+        // The entry makes its own counter in this one: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let out = self.enter(0, registers, Tracked(&mut steps));
+        let ghost s3 = *self;
+        proof {
+            let mid = choose|mid: Self| #[trigger] Self::dispatched(s2, mid, 0, registers, out)
+                && Self::only_core_changed(mid, s3, 0);
+            assert(out is Some);
+            assert(mid.cores == s2.cores);
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.cores@[0].since == first);
+            reveal(CapKernel::wf);
+            reveal(current_wf);
+            assert(runs(s3.cores@, 0, t));
+            assert(s3.threads.records@.contains_key(t));
+            assert(s3.threads.records@[t].value().consumed == s2.threads.records@[t].value().consumed);
+        }
+        self.charge(0, second);
+        let after = self.thread_consumed(t);
+        (consumed, since, after)
+    }
+
+    /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
     /// enters it, destroys its own process through ROOT_PROCESS_SLOT, and then check_current runs on
     /// core 0 with marker `saved`. Because its process is dead, the thread must leave user mode:
     /// check_current returns CurrentStep::MovedOff, leaves core 0 running nothing, and saves the

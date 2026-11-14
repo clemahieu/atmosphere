@@ -1971,11 +1971,14 @@ impl CapKernel {
         }
     }
 
-    /// What dispatch proves of core c's step for frame, which answered ret: well formed, and the
-    /// caller's operation as invoked says when one returns to it. A destroy of the caller's own process
-    /// or thread leaves the caller to check_current at core c's next entry, which moves it off.
+    /// What dispatch proves of core c's step for frame, which answered ret: well formed, no thread's
+    /// consumed time changed, the caller's included, since only charge charges it, and the caller's
+    /// operation as invoked says when one returns to it, its core as it was unless the operation was
+    /// a suspend. A destroy of the caller's own process or thread leaves the caller to check_current
+    /// at core c's next entry, which moves it off.
     pub open spec fn dispatched(pre: Self, post: Self, c: int, frame: Registers, ret: Option<Outcome>) -> bool {
         &&& Self::step_ok(pre, post, c)
+        &&& Self::consumed_kept(pre, post)
         &&& (ret is None <==> pre.must_leave(c) || pre.cores@[c].current_thread is None)
         // A caller that must leave, among them one acting within a dead process, reaches no
         // operation and gets nothing back: it is moved off its core and nothing else changes.
@@ -1994,6 +1997,7 @@ impl CapKernel {
             &&& pre.cores@[c].space == Some(root)
             &&& post.cores@[c].space == Some(root)
             &&& Self::invoked(pre, post, root, frame, ret->0)
+            &&& spec_operation(frame.operation_number()) != Some(Operation::Suspend) ==> post.cores == pre.cores
             &&& spec_operation(frame.operation_number()) == Some(Operation::Destroy) && ret->0 == status_only(STATUS_OK)
                 && pre.destroys_own(c, root, frame.slot() as usize) ==> post.must_leave(c)
             &&& spec_operation(frame.operation_number()) == Some(Operation::Suspend)
@@ -2045,11 +2049,19 @@ impl CapKernel {
             final(steps).count <= old(steps).count + DISPATCH_STEPS,
             Self::dispatched(*old(self), *final(self), c as int, frame, ret),
     {
+        let ghost pre = *self;
         proof {
             lemma_revoke_bounds_the_operations();
         }
         match self.check_current(c, frame, FrameKind::Partial, Tracked(steps)) {
-            CurrentStep::MovedOff => { return None; },
+            CurrentStep::MovedOff => {
+                proof {
+                    // The thread moved off keeps its record but for the frame and the state.
+                    let t = pre.cores@[c as int].current_thread->Some_0;
+                    assert(self.threads.records@[t].value().consumed == pre.threads.records@[t].value().consumed);
+                }
+                return None;
+            },
             CurrentStep::Kept => {},
         }
         let t = match self.cores.get(c).current_thread {
@@ -2124,6 +2136,7 @@ impl CapKernel {
         ensures
             final(steps).count <= ENTRY_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
+            Self::consumed_kept(*old(self), *final(self)),
             exists|mid: Self| #[trigger] Self::dispatched(*old(self), mid, c as int, frame, ret)
                 && Self::only_core_changed(mid, *final(self), c as int),
             final(self).acked(c as int) == final(self).flush_epoch,
@@ -2374,6 +2387,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_registers_written(*old(self), *final(self), root, frame, ret),

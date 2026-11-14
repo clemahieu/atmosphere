@@ -2004,7 +2004,8 @@ impl CapKernel {
         assert(1 <= self.cores@[c].generation <= ID_GENERATION_MAX);
     }
 
-    /// Only core c's state and its model of the TLB changed, and it stays on what it was running.
+    /// Only core c's state and its model of the TLB changed, and it stays on what it was running, its
+    /// last counter reading kept, which only charge writes: design/cpu-time-as-capability/.
     pub open spec fn only_core_changed(pre: Self, post: Self, c: int) -> bool {
         &&& post.list == pre.list
         &&& post.tables == pre.tables
@@ -2026,6 +2027,7 @@ impl CapKernel {
         &&& post.replies == pre.replies
         &&& post.cores@[c].current_thread == pre.cores@[c].current_thread
         &&& post.cores@[c].space == pre.cores@[c].space
+        &&& post.cores@[c].since == pre.cores@[c].since
         &&& pre.acked(c) <= post.acked(c)
         &&& forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) ==> pre.tlb@[c].contains(e)
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
@@ -2065,7 +2067,9 @@ impl CapKernel {
         requires
             pre.wf(),
             0 <= c < NUM_CPUS,
-            Self::only_core_changed(pre, post, c),
+            post.spaces == pre.spaces,
+            post.cores@[c].space == pre.cores@[c].space,
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d],
         ensures
             registers_wf(post.spaces.registers@, post.cores@, post.spaces.loaded@, post.spaces.kernel_root@),
     {
