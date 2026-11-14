@@ -172,6 +172,25 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
+    /// Whether an unmap of the entry the address va and the level name, in the space of the capability
+    /// at index slot of the table at root, answered ok exactly when can_unmap_at holds, and left the
+    /// kernel as it was when it refused. unmap_at's ensures and spec_unmapped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn unmap_answered(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, ok: bool) -> bool {
+        &&& ok == pre.can_unmap_at(root, slot, va, level)
+        &&& !ok ==> post == pre
+    }
+
+    /// What an unmap leaves as it was, whether it answered ok or refused: the cores, the spaces, the
+    /// table pages' records and the process each thread is bound to. unmap_at's ensures and
+    /// spec_unmapped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn unmap_kept(pre: Self, post: Self) -> bool {
+        &&& post.cores == pre.cores
+        &&& post.spaces == pre.spaces
+        &&& post.table_pages.records == pre.table_pages.records
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
     /// An unmap leaves the tables, the list's parents and the bound threads as they were, and changes the
     /// kind or the liveness of no node but the mapping node it unlinked.
     pub proof fn lemma_page_unmapped_frame(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, r: Unmapped)
@@ -199,13 +218,9 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + UNMAP_AT_STEPS,
             final(self).wf(),
-            final(self).cores == old(self).cores,
-            ret is Some == old(self).can_unmap_at(root, slot, va, level),
-            ret is None ==> *final(self) == *old(self),
+            Self::unmap_answered(*old(self), *final(self), root, slot, va, level, ret is Some),
             ret is Some ==> Self::page_unmapped(*old(self), *final(self), root, slot, va, level, ret->0),
-            final(self).spaces == old(self).spaces,
-            final(self).table_pages.records == old(self).table_pages.records,
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            Self::unmap_kept(*old(self), *final(self)),
     {
         if level != 1 || !entry_named(va, level) {
             return None;

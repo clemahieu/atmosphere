@@ -583,16 +583,24 @@ impl CapKernel {
     /// returned: refused with nothing changed, exactly when can_unmap_at fails over the arguments, or ok with the entry the address in argument 1 and the
     /// level in argument 2 name in the space of the capability in the slot cleared, its accessed and dirty
     /// bits as read before it was cleared in results 1 and 2, and whether the target maintains each bit in
-    /// results 3 and 4, each result 1 when it holds and 0 when it does not.
+    /// results 3 and 4, each result 1 when it holds and 0 when it does not; either way the cores, the
+    /// spaces, the table pages' records and every thread's binding are as unmap_kept says.
     pub open spec fn spec_unmapped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| !pre.allows_unmap(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& out.status == STATUS_OK
-            &&& out.result_1 <= 1
-            &&& out.result_2 <= 1
-            &&& out.result_3 <= 1
-            &&& out.result_4 <= 1
-            &&& exists|read: usize| Self::page_unmapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] unmapped_of(out, read))
+        let slot = frame.slot() as usize;
+        let va = frame.argument(1);
+        let level = frame.argument(2);
+        &&& Self::unmap_kept(pre, post)
+        &&& {
+            ||| out == status_only(STATUS_REFUSED) && Self::unmap_answered(pre, post, root, slot, va, level, false)
+            ||| {
+                &&& out.status == STATUS_OK
+                &&& Self::unmap_answered(pre, post, root, slot, va, level, true)
+                &&& out.result_1 <= 1
+                &&& out.result_2 <= 1
+                &&& out.result_3 <= 1
+                &&& out.result_4 <= 1
+                &&& exists|read: usize| Self::page_unmapped(pre, post, root, slot, va, level, #[trigger] unmapped_of(out, read))
+            }
         }
     }
 
