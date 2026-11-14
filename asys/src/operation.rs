@@ -44,6 +44,11 @@ pub const MAP: u64 = 7;
 /// accessed and dirty bits as read when it was cleared in results 1 and 2, and in results 3 and 4 whether
 /// the target maintains each bit, each 1 when it holds.
 pub const UNMAP: u64 = 8;
+/// Destroys the process or the thread the capability with control in the slot names, which must not be
+/// dead already. A process's threads, table, space and capabilities stay, and a holder claims a slot of
+/// its table by a move whose source position names it; a thread that is running stops at its core's
+/// next entry. When the capability names the caller's own process or thread, the caller is moved off at
+/// its next entry.
 pub const DESTROY: u64 = 9;
 pub const SEND: u64 = 10;
 pub const RECEIVE: u64 = 11;

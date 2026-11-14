@@ -229,6 +229,7 @@ def boot_log():
             "thread best 31000 before 57405\n"
             "thread mean 33000 before 59384\n"
             "dom0 threads retyped\n"
+            "dom0 process destroyed\n"
             "dom0 eager backed 40\n"
             "dom0 heap allocator held\n"
             "dom0 slot checks held\n"

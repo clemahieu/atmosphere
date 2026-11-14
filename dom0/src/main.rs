@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -65,6 +65,13 @@
 //! base not aligned to the block are refused; inspect finds a thread with control in the first slot, a
 //! second retype of its block is refused, and dom0 prints the best and the mean cycles of a thread's
 //! retype beside new_thread's before numbers.
+//! It retypes a table leaf into root entry 0 of the child's table, through the child's process
+//! capability, and derives its power capability into that entry's first slot, which inspect finds there.
+//! A destroy of an empty slot, of the console and of the power capability is refused; the destroy of the
+//! child is accepted and a second refused, and a destroy of a thread bound to the dead child and a derive
+//! into its table are refused. A move from the dead child's first slot into an empty slot of
+//! dom0's own claims the capability: inspect finds it there and refuses the child's slot, and dom0 prints
+//! that it held.
 //! It retypes a third leaf into root entry 4 and derives into its first slot a child untyped of 64 pages
 //! of the gigabyte untyped, from which aeager's eager span source backs page runs of a window in root
 //! entry 3 of its space; aeager's verified exercise reserves a span, backs it a page at a time until the
@@ -81,7 +88,7 @@
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
 //! `svc #1` returns unknown and prints nothing.
 //!
-//! dom0 invokes retype, derive, inspect, move, delete, revoke, link and map through acall's wrappers,
+//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, link and map through acall's wrappers,
 //! whose ensures are the kernel's proven contracts, so the code those proofs speak of is the code that
 //! boots. dom0 is not verified: the caller token it threads through them erases in its build, and
 //! nothing here checks the wrappers' requires.
@@ -96,7 +103,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 
-use acall::capability::{delete, move_cap, revoke};
+use acall::capability::{delete, destroy, move_cap, revoke};
 use acall::memory::{derive, link, map, retype};
 use acall::step::Caller;
 use asys::operation;
@@ -903,6 +910,53 @@ fn retyped_threads_held(caller: &mut Tracked<Caller>, empty: u64, process: u64) 
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, THREADS_HELD) } == operation::STATUS_OK
 }
 
+/// How far below the top of the gigabyte untyped the child's table leaf starts: the order-1 block below the
+/// thread check's, above the eager source's block, where nothing else retypes.
+const CHILD_LEAF_BELOW_TOP: u64 = THREADS_BELOW_TOP + LEAF_BYTES;
+
+/// What dom0 prints once it destroyed its child process and claimed a capability from the dead child's
+/// table, which the gate looks for.
+const DESTROYED_HELD: [u64; 5] = operation::print_words(b"dom0 process destroyed\n");
+
+/// Whether dom0 destroys its child process, whose capability is in `process`, and claims a capability from
+/// the dead child's table into the empty slot `claim`, under the gigabyte untyped, the last from `empty`
+/// down. A table leaf CHILD_LEAF_BELOW_TOP below the untyped's top goes into root entry 0 of the child's
+/// table, through `process`, and inspect finds the power capability derived into that entry's first slot.
+/// A destroy of the empty slot `claim`, of the console slot and of the power slot, none holding a process
+/// or a thread, is refused; the destroy of `process` is accepted and a second refused, the child being
+/// dead. A destroy of the first thread the thread check bound to the child is refused, its process being
+/// dead, and so is a derive into the dead child's table. A move from the child's first slot
+/// into `claim` is accepted, after which inspect finds power's capability in `claim` and refuses the
+/// child's first slot. dom0 prints that it held.
+fn destroyed_process_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, claim: u64) -> bool {
+    let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
+        return false;
+    };
+    let Ok(power) = inspect(caller, operation::ROOT_POWER_SLOT) else {
+        return false;
+    };
+    let base = block.base + (4096 << block.order) - CHILD_LEAF_BELOW_TOP;
+    let held = operation::through(process, first_slot(0));
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 1;
+    let derive_power = |caller: &mut Tracked<Caller>, to: u64| {
+        derive(caller, operation::ROOT_POWER_SLOT, to, power.rights, power.base, 0).status
+    };
+    retype(caller, untyped, operation::RETYPE_LEAF, base, operation::through(process, 0), 0).status == operation::STATUS_OK
+        && derive_power(caller, held) == operation::STATUS_OK
+        && inspect(caller, held) == Ok(power)
+        && destroy(caller, claim).status == operation::STATUS_REFUSED
+        && destroy(caller, operation::ROOT_CONSOLE_SLOT).status == operation::STATUS_REFUSED
+        && destroy(caller, operation::ROOT_POWER_SLOT).status == operation::STATUS_REFUSED
+        && destroy(caller, process).status == operation::STATUS_OK
+        && destroy(caller, process).status == operation::STATUS_REFUSED
+        && destroy(caller, thread).status == operation::STATUS_REFUSED
+        && derive_power(caller, operation::through(process, first_slot(0) + 1)) == operation::STATUS_REFUSED
+        && move_cap(caller, held, claim).status == operation::STATUS_OK
+        && inspect(caller, claim) == Ok(power)
+        && inspect(caller, held) == Err(operation::STATUS_REFUSED)
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, DESTROYED_HELD) } == operation::STATUS_OK
+}
+
 /// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
 /// into the empty slot `destination`, repeating while retype returns again, and prints how many again
 /// returns that took: a retype at a base not aligned to 2M is refused, the retype returns again at least
@@ -1408,6 +1462,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && retyped_process_held(caller, untyped, tables[0], empty + 4)
                                 && retyped_leaves_held(caller, untyped, tables[3])
                                 && retyped_threads_held(caller, empty, empty + 4)
+                                && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && eager_source_held(caller, empty)
                         })
             })
