@@ -22,6 +22,7 @@ pub mod console;
 pub mod debugger;
 pub mod logging;
 pub mod memory;
+pub mod stack;
 
 use core::slice;
 
@@ -223,6 +224,9 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         stack_base + KERNEL_STACK_SIZE,
         &boot_info as *const _ as u64
     );
+    let (written, size) = stack::depth();
+    assert!(written < size, "the loader's stack overflowed");
+    log::info!("Loader stack: {} of {} bytes written", written, size);
     log::info!("Calling into kernel @ {:x?}", kernel_map.entry_point);
     let ret = unsafe {
         arch::enter_kernel(kernel_map.entry_point, &boot_info, stack_base + KERNEL_STACK_SIZE)

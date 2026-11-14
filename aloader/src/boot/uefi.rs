@@ -47,8 +47,9 @@ static DEBUGGER_PATH: [u16; 4] = [b'g' as u16, b'd' as u16, b'b' as u16, 0];
 const ACPI_20_TABLE_GUID: Guid = guid!("8868e871-e4f1-11d3-bc22-0080c73c8881");
 
 /// The loader's stack. `load` reaches 108 KiB down it in a debug build and 48 KiB in release, with
-/// the kernel's BootInfo and its own copies of the memory map. design/test-guest-memory/.
-const STACK_SIZE: usize = 1024 * 1024;
+/// the kernel's BootInfo and its own copies of the memory map, and logs how far as it enters the
+/// kernel (the line `Loader stack:`). design/test-guest-memory/.
+const STACK_SIZE: usize = 256 * 1024;
 
 /// Allocations the loader keeps stay below 4 GiB: inside the identity map the loader builds, and
 /// for the page tables, where the AP trampoline's 32-bit CR3 load reaches.
@@ -99,6 +100,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *const SystemTable) -> 
 
     unsafe {
         crate::memory::init();
+        crate::stack::paint(stack as u64, STACK_SIZE as u64);
 
         arch::load_on_stack(stack as u64 + STACK_SIZE as u64, rsdp, wait_for_debugger)
     }
