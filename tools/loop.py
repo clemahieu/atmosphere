@@ -48,8 +48,8 @@ each ready stage, leaf, or epic round by its route `[routes.<key>]` (`default`, 
 `spec`, `arch`, `review`, `epic-close`, `epic-split`, `needs-land`, `prover`, `skeptic`, `retry`), which
 holds `candidates`, the offerings capable of that work, cheapest first, or `disabled = true`. At claim,
 and for each hand-off, the work goes to the first candidate free to take it: none of its meters, nor its
-harness as a whole, is cooled down, and each of its meters that `[meters.<name>]` paces admits one more
-session than the loops have in flight on it, counted from the pid files. When no candidate is free, the
+harness as a whole, is cooled down, and each of its meters that `[meters.<name>]` paces has room for one
+more session of it beside the loops' sessions in flight on it, counted from the pid files. When no candidate is free, the
 work waits, for the earliest reset when only cooldowns keep it and at most PACE_WAIT s when a pace does,
 and `--check` names each cooldown or pace it waits on. A key left out takes `default`'s candidates, or none when `default` is
 left out too. A candidate that is not under `[offerings]` is an error. When nothing matches, no LLM
@@ -57,21 +57,28 @@ session is started: the loop waits if another loop or actor is active, and stops
 `[routes]`, the loop runs plain rounds on Claude with the top-level tables' flags.
 
 Pacing (`[meters.<name>]`, with `target` and `window`, the length of the meter's window in hours). Each
-paced meter has a line, which climbs from 0% at the window's opening, `window` hours before the reset,
-to the target at the reset, so every paced meter spreads its use over its window. A meter at p percent at or above its line now admits none. Under it, with r its
-fitted rate a session in flight and h the hours to its reset, it admits max(1, ceil((target - p) /
-(r * h))) sessions at once: those that, spending what is left evenly over the time left, bring it to
-its target at the reset. A meter behind its line catches up over the rest of its window, not at once,
-and one whose sessions cost more than the time left affords runs while under its line and waits above
-it, so a climbing line spreads the meter's use over its window as a duty cycle; `[pool] jobs` is the
-only ceiling. One with no rate yet, or none above zero, admits one session while under its line; one
-with no readings, or a window that has reset since the last reading, admits any number; a window with
-no reset known cannot be placed, and its line stands at the target and it admits one; a meter no table
-names is not paced. r is the meter's fitted rate over the mean number of the loops'
-sessions in flight on it at the readings it was fitted over, a mean under one counting as one, so use
-from outside the loops is charged to the sessions. The pool recomputes every paced meter's admission
-each tick and logs each change with p, the hours to reset, the line and r; each worker recomputes it
-before it chooses. Two workers choosing at the same instant may both take a meter's last place.
+paced meter is a token bucket. Its line climbs from 0% at the window's opening, `window` hours before
+the reset, to the target at the reset, refilling target / window percent an hour, and what lies between
+the line and p, the percent used, is what the meter may spend. A meter at or above its line admits
+none. Under it, with h the hours to its reset, it allows (target - p) / h percent an hour: what is left
+spent evenly over the time left. One more session fits while what the sessions in flight on it cost an
+hour and its own cost stay within that, and the first fits whatever it costs, so a meter behind its line
+catches up over the rest of its window, not at once, and one whose sessions cost more than the time
+left affords runs one while under its line and waits above it, a duty cycle. `[pool] jobs` is the only
+ceiling. A session's cost is the meter's rate a session r, its fitted rate over the mean number of the
+loops' sessions in flight on it at the readings it was fitted over (a mean under one counting as one,
+so use from outside the loops is charged to the sessions), scaled by its offering's intensity against
+the meter's: an intensity is weekly points an hour, a session's plan-weighted tokens at its model's rate
+on Claude (`flag_rate` of tools/leaf-cost.py) and at one on Grok and Gemini, over its minutes, taken
+over the offering's last COST_SESSIONS sessions in sessions.sqlite and over every session that drew on
+the meter and ended within RATE_WINDOW. With either intensity not known it costs r. A meter with no
+rate yet takes one session at a time while under its line; one with no readings, or a window that has
+reset since the last reading, takes any number; a window with no reset known cannot be placed, and its
+line stands at the target and it takes one; a meter no table names is not paced. The pool recomputes
+every paced meter's admission each tick and logs each change with p, the hours to reset, the line, what
+it allows, r and how many sessions at r that fits; each worker recomputes it, with the costs, before it
+chooses, and `--check` shows each meter with what flies on it and what a session of each offering
+costs it. Two workers choosing at the same instant may both take a meter's last place.
 
 Shared meter and cooldown state. The pool and its workers share `<project root>/logs/loop/state.json`,
 updated under `<project root>/logs/loop/.state.lock` and replaced atomically so readers never see half a
@@ -182,6 +189,7 @@ import math
 import multiprocessing
 import os
 import re
+import runpy
 import shutil
 import signal
 import sqlite3
@@ -221,6 +229,8 @@ CLAUDE_USAGE = Path(__file__).resolve().parent / "claude-usage.py"
 CLAUDE_USAGE_INTERVAL = 300
 CLAUDE_USAGE_TIMEOUT = 30
 RATE_WINDOW = 12 * 3600
+# The sessions of an offering, newest first, whose tokens an hour price it.
+COST_SESSIONS = 10
 HISTORY_MAX_AGE = 24 * 3600
 MAX_HISTORY = 500
 MIN_RATE_SPAN = 60
@@ -290,6 +300,7 @@ class Dispatch:
     routes: dict = field(default_factory=dict)
     routed: bool = False
     paces: dict = field(default_factory=dict)
+    offerings: dict = field(default_factory=dict)
 
 
 def plain(line):
@@ -627,9 +638,9 @@ def options(text):
 
 def parse_dispatch(text):
     """The loop's dispatch from loop.toml: routed when [routes] is there, else the top-level tables alone."""
-    top_flags, _, routes, paces = parse_all(text)
+    top_flags, offerings, routes, paces = parse_all(text)
     agents = {kind: AgentSpec(harness="claude", flags=list(flags)) for kind, flags in top_flags.items()}
-    return Dispatch(agents=agents, routes=routes, routed=bool(routes), paces=paces)
+    return Dispatch(agents=agents, routes=routes, routed=bool(routes), paces=paces, offerings=offerings)
 
 
 def nearest_tier(issue, by_id):
@@ -888,53 +899,131 @@ def add_reading(state, meter, harness, percent, resets_at, read, sessions=None):
 
 
 def admission(held, pace, now):
-    """(sessions the meter admits at once, or None for any number, percent, hours to reset, rate a
-    session, line) for a meter's state `held` (None when it has no readings) under its pace from
-    [meters]. The line climbs from 0% at the window's opening to the target at its reset; with no reset
-    known to place the window by, it stands at the target. `line` is where
-    it stands now. A meter at or above it admits none. One under it admits the sessions that, each
-    spending the rate a session, bring it to its target at its reset: (target - percent) over the rate
-    a session times the hours to reset, rounded up, one at least. So a meter behind its line catches up
-    evenly over the time left rather than at once, and one whose sessions cost more than the time left
-    affords runs while under its line and waits above it, a duty cycle. With no rate a session, none
-    above zero, or no reset known, one while under the line; with no readings, or a window that has
-    reset since the reading, any number."""
+    """(sessions the meter admits at once, or None for any number; percent an hour it allows; percent;
+    hours to reset; rate a session; line) for a meter's state `held` (None when it has no readings) under
+    its pace from [meters]. The meter is a token bucket: its line climbs from 0% at the window's opening
+    to the target at its reset, so it refills at target / window percent an hour, and with no reset known
+    to place the window by the line stands at the target. `line` is where it stands now. A meter at or
+    above it admits none and allows nothing. One under it allows (target - percent) / hours to reset: the
+    spend an hour that, held to the reset, brings it to its target there. It admits the sessions of its
+    mean rate that spend fits, one at least, so a meter whose sessions cost more than the time left
+    affords runs one while under its line and waits above it, a duty cycle. With no rate a session or
+    none above zero it admits one; with no reset known it allows nothing beyond that one. With no
+    readings, or a window that has reset since the reading, it admits any number and allows any spend."""
     if held is None:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     percent, resets_at, rate = held["percent"], held.get("resets_at"), held.get("session_rate")
     hours = None if resets_at is None else (resets_at - now) / 3600
     if hours is not None and hours <= 0:
-        return None, percent, hours, rate, None
+        return None, None, percent, hours, rate, None
     target, window = pace["target"], pace["window"]
     line = target
     if hours is not None:
         line *= min(max(window - hours, 0.0) / window, 1.0)
     if percent >= line:
-        return 0, percent, hours, rate, line
-    if rate is None or rate <= 0 or hours is None:
-        return 1, percent, hours, rate, line
-    return max(math.ceil((target - percent) / (rate * hours)), 1), percent, hours, rate, line
+        return 0, 0.0, percent, hours, rate, line
+    if hours is None:
+        return 1, 0.0, percent, hours, rate, line
+    allowed = (target - percent) / hours
+    if rate is None or rate <= 0:
+        return 1, allowed, percent, hours, rate, line
+    return max(math.floor(allowed / rate), 1), allowed, percent, hours, rate, line
+
+
+def fits(admitted, flying, cost):
+    """Whether one more session costing `cost` percent an hour fits a meter whose admission is `admitted`
+    and whose sessions in flight cost `flying`: a meter with no readings takes any, one over its line
+    none, and one under it the first session whatever it costs, then each whose cost with what flies
+    stays within what it allows. A cost not known counts as more than any allowance."""
+    admits, allowed = admitted[:2]
+    if admits is None:
+        return True
+    if admits == 0:
+        return False
+    if not flying:
+        return True
+    if cost is None or any(c is None for c in flying):
+        return False
+    return sum(flying) + cost <= allowed
+
+
+FLAG_RATE = runpy.run_path(str(Path(__file__).with_name("leaf-cost.py")))["flag_rate"]
+
+
+def intensity(rows):
+    """Weekly points an hour the sessions `rows` spent while they ran, or None when none tells: tokens
+    weighted at their model's rate on Claude and at one elsewhere, over their hours. A Claude session on a
+    model with no rate, or with no minutes or no tokens counted, says nothing."""
+    points = hours = 0.0
+    for row in rows:
+        if not row["minutes"] or row["weighted"] is None:
+            continue
+        weight = FLAG_RATE(row["harness"], row["model"]) if row["harness"] == "claude" else 1.0
+        if weight is None:
+            continue
+        points += row["weighted"] / 1e6 * weight
+        hours += row["minutes"] / 60
+    return points / hours if hours > 0 and points > 0 else None
+
+
+def offering_costs(rows, offerings, meters, now):
+    """{meter: {offering: percent an hour one session of it adds}} for each meter of `meters` (name to
+    state) and each offering of the table drawing on it. The meter's rate a session is the mean of the
+    sessions that drew on it over RATE_WINDOW; an offering costs that rate scaled by its intensity, over
+    its last COST_SESSIONS sessions, against theirs. With either intensity unknown an offering costs the
+    meter's rate a session, and with that unknown nothing is known."""
+    own = {name: intensity([row for row in rows if row["offering"] == name and row["minutes"]
+                            and row["weighted"] is not None][-COST_SESSIONS:]) for name in offerings}
+    costs = {}
+    for meter, held in meters.items():
+        rate = held.get("session_rate")
+        drawing = [name for name, spec in offerings.items() if meter in spec.meters]
+        recent = intensity([row for row in rows if row["offering"] in drawing and row["started"] is not None
+                            and row["minutes"] is not None
+                            and row["started"] + 60 * row["minutes"] >= now - RATE_WINDOW])
+        costs[meter] = {name: None if rate is None else rate if own[name] is None or recent is None
+                        else rate * own[name] / recent for name in drawing}
+    return costs
 
 
 def in_flight(folder, alive=loop_alive):
-    """The loops' sessions in flight on each meter, from the pid files in `folder` of the loops still alive."""
-    counts = {}
+    """The offerings of the loops' sessions in flight on each meter, from the pid files in `folder` of the
+    loops still alive."""
+    flying = {}
     for path in Path(folder).glob("*"):
         if not path.name.isdigit() or not alive(int(path.name)):
             continue
         session = read_pid_file(folder, path.name).get("session") or {}
         for meter in session.get("meters") or ():
-            counts[meter] = counts.get(meter, 0) + 1
-    return counts
+            flying.setdefault(meter, []).append(session.get("offering"))
+    return flying
 
 
-def fmt_admission(meter, admits, percent, hours, rate, line, pace):
+def spends(flying, costs, held):
+    """What the offerings `flying` in flight on a meter cost it an hour each: an offering the table no
+    longer holds costs the meter's rate a session."""
+    rate = None if held is None else held.get("session_rate")
+    return [costs.get(name, rate) for name in flying]
+
+
+def fmt_paced(admitted, flying, cost):
+    """Why a meter has no room for one more session."""
+    admits, allowed, percent, _, _, line = admitted
+    if admits == 0:
+        return f"{percent:.1f}% used, at or over its line {line:.1f}%"
+    if cost is None or any(c is None for c in flying):
+        return f"{len(flying)} in flight at a cost not known"
+    return f"{sum(flying):.2f}%/h in flight and {cost:.2f} more over {allowed:.2f}%/h allowed"
+
+
+def fmt_admission(meter, admits, allowed, percent, hours, rate, line, pace):
     """One meter's admission with what it was computed from, for the pool's log."""
     if percent is None:
         why = "no readings"
     else:
         why = f"{percent:.1f}% used, " + ("no reset known" if hours is None else f"{hours:.1f} h to reset") + (
-            "" if line is None else f", line {line:.1f}%") + ", " + (
+            "" if line is None else f", line {line:.1f}%") + (
+            "" if allowed is None else f", allows {allowed:.2f}%/h") + ", " + (
             "no rate yet" if rate is None else f"{rate:.2f}%/h a session")
     return f"{meter}: {why}: admits {'any' if admits is None else admits} ({fmt_pace(pace)})"
 
@@ -1023,8 +1112,7 @@ def fmt_waits(waits):
     whose pace has no room for it."""
     return "; ".join(f"{fmt_spec(spec)} cooled on " + ", ".join(
         f"{key} until {time.strftime('%a %H:%M', time.localtime(until))}" for key, until in cooled)
-        if cooled else f"{fmt_spec(spec)} paced on " + ", ".join(
-        f"{meter} (admits {admits}, {flying} in flight)" for meter, admits, flying in paced)
+        if cooled else f"{fmt_spec(spec)} paced on " + ", ".join(f"{meter} ({why})" for meter, why in paced)
         for spec, cooled, paced in waits)
 
 
@@ -1140,18 +1228,22 @@ class Loop:
                          f"for every loop for {wait_s:.0f} s")
 
     def paced_out(self, spec):
-        """The meters `spec` draws on whose pace in [meters] has no room for one more session, as (meter,
-        sessions it admits, sessions in flight on it)."""
+        """The meters `spec` draws on whose pace in [meters] has no room for one more session of it, as
+        (meter, why)."""
         paces = self.dispatch.paces
-        if not any(meter in paces for meter in spec.meters):
+        paced = [meter for meter in spec.meters if meter in paces]
+        if not paced:
             return []
-        meters, flying = read_state(self.pids)["meters"], in_flight(self.pids, self.alive)
+        meters, flying, now = read_state(self.pids)["meters"], in_flight(self.pids, self.alive), self.now()
+        held = {meter: meters[meter] for meter in paced if meter in meters}
+        costs = offering_costs(read_sessions(self.pids), self.dispatch.offerings, held, now)
         found = []
-        for meter in spec.meters:
-            if meter in paces:
-                admits = admission(meters.get(meter), paces[meter], self.now())[0]
-                if admits is not None and admits <= flying.get(meter, 0):
-                    found.append((meter, admits, flying.get(meter, 0)))
+        for meter in paced:
+            admitted = admission(held.get(meter), paces[meter], now)
+            spent = spends(flying.get(meter, []), costs.get(meter, {}), held.get(meter))
+            cost = costs.get(meter, {}).get(spec.name)
+            if not fits(admitted, spent, cost):
+                found.append((meter, fmt_paced(admitted, spent, cost)))
         return found
 
     def keep_readings(self, run, spec):
@@ -1164,7 +1256,7 @@ class Loop:
             def keep(state):
                 for meter, (percent, resets_at) in run.readings.items():
                     add_reading(state, meter, spec.harness, percent, resets_at, read,
-                                sessions=flying.get(meter, 0) + (meter in spec.meters))
+                                sessions=len(flying.get(meter, ())) + (meter in spec.meters))
             update_state(self.pids, keep)
         if run.limited:
             self.mark_cooldown(limit_keys(run, spec), spec.harness, run.reset)
@@ -1765,7 +1857,7 @@ class Pool:
 
         def change(state):
             for meter, percent, resets_at, read in readings:
-                add_reading(state, meter, harness, percent, resets_at, read, sessions=flying.get(meter, 0))
+                add_reading(state, meter, harness, percent, resets_at, read, sessions=len(flying.get(meter, ())))
         update_state(self.pids, change)
 
     def pace(self):
@@ -1774,10 +1866,9 @@ class Pool:
         meters = read_state(self.pids)["meters"]
         admitted = {}
         for meter, pace in self.paces.items():
-            admits, percent, hours, rate, line = admission(meters.get(meter), pace, self.now())
-            admitted[meter] = admits
-            if meter not in self.admitted or self.admitted[meter] != admits:
-                self.say(fmt_admission(meter, admits, percent, hours, rate, line, pace))
+            admitted[meter] = admission(meters.get(meter), pace, self.now())
+            if meter not in self.admitted or self.admitted[meter][0] != admitted[meter][0]:
+                self.say(fmt_admission(meter, *admitted[meter], pace))
         self.admitted = admitted
 
     def sample(self):
@@ -1937,10 +2028,17 @@ def check(config=CONFIG, out=sys.stdout, loop=None):
           + ("; ".join(summary["finished_epics"]) or "none"), file=out)
     print(f"splittable epics ({len(summary['split_epics'])}{split_tag}): "
           + (", ".join(summary["split_epics"]) or "none"), file=out)
-    meters, flying = read_state(loop.pids)["meters"], in_flight(loop.pids, loop.alive)
+    meters, flying, now = read_state(loop.pids)["meters"], in_flight(loop.pids, loop.alive), loop.now()
+    held = {meter: meters[meter] for meter in loop.dispatch.paces if meter in meters}
+    costs = offering_costs(read_sessions(loop.pids), loop.dispatch.offerings, held, now)
     for meter, pace in loop.dispatch.paces.items():
-        admits, percent, hours, rate, line = admission(meters.get(meter), pace, loop.now())
-        print(f"meter {fmt_admission(meter, admits, percent, hours, rate, line, pace)}, {flying.get(meter, 0)} in flight", file=out)
+        spent = spends(flying.get(meter, []), costs.get(meter, {}), held.get(meter))
+        shown = (f"{len(spent)} in flight" + ("" if not spent else " at a cost not known" if None in spent
+                 else f" at {sum(spent):.2f}%/h"))
+        priced = ", ".join(f"{name} " + ("not known" if cost is None else f"{cost:.2f}%/h")
+                           for name, cost in costs.get(meter, {}).items())
+        print(f"meter {fmt_admission(meter, *admission(meters.get(meter), pace, now), pace)}; {shown}"
+              + (f"; a session costs {priced}" if priced else ""), file=out)
     print(f"waiting on cooldowns or pace ({len(summary['cooled'])})" + ("".join(
         f"\n  {what} [{key}]: {fmt_waits(waits)}" for key, what, waits in summary["cooled"]) or ": none"), file=out)
     return 0
@@ -3583,9 +3681,9 @@ class Tests(unittest.TestCase):
         effort = "high"
         meters = ["claude-week", "claude-5h"]
 
-        [offerings.sonnet]
-        model = "sonnet"
-        effort = "high"
+        [offerings.fable]
+        model = "fable"
+        effort = "xhigh"
         meters = ["claude-week"]
 
         [routes.default]
@@ -3608,41 +3706,44 @@ class Tests(unittest.TestCase):
         return {"harness": "claude", "percent": percent, "resets_at": resets_at, "read": read, "rate": rate,
                 "session_rate": session_rate, "history": []}
 
-    def test_a_meter_under_its_line_admits_what_reaches_its_target_by_its_reset(self):
+    def test_a_meter_under_its_line_allows_the_spend_that_reaches_its_target_by_its_reset(self):
         week, five_hours = {"target": 95.0, "window": 168.0}, {"target": 95.0, "window": 5.0}
         hour = 3600.0
-        # The week of 2026-11-14: 17% used 27.8 h before the reset, its line at 95 * 140.2 / 168 = 79.3%,
-        # 0.57%/h a session. The 78 points left over 27.8 h are 2.8%/h, 4.9 sessions: 5, not the 109 that
-        # would reach the line within the hour.
-        admits, percent, hours, rate, line = admission(self.meter(17.0, 27.8 * hour, session_rate=0.57), week, 0.0)
-        self.assertEqual((admits, percent, rate), (5, 17.0, 0.57))
+        # The week of 2026-11-14: 17% used 27.8 h before the reset, its line at 95 * 140.2 / 168 = 79.3%.
+        # The 78 points left over 27.8 h allow 2.81%/h: four sessions at 0.57%/h, not the 109 that would
+        # reach the line within the hour.
+        admits, allowed, percent, hours, rate, line = admission(self.meter(17.0, 27.8 * hour, session_rate=0.57), week, 0.0)
+        self.assertEqual((admits, percent, rate), (4, 17.0, 0.57))
+        self.assertAlmostEqual(allowed, 78 / 27.8)
         self.assertAlmostEqual(hours, 27.8)
         self.assertAlmostEqual(line, 95 * 140.2 / 168)
-        # 50 h from the reset the line stands at 95 * 118 / 168 = 66.7%. At 10%, 85 points over 50 h at
-        # 20%/h a session is a fraction of one: one; at 0.5%/h, 3.4: 4.
-        admits, percent, hours, rate, line = admission(self.meter(10.0, 50 * hour, session_rate=20.0), week, 0.0)
+        # 50 h from the reset the line stands at 95 * 118 / 168 = 66.7%. At 10%, 85 points over 50 h allow
+        # 1.7%/h: at 20%/h a session a fraction of one, which is one; at 0.5%/h, three.
+        admits, allowed, percent, hours, rate, line = admission(self.meter(10.0, 50 * hour, session_rate=20.0), week, 0.0)
         self.assertEqual((admits, percent, hours, rate), (1, 10.0, 50.0, 20.0))
+        self.assertAlmostEqual(allowed, 1.7)
         self.assertAlmostEqual(line, 95 * 118 / 168)
-        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.5), week, 0.0)[0], 4)
+        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.5), week, 0.0)[0], 3)
         # A meter whose sessions cost a fraction of what the time left affords runs while under its line and
         # waits above it, a duty cycle: 1.6% used an hour into the week waits; 10 h in, runs one.
-        self.assertEqual(admission(self.meter(1.6, 167 * hour, session_rate=3.3), week, 0.0)[0], 0)
+        self.assertEqual(admission(self.meter(1.6, 167 * hour, session_rate=3.3), week, 0.0)[:2], (0, 0.0))
         self.assertEqual(admission(self.meter(1.6, 158 * hour, session_rate=3.3), week, 0.0)[0], 1)
         # Ahead of the line: 80% used, 100 h out (line 38.5%): none.
         self.assertEqual(admission(self.meter(80.0, 100 * hour, session_rate=0.5), week, 0.0)[0], 0)
-        # A five-hour meter's line runs over five hours: 3 h out it stands at 38%; 85 points over 3 h at
-        # 10%/h a session is 2.8: 3.
-        self.assertEqual(admission(self.meter(10.0, 3 * hour, session_rate=10.0), five_hours, 0.0),
-                         (3, 10.0, 3.0, 10.0, 38.0))
-        # Half an hour out: 5 points at 2%/h a session over half an hour is 5 sessions.
+        # A five-hour meter's line runs over five hours: 3 h out it stands at 38%; 85 points over 3 h allow
+        # 28.3%/h, two sessions at 10%/h.
+        admits, allowed, percent, hours, rate, line = admission(self.meter(10.0, 3 * hour, session_rate=10.0), five_hours, 0.0)
+        self.assertEqual((admits, percent, hours, rate, line), (2, 10.0, 3.0, 10.0, 38.0))
+        self.assertAlmostEqual(allowed, 85 / 3)
+        # Half an hour out: 5 points over half an hour allow 10%/h, five sessions at 2%/h.
         self.assertEqual(admission(self.meter(90.0, 0.5 * hour, session_rate=2.0), week, 0.0)[0], 5)
         # Gemini's week of 2026-11-14, 3.2% used just past its reset at 3.2%/h a session: its line holds it
         # back until the line passes 3.2%, 5.7 h into the week, then runs one at a time, under the line.
         self.assertEqual(admission(self.meter(3.2, 167 * hour, session_rate=3.2), week, 0.0)[0], 0)
         self.assertEqual(admission(self.meter(3.2, 162 * hour, session_rate=3.2), week, 0.0)[0], 1)
         # A window with no reset known cannot be placed, and leaves no time to spread over: its line stands
-        # at the target and it admits one.
-        self.assertEqual(admission(self.meter(10.0, None, session_rate=20.0), week, 0.0), (1, 10.0, None, 20.0, 95.0))
+        # at the target, it allows no spend, and it admits one.
+        self.assertEqual(admission(self.meter(10.0, None, session_rate=20.0), week, 0.0), (1, 0.0, 10.0, None, 20.0, 95.0))
         # At or past the target nothing is admitted, whatever the rate.
         self.assertEqual(admission(self.meter(95.0, 2 * hour), week, 0.0)[0], 0)
         self.assertEqual(admission(self.meter(96.0, 0.5 * hour, session_rate=1.0), week, 0.0)[0], 0)
@@ -3654,7 +3755,63 @@ class Tests(unittest.TestCase):
         # A reading whose window has since reset says nothing of the new window, and a meter with no
         # readings nothing at all: any number.
         self.assertIsNone(admission(self.meter(94.0, 100.0, session_rate=5.0), week, 200.0)[0])
-        self.assertEqual(admission(None, week, 0.0), (None, None, None, None, None))
+        self.assertEqual(admission(None, week, 0.0), (None, None, None, None, None, None))
+
+    def test_a_session_fits_a_meter_when_what_flies_on_it_and_its_own_cost_are_within_what_it_allows(self):
+        week, hour = {"target": 95.0, "window": 168.0}, 3600.0
+        under = admission(self.meter(10.0, 50 * hour, session_rate=0.5), week, 0.0)  # allows 1.7%/h
+        self.assertTrue(fits(under, [0.8], 0.8))
+        self.assertFalse(fits(under, [0.8, 0.2], 0.8))
+        # The first session always fits a meter under its line, however much it costs.
+        self.assertTrue(fits(under, [], 5.0))
+        # Over its line, none fits; with no readings, any number does.
+        self.assertFalse(fits(admission(self.meter(80.0, 100 * hour, session_rate=0.5), week, 0.0), [], 0.1))
+        self.assertTrue(fits(admission(None, week, 0.0), [9.0, 9.0], 9.0))
+        # With no rate, a cost is unknown: one at a time.
+        unrated = admission(self.meter(10.0, 50 * hour), week, 0.0)
+        self.assertTrue(fits(unrated, [], None))
+        self.assertFalse(fits(unrated, [None], None))
+        # With no reset known nothing is allowed beyond the one.
+        unplaced = admission(self.meter(10.0, None, session_rate=0.1), week, 0.0)
+        self.assertTrue(fits(unplaced, [], 0.1))
+        self.assertFalse(fits(unplaced, [0.1], 0.1))
+
+    def session_row(self, offering, model, started, minutes, weighted, harness="claude"):
+        row = {name: None for name, _ in SESSION_COLUMNS}
+        row.update(offering=offering, harness=harness, model=model, started=started, minutes=minutes, weighted=weighted)
+        return row
+
+    def test_an_offering_costs_a_meter_its_rate_scaled_by_its_recent_sessions_against_the_meters(self):
+        hour = 3600.0
+        offerings = parse_dispatch(self.PACED).offerings
+        now = 20 * hour
+        meters = {"claude-week": {"session_rate": 0.5}, "gemini-week": {"session_rate": 3.0}}
+        rows = [
+            # Fable's oldest session is past the COST_SESSIONS it is priced over, and past the rate's window.
+            self.session_row("fable", "fable", 0.0, 60.0, 50e6),
+            *[self.session_row("fable", "fable", 2 * hour + i, 60.0, 1e6) for i in range(COST_SESSIONS)],
+            # Opus ran within the rate's window: 2 M weighted an hour at 0.12 points a million.
+            self.session_row("opus", "opus", 15 * hour, 30.0, 1e6),
+            self.session_row("opus", "opus", 16 * hour, 30.0, 1e6),
+            # A session with no minutes or no tokens counted says nothing of its cost.
+            self.session_row("opus", "opus", 17 * hour, 0.0, 1e6),
+            self.session_row("opus", "opus", 17 * hour, 10.0, None),
+        ]
+        costs = offering_costs(rows, offerings, meters, now)
+        # Over the window only Opus ran (0.24 points an hour), so the week's 0.5%/h is an Opus session's,
+        # and a Fable session, 0.57 points an hour, costs 0.5 * 0.57 / 0.24.
+        self.assertAlmostEqual(costs["claude-week"]["opus"], 0.5)
+        self.assertAlmostEqual(costs["claude-week"]["fable"], 0.5 * 0.57 / 0.24)
+        self.assertEqual(set(costs["claude-week"]), {"opus", "fable"})
+        # An offering with no sessions costs the meter's rate a session; a meter with no rate, nothing known.
+        self.assertEqual(costs["gemini-week"], {"carbon": 3.0})
+        self.assertEqual(offering_costs(rows, offerings, {"claude-week": {"session_rate": None}}, now)["claude-week"],
+                         {"opus": None, "fable": None})
+        # With nothing run in the window, the meter's rate is no offering's in particular: each costs it.
+        self.assertEqual(offering_costs(rows, offerings, meters, 100 * hour)["claude-week"], {"opus": 0.5, "fable": 0.5})
+        # On a harness with no plan rate, tokens weigh the same whatever the model.
+        rows = [self.session_row("carbon", "gemini-4-carbon-high", 19 * hour, 60.0, 3e6, harness="agy")]
+        self.assertAlmostEqual(offering_costs(rows, offerings, meters, now)["gemini-week"]["carbon"], 3.0)
 
     def test_the_rate_a_session_is_the_meters_rate_over_the_sessions_in_flight_when_read(self):
         state = empty_state()
@@ -3712,7 +3869,7 @@ class Tests(unittest.TestCase):
                 for path in folder.glob("[0-9]*"):
                     path.unlink()
                 for pid, name in enumerate(offerings, start=900001):
-                    meters = {"opus": ["claude-week", "claude-5h"], "sonnet": ["claude-week"]}[name]
+                    meters = {"opus": ["claude-week", "claude-5h"], "fable": ["claude-week"]}[name]
                     write_pid_file(folder, {"pid": pid, "pool": 1, "session": {
                         "kind": "round", "offering": name, "meters": meters}})
 
@@ -3726,21 +3883,30 @@ class Tests(unittest.TestCase):
             in_flight()
             self.assertEqual(choice(), "opus")
             # One session already draws on the week, which admits one: the leaf goes to the next candidate.
-            in_flight("sonnet")
+            in_flight("fable")
             self.assertEqual(choice(), "carbon")
             # The week has room, the five-hour window is ahead of its line (90% against 19%): it binds.
             readings((10.0, 5.0, 51 * hour), (90.0, 2.0, 5 * hour))
-            in_flight("sonnet")
+            in_flight("fable")
             self.assertEqual(choice(), "carbon")
-            # The week admits two (85 points over 50 h at 1%/h a session) and the five-hour window three (85
-            # over 4 h at 9%/h): opus again, with one in flight on each.
-            readings((10.0, 1.0, 51 * hour), (10.0, 9.0, 5 * hour))
+            # The week allows 1.7%/h (85 points over 50 h), three sessions at 0.5%/h, and the five-hour window
+            # 21.25%/h (85 over 4 h), two at 9%/h: opus again, with one in flight on each.
+            readings((10.0, 0.5, 51 * hour), (10.0, 9.0, 5 * hour))
             in_flight("opus")
             self.assertEqual(choice(), "opus")
-            # Every candidate held: Gemini's week at its target admits none; the leaf waits and is not claimed.
+            # A session is priced by its offering's recent sessions: Fable spends 0.57 points a million
+            # weighted tokens to Opus's 0.12, so at the same tokens an hour a Fable session costs the week
+            # 0.83%/h and an Opus one 0.17%/h, and two Fable sessions leave no room for an Opus one, where
+            # three sessions of the week's mean would fit.
+            for offering in ("opus", "fable"):
+                record_session(folder, self.session_row(offering, offering, 0.0, 60.0, 1e6))
+            in_flight("fable", "opus")
+            self.assertEqual(choice(), "opus")
+            # Every candidate held: Gemini's week over its line admits none; the leaf waits and is not claimed.
             update_state(folder, lambda held: add_reading(held, "gemini-week", "agy", 90.0, 100 * hour, hour))
-            in_flight("opus", "opus")
-            self.assertEqual(choice(), [("opus", [("claude-week", 2, 2)]), ("carbon", [("gemini-week", 0, 0)])])
+            in_flight("fable", "fable")
+            self.assertEqual(choice(), [("opus", [("claude-week", "1.65%/h in flight and 0.17 more over 1.70%/h allowed")]),
+                                        ("carbon", [("gemini-week", "90.0% used, at or over its line 37.0%")])])
             action, _, summary = loop.inspect_work(claim=True)
             self.assertEqual(action, "cooldown_wait")
             self.assertNotIn(["update", "atmo-1.1", "--claim"], self.log(folder, "bd"))
@@ -3753,14 +3919,16 @@ class Tests(unittest.TestCase):
                 def flush(self):
                     pass
             check(config=folder / "loop.toml", out=Lines(), loop=loop)
-            self.assertIn("meter claude-week: 10.0% used, 50.0 h to reset, line 66.7%, 1.00%/h a session: admits 2 (target 95, window 168 h), "
-                          "2 in flight", "".join(shown))
-            self.assertIn("opus paced on claude-week (admits 2, 2 in flight); carbon paced on gemini-week (admits 0, 0 in flight)", "".join(shown))
+            self.assertIn("meter claude-week: 10.0% used, 50.0 h to reset, line 66.7%, allows 1.70%/h, 0.50%/h a session: "
+                          "admits 3 (target 95, window 168 h); 2 in flight at 1.65%/h; a session costs opus 0.17%/h, fable 0.83%/h",
+                          "".join(shown))
+            self.assertIn("opus paced on claude-week (1.65%/h in flight and 0.17 more over 1.70%/h allowed); "
+                          "carbon paced on gemini-week (90.0% used, at or over its line 37.0%)", "".join(shown))
 
             # A held route rechecks after PACE_WAIT, not after the full wait: a session ending frees a place.
             pauses = []
             loop.sleep = lambda seconds: (pauses.append(seconds), clock.__setitem__(0, clock[0] + seconds),
-                                          in_flight("opus"))
+                                          in_flight("fable"))
             self.assertEqual(loop.drive(once=True), 0)
             loop.wait = 900
             loop.stopping = False
@@ -3775,7 +3943,7 @@ class Tests(unittest.TestCase):
                     loop.stopping = True
                 return result
             loop.round = round_then_stop
-            in_flight("opus", "opus")
+            in_flight("fable", "fable")
             self.assertEqual(loop.drive(), 0)
             self.assertEqual(sum(pauses), PACE_WAIT)
             self.assertEqual([call[call.index("--model") + 1] for call in self.log(folder, "claude")], ["opus"])
@@ -3814,8 +3982,8 @@ class Tests(unittest.TestCase):
             pool.tune()
             pool.pace()
             self.assertEqual(len(lines()), 3)
-            self.assertIn("claude-week: 10.0% used, 50.0 h to reset, line 66.7%, 1.00%/h a session: admits 2 (target 95, window 168 h)",
-                          lines()[0])
+            self.assertIn("claude-week: 10.0% used, 50.0 h to reset, line 66.7%, allows 1.70%/h, 1.00%/h a session: admits 1 "
+                          "(target 95, window 168 h)", lines()[0])
             self.assertIn("claude-5h: no readings: admits any (target 95, window 5 h)", "\n".join(lines()))
             # Unchanged admission is not logged again, though the hours to reset moved.
             clock[0] = 1.5 * hour
@@ -3825,11 +3993,12 @@ class Tests(unittest.TestCase):
             set_meter(94.5, 1.0, 51 * hour)
             pool.pace()
             self.assertEqual(len(lines()), 4)
-            self.assertIn("claude-week: 94.5% used, 49.5 h to reset, line 67.0%, 1.00%/h a session: admits 0 (target 95, window 168 h)", lines()[-1])
+            self.assertIn("claude-week: 94.5% used, 49.5 h to reset, line 67.0%, allows 0.00%/h, 1.00%/h a session: admits 0 "
+                          "(target 95, window 168 h)", lines()[-1])
             # step() is a tick, and recomputes it.
             set_meter(10.0, 1.0, 51 * hour)
             pool.step()
-            self.assertIn("admits 2", lines()[-1])
+            self.assertIn("admits 1", lines()[-1])
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
