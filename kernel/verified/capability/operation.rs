@@ -537,9 +537,10 @@ impl CapKernel {
     /// operation not wired yet;
     /// and unknown for a number no operation has. Print's words are arguments 1 to 5 and power-off's
     /// word is argument 1, as design/syscall-abi-in-registers/ places them; neither decides the status.
-    /// Print, power-off and inspect call here the predicates their ensures call, as
+    /// Print, power-off, inspect and read registers call here the predicates their ensures call, as
     /// design/invoked-arm-is-the-operation-postcondition/ requires. The kernel is unchanged, so the
-    /// discharge is this kernel with itself; inspect's payload is the one the position holds.
+    /// discharge is this kernel with itself; inspect's payload is the one the position holds, and the
+    /// frame read registers names is the saved frame when can_set_registers holds.
     pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
         match spec_operation(frame.operation_number()) {
             Some(Operation::Print) => {
@@ -565,7 +566,17 @@ impl CapKernel {
                 },
                 None => status_only(STATUS_REFUSED),
             },
-            Some(Operation::ReadRegisters) => self.spec_read_registers(root, frame),
+            Some(Operation::ReadRegisters) => {
+                let i = frame.slot() as usize;
+                let saved = if self.can_set_registers(root, i) {
+                    Some(self.threads.records@[self.thread_named(root, i)].value().frame)
+                } else {
+                    None
+                };
+                let _answered = self.read_registers_answered(root, i, saved);
+                let _done = self.read_registers_done(root, i, saved);
+                self.spec_read_registers(root, frame)
+            },
             Some(_) => status_only(STATUS_REFUSED),
             None => status_only(STATUS_UNKNOWN),
         }

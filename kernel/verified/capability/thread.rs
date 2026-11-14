@@ -3690,22 +3690,37 @@ impl CapKernel {
         Some((n, payload.base, dead))
     }
 
+    /// ret names the saved frame exactly when index i of the table at root holds a control capability
+    /// for an Inactive thread that is not dead. read_registers's ensures and spec_outcome both call
+    /// it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn read_registers_answered(&self, root: usize, i: usize, ret: Option<Registers>) -> bool {
+        ret is Some == self.can_set_registers(root, i)
+    }
+
+    /// When ret names a frame, it is the saved frame of the thread the control capability at index i
+    /// names, and the step discharges control of that thread. read_registers's ensures and
+    /// spec_outcome both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn read_registers_done(&self, root: usize, i: usize, ret: Option<Registers>) -> bool {
+        ret is Some ==> {
+            let n = self.tables.node_of(root, i);
+            let t = self.payload_of(n).base;
+            &&& self.threads.records@.contains_key(t)
+            &&& ret->0 == self.threads.records@[t].value().frame
+            &&& discharges(self.view(), self.view(), root, Effect::Control { cap: n, thread: t })
+        }
+    }
+
     /// Reads the saved frame of the Inactive thread named at index i, through its control capability.
-    /// The index comes from user space, so it can be refused.
+    /// The index comes from user space, so it can be refused. What it returns is
+    /// read_registers_answered and read_registers_done.
     pub fn read_registers(&self, root: usize, i: usize) -> (ret: Option<Registers>)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
             self.root_live(root),
         ensures
-            ret is Some == self.can_set_registers(root, i),
-            ret is Some ==> {
-                let n = self.tables.node_of(root, i);
-                let t = self.payload_of(n).base;
-                &&& self.threads.records@.contains_key(t)
-                &&& ret->0 == self.threads.records@[t].value().frame
-                &&& discharges(self.view(), self.view(), root, Effect::Control { cap: n, thread: t })
-            },
+            self.read_registers_answered(root, i, ret),
+            self.read_registers_done(root, i, ret),
     {
         let (_, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
