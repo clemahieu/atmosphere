@@ -1231,6 +1231,7 @@ impl CapKernel {
             Some(place) => {
                 &&& pre.can_link(root, slot, place.table, place.entry, from, child)
                 &&& Self::link_done(pre, post, place.table, place.entry, child, s)
+                &&& post.flush_epoch == pre.flush_epoch
                 &&& discharges(pre.view(), post.view(), root, Effect::Local)
             },
         }
@@ -1249,6 +1250,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).cores == old(self).cores,
+            final(self).flush_epoch == old(self).flush_epoch,
             ret == old(self).can_link_at(root, slot, va, level, from, child),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::table_linked(*old(self), *final(self), root, slot, va, level, from, child),
@@ -1356,6 +1358,7 @@ impl CapKernel {
                 &&& Self::map_large_done(pre, post, root, slot, p, from, page)
             }
         }
+        &&& post.flush_epoch == pre.flush_epoch
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
@@ -1886,6 +1889,7 @@ impl CapKernel {
         &&& walk_table(b, s, p) == Some(t)
         &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, false))
         &&& post.table_pages.maps@[t].value().status(p.l1 as int).is_clear()
+        &&& Self::map_done_entry(pre, post, root, slot, p, from, page)
         &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
         &&& post.list.is_child(f, node)
         &&& post.list.nodes@[node as int].kind is Mapping
@@ -1914,6 +1918,20 @@ impl CapKernel {
             ==> forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
         &&& !(pre.spaces.records@[s].value().kind is Process)
             ==> post.view().shares == pre.view().shares.union(map_shares(s, frame, false))
+    }
+
+    /// Leaf-entry write facts of `map_done`, kept opaque outside `lemma_map_done` and
+    /// `lemma_map_contract` so global quantifier context does not grow.
+    #[verifier::opaque]
+    pub open spec fn map_done_entry(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
+        let cap = pre.payload_of(pre.tables.node_of(root, from));
+        let frame = frame_of(cap, page);
+        let t = walk_table(a, s, p)->0;
+        &&& entry_written(a, b, t, p.l1)
+        &&& b.entry(t, p.l1) == frame_map_entry(frame, cap.rights, false)
     }
 
     /// What a large map leaves: the capability tables as they were; path p of the space still reaches its
@@ -2012,6 +2030,7 @@ impl CapKernel {
         let e = p.l1;
         Self::lemma_map_tree(pre, post, t, e, f, frame, false);
         assert(b.entry(t, e) == frame_map_entry(frame, pre.payload_of(f).rights, false));
+        reveal(CapKernel::map_done_entry);
         lemma_mapping_written(a, b, s, p, t);
         lemma_walk_table_entry_written(a, b, t, e);
         if kind is Process {

@@ -2913,6 +2913,7 @@ impl CapKernel {
                         == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
                 &&& forall|i: usize| i < ENTRIES ==> #[trigger] final(self).table_pages.maps@[base].value()[i].is_empty()
                 &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
+                &&& !final(self).blocks.pages@[(base / PAGE_SZ) as int].dead
                 &&& forall|k: usize| k < TABLE_NODE_PAGES ==> final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k))
                 &&& final(self).list.is_child(parent, base)
                 &&& final(self).list.nodes@[base as int].kind is Hidden
@@ -3420,7 +3421,9 @@ impl CapKernel {
     /// Retypes the free block at `base` as a space of `kind`, a device space or a nested table, under the
     /// untyped at index `from` of the table at `root`, with its capability at the empty index `to`. All of
     /// these come from user space, and a refusal changes nothing. A process's space is part of its process:
-    /// see retype_process.
+    /// see retype_process. Its own solver, so that the module's earlier queries do not push its body's
+    /// query over budget.
+    #[verifier::spinoff_prover]
     pub fn retype_space(&mut self, root: usize, from: usize, to: usize, base: usize, kind: SpaceKind, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             !(kind is Process),

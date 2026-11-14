@@ -99,6 +99,8 @@ impl CapKernel {
         &&& Self::flush_sent(pre, post, pre.payload_of(pre.tables.node_of(root, slot)).base)
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.spaces == pre.spaces
+        &&& post.table_pages.records == pre.table_pages.records
     }
 
     /// What clearing the entry leaves: the entry the path reaches is empty, its mapping node is the only

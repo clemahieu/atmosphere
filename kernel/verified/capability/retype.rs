@@ -690,7 +690,18 @@ impl CapKernel {
         }
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& Self::frame_retyped_fields(pre, post, root, to, base)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: 1, into: None })
+    }
+
+    /// Additional frame-retype preservation facts kept opaque outside `retype_frame` and
+    /// `lemma_retype_contract` so global quantifier context does not grow.
+    #[verifier::opaque]
+    pub open spec fn frame_retyped_fields(pre: Self, post: Self, root: usize, to: usize, base: usize) -> bool {
+        let child = pre.tables.node_of(root, to);
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.blocks.pages@[(base / PAGE_SZ) as int].object is Frame
+        &&& Self::retype_keeps(pre, post, child, (base / PAGE_SZ) as int, 0, None)
     }
 
     /// What a step of a large retype that has not found its block all zero yet did, under the untyped at
@@ -879,6 +890,7 @@ impl CapKernel {
                 assert(post.blocks.pages@[i] == pre.blocks.pages@[i]);
             }
             assert(Self::retype_keeps(pre, post, child, page as int, 0, None));
+            reveal(CapKernel::frame_retyped_fields);
         }
         true
     }

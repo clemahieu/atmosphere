@@ -511,9 +511,22 @@ impl CapKernel {
         &&& forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
             space_mapping(tree_of(&post.table_pages, &post.spaces), r) == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
         &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 3)
+        &&& Self::table_page_retyped_fields(pre, post, base)
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
+    }
+
+    /// Additional table-page retype preservation facts kept opaque outside `invoke_retype` and
+    /// `lemma_retype_contract` so global quantifier context does not grow.
+    #[verifier::opaque]
+    pub open spec fn table_page_retyped_fields(pre: Self, post: Self, base: usize) -> bool {
+        &&& !post.blocks.pages@[(base / PAGE_SZ) as int].dead
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base])
+        &&& post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base])
+        &&& forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base
+            ==> post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
     }
 
     /// A link in frame by a thread of the process whose table is at root, from pre to post with out
@@ -1466,6 +1479,9 @@ impl CapKernel {
             }
         } else if frame.argument(1) == RETYPE_TABLE_PAGE {
             if self.retype_table_page(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize, Tracked(steps)) {
+                proof {
+                    reveal(CapKernel::table_page_retyped_fields);
+                }
                 STATUS_OK
             } else {
                 STATUS_REFUSED

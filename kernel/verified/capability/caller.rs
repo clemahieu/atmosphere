@@ -559,11 +559,23 @@ impl CapKernel {
                 &&& pre.link_allowed(root, slot, va, level, from, child)
                 &&& out == status_only(STATUS_OK)
                 &&& linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), place.table, place.entry, child, s)
+                &&& Self::link_contract_fields(pre, post)
             }
         }
     }
 
+    /// Additional preservation facts of `link_contract`, kept opaque outside `lemma_link_contract` and
+    /// caller proofs that reveal them.
+    #[verifier::opaque]
+    pub open spec fn link_contract_fields(pre: Self, post: Self) -> bool {
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.processes == pre.processes
+        &&& post.flush_epoch == pre.flush_epoch
+    }
+
     /// Link's specification implies its contract.
+    #[verifier::spinoff_prover]
     pub proof fn lemma_link_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
             pre.wf(),
@@ -601,6 +613,7 @@ impl CapKernel {
             assert forall|r: usize| #[trigger] space_mapping(b, r) == space_mapping(a, r) by {
                 lemma_mapping_linked(a, b, place.table, place.entry, child, s, r);
             }
+            reveal(CapKernel::link_contract_fields);
         }
     }
 
@@ -690,11 +703,38 @@ impl CapKernel {
                 &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
                 &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
                 &&& post.frames@.contains_key(view_frame(v[from], page))
+                &&& Self::map_contract_fields(pre, post, root, slot, va, level, from, page)
             }
         }
     }
 
+    /// Additional preservation and leaf-entry facts of `map_contract`, kept opaque outside
+    /// `lemma_map_contract` and caller proofs that reveal them.
+    #[verifier::opaque]
+    pub open spec fn map_contract_fields(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize) -> bool {
+        let v = pre.table_view(root);
+        let s = v[slot].base;
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        &&& post.tables == pre.tables
+        &&& post.processes == pre.processes
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& forall|t: usize, j: usize| #[trigger] pre.tables.has_slot(&pre.list, t, j) ==> {
+            &&& post.tables.has_slot(&post.list, t, j)
+            &&& post.list.nodes@[pre.tables.node_of(t, j) as int].live == pre.list.nodes@[pre.tables.node_of(t, j) as int].live
+        }
+        &&& forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+            ==> post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        &&& level == 1 ==> {
+            let t = walk_table(a, s, address_path(va))->0;
+            &&& post.spaces == pre.spaces
+            &&& entry_written(a, b, t, address_path(va).l1)
+            &&& b.entry(t, address_path(va).l1) == frame_map_entry(view_frame(v[from], page), v[from].rights, false)
+        }
+    }
+
     /// Map's specification implies its contract.
+    #[verifier::spinoff_prover]
     pub proof fn lemma_map_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
             pre.wf(),
@@ -717,6 +757,7 @@ impl CapKernel {
             let p = address_path(va);
             pre.lemma_frame_page_held(f, page);
             if level == 1 {
+                reveal(CapKernel::map_done_entry);
                 pre.lemma_walk_table_facts(s, p);
                 let t = walk_table(tree, s, p)->0;
                 pre.lemma_map_node_place(t, p.l1);
@@ -730,6 +771,7 @@ impl CapKernel {
                 Self::lemma_map_slots(pre, post, mapping_node(t, p.l2), f);
             }
             assert(view_frame(pre.table_view(root)[from], page) == frame_of(pre.payload_of(f), page));
+            reveal(CapKernel::map_contract_fields);
         }
     }
 
@@ -768,9 +810,16 @@ impl CapKernel {
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
                 &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
                 &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+                &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
             },
         ensures
             forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+            forall|t: usize, j: usize| #[trigger] pre.tables.has_slot(&pre.list, t, j) ==> {
+                &&& post.tables.has_slot(&post.list, t, j)
+                &&& post.list.nodes@[pre.tables.node_of(t, j) as int].live == pre.list.nodes@[pre.tables.node_of(t, j) as int].live
+            },
+            forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+                ==> post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth,
     {
         assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
             assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
@@ -795,6 +844,26 @@ impl CapKernel {
                 }
             }
             assert(post.table_view(t) =~= pre.table_view(t));
+        }
+        assert forall|t: usize, j: usize| #[trigger] pre.tables.has_slot(&pre.list, t, j) implies {
+            &&& post.tables.has_slot(&post.list, t, j)
+            &&& post.list.nodes@[pre.tables.node_of(t, j) as int].live == pre.list.nodes@[pre.tables.node_of(t, j) as int].live
+        } by {
+            let leaf = pre.tables.leaf(t, index_entry(j));
+            assert(0 <= index_entry(j) < ROOT_ENTRIES);
+            pre.tables.lemma_entry(t, index_entry(j));
+            pre.tables.lemma_leaf(&pre.list, leaf);
+            assert(page_of(leaf) == leaf);
+            pre.lemma_slot_bound(leaf);
+            assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+            pre.lemma_slot(t, j);
+            let x = pre.tables.node_of(t, j);
+            pre.lemma_slot_bound(x);
+            assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+            implies post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth by {
+            pre.lemma_slot_bound(x);
         }
     }
 
@@ -856,11 +925,37 @@ impl CapKernel {
                 &&& space_mapping(b, s) == space_mapping(a, s).remove(p)
                 &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
                 &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) - 1) as usize, block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1)
+                &&& Self::unmap_contract_fields(pre, post, root, slot, va)
             }
         }
     }
 
+    /// Additional preservation and leaf-entry facts of `unmap_contract`, kept opaque outside
+    /// `lemma_unmap_contract` and caller proofs that reveal them.
+    #[verifier::opaque]
+    pub open spec fn unmap_contract_fields(pre: Self, post: Self, root: usize, slot: usize, va: u64) -> bool {
+        let s = pre.table_view(root)[slot].base;
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let p = address_path(va);
+        let t = walk_table(a, s, p)->0;
+        &&& post.tables == pre.tables
+        &&& post.spaces == pre.spaces
+        &&& post.processes == pre.processes
+        &&& post.flush_epoch == pre.flush_epoch + 1
+        &&& post.table_pages.records == pre.table_pages.records
+        &&& post.table_pages.maps@.dom() == pre.table_pages.maps@.dom()
+        &&& b.entry(t, p.l1).is_empty()
+        &&& entries_cleared(a, b, t, p.l1)
+        &&& forall|r: usize, j: usize| #[trigger] pre.tables.has_slot(&pre.list, r, j) ==> {
+            &&& post.tables.has_slot(&post.list, r, j)
+            &&& post.list.nodes@[pre.tables.node_of(r, j) as int].live == pre.list.nodes@[pre.tables.node_of(r, j) as int].live
+        }
+        &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == pre.list.nodes@[x].depth
+    }
+
     /// Unmap's specification implies its contract.
+    #[verifier::spinoff_prover]
     pub proof fn lemma_unmap_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
             pre.wf(),
@@ -884,6 +979,7 @@ impl CapKernel {
             let node = mapping_node(t, p.l1);
             assert(Self::entry_unmapped(pre, post, root, slot, p));
             assert(Self::mapping_unlinked(pre, post, node));
+            assert(post.table_pages.maps@.dom() =~= pre.table_pages.maps@.dom());
             pre.lemma_map_node_place(t, p.l1);
             assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, node));
             assert(post.list.parent@ =~= pre.list.parent@.insert(node, pre.list.parent@[node]));
@@ -900,6 +996,7 @@ impl CapKernel {
             }
             assert(space_mapping(a, s)[p].addr == m.frame * PAGE_SZ);
             vstd::arithmetic::div_mod::lemma_div_by_multiple(m.frame as int, PAGE_SZ as int);
+            reveal(CapKernel::unmap_contract_fields);
         }
     }
 
@@ -921,6 +1018,7 @@ impl CapKernel {
         &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
         &&& post.blocks == pre.blocks
         &&& Self::mappings_kept(pre, post)
+        &&& Self::inspect_contract_fields(pre, post)
         &&& {
             ||| {
                 &&& !pre.inspect_allowed(root, at)
@@ -940,7 +1038,20 @@ impl CapKernel {
         }
     }
 
+    /// Additional preservation facts of `inspect_contract`, kept opaque outside
+    /// `lemma_inspect_contract` and caller proofs that reveal them.
+    #[verifier::opaque]
+    pub open spec fn inspect_contract_fields(pre: Self, post: Self) -> bool {
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.table_pages == pre.table_pages
+        &&& post.spaces == pre.spaces
+        &&& post.processes == pre.processes
+        &&& post.flush_epoch == pre.flush_epoch
+    }
+
     /// Inspect's arm of invoked implies its contract.
+    #[verifier::spinoff_prover]
     pub proof fn lemma_inspect_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
             spec_operation(frame.operation_number()) == Some(Operation::Inspect),
@@ -948,6 +1059,7 @@ impl CapKernel {
         ensures
             Self::inspect_contract(pre, post, root, spec_position(frame.slot()), out),
     {
+        reveal(CapKernel::inspect_contract_fields);
     }
 
     /// A step that leaves the list and the tables as they were leaves every table's view as it was.
@@ -1260,6 +1372,7 @@ impl CapKernel {
                 &&& block_refs(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ)) == 1
                 &&& Self::frame_blocks_kept(pre, post)
                 &&& Self::frame_block_new(pre, post, frame_view(base, 0, parent))
+                &&& Self::retype_frame_contract_fields(pre, post, root, from, base, to)
             }
             ||| {
                 &&& kind == RETYPE_LARGE_FRAME
@@ -1286,6 +1399,7 @@ impl CapKernel {
                 &&& Self::frame_blocks_kept(pre, post)
                 &&& post.table_pages.maps@.contains_key(base)
                 &&& post.table_pages.records@[base].value() == fresh_table(level)
+                &&& Self::retype_table_contract_fields(pre, post, base)
             }
             ||| {
                 let table = pre.view_table_at(root, at.through)->0;
@@ -1319,6 +1433,54 @@ impl CapKernel {
                 &&& Self::frame_blocks_kept(pre, post)
             }
         }
+    }
+
+    /// Additional preservation and block-typing facts of `retype_contract` on `RETYPE_FRAME`, kept
+    /// opaque outside `lemma_retype_contract` and caller proofs that reveal them.
+    #[verifier::opaque]
+    pub open spec fn retype_frame_contract_fields(pre: Self, post: Self, root: usize, from: usize, base: usize, to: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        &&& tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces)
+        &&& post.processes == pre.processes
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.tables.roots == pre.tables.roots
+        &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 0)
+        &&& block_ref(&post.blocks, base / PAGE_SZ) == BlockRef::Small(base / PAGE_SZ)
+        &&& post.blocks.pages@[(base / PAGE_SZ) as int].kind is Base
+        &&& post.blocks.pages@[(base / PAGE_SZ) as int].object is Frame
+        &&& block_typed(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ))
+        &&& !block_dead(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ))
+        &&& post.list.nodes@[pre.tables.node_of(root, to) as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+            ==> post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        &&& forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) ==> {
+            &&& post.tables.has_slot(&post.list, r, i)
+            &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+            &&& pre.tables.node_of(r, i) != pre.tables.node_of(root, to)
+                && !pre.list.nodes@[pre.tables.node_of(r, i) as int].live
+                    ==> !post.list.nodes@[pre.tables.node_of(r, i) as int].live
+        }
+    }
+
+    /// Additional preservation facts of `retype_contract` on `RETYPE_TABLE_PAGE`, kept opaque outside
+    /// `lemma_retype_contract` and caller proofs that reveal them.
+    #[verifier::opaque]
+    pub open spec fn retype_table_contract_fields(pre: Self, post: Self, base: usize) -> bool {
+        &&& post.tables == pre.tables
+        &&& post.spaces == pre.spaces
+        &&& post.processes == pre.processes
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 3)
+        &&& !post.blocks.pages@[(base / PAGE_SZ) as int].dead
+        &&& post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base])
+        &&& post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base])
+        &&& forall|i: usize| i < ENTRIES ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty()
+        &&& forall|t: usize, j: usize| #[trigger] pre.tables.has_slot(&pre.list, t, j) ==> {
+            &&& post.tables.has_slot(&post.list, t, j)
+            &&& post.list.nodes@[pre.tables.node_of(t, j) as int].live == pre.list.nodes@[pre.tables.node_of(t, j) as int].live
+        }
+        &&& forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+            ==> post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
     }
 
     /// A step that fills the empty slot at index to of the table at root with a capability, saying v
@@ -1449,15 +1611,25 @@ impl CapKernel {
         requires
             pre.wf(),
             post.tables == pre.tables,
+            base % PAGE_SZ == 0,
             !pre.list.nodes@[base as int].live,
             !pre.tables.owner@.contains_key(base),
             forall|x: usize| x != base ==> #[trigger] post.list.parent@[x] == pre.list.parent@[x],
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
                 ==> post.list.nodes@[i].live == pre.list.nodes@[i].live,
+            forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base
+                ==> post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth,
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
         ensures
             forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+            forall|t: usize, j: usize| #[trigger] pre.tables.has_slot(&pre.list, t, j) ==> {
+                &&& post.tables.has_slot(&post.list, t, j)
+                &&& post.list.nodes@[pre.tables.node_of(t, j) as int].live == pre.list.nodes@[pre.tables.node_of(t, j) as int].live
+            },
+            forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+                ==> post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth,
     {
+        assert(page_of(base) == base);
         assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
             assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
                 && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
@@ -1478,6 +1650,26 @@ impl CapKernel {
                 }
             }
             assert(post.table_view(t) =~= pre.table_view(t));
+        }
+        assert forall|t: usize, j: usize| #[trigger] pre.tables.has_slot(&pre.list, t, j) implies {
+            &&& post.tables.has_slot(&post.list, t, j)
+            &&& post.list.nodes@[pre.tables.node_of(t, j) as int].live == pre.list.nodes@[pre.tables.node_of(t, j) as int].live
+        } by {
+            let leaf = pre.tables.leaf(t, index_entry(j));
+            assert(0 <= index_entry(j) < ROOT_ENTRIES);
+            pre.tables.lemma_entry(t, index_entry(j));
+            pre.tables.lemma_leaf(&pre.list, leaf);
+            assert(page_of(leaf) == leaf);
+            pre.lemma_slot_bound(leaf);
+            assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+            pre.lemma_slot(t, j);
+            let x = pre.tables.node_of(t, j);
+            pre.lemma_slot_bound(x);
+            assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+            implies post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth by {
+            pre.lemma_slot_bound(x);
         }
     }
 
@@ -1526,6 +1718,7 @@ impl CapKernel {
     }
 
     /// Retype's specification implies its contract.
+    #[verifier::spinoff_prover]
     pub proof fn lemma_retype_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
             pre.wf(),
@@ -1552,6 +1745,7 @@ impl CapKernel {
         if out == status_only(STATUS_REFUSED) {
             Self::lemma_views_same(pre, post);
         } else if kind == RETYPE_FRAME {
+            reveal(CapKernel::frame_retyped_fields);
             assert(post.is_cap(child));
             assert(post.slot_view(root, to) == frame_view(base, 0, parent));
             Self::lemma_slot_added(pre, post, root, to, frame_view(base, 0, parent));
@@ -1570,6 +1764,11 @@ impl CapKernel {
                 assert(k == 0);
                 assert(view_frame(v, k) == base / PAGE_SZ);
             }
+            assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+                implies post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth by {
+                assert(pre.is_cap(x));
+            }
+            reveal(CapKernel::retype_frame_contract_fields);
         } else if kind == RETYPE_LARGE_FRAME {
             let r = base / PAGE_SZ / level_pages(Large::Two);
             assert(large_level(9) == Large::Two);
@@ -1615,11 +1814,21 @@ impl CapKernel {
                 }
             }
         } else if kind == RETYPE_TABLE_PAGE {
+            reveal(CapKernel::table_page_retyped_fields);
+            lemma2_to64();
+            assert(block_bytes(3) == 8 * PAGE_SZ);
+            assert(base as int % (8 * PAGE_SZ) == 0);
+            let q = base as int / (8 * PAGE_SZ) as int;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(base as int, (8 * PAGE_SZ) as int);
+            assert(base as int == (8 * PAGE_SZ) as int * q);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(base as int, PAGE_SZ as int, 8 * q, 0);
+            assert(base % PAGE_SZ == 0);
             if pre.tables.owner@.contains_key(base) {
                 assert(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base);
             }
             Self::lemma_unslotted_node(pre, post, base);
             Self::lemma_run_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, 3);
+            reveal(CapKernel::retype_table_contract_fields);
         } else if kind == RETYPE_PROCESS {
             let v = process_view(base, parent);
             assert(post.slot_view(root, to) == v);
