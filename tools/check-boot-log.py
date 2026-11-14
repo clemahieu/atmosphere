@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, eager source line, heap line, freed frame
-line, process line, thread line and thread times, placed thread line, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line and thread times, placed thread line, started thread line, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -56,6 +56,10 @@ THREADS_LINE = "dom0 threads retyped"
 # The line dom0 prints once it placed a thread of its child on core 0 through its core capability, after the
 # places a placed thread and a priority above a core capability's maximum must refuse were refused.
 PLACED_LINE = "dom0 thread placed"
+
+# The line dom0 prints once it started the thread it placed, after the starts an unplaced thread and a
+# started one must refuse were refused.
+STARTED_LINE = "dom0 thread started"
 
 # The line dom0 prints once it destroyed its child process and claimed a capability from the dead child's
 # table by a move, after the destroys and the derive a dead process must refuse were refused.
@@ -195,6 +199,8 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused(f'the serial log does not show dom0 retyping threads into its child: "{THREADS_LINE}"')
     if not line_printed(serial, PLACED_LINE):
         raise Refused(f'the serial log does not show dom0 placing a thread on core 0: "{PLACED_LINE}"')
+    if not line_printed(serial, STARTED_LINE):
+        raise Refused(f'the serial log does not show dom0 starting a thread: "{STARTED_LINE}"')
     if not line_printed(serial, DESTROYED_LINE):
         raise Refused(f'the serial log does not show dom0 destroying its child and claiming a slot: "{DESTROYED_LINE}"')
     if not THREAD_TIMES.search(serial):
@@ -206,7 +212,7 @@ def boot_log_accepted(serial, arch, translation=False):
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, placed thread line, destroyed process line, "
+            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, placed thread line, started thread line, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
@@ -253,6 +259,7 @@ def boot_log():
             "thread mean 33000 before 59384\n"
             "dom0 threads retyped\n"
             "dom0 thread placed\n"
+            "dom0 thread started\n"
             "dom0 process destroyed\n"
             "dom0 eager backed 40\n"
             "dom0 heap allocator held\n"
@@ -286,6 +293,7 @@ class Tests(unittest.TestCase):
             ("dom0 process retyped\n", "child process"),
             ("dom0 threads retyped\n", "threads"),
             ("dom0 thread placed\n", "placing a thread"),
+            ("dom0 thread started\n", "starting a thread"),
             ("dom0 process destroyed\n", "destroying its child"),
             ("thread mean 33000 before 59384\n", "mean cycles"),
             ("dom0 capability done\n", "exit marker"),

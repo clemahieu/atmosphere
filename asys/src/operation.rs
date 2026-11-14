@@ -81,6 +81,10 @@ pub const POWER_OFF: u64 = 18;
 /// the thread is inactive and not placed yet and argument 1 holds a live core capability whose maximum
 /// is at least the priority. A placed thread runs on that core once started.
 pub const PLACE: u64 = 21;
+/// Starts the thread in the slot on the core it is placed on, at its placement's priority, behind the
+/// threads of that priority there. Refused unless the thread is inactive, bound to a live process and
+/// placed.
+pub const START: u64 = 22;
 
 /// The most entries one probe reads.
 pub const PROBE_MAX: u64 = 64;

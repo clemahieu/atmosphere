@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy, place and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy, place, start and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -69,11 +69,14 @@
 //! after a place of the console slot, one whose core argument is the console slot and one at priority
 //! 256 are refused, and after a copy of the core capability derived with maximum 0 refuses the thread
 //! at priority 1 and is deleted; a second place of the thread is refused, and dom0 prints that it held.
+//! It starts that thread, which is Runnable behind dom0 at the same priority, after a start of the
+//! console slot and of the second thread, not placed, are refused; a second start is refused, the
+//! thread being started, and dom0 places the third thread without starting it and prints that it held.
 //! It retypes a table leaf into root entry 0 of the child's table, through the child's process
 //! capability, and derives its power capability into that entry's first slot, which inspect finds there.
 //! A destroy of an empty slot, of the console and of the power capability is refused; the destroy of the
-//! child is accepted and a second refused, and a destroy of a thread bound to the dead child and a derive
-//! into its table are refused. A move from the dead child's first slot into an empty slot of
+//! child is accepted and a second refused, and a destroy of a thread bound to the dead child, a start of
+//! the placed third thread, bound to it too, and a derive into its table are refused. A move from the dead child's first slot into an empty slot of
 //! dom0's own claims the capability: inspect finds it there and refuses the child's slot, and dom0 prints
 //! that it held.
 //! It retypes a third leaf into root entry 4 and derives into its first slot a child untyped of 64 pages
@@ -92,7 +95,7 @@
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
 //! `svc #1` returns unknown and prints nothing.
 //!
-//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, place, link and map through acall's wrappers,
+//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, place, start, link and map through acall's wrappers,
 //! whose ensures are the kernel's proven contracts, so the code those proofs speak of is the code that
 //! boots. dom0 is not verified: the caller token it threads through them erases in its build, and
 //! nothing here checks the wrappers' requires.
@@ -107,7 +110,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 
-use acall::capability::{delete, destroy, move_cap, place, revoke};
+use acall::capability::{delete, destroy, move_cap, place, revoke, start};
 use acall::memory::{derive, link, map, retype};
 use acall::step::Caller;
 use asys::operation;
@@ -941,6 +944,25 @@ fn placed_thread_held(caller: &mut Tracked<Caller>, copy: u64) -> bool {
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, PLACED_HELD) } == operation::STATUS_OK
 }
 
+/// What dom0 prints once it started a thread of its child, which the gate looks for.
+const STARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread started\n");
+
+/// Whether dom0 starts the thread the place check placed on core 0 at dom0's own priority, 0, so that
+/// thread is Runnable behind dom0, which outranks it in nothing, and the core gets no reschedule IPI.
+/// A start of the console slot, which holds no thread, is refused, and so is one of the second thread
+/// the thread check retyped, which is not placed. The start is accepted and a second refused, the
+/// thread being Runnable. dom0 then places the third thread on core 0 without starting it, for
+/// destroyed_process_held to find its start refused once the child is dead, and prints that it held.
+fn started_thread_held(caller: &mut Tracked<Caller>) -> bool {
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 1;
+    start(caller, operation::ROOT_CONSOLE_SLOT).status == operation::STATUS_REFUSED
+        && start(caller, thread + 1).status == operation::STATUS_REFUSED
+        && start(caller, thread).status == operation::STATUS_OK
+        && start(caller, thread).status == operation::STATUS_REFUSED
+        && place(caller, thread + 2, operation::ROOT_CORE_SLOT, 0).status == operation::STATUS_OK
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, STARTED_HELD) } == operation::STATUS_OK
+}
+
 /// How far below the top of the gigabyte untyped the child's table leaf starts: the order-1 block below the
 /// thread check's, above the eager source's block, where nothing else retypes.
 const CHILD_LEAF_BELOW_TOP: u64 = THREADS_BELOW_TOP + LEAF_BYTES;
@@ -956,7 +978,8 @@ const DESTROYED_HELD: [u64; 5] = operation::print_words(b"dom0 process destroyed
 /// A destroy of the empty slot `claim`, of the console slot and of the power slot, none holding a process
 /// or a thread, is refused; the destroy of `process` is accepted and a second refused, the child being
 /// dead. A destroy of the first thread the thread check bound to the child is refused, its process being
-/// dead, and so is a derive into the dead child's table. A move from the child's first slot
+/// dead, and so are a start of the third, placed and Inactive but bound to the dead child, and a derive
+/// into the dead child's table. A move from the child's first slot
 /// into `claim` is accepted, after which inspect finds power's capability in `claim` and refuses the
 /// child's first slot. dom0 prints that it held.
 fn destroyed_process_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, claim: u64) -> bool {
@@ -981,6 +1004,7 @@ fn destroyed_process_held(caller: &mut Tracked<Caller>, empty: u64, process: u64
         && destroy(caller, process).status == operation::STATUS_OK
         && destroy(caller, process).status == operation::STATUS_REFUSED
         && destroy(caller, thread).status == operation::STATUS_REFUSED
+        && start(caller, thread + 2).status == operation::STATUS_REFUSED
         && derive_power(caller, operation::through(process, first_slot(0) + 1)) == operation::STATUS_REFUSED
         && move_cap(caller, held, claim).status == operation::STATUS_OK
         && inspect(caller, claim) == Ok(power)
@@ -1494,6 +1518,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && retyped_leaves_held(caller, untyped, tables[3])
                                 && retyped_threads_held(caller, empty, empty + 4)
                                 && placed_thread_held(caller, empty + 5)
+                                && started_thread_held(caller)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && eager_source_held(caller, empty)
                         })
