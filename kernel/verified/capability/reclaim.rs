@@ -4971,6 +4971,19 @@ impl CapKernel {
         self.unlink_table_mappings(root, from, base, Tracked(steps))
     }
 
+    /// What a reclaim of the 4K block at base, under the untyped at index from of the table at root,
+    /// answered: refused unless the untyped covers the frame and the frame is dead, freed once every core
+    /// has acknowledged the frame's staleness, again before then, and the kernel as it was unless it
+    /// freed. reclaim_frame's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn frame_reclaim_answered(pre: Self, post: Self, root: usize, from: usize, base: usize, ret: FrameReclaimStep) -> bool {
+        &&& !(ret is Freed) ==> post == pre
+        &&& !(pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(base / PAGE_SZ)) ==> ret is Refused
+        &&& pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(base / PAGE_SZ)
+            ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again }
+        &&& ret is Again ==> !pre.acknowledged(base / PAGE_SZ)
+    }
+
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of
     /// these come from user space, and anything but a free changes nothing.
     pub fn reclaim_frame(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: FrameReclaimStep)
@@ -4983,15 +4996,7 @@ impl CapKernel {
             final(steps).count <= old(steps).count + (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
-            !(ret is Freed) ==> *final(self) == *old(self),
-            !(old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)) ==> ret is Refused,
-            old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)
-                ==> if old(self).acknowledged(base / PAGE_SZ) {
-                    ret is Freed && old(self).frame_freed(*final(self), c, root, from, base)
-                } else {
-                    ret is Again
-                },
-            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ),
+            Self::frame_reclaim_answered(*old(self), *final(self), root, from, base, ret),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
@@ -5110,6 +5115,19 @@ impl CapKernel {
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: level_pages(level) as nat, object: base })
     }
 
+    /// What a reclaim of the 2M or 1G block at base, under the untyped at index from of the table at
+    /// root, answered: refused unless can_reclaim_large holds, freed once every core has acknowledged
+    /// the region's staleness, again before then, and the kernel as it was unless it freed.
+    /// reclaim_large_frame's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn large_reclaim_answered(pre: Self, post: Self, root: usize, from: usize, base: usize, order: u8, ret: FrameReclaimStep) -> bool {
+        let level = large_level(order);
+        &&& !(ret is Freed) ==> post == pre
+        &&& !pre.can_reclaim_large(root, from, base, order) ==> ret is Refused
+        &&& pre.can_reclaim_large(root, from, base, order)
+            ==> if pre.region_acknowledged(level, base / PAGE_SZ / level_pages(level)) { ret is Freed } else { ret is Again }
+    }
+
     /// Reclaims the 2M or 1G block at `base`, as reclaim_frame does a 4K one.
     pub fn reclaim_large_frame(&mut self, c: usize, root: usize, from: usize, base: usize, order: u8, Tracked(steps): Tracked<&mut Steps>) -> (ret: FrameReclaimStep)
         requires
@@ -5122,12 +5140,7 @@ impl CapKernel {
             ret is Refused ==> final(steps).count == old(steps).count,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
-            !(ret is Freed) ==> *final(self) == *old(self),
-            !old(self).can_reclaim_large(root, from, base, order) ==> ret is Refused,
-            old(self).can_reclaim_large(root, from, base, order) ==> {
-                let level = large_level(order);
-                if old(self).region_acknowledged(level, base / PAGE_SZ / level_pages(level)) { ret is Freed } else { ret is Again }
-            },
+            Self::large_reclaim_answered(*old(self), *final(self), root, from, base, order, ret),
             ret is Freed ==> old(self).large_frame_freed(*final(self), c, root, from, base, order),
     {
         let ghost pre = *old(self);

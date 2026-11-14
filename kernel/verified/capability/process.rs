@@ -1245,6 +1245,89 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
     }
 
+    /// Whether a retype of the order-3 block at base as a process, under the untyped at index from of the
+    /// table at root into the slot at index to, answered ok exactly when can_retype_block holds at the
+    /// process order, and left the kernel as it was when it refused. retype_process's ensures and
+    /// spec_retyped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn process_retype_answered(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, ok: bool) -> bool {
+        &&& ok == pre.can_retype_block(root, from, to, base, PROCESS_ORDER)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a retype of a process leaves as it was, whether it answered ok or refused: the process each
+    /// thread is bound to, both epochs, the cores, the IOMMUs, the devices and the threads.
+    /// retype_process's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn process_retype_kept(pre: Self, post: Self) -> bool {
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.cores == pre.cores
+        &&& post.iommus == pre.iommus
+        &&& post.devices == pre.devices
+        &&& post.threads == pre.threads
+    }
+
+    /// What a retype of the order-3 block at base as a process did when it answered ok, under the
+    /// untyped at index from of the table at root into the slot at index to: the untyped held the
+    /// retype right; the block is a live process block with one reference, the block table changed in
+    /// it alone; the process has an empty table at base and a fresh space with only the kernel's
+    /// entries, loaded on no core, whose mapping is empty, every other space's mapping as it was; its
+    /// record is alive; the capability in the slot names it with the control right, the untyped's
+    /// child one deeper, the only node whose liveness, kind or depth changed; and what retype_keeps
+    /// names is as it was, and the step discharges the retype's effect. retype_process's ensures and
+    /// spec_retyped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn process_retype_done(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        let page = (base / PAGE_SZ) as int;
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& post.blocks.pages@[page].kind is Base
+        &&& post.blocks.pages@[page].object is Process
+        &&& post.blocks.pages@[page].order == 3
+        &&& post.blocks.pages@[page].refs == 1
+        &&& !post.blocks.pages@[page].dead
+        &&& forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 8)
+            ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i]
+        &&& post.table_pages == pre.table_pages
+        &&& post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base])
+        &&& post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base])
+        &&& post.tables.roots@.contains_key(base)
+        &&& forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] post.tables.leaf(base, r) == NO_LEAF
+        &&& post.spaces.roots@.contains_key(base)
+        &&& post.spaces.records@[base].value().kind is Process
+        &&& post.spaces.records@[base].value().table == fresh_root(base)
+        &&& forall|i: usize| i < ENTRIES && !holds_kernel(SpaceKind::Process, i)
+            ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty()
+        &&& kernel_slots_wf(&post.spaces, base)
+        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.registers == pre.spaces.registers
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
+        &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] post.loaded(c, base)
+        &&& post.process_unloaded(base)
+        &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] holds_id(post.cores@, post.spaces.loaded@, c, base)
+        &&& space_mapping(tree_of(&post.table_pages, &post.spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty()
+        &&& forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
+            space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+                == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
+        &&& post.processes.records@.contains_key(base)
+        &&& !post.processes.records@[base].value().dead
+        &&& post.view().holds(root, child)
+        &&& post.payload_of(child) == process_of(base)
+        &&& post.payload_of(child).rights & right_bit(Right::Control) != 0
+        &&& post.list.is_child(parent, child)
+        &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
+        &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& post.list.seq@[0] == pre.list.seq@[0]
+        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
+            &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+            &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
+        }
+        &&& Self::retype_keeps(pre, post, child, page, 3, None)
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
+    }
+
     /// Retypes the free order-3 block at `base` as a process, under the untyped at index `from` of the
     /// table at `root`, with its capability at the empty index `to`: an empty capability table whose
     /// root is the block's first page, a record that says it is live, and an address space holding the
@@ -1259,65 +1342,9 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + RETYPE_PROCESS_STEPS,
             final(self).wf(),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).cores == old(self).cores,
-            final(self).iommus == old(self).iommus,
-            final(self).devices == old(self).devices,
-            final(self).threads == old(self).threads,
-            ret == old(self).can_retype_block(root, from, to, base, PROCESS_ORDER),
-            !ret ==> *final(self) == *old(self),
-            ret ==> {
-                let parent = old(self).tables.node_of(root, from);
-                let child = old(self).tables.node_of(root, to);
-                let page = (base / PAGE_SZ) as int;
-                &&& old(self).view().holds_right(root, parent, Right::Retype)
-                &&& final(self).blocks.pages@[page].kind is Base
-                &&& final(self).blocks.pages@[page].object is Process
-                &&& final(self).blocks.pages@[page].order == 3
-                &&& final(self).blocks.pages@[page].refs == 1
-                &&& !final(self).blocks.pages@[page].dead
-                &&& forall|i: int| old(self).blocks.tracks(i) && !(page <= i < page + 8)
-                    ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
-                &&& final(self).table_pages == old(self).table_pages
-                &&& final(self).spaces.roots@ == old(self).spaces.roots@.insert(base, final(self).spaces.roots@[base])
-                &&& final(self).spaces.records@ == old(self).spaces.records@.insert(base, final(self).spaces.records@[base])
-                &&& final(self).tables.roots@.contains_key(base)
-                &&& forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(base, r) == NO_LEAF
-                &&& final(self).spaces.roots@.contains_key(base)
-                &&& final(self).spaces.records@[base].value().kind is Process
-                &&& final(self).spaces.records@[base].value().table == fresh_root(base)
-                &&& forall|i: usize| i < ENTRIES && !holds_kernel(SpaceKind::Process, i)
-                    ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
-                &&& kernel_slots_wf(&final(self).spaces, base)
-                &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
-                &&& final(self).spaces.registers == old(self).spaces.registers
-                &&& final(self).spaces.kernel_root == old(self).spaces.kernel_root
-                &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base)
-                &&& final(self).process_unloaded(base)
-                &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c, base)
-                &&& space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty()
-                &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
-                    space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
-                        == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
-                &&& final(self).processes.records@.contains_key(base)
-                &&& !final(self).processes.records@[base].value().dead
-                &&& final(self).view().holds(root, child)
-                &&& final(self).payload_of(child) == process_of(base)
-                &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
-                &&& final(self).list.is_child(parent, child)
-                &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
-                &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
-                &&& final(self).list.seq@[0] == old(self).list.seq@[0]
-                &&& forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
-                    &&& final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
-                    &&& final(self).list.nodes@[i].kind == old(self).list.nodes@[i].kind
-                    &&& final(self).list.nodes@[i].depth == old(self).list.nodes@[i].depth
-                }
-                &&& Self::retype_keeps(*old(self), *final(self), child, page, 3, None)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
-            },
+            Self::process_retype_answered(*old(self), *final(self), root, from, to, base, ret),
+            Self::process_retype_kept(*old(self), *final(self)),
+            ret ==> Self::process_retype_done(*old(self), *final(self), root, from, to, base),
             ret ==> Self::process_retyped(*old(self), *final(self), root, from, to, base),
     {
         // try_type proves the block counts; this body only carries them.

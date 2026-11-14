@@ -2956,6 +2956,77 @@ impl CapKernel {
         lemma_space_added_same_shares(a, b, base);
     }
 
+    /// Whether a retype of the order-3 block at base as a table page of level, under the untyped at
+    /// index from of the table at root, answered ok exactly when can_retype_table_page holds, and left
+    /// the kernel as it was when it refused. retype_table_page's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn table_page_retype_answered(pre: Self, post: Self, root: usize, from: usize, base: usize, level: usize, ok: bool) -> bool {
+        &&& ok == pre.can_retype_table_page(root, from, base, level)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a retype of a table page leaves as it was, whether it answered ok or refused: both epochs,
+    /// the devices, which IOMMUs are present, the process each thread is bound to and the cores.
+    /// retype_table_page's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn table_page_retype_kept(pre: Self, post: Self) -> bool {
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.devices == pre.devices
+        &&& post.iommus.present == pre.iommus.present
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& post.cores == pre.cores
+    }
+
+    /// What a retype of the order-3 block at base as a table page of level did when it answered ok,
+    /// under the untyped at index from of the table at root: the untyped held the retype right and the
+    /// block was free; the page is an empty table of that level with one reference, alive, its node
+    /// pages in the list, its hidden node the untyped's child and not live before; every capability,
+    /// every reach, every space's mapping, the tables, the spaces, the processes, endpoints, replies and
+    /// threads as they were; the table pages and the parent map grew by that page alone, every other
+    /// node's liveness, kind and depth as it was, the block table changed in the block's pages alone;
+    /// and the step discharges the retype's effect. retype_table_page's ensures and spec_retyped both
+    /// call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn table_page_retype_done(pre: Self, post: Self, root: usize, from: usize, base: usize, level: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Free
+        &&& post.table_pages.maps@.contains_key(base)
+        &&& post.table_pages.records@[base].value() == fresh_table(level)
+        &&& forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
+            space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+                == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
+        &&& forall|i: usize| i < ENTRIES ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty()
+        &&& post.blocks.pages@[(base / PAGE_SZ) as int].refs == 1
+        &&& !post.blocks.pages@[(base / PAGE_SZ) as int].dead
+        &&& forall|k: usize| k < TABLE_NODE_PAGES ==> post.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
+        &&& post.list.is_child(parent, base)
+        &&& post.list.nodes@[base as int].kind is Hidden
+        &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
+        &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
+        &&& !pre.list.nodes@[base as int].live
+        &&& post.list.parent@ == pre.list.parent@.insert(base, parent)
+        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
+            ==> post.list.nodes@[i].live == pre.list.nodes@[i].live
+        &&& forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base ==> {
+            &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+            &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        }
+        &&& post.tables == pre.tables
+        &&& post.spaces == pre.spaces
+        &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
+        &&& post.threads == pre.threads
+        &&& post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base])
+        &&& post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base])
+        &&& post.blocks.regions_2m@ == pre.blocks.regions_2m@
+        &&& post.blocks.regions_1g@ == pre.blocks.regions_1g@
+        &&& forall|i: int| pre.blocks.tracks(i) && !(base / PAGE_SZ <= i < base / PAGE_SZ + 8)
+            ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i]
+    }
+
     /// Retypes the free order-3 block at `base` as a table page, under the untyped at index `from` of the
     /// table at `root`. All of these come from user space, and a refusal changes nothing.
     #[verifier::spinoff_prover]
@@ -2966,54 +3037,10 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + RETYPE_TABLE_PAGE_STEPS,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).devices == old(self).devices,
-            final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            final(self).cores == old(self).cores,
-            ret == old(self).can_retype_table_page(root, from, base, level),
-            !ret ==> *final(self) == *old(self),
-            ret ==> {
-                let parent = old(self).tables.node_of(root, from);
-                &&& old(self).view().holds_right(root, parent, Right::Retype)
-                &&& old(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free
-                &&& final(self).table_pages.maps@.contains_key(base)
-                &&& final(self).table_pages.records@[base].value() == fresh_table(level)
-                &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
-                    space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
-                        == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
-                &&& forall|i: usize| i < ENTRIES ==> #[trigger] final(self).table_pages.maps@[base].value()[i].is_empty()
-                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
-                &&& !final(self).blocks.pages@[(base / PAGE_SZ) as int].dead
-                &&& forall|k: usize| k < TABLE_NODE_PAGES ==> final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k))
-                &&& final(self).list.is_child(parent, base)
-                &&& final(self).list.nodes@[base as int].kind is Hidden
-                &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
-                &&& forall|r: ObjectId, o: ObjectId| #[trigger] final(self).view().reach(r, o) == old(self).view().reach(r, o)
-                &&& !old(self).list.nodes@[base as int].live
-                &&& final(self).list.parent@ == old(self).list.parent@.insert(base, parent)
-                &&& forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
-                    ==> final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
-                &&& forall|x: usize| #![trigger final(self).list.nodes@[x as int]] old(self).list.valid(x) && x != base ==> {
-                    &&& final(self).list.nodes@[x as int].kind == old(self).list.nodes@[x as int].kind
-                    &&& final(self).list.nodes@[x as int].depth == old(self).list.nodes@[x as int].depth
-                }
-                &&& final(self).tables == old(self).tables
-                &&& final(self).spaces == old(self).spaces
-                &&& final(self).processes == old(self).processes
-                &&& final(self).endpoints == old(self).endpoints
-                &&& final(self).replies == old(self).replies
-                &&& final(self).threads == old(self).threads
-                &&& final(self).table_pages.maps@ == old(self).table_pages.maps@.insert(base, final(self).table_pages.maps@[base])
-                &&& final(self).table_pages.records@ == old(self).table_pages.records@.insert(base, final(self).table_pages.records@[base])
-                &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
-                &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
-                &&& forall|i: int| old(self).blocks.tracks(i) && !(base / PAGE_SZ <= i < base / PAGE_SZ + 8)
-                    ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
-            },
+            Self::table_page_retype_answered(*old(self), *final(self), root, from, base, level, ret),
+            Self::table_page_retype_kept(*old(self), *final(self)),
+            ret ==> Self::table_page_retype_done(*old(self), *final(self), root, from, base, level),
     {
         // try_type proves the block counts; this body only carries them.
         hide(BlockTable::counts_wf);

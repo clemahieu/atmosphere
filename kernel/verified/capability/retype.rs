@@ -774,6 +774,61 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None })
     }
 
+    /// Whether a retype of the page at base as a 4K frame, under the untyped at index from of the table
+    /// at root into the slot at index to, answered ok exactly when can_retype_frame holds, and left the
+    /// kernel as it was when it refused. retype_frame's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn frame_retype_answered(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, ok: bool) -> bool {
+        &&& ok == pre.can_retype_frame(root, from, to, base)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a retype of a 4K frame leaves as it was, whether it answered ok or refused: the process each
+    /// thread is bound to, the cores, the flush epoch, the IOMMUs and the mappings. retype_frame's
+    /// ensures and spec_retyped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn frame_retype_kept(pre: Self, post: Self) -> bool {
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& post.cores == pre.cores
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.iommus == pre.iommus
+        &&& post.mappings == pre.mappings
+    }
+
+    /// Whether a step of a retype of the block at base as a large frame of the order, under the untyped
+    /// at index from of the table at root into the slot at index to, refused exactly when
+    /// can_retype_large fails, and left the kernel as it was when it refused. retype_large_frame's
+    /// ensures and spec_retyped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn large_retype_answered(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8, refused: bool) -> bool {
+        &&& refused == !pre.can_retype_large(root, from, to, base, order)
+        &&& refused ==> post == pre
+    }
+
+    /// What a step of a large frame retype leaves as it was, whatever it answered: the process each
+    /// thread is bound to, the cores, the processes, endpoints and replies, both epochs and the IOMMUs.
+    /// retype_large_frame's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn large_retype_kept(pre: Self, post: Self) -> bool {
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& post.cores == pre.cores
+        &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.iommus == pre.iommus
+    }
+
+    /// How far a step of a large frame retype moved the zeroing cursor of the block at base: at most one
+    /// chunk past where it was when the block was being zeroed, and at most one chunk from the start when
+    /// the step began it. retype_large_frame's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn large_retype_cursor(pre: Self, post: Self, base: usize, refused: bool) -> bool {
+        &&& pre.zeroing.blocks@.contains_key(base / PAGE_SZ) ==>
+            post.zeroing.cursor@[(base / PAGE_SZ) as int] <= pre.zeroing.cursor@[(base / PAGE_SZ) as int] + ZERO_CHUNK_PAGES
+        &&& !pre.zeroing.blocks@.contains_key(base / PAGE_SZ) && !refused ==>
+            post.zeroing.cursor@[(base / PAGE_SZ) as int] <= ZERO_CHUNK_PAGES
+    }
+
     /// Retypes the free page at `base` as a frame, under the untyped at index `from` of the table at
     /// `root`, with the capability at the empty index `to`. All of these come from user space, and a
     /// refusal changes nothing. The block table refuses a page that is not free.
@@ -785,14 +840,9 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + RETYPE_FRAME_STEPS,
             final(self).wf(),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
-            final(self).cores == old(self).cores,
-            ret == old(self).can_retype_frame(root, from, to, base),
-            !ret ==> *final(self) == *old(self),
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).iommus == old(self).iommus,
-            final(self).mappings == old(self).mappings,
+            Self::frame_retype_answered(*old(self), *final(self), root, from, to, base, ret),
+            Self::frame_retype_kept(*old(self), *final(self)),
             ret ==> Self::frame_retyped(*old(self), *final(self), root, from, to, base),
             ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None),
     {
@@ -1221,6 +1271,38 @@ impl CapKernel {
         )
     }
 
+    /// Whether a retype of the two pages at base as a table leaf, under the untyped at index from of the
+    /// table at root into the root entry at names, answered ok exactly when can_retype_leaf holds, and
+    /// left the kernel as it was when it refused. retype_leaf's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn leaf_retype_answered(pre: Self, post: Self, root: usize, from: usize, at: Position, base: usize, ok: bool) -> bool {
+        &&& ok == pre.can_retype_leaf(root, from, at, base)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a retype of a table leaf leaves as it was, whether it answered ok or refused: the process
+    /// each thread is bound to, the cores, the threads, both epochs, the IOMMUs and the devices.
+    /// retype_leaf's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn leaf_retype_kept(pre: Self, post: Self) -> bool {
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& post.cores == pre.cores
+        &&& post.threads == pre.threads
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.iommus == pre.iommus
+        &&& post.devices == pre.devices
+    }
+
+    /// What a retype of the two pages at base as a table leaf left as it was when it answered ok: every
+    /// space, and every tracked page of the block table outside those two. retype_leaf's ensures and
+    /// spec_retyped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn leaf_retype_spared(pre: Self, post: Self, base: usize) -> bool {
+        &&& post.spaces == pre.spaces
+        &&& forall|i: int| pre.blocks.tracks(i) && !(base / PAGE_SZ <= i < base / PAGE_SZ + 2)
+            ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i]
+    }
+
     /// Retypes the two free pages at `base` as a table leaf, under the untyped at index `from` of the
     /// table at root, the caller's. The leaf goes in the root entry `at` names: of the caller's own
     /// table, or of the table of a live process the caller holds a capability to with the control
@@ -1237,20 +1319,11 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + RETYPE_LEAF_STEPS,
             final(self).wf(),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
-            final(self).cores == old(self).cores,
-            final(self).threads == old(self).threads,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).iommus == old(self).iommus,
-            final(self).devices == old(self).devices,
-            ret == old(self).can_retype_leaf(root, from, at, base),
-            !ret ==> *final(self) == *old(self),
+            Self::leaf_retype_answered(*old(self), *final(self), root, from, at, base, ret),
+            Self::leaf_retype_kept(*old(self), *final(self)),
             ret ==> Self::leaf_retyped(*old(self), *final(self), root, from, at, base),
-            ret ==> final(self).spaces == old(self).spaces,
-            ret ==> forall|i: int| old(self).blocks.tracks(i) && !(base / PAGE_SZ <= i < base / PAGE_SZ + 2)
-                ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
+            ret ==> Self::leaf_retype_spared(*old(self), *final(self), base),
     {
         let ghost pre = *old(self);
         let r = at.index;
@@ -2101,22 +2174,10 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + RETYPE_LARGE_FRAME_STEPS,
             final(self).wf(),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
-            final(self).cores == old(self).cores,
-            final(self).processes == old(self).processes,
-            final(self).endpoints == old(self).endpoints,
-            final(self).replies == old(self).replies,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).iommus == old(self).iommus,
-            ret is Refused == !old(self).can_retype_large(root, from, to, base, order),
-            ret is Refused ==> *final(self) == *old(self),
-            old(self).zeroing.blocks@.contains_key(base / PAGE_SZ) ==>
-                final(self).zeroing.cursor@[(base / PAGE_SZ) as int]
-                    <= old(self).zeroing.cursor@[(base / PAGE_SZ) as int] + ZERO_CHUNK_PAGES,
-            !old(self).zeroing.blocks@.contains_key(base / PAGE_SZ) && !(ret is Refused) ==>
-                final(self).zeroing.cursor@[(base / PAGE_SZ) as int] <= ZERO_CHUNK_PAGES,
+            Self::large_retype_answered(*old(self), *final(self), root, from, to, base, order, ret is Refused),
+            Self::large_retype_kept(*old(self), *final(self)),
+            Self::large_retype_cursor(*old(self), *final(self), base, ret is Refused),
             ret is Again ==> Self::large_frame_zeroing(*old(self), *final(self), root, from, to, base, order),
             ret is Done ==> Self::large_frame_retyped(*old(self), *final(self), root, from, to, base, order),
     {

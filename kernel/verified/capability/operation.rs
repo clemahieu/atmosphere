@@ -449,16 +449,6 @@ impl CapKernel {
         }
     }
 
-    /// What freeing the frame of the order at base did, from self to post on core c: frame_freed at
-    /// order 0, large_frame_freed otherwise.
-    pub open spec fn frame_freed_of(&self, post: Self, c: usize, root: usize, from: usize, base: usize, order: usize) -> bool {
-        if order == 0 {
-            self.frame_freed(post, c, root, from, base)
-        } else {
-            self.large_frame_freed(post, c, root, from, base, order as u8)
-        }
-    }
-
     /// A retype in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_retype fails; for the 4K frame kind in argument 1, ok with the frame
     /// at the base in argument 2 retyped under the untyped in the slot into the slot in argument 3; for
@@ -470,70 +460,105 @@ impl CapKernel {
     /// argument 3 names, the block table changed in the leaf's two pages alone; or, for the free kind,
     /// again with nothing changed while a core has not acknowledged the frame's staleness, and ok with
     /// the frame of the order in argument 4 at the base in argument 2 freed by reclaim once every core
-    /// has; or, for the process kind, ok with a process at the base in argument 2 under the untyped in
+    /// has, as frame_freed says at order 0 and large_frame_freed at order 9 or 18; or, for the process kind, ok with a process at the base in argument 2 under the untyped in
     /// the slot, its capability in the slot in argument 3, as process_retyped says; or, for the thread
     /// kind, ok with a thread at the base in argument 2 under the untyped in the slot, its capability in
     /// the slot in argument 3, bound to the process whose capability is in the slot in argument 4, as
     /// thread_retyped says. Every arm but the table page's and the process's leaves every space's
-    /// tables as they were.
+    /// tables as they were. Each arm that answers calls the predicates the ensures of the operation
+    /// invoke_retype calls for its kind call, so it carries that operation's postcondition:
+    /// design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        let from = frame.slot() as usize;
+        let base = frame.argument(2) as usize;
+        let to = frame.argument(3) as usize;
+        let level = frame.argument(4) as usize;
         ||| !pre.allows_retype(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& frame.argument(1) == RETYPE_FRAME
             &&& out == status_only(STATUS_OK)
-            &&& Self::frame_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize)
+            &&& Self::frame_retype_answered(pre, post, root, from, to, base, true)
+            &&& Self::frame_retype_kept(pre, post)
+            &&& Self::frame_retyped(pre, post, root, from, to, base)
+            &&& Self::retype_keeps(pre, post, pre.tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None)
             &&& Self::same_tree(pre, post)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_LARGE_FRAME
             &&& out == status_only(STATUS_AGAIN)
-            &&& Self::large_frame_zeroing(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9)
+            &&& Self::large_retype_answered(pre, post, root, from, to, base, 9, false)
+            &&& Self::large_retype_kept(pre, post)
+            &&& Self::large_retype_cursor(pre, post, base, false)
+            &&& Self::large_frame_zeroing(pre, post, root, from, to, base, 9)
             &&& Self::same_tree(pre, post)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_LARGE_FRAME
             &&& out == status_only(STATUS_OK)
-            &&& Self::large_frame_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9)
+            &&& Self::large_retype_answered(pre, post, root, from, to, base, 9, false)
+            &&& Self::large_retype_kept(pre, post)
+            &&& Self::large_retype_cursor(pre, post, base, false)
+            &&& Self::large_frame_retyped(pre, post, root, from, to, base, 9)
             &&& Self::same_tree(pre, post)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_TABLE_PAGE
             &&& out == status_only(STATUS_OK)
-            &&& Self::table_page_retyped(pre, post, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize)
+            &&& Self::table_page_retype_answered(pre, post, root, from, base, level, true)
+            &&& Self::table_page_retype_kept(pre, post)
+            &&& Self::table_page_retype_done(pre, post, root, from, base, level)
+            &&& Self::table_page_retyped(pre, post, root, from, base, level)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_LEAF
             &&& out == status_only(STATUS_OK)
             &&& spec_position(frame.argument(3)) is Some
-            &&& Self::leaf_retyped(pre, post, root, frame.slot() as usize, spec_position(frame.argument(3))->0, frame.argument(2) as usize)
-            &&& pre.blocks.kept_but_run(post.blocks, (frame.argument(2) as usize / PAGE_SZ) as int, 1)
+            &&& Self::leaf_retype_answered(pre, post, root, from, spec_position(frame.argument(3))->0, base, true)
+            &&& Self::leaf_retype_kept(pre, post)
+            &&& Self::leaf_retyped(pre, post, root, from, spec_position(frame.argument(3))->0, base)
+            &&& Self::leaf_retype_spared(pre, post, base)
+            &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 1)
             &&& Self::same_tree(pre, post)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_FREE
             &&& pre.allows_retype(root, frame)
-            &&& !pre.frame_free_acknowledged(frame.argument(2) as usize, frame.argument(4) as usize)
+            &&& !pre.frame_free_acknowledged(base, level)
             &&& out == status_only(STATUS_AGAIN)
             &&& post == pre
         }
         ||| {
             &&& frame.argument(1) == RETYPE_FREE
+            &&& level == 0
             &&& pre.allows_retype(root, frame)
-            &&& pre.frame_free_acknowledged(frame.argument(2) as usize, frame.argument(4) as usize)
+            &&& pre.frame_free_acknowledged(base, level)
             &&& out == status_only(STATUS_OK)
-            &&& exists|c: usize| c < NUM_CPUS
-                && #[trigger] pre.frame_freed_of(post, c, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize)
+            &&& Self::frame_reclaim_answered(pre, post, root, from, base, FrameReclaimStep::Freed)
+            &&& exists|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed(post, c, root, from, base)
+            &&& Self::same_tree(pre, post)
+        }
+        ||| {
+            &&& frame.argument(1) == RETYPE_FREE
+            &&& (level == 9 || level == 18)
+            &&& pre.allows_retype(root, frame)
+            &&& pre.frame_free_acknowledged(base, level)
+            &&& out == status_only(STATUS_OK)
+            &&& Self::large_reclaim_answered(pre, post, root, from, base, level as u8, FrameReclaimStep::Freed)
+            &&& exists|c: usize| c < NUM_CPUS && #[trigger] pre.large_frame_freed(post, c, root, from, base, level as u8)
             &&& Self::same_tree(pre, post)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_PROCESS
             &&& out == status_only(STATUS_OK)
-            &&& Self::process_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize)
+            &&& Self::process_retype_answered(pre, post, root, from, to, base, true)
+            &&& Self::process_retype_kept(pre, post)
+            &&& Self::process_retype_done(pre, post, root, from, to, base)
+            &&& Self::process_retyped(pre, post, root, from, to, base)
         }
         ||| {
             &&& frame.argument(1) == RETYPE_THREAD
             &&& out == status_only(STATUS_OK)
-            &&& Self::thread_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, frame.argument(4) as usize)
+            &&& Self::thread_retyped(pre, post, root, from, to, base, level)
         }
     }
 
@@ -1145,7 +1170,7 @@ impl CapKernel {
             )
         {
             let c = choose|c: usize| c < NUM_CPUS
-                && #[trigger] pre.frame_freed_of(post, c, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize);
+                && #[trigger] pre.large_frame_freed(post, c, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize as u8);
             assert(pre.large_frame_freed(post, c, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as u8));
         }
     }
@@ -1944,7 +1969,7 @@ impl CapKernel {
                 let step = self.reclaim_frame(c, root, frame.slot() as usize, frame.argument(2) as usize, Tracked(steps));
                 proof {
                     if step is Freed {
-                        assert(old(self).frame_freed_of(*self, c, root, frame.slot() as usize, frame.argument(2) as usize, order as usize));
+                        assert(old(self).frame_freed(*self, c, root, frame.slot() as usize, frame.argument(2) as usize));
                     }
                 }
                 match step {
@@ -1956,7 +1981,7 @@ impl CapKernel {
                 let step = self.reclaim_large_frame(c, root, frame.slot() as usize, frame.argument(2) as usize, order as u8, Tracked(steps));
                 proof {
                     if step is Freed {
-                        assert(old(self).frame_freed_of(*self, c, root, frame.slot() as usize, frame.argument(2) as usize, order as usize));
+                        assert(old(self).large_frame_freed(*self, c, root, frame.slot() as usize, frame.argument(2) as usize, order as usize as u8));
                     }
                 }
                 match step {

@@ -670,8 +670,14 @@ impl CapKernel {
             Self::lemma_retype_thread_keeps_sealed(pre, post, caller, frame, out, root);
         } else if kind == RETYPE_FREE {
             if out == status_only(STATUS_OK) {
-                let c = choose|c: usize| c < crate::define::NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, caller, from, base, frame.argument(4) as usize);
-                assert(post.list == pre.list && post.tables == pre.tables);
+                if frame.argument(4) == 0 {
+                    let c = choose|c: usize| c < crate::define::NUM_CPUS && #[trigger] pre.frame_freed(post, c, caller, from, base);
+                    assert(post.list == pre.list && post.tables == pre.tables);
+                } else {
+                    let c = choose|c: usize| c < crate::define::NUM_CPUS
+                        && #[trigger] pre.large_frame_freed(post, c, caller, from, base, frame.argument(4) as usize as u8);
+                    assert(post.list == pre.list && post.tables == pre.tables);
+                }
             }
             assert(after == bound);
         } else {

@@ -2098,11 +2098,13 @@ impl CapKernel {
             Self::lemma_thread_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, (pre.payload_of(n).base / PAGE_SZ) as int);
         } else if kind == RETYPE_FREE {
             if out == status_only(STATUS_OK) {
-                let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, root, from, base, level);
-                assert(post.list == pre.list && post.tables == pre.tables);
                 if level == 0 {
+                    let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed(post, c, root, from, base);
+                    assert(post.list == pre.list && post.tables == pre.tables);
                     Self::lemma_freed_page_keeps_frame_blocks(pre, post, base / PAGE_SZ);
                 } else {
+                    let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.large_frame_freed(post, c, root, from, base, level as u8);
+                    assert(post.list == pre.list && post.tables == pre.tables);
                     let l = large_level(level as u8);
                     Self::lemma_region_keeps_frame_blocks(pre, post, l, base / PAGE_SZ / level_pages(l));
                 }
