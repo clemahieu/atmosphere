@@ -23,6 +23,8 @@ use crate::capability::zero::*;
 use crate::capability::derive::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
@@ -1139,6 +1141,7 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
     }
 
     /// The table entry i of table t leads to, in constant time. Above level 1 an entry either is a
@@ -1838,6 +1841,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).mappings == old(self).mappings,
             final(self).zeroing == old(self).zeroing,
@@ -1922,6 +1926,7 @@ impl CapKernel {
         &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& post.threads == pre.threads
         &&& post.spaces == pre.spaces
         &&& post.frames == pre.frames
@@ -1967,6 +1972,7 @@ impl CapKernel {
         &&& post.tables == pre.tables
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& post.frames == pre.frames
         &&& walk_large_table(b, s, p) == Some(t)
         &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, true))
@@ -2609,6 +2615,7 @@ impl CapKernel {
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            replies_wf(&post.list, &post.tables, &post.replies, &post.blocks),
     {
         let node = mapping_node(t, e);
         let br = block_ref(&pre.blocks, frame);
@@ -2638,6 +2645,7 @@ impl CapKernel {
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
         lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
         lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_replies_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, br, refs, dead);
     }
 
     /// The table pages and the links after a map: the frame's block is no table page's, and the entry

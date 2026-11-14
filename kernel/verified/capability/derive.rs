@@ -14,6 +14,8 @@ verus! {
 
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::position::*;
@@ -194,8 +196,8 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 impl CapKernel {
     /// The refusals of a derive from index from of the table at src into index to of the table at dst:
     /// an index that names no slot, a parent that is no capability, a device's, a notification's, a
-    /// dead process's or thread's, or at the deepest depth, a child's slot in use, a child that does not narrow its
-    /// parent, a badge badge_allowed refuses, or a block that counts its holders and has no room for
+    /// reply's, a dead process's or thread's, or at the deepest depth, a child's slot in use, a child that does not
+    /// narrow its parent, a badge badge_allowed refuses, or a block that counts its holders and has no room for
     /// one more. A console's, power's or endpoint's child names its parent's object, with rights no
     /// wider, and so does a core capability's, with a maximum priority, the order, no higher.
     pub open spec fn can_derive_between(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8, badge: usize) -> bool {
@@ -206,6 +208,7 @@ impl CapKernel {
         &&& self.is_cap(parent)
         &&& !(self.payload_of(parent).kind is Device)
         &&& !(self.payload_of(parent).kind is Notification)
+        &&& !(self.payload_of(parent).kind is Reply)
         &&& !self.cap_dead(parent)
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
         &&& !self.list.nodes@[child as int].live
@@ -524,12 +527,12 @@ impl CapKernel {
             }
         }
         // A device is bound to one space at a time, so its capability has no children: it moves instead.
-        // A notification's capability has none either: its retype makes the one capability that names it.
-        // The console's, power's, an endpoint's and a core's name one page, so a child names that page as
-        // its parent does. A core capability's child takes the order as its maximum priority, which it
+        // A notification's or a reply's capability has none either: its retype makes the one capability that
+        // names it. The console's, power's, an endpoint's and a core's name one page, so a child names that page
+        // as its parent does. A core capability's child takes the order as its maximum priority, which it
         // may lower and not raise.
         let allowed = match payload.kind {
-            CapKind::Device | CapKind::Notification => false,
+            CapKind::Device | CapKind::Notification | CapKind::Reply => false,
             CapKind::Console | CapKind::Power | CapKind::Endpoint => rights & !payload.rights == 0 && base == payload.base && order == payload.order,
             CapKind::Core => rights & !payload.rights == 0 && base == payload.base && order as usize <= payload.priority,
             _ => may_derive(payload, rights, base, order),
@@ -708,7 +711,9 @@ impl CapKernel {
             block is None ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces
                 && post.threads == pre.threads && post.processes == pre.processes,
             !(pre.payload_of(parent).kind is Notification),
+            !(pre.payload_of(parent).kind is Reply),
             !(pre.payload_of(parent).kind is Endpoint) ==> post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.table_pages == pre.table_pages,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -721,6 +726,7 @@ impl CapKernel {
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            replies_wf(&post.list, &post.tables, &post.replies, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -756,6 +762,7 @@ impl CapKernel {
                     lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_replies_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                 } else if pp.kind is Space {
                     // A space is its block's base, so the child names the parent's space.
                     pre.lemma_space_cap(parent);
@@ -781,6 +788,7 @@ impl CapKernel {
                     lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_replies_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                 } else if pp.kind is Thread {
                     // A thread is its block's base, so the child names the parent's thread.
                     pre.lemma_thread_cap(parent);
@@ -806,6 +814,7 @@ impl CapKernel {
                     Self::lemma_threads_holder_added(pre, post, child, t);
                     lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_replies_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                 } else if pp.kind is Process {
                     // A process is its block's base, so the child names the parent's process.
                     pre.lemma_process_cap(parent);
@@ -831,6 +840,7 @@ impl CapKernel {
                     lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     Self::lemma_processes_holder_added(pre, post, child, p);
                     lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_replies_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                 } else {
                     // An endpoint is its block's base, so the child names the parent's endpoint.
                     pre.lemma_endpoint_cap(parent);
@@ -855,6 +865,7 @@ impl CapKernel {
                     lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_replies_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     Self::lemma_endpoints_holder_added(pre, post, child, e);
                 }
             },
@@ -867,6 +878,7 @@ impl CapKernel {
                 lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
                 lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
                 lemma_endpoints_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks);
+                lemma_replies_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks);
             },
         }
     }

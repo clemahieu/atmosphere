@@ -96,10 +96,10 @@ pub open spec fn names_block(k: CapKind) -> bool {
 }
 
 /// A capability of this kind is a holder some record counts: a frame's in its block's holders, and a
-/// space's, thread's, process's, endpoint's or notification's in that object's. Any other kind's
-/// capability can come and go without a record changing.
+/// space's, thread's, process's, endpoint's, notification's or reply's in that object's. Any other
+/// kind's capability can come and go without a record changing.
 pub open spec fn tracked_kind(k: CapKind) -> bool {
-    k is Frame || k is Space || k is Thread || k is Process || k is Endpoint || k is Notification
+    k is Frame || k is Space || k is Thread || k is Process || k is Endpoint || k is Notification || k is Reply
 }
 
 /// A badge fits the 48 bits above a receive's status: design/syscall-abi-in-registers/.

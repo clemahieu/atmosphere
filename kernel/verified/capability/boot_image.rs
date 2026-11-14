@@ -22,6 +22,8 @@ use crate::capability::boot_memory::*;
 use crate::capability::decompose::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
@@ -285,6 +287,7 @@ pub open spec fn image_progress(
     &&& cur.threads == pre.threads
     &&& cur.processes == pre.processes
     &&& cur.endpoints == pre.endpoints
+    &&& cur.replies == pre.replies
     &&& cur.spaces == pre.spaces
     &&& cur.table_pages == pre.table_pages
     &&& cur.list.pages@.dom() == pre.list.pages@.dom()
@@ -385,6 +388,7 @@ impl CapKernel {
                 &&& post.threads == cur.threads
                 &&& post.processes == cur.processes
                 &&& post.endpoints == cur.endpoints
+                &&& post.replies == cur.replies
                 &&& post.spaces == cur.spaces
                 &&& post.table_pages == cur.table_pages
                 &&& post.list.pages@.dom() == cur.list.pages@.dom()
@@ -600,7 +604,9 @@ impl CapKernel {
         let i = (ROOT_FRAME_SLOT + k) as usize;
         assert(block_region(bs[k]) == q);
         assert(in_regions(bs, k + 1, q));
-        assert(index_entry(i) == 1);
+        assert(index_entry(i) == 1) by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(i as int, NODES_PER_PAGE as int, 1, i - NODES_PER_PAGE);
+        }
         assert(pre.tables.has_slot(&pre.list, process, i));
         assert(cur.list.nodes@[leaf2 as int].live == pre.list.nodes@[leaf2 as int].live);
         assert(cur.tables.has_slot(&cur.list, process, i));
@@ -828,6 +834,7 @@ impl CapKernel {
                 &&& final(self).threads == old(self).threads
                 &&& final(self).processes == old(self).processes
                 &&& final(self).endpoints == old(self).endpoints
+                &&& final(self).replies == old(self).replies
                 &&& final(self).spaces == old(self).spaces
                 &&& final(self).list.pages@.dom() == old(self).list.pages@.dom()
                 &&& forall|o: usize| #[trigger] final(self).view().reach(process, o)

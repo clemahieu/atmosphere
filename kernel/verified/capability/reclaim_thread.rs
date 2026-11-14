@@ -15,6 +15,8 @@ verus! {
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -639,6 +641,7 @@ impl CapKernel {
             post.threads.boot_thread@ == (if pre.threads.boot_thread@ == Some(base) { None } else { pre.threads.boot_thread@ }),
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.mappings == pre.mappings,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -651,6 +654,7 @@ impl CapKernel {
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            replies_wf(&post.list, &post.tables, &post.replies, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let page = base / PAGE_SZ;
@@ -715,6 +719,7 @@ impl CapKernel {
         Self::lemma_threads_freed(pre, post, base);
         lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page);
         lemma_endpoints_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page);
+        lemma_replies_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, page);
     }
 
     /// The kernel after the spent thread at `base` frees: nothing but its block, its record and its list
@@ -754,6 +759,7 @@ impl CapKernel {
             post.threads.boot_thread@ == (if pre.threads.boot_thread@ == Some(base) { None } else { pre.threads.boot_thread@ }),
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.stop_ipis == pre.stop_ipis,
         ensures
             post.wf(),

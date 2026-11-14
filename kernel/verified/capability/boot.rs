@@ -29,6 +29,8 @@ use crate::capability::mapping::*;
 use crate::capability::power::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::process::*;
 use crate::capability::reach::{CORE_OBJECTS, MAX_PRIORITY};
 #[cfg(verus_keep_ghost)]
@@ -125,7 +127,9 @@ impl CapKernel {
         &&& self.processes.holders@ == IMap::<usize, Set<usize>>::empty()
         &&& self.processes.bound@ == IMap::<usize, Set<usize>>::empty()
         &&& self.endpoints.records@ == Map::<usize, PointsTo<QueueRecord>>::empty()
+        &&& self.replies.records@ == Map::<usize, PointsTo<ReplyRecord>>::empty()
         &&& self.endpoints.holders@ == IMap::<usize, Set<usize>>::empty()
+        &&& self.replies.holders@ == IMap::<usize, Set<usize>>::empty()
         &&& self.threads.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty()
         &&& self.threads.holders@ == IMap::<usize, Set<usize>>::empty()
         &&& self.threads.queues.all_empty()
@@ -787,6 +791,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).table_pages == old(self).table_pages,
     {
@@ -1255,6 +1260,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).list.pages@.dom() == old(self).list.pages@.dom(),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
@@ -1375,6 +1381,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).list.pages@.dom() == old(self).list.pages@.dom(),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
@@ -1408,6 +1415,7 @@ impl CapKernel {
                 self.threads == pre.threads,
                 self.processes == pre.processes,
                 self.endpoints == pre.endpoints,
+                self.replies == pre.replies,
                 self.spaces == pre.spaces,
                 self.list.pages@.dom() == pre.list.pages@.dom(),
                 forall|k: int| 0 <= k < c ==> {
@@ -1640,6 +1648,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).list.pages@.dom() == old(self).list.pages@.dom(),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
@@ -1914,6 +1923,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.stop_ipis == pre.stop_ipis,
         ensures
             post.wf(),
@@ -1993,6 +2003,7 @@ impl CapKernel {
         }
         lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 2);
         lemma_endpoints_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page, 2);
+        lemma_replies_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, page, 2);
         reveal(frame_save_matches);
         Self::lemma_threads_thread_added(pre, post, base, page, child);
         assert(!pre.threads.records@.contains_key(base)) by {
@@ -2102,6 +2113,7 @@ impl CapKernel {
             post.threads == pre.threads,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.frames == pre.frames,
             post.zeroing == pre.zeroing,
             post.holders == pre.holders,
@@ -2289,6 +2301,17 @@ impl CapKernel {
                 assert(endpoint_block(&a, x));
             }
         }
+        assert(replies_wf(&post.list, &post.tables, &post.replies, &b)) by {
+            assert forall|e: usize| #[trigger] post.replies.records@.contains_key(e) implies reply_wf(&post.replies, &b, e) by {
+                assert(reply_wf(&pre.replies, &a, e));
+                assert(a.pages@[(e / PAGE_SZ) as int].kind is Base);
+            }
+            assert forall|x: usize| b.tracks(x as int) && #[trigger] reply_block(&b, x)
+                implies post.replies.records@.contains_key((x * PAGE_SZ) as usize) by {
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+                assert(reply_block(&a, x));
+            }
+        }
         assert forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
             implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {}
@@ -2455,6 +2478,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.stop_ipis == pre.stop_ipis,
         ensures
             post.wf(),
@@ -2769,6 +2793,16 @@ impl CapKernel {
                 assert(x == pb || x == lb);
             }
             assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n) && queue_kind(post.tables.payload_of(n).kind) implies false by {
+                assert(post.is_cap(n));
+                assert(n == cap);
+            }
+        }
+        assert(replies_wf(&list, &post.tables, &post.replies, &blocks)) by {
+            assert forall|x: usize| blocks.tracks(x as int) && #[trigger] reply_block(&blocks, x)
+                implies post.replies.records@.contains_key((x * PAGE_SZ) as usize) by {
+                assert(x == pb || x == lb);
+            }
+            assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n) && post.tables.payload_of(n).kind is Reply implies false by {
                 assert(post.is_cap(n));
                 assert(n == cap);
             }

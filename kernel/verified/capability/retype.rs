@@ -19,6 +19,8 @@ use crate::capability::block::*;
 use crate::capability::derive::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
@@ -417,6 +419,7 @@ impl CapKernel {
             post.threads == pre.threads,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.list.pages@.dom() == pre.list.pages@.dom(),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -426,6 +429,7 @@ impl CapKernel {
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            replies_wf(&post.list, &post.tables, &post.replies, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -444,6 +448,7 @@ impl CapKernel {
         lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
         lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
         lemma_endpoints_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks);
+        lemma_replies_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks);
         lemma_holders_frame_new(
             &pre.list,
             &pre.tables,
@@ -489,6 +494,7 @@ impl CapKernel {
             final(self).list.parent@ == old(self).list.parent@.insert(child, parent),
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).iommus == old(self).iommus,
             forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
@@ -690,6 +696,7 @@ impl CapKernel {
         }
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& Self::frame_retyped_fields(pre, post, root, to, base)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: 1, into: None })
     }
@@ -727,6 +734,7 @@ impl CapKernel {
         &&& 0 < post.zeroing.cursor@[page as int] < level_pages(level)
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None })
     }
 
@@ -761,6 +769,7 @@ impl CapKernel {
         }
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None })
     }
 
@@ -844,6 +853,7 @@ impl CapKernel {
             }
             lemma_processes_small_typed(&self.list, &self.tables, &self.list, &self.tables, &self.processes, &pre.blocks, &self.blocks, page, 1);
             lemma_endpoints_small_typed(&self.list, &self.tables, &self.list, &self.tables, &self.endpoints, &pre.blocks, &self.blocks, page, 1);
+            lemma_replies_small_typed(&self.list, &self.tables, &self.list, &self.tables, &self.replies, &pre.blocks, &self.blocks, page, 1);
             assert(self.wf());
             assert(same_but_contents(pre.view(), self.view()));
             assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), self.view(), o) implies in_pages(base, 1, o) by {
@@ -914,6 +924,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).threads == old(self).threads,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).stale_epoch == old(self).stale_epoch,
@@ -1026,6 +1037,7 @@ impl CapKernel {
                 lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &self.blocks);
                 lemma_processes_same_pages(&pre.list, &pre.tables, &pre.processes, &pre.blocks, &self.blocks);
                 lemma_endpoints_same_pages(&pre.list, &pre.tables, &pre.endpoints, &pre.blocks, &self.blocks);
+                lemma_replies_same_pages(&pre.list, &pre.tables, &pre.replies, &pre.blocks, &self.blocks);
                 assert forall|g: usize| translatable(&pre.blocks, g) implies #[trigger] translatable(&self.blocks, g) by {
                     assert(self.blocks.pages@[g as int] == pre.blocks.pages@[g as int]);
                 }
@@ -1082,6 +1094,7 @@ impl CapKernel {
             lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &me.blocks);
             lemma_processes_same_pages(&pre.list, &pre.tables, &pre.processes, &pre.blocks, &me.blocks);
             lemma_endpoints_same_pages(&pre.list, &pre.tables, &pre.endpoints, &pre.blocks, &me.blocks);
+            lemma_replies_same_pages(&pre.list, &pre.tables, &pre.replies, &pre.blocks, &me.blocks);
             assert forall|g: usize| translatable(&pre.blocks, g) implies #[trigger] translatable(&me.blocks, g) by {
                 assert(me.blocks.pages@[g as int] == pre.blocks.pages@[g as int]);
             }
@@ -1197,6 +1210,7 @@ impl CapKernel {
         &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& Self::retype_keeps(pre, post, base, (base / PAGE_SZ) as int, 1, Some((table, at.index as int)))
         &&& discharges(
             pre.view(),
@@ -1370,6 +1384,7 @@ impl CapKernel {
                 &&& final(self).threads == old(self).threads
                 &&& final(self).processes == old(self).processes
                 &&& final(self).endpoints == old(self).endpoints
+                &&& final(self).replies == old(self).replies
                 &&& final(self).spaces == old(self).spaces
                 &&& final(self).table_pages == old(self).table_pages
                 &&& final(self).frames == old(self).frames
@@ -1500,6 +1515,7 @@ impl CapKernel {
             }
             lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 2);
             lemma_endpoints_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page, 2);
+            lemma_replies_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, page, 2);
             Self::lemma_devices_same_caps(pre, post);
             assert(!pre.list.nodes@[base as int].live) by {
                 if pre.list.nodes@[base as int].live {
@@ -1921,6 +1937,7 @@ impl CapKernel {
             post.tables.roots@.dom() == pre.tables.roots@.dom(),
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             forall|i: int| pre.blocks.tracks(i) && !(base / PAGE_SZ <= i < base / PAGE_SZ + 2)
@@ -2086,6 +2103,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).iommus == old(self).iommus,

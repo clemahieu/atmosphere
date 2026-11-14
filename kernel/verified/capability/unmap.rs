@@ -14,6 +14,8 @@ use crate::arch::*;
 use crate::capability::destroy::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
@@ -99,6 +101,7 @@ impl CapKernel {
         &&& Self::flush_sent(pre, post, pre.payload_of(pre.tables.node_of(root, slot)).base)
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& post.spaces == pre.spaces
         &&& post.table_pages.records == pre.table_pages.records
     }
@@ -368,6 +371,7 @@ impl CapKernel {
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> {
                 &&& (ret->0).0 == old(self).payload_of(old(self).tables.node_of(root, slot)).base

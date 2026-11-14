@@ -13,6 +13,8 @@ use crate::arch::*;
 use crate::util::page_ptr_util_u::mem_valid;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -120,6 +122,7 @@ impl CapKernel {
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& match pre.cores@[c].current_thread {
             Some(o) => {
                 let r = post.threads.records@[o].value();
@@ -415,6 +418,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).threads.records@.dom() == old(self).threads.records@.dom(),
             final(self).threads.holders == old(self).threads.holders,
             final(self).threads.boot_thread == old(self).threads.boot_thread,

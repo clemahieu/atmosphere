@@ -26,6 +26,8 @@ use crate::capability::boot_table::*;
 use crate::capability::derive::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -63,6 +65,7 @@ impl CapKernel {
             post.tables.owner == pre.tables.owner,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.threads == pre.threads,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             forall|j: int| #![trigger post.list.nodes@[j]] 0 <= j < NODE_SPACE && !(leaf2 + 1 <= j < leaf2 + 1 + count)
@@ -229,6 +232,7 @@ impl CapKernel {
                 &&& final(self).root_space(process) == s
                 &&& final(self).processes == old(self).processes
                 &&& final(self).endpoints == old(self).endpoints
+                &&& final(self).replies == old(self).replies
                 &&& final(self).threads == old(self).threads
                 &&& final(self).list.seq@[0] == root
                 &&& final(self).tables.roots == old(self).tables.roots

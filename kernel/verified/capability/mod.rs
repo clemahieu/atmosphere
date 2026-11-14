@@ -21,6 +21,7 @@ pub mod destroy;
 pub mod device;
 pub mod device_space;
 pub mod endpoint;
+pub mod reply;
 pub mod guest_space;
 pub mod inspect;
 pub mod kernel;

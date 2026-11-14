@@ -42,6 +42,7 @@ use crate::capability::reclaim::*;
 use crate::capability::reclaim_process::*;
 use crate::capability::reclaim_thread::*;
 use crate::capability::refs::*;
+use crate::capability::reply::*;
 use crate::capability::retype::*;
 use crate::capability::revoke::*;
 use crate::capability::schedule::*;

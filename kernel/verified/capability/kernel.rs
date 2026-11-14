@@ -19,6 +19,7 @@ use crate::capability::block::*;
 use crate::capability::derive::badges_inherited;
 use crate::capability::device::*;
 use crate::capability::endpoint::*;
+use crate::capability::reply::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::mapping::*;
@@ -1200,6 +1201,8 @@ pub struct CapKernel {
     pub processes: Processes,
     /// The endpoints and notifications, each a record named by capabilities.
     pub endpoints: Endpoints,
+    /// The replies, each a record named by capabilities.
+    pub replies: Replies,
     /// The cores sent an IPI to act on a pending stop, in the order sent. The send is ghost: see
     /// design/one-lock-bounded-steps/.
     pub stop_ipis: Ghost<Seq<usize>>,
@@ -1667,6 +1670,7 @@ impl CapKernel {
         &&& threads_wf(&self.list, &self.tables, &self.threads, &self.blocks)
         &&& processes_wf(&self.list, &self.tables, &self.processes, &self.blocks)
         &&& endpoints_wf(&self.list, &self.tables, &self.endpoints, &self.blocks)
+        &&& replies_wf(&self.list, &self.tables, &self.replies, &self.blocks)
         &&& process_tables_wf(&self.tables, &self.processes)
         &&& process_spaces_wf(&self.spaces, &self.processes)
         &&& current_wf(self.cores@, self.threads.records@)
@@ -1966,6 +1970,7 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& post.cores@[c].current_thread == pre.cores@[c].current_thread
         &&& post.cores@[c].space == pre.cores@[c].space
         &&& pre.acked(c) <= post.acked(c)
@@ -1994,6 +1999,7 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
         &&& post.stop_ipis == pre.stop_ipis
         &&& post.flush_ipis == pre.flush_ipis
         &&& post.iommus.present == pre.iommus.present
@@ -2178,6 +2184,7 @@ impl CapKernel {
         self.threads.init(Tracked(&mut steps));
         self.processes = Processes::new();
         self.endpoints = Endpoints::new();
+        self.replies = Replies::new();
         self.blocks.pages.init();
         self.blocks.regions_2m.init();
         self.blocks.regions_1g.init();
@@ -2528,6 +2535,7 @@ impl CapKernel {
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            replies_wf(&post.list, &post.tables, &post.replies, &post.blocks),
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
@@ -2543,6 +2551,7 @@ impl CapKernel {
             post.threads == pre.threads,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
                 && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
                 ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
@@ -2579,6 +2588,7 @@ impl CapKernel {
             post.threads == pre.threads,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.frames_wf(),
             post.zeroing == pre.zeroing,
             zeroing_typed(&pre.zeroing, &post.blocks),
@@ -2592,6 +2602,7 @@ impl CapKernel {
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            replies_wf(&post.list, &post.tables, &post.replies, &post.blocks),
             forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
                 && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
                 ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
@@ -2729,11 +2740,13 @@ impl CapKernel {
             post.threads == pre.threads,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             pre.wf(),
             pre.blocks.tracks(base as int),
             pre.blocks.pages@[base as int].kind is Base,
             !(pre.blocks.pages@[base as int].object is Process),
             !queue_object(pre.blocks.pages@[base as int].object),
+            !(pre.blocks.pages@[base as int].object is Reply),
             pre.blocks.pages@[base as int].refs == 0,
             pre.no_stale_translation(base),
             post.blocks.wf(),
@@ -2780,6 +2793,7 @@ impl CapKernel {
         lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, base);
         lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, base);
         lemma_endpoints_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, base);
+        lemma_replies_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, base);
         assert forall|x: usize| #[trigger] post.holders@.contains_key(BlockRef::Small(x))
             implies post.blocks.pages@[x as int].object is Frame by {
             assert(x != base);
@@ -2837,6 +2851,7 @@ impl CapKernel {
             post.threads == pre.threads,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             pre.wf(),
             r < level_regions(level),
             pre.region_clean(level, r),
@@ -2908,6 +2923,7 @@ impl CapKernel {
         lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &post.blocks);
         lemma_processes_same_pages(&pre.list, &pre.tables, &pre.processes, &pre.blocks, &post.blocks);
         lemma_endpoints_same_pages(&pre.list, &pre.tables, &pre.endpoints, &pre.blocks, &post.blocks);
+        lemma_replies_same_pages(&pre.list, &pre.tables, &pre.replies, &pre.blocks, &post.blocks);
         let br = level_ref(level, r);
         assert forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0

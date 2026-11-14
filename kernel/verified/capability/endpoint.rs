@@ -31,6 +31,8 @@ use crate::capability::reach::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::retype::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
@@ -1011,6 +1013,10 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 1);
+            assert forall|k: int| 0 <= k < 1 implies !((#[trigger] post.blocks.pages@[page + k]).object is Reply) by {
+                assert(page + k == page);
+            }
+            lemma_replies_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, page, 1);
             assert(post.endpoints.records@ == pre.endpoints.records@.insert(base, post.endpoints.records@[base]));
             Self::lemma_endpoints_endpoint_added(pre, post, base, page, child);
             assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)

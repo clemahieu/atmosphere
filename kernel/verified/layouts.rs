@@ -7,6 +7,7 @@
 use vstd::prelude::*;
 
 use crate::capability::endpoint::QueueRecord;
+use crate::capability::reply::ReplyRecord;
 use crate::capability::list::NodePage;
 use crate::capability::space::{SpaceCores, SpaceRecord, TableRecord};
 use crate::capability::table::{PayloadPage, TableRoot};
@@ -40,6 +41,7 @@ global layout ThreadRecord is size == 248, align == 8;
 global layout ThreadRecord is size == 352, align == 8;
 global layout ProcessRecord is size == 1, align == 1;
 global layout QueueRecord is size == 32, align == 8;
+global layout ReplyRecord is size == 16, align == 8;
 
 /// A page becomes an uninitialised node page.
 pub proof fn page_into_node_page(tracked page: PagePerm4k) -> (tracked ret: PointsTo<NodePage>)
@@ -112,6 +114,18 @@ pub proof fn page_into_queue_record(tracked page: PagePerm4k) -> (tracked ret: P
         ret.is_uninit(),
 {
     crate::pptr::page_into_typed::<QueueRecord>(page)
+}
+
+/// A page becomes an uninitialised reply record.
+pub proof fn page_into_reply_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<ReplyRecord>)
+    requires
+        page.is_uninit(),
+        page.addr() % PAGE_SZ == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<ReplyRecord>(page)
 }
 
 /// A page becomes an uninitialised list of a space's cores.

@@ -587,6 +587,7 @@ impl CapKernel {
             post.tables == pre.tables,
             post.processes == pre.processes,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
             post.threads == pre.threads,
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             forall|j: int| #![trigger post.list.nodes@[j]] 0 <= j < NODE_SPACE && pre.list.nodes@[j].live
@@ -730,6 +731,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).threads == old(self).threads,
             final(self).spaces.roots@.dom() == old(self).spaces.roots@.dom(),
             final(self).spaces.kernel_root == old(self).spaces.kernel_root,
@@ -891,6 +893,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).threads == old(self).threads,
             final(self).spaces.roots@.dom() == old(self).spaces.roots@.dom(),
             final(self).spaces.kernel_root == old(self).spaces.kernel_root,
@@ -1251,6 +1254,7 @@ impl CapKernel {
                 &&& final(self).tables == old(self).tables
                 &&& final(self).processes == old(self).processes
                 &&& final(self).endpoints == old(self).endpoints
+                &&& final(self).replies == old(self).replies
                 &&& final(self).threads == old(self).threads
                 &&& final(self).spaces.roots@.dom() == old(self).spaces.roots@.dom()
                 &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
@@ -1335,6 +1339,7 @@ impl CapKernel {
                 self.tables == pre.tables,
                 self.processes == pre.processes,
                 self.endpoints == pre.endpoints,
+                self.replies == pre.replies,
                 self.threads == pre.threads,
                 self.spaces.roots@.dom() == pre.spaces.roots@.dom(),
                 self.spaces.kernel_root == pre.spaces.kernel_root,
@@ -1399,6 +1404,7 @@ impl CapKernel {
                     self.tables == pre.tables,
                     self.processes == pre.processes,
                     self.endpoints == pre.endpoints,
+                    self.replies == pre.replies,
                     self.threads == pre.threads,
                     self.spaces.roots@.dom() == pre.spaces.roots@.dom(),
                     self.spaces.kernel_root == pre.spaces.kernel_root,

@@ -21,6 +21,8 @@ use crate::capability::link::*;
 use crate::capability::mapping::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::position::*;
@@ -129,7 +131,9 @@ impl CapKernel {
         &&& post.processes.holders@ == moved_process_holders(pre.processes.holders@, i, n)
         &&& post.processes.bound == pre.processes.bound
         &&& post.endpoints.records == pre.endpoints.records
+        &&& post.replies.records == pre.replies.records
         &&& post.endpoints.holders@ == moved_endpoint_holders(pre.endpoints.holders@, i, n)
+        &&& post.replies.holders@ == moved_reply_holders(pre.replies.holders@, i, n)
         &&& post.stop_ipis == pre.stop_ipis
         &&& post.flush_ipis == pre.flush_ipis
     }
@@ -468,6 +472,7 @@ impl CapKernel {
         self.threads.holders = Ghost(moved_thread_holders(pre.threads.holders@, i, n));
         self.processes.holders = Ghost(moved_process_holders(pre.processes.holders@, i, n));
         self.endpoints.holders = Ghost(moved_endpoint_holders(pre.endpoints.holders@, i, n));
+        self.replies.holders = Ghost(moved_reply_holders(pre.replies.holders@, i, n));
         // A device's one capability has a new name.
         if let CapKind::Device = payload.kind {
             self.devices.holder = Ghost(pre.devices.holder@.insert(payload.base, n));

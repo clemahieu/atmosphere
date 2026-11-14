@@ -19,6 +19,8 @@ use crate::capability::block::*;
 use crate::capability::derive::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -821,6 +823,7 @@ impl CapKernel {
             post.is_cap(child),
             post.payload_of(child).kind is Process,
             post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
         ensures
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -829,6 +832,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             zeroing_typed(&post.zeroing, &post.blocks),
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            replies_wf(&post.list, &post.tables, &post.replies, &post.blocks),
     {
         let a = &pre.blocks;
         let b = &post.blocks;
@@ -884,12 +888,19 @@ impl CapKernel {
         }
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, b);
         assert(same_endpoints(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_replies(&pre.list, &pre.tables, &post.list, &post.tables));
         assert forall|k: int| 0 <= k < 8 implies !queue_object((#[trigger] b.pages@[page + k]).object) by {
             if k == 0 {
                 assert(b.pages@[page as int].object is Process);
             }
         }
+        assert forall|k: int| 0 <= k < 8 implies !((#[trigger] b.pages@[page + k]).object is Reply) by {
+            if k == 0 {
+                assert(b.pages@[page as int].object is Process);
+            }
+        }
         lemma_endpoints_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, a, b, page, 8);
+        lemma_replies_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, a, b, page, 8);
     }
 
     /// The spaces after a process's retype: the new one lies in the process's block with what the

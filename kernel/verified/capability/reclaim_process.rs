@@ -19,6 +19,8 @@ verus! {
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 #[cfg(verus_keep_ghost)]
@@ -631,6 +633,7 @@ impl CapKernel {
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
         &&& post.endpoints == pre.endpoints
+        &&& post.replies == pre.replies
     }
 
     /// What the invariant says of a spent process before it frees: its block and its space.
@@ -790,6 +793,7 @@ impl CapKernel {
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            replies_wf(&post.list, &post.tables, &post.replies, &post.blocks),
             process_tables_wf(&post.tables, &post.processes),
             process_spaces_wf(&post.spaces, &post.processes),
             bindings_wf(&post.list, &post.threads, &post.processes),
@@ -823,6 +827,7 @@ impl CapKernel {
         lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page);
         lemma_processes_process_freed(&pre.list, &pre.tables, &post.tables, &pre.processes, &post.processes, &pre.blocks, &post.blocks, base);
         lemma_endpoints_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page);
+        lemma_replies_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, page);
         assert forall|p: usize| #[trigger] post.processes.records@.contains_key(p) implies post.tables.roots@.contains_key(p) by {
             assert(pre.processes.records@.contains_key(p));
         }

@@ -18,6 +18,8 @@ use crate::capability::boot::*;
 use crate::capability::decompose::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::reply::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
@@ -388,6 +390,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).table_pages == old(self).table_pages,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
@@ -426,6 +429,7 @@ impl CapKernel {
                 self.threads == pre.threads,
                 self.processes == pre.processes,
                 self.endpoints == pre.endpoints,
+                self.replies == pre.replies,
                 self.frames == pre.frames,
                 self.zeroing == pre.zeroing,
                 self.holders == pre.holders,
@@ -546,6 +550,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
+            final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).list.pages@.dom() == old(self).list.pages@.dom(),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
@@ -595,6 +600,7 @@ impl CapKernel {
                 self.threads == pre.threads,
                 self.processes == pre.processes,
                 self.endpoints == pre.endpoints,
+                self.replies == pre.replies,
                 self.spaces == pre.spaces,
                 no_device_space(&pre.spaces),
                 self.list.pages@.dom() == pre.list.pages@.dom(),
@@ -655,6 +661,7 @@ impl CapKernel {
                     self.threads == pre.threads,
                     self.processes == pre.processes,
                     self.endpoints == pre.endpoints,
+                    self.replies == pre.replies,
                     self.spaces == pre.spaces,
                     no_device_space(&pre.spaces),
                     self.list.pages@.dom() == pre.list.pages@.dom(),
@@ -910,6 +917,7 @@ impl CapKernel {
                 &&& final(self).threads == old(self).threads
                 &&& final(self).processes == old(self).processes
                 &&& final(self).endpoints == old(self).endpoints
+                &&& final(self).replies == old(self).replies
                 &&& final(self).spaces == old(self).spaces
                 &&& final(self).list.pages@.dom() == old(self).list.pages@.dom()
                 &&& forall|o: usize| #[trigger] final(self).view().reach(process, o)
