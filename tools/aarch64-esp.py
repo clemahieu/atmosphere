@@ -4,10 +4,10 @@
 """Build the aarch64 loader, kernel, dom0 and payload and lay out the EFI system partition they boot from.
 
 The directory gets EFI/BOOT/BOOTAA64.EFI, the loader, which EDK2 boots as removable media, and
-initrd, the kernel, dom0 and the payload with their debug sections dropped, concatenated as the
-loader reads them. With --command-line the directory also gets cmdline, the kernel's command line,
-which the loader hands the kernel. tools/orangepi-kvm.py --esp takes the directory. A directory
-already there is replaced.
+initrd, the kernel, dom0 and the payload without the sections the loader does not load (elfstrip.py),
+concatenated as the loader reads them. With --command-line the directory also gets cmdline, the
+kernel's command line, which the loader hands the kernel. tools/orangepi-kvm.py --esp takes the
+directory. A directory already there is replaced.
 
 The images are the debug build of `tools/build.py --target aarch64`. With --loader-feature the loader
 is then built again with those features, small_kernel_stack for a kernel stack the boot overflows,

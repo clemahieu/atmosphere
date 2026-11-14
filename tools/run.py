@@ -217,8 +217,9 @@ def lay_out_esp(run_dir, loader, images, gdb, ovmf_vars):
     loader_path = run_dir / "esp" / ESP_LOADER
     loader_path.parent.mkdir(parents=True)
     shutil.copy(loader, loader_path)
-    # .debug_* stays in target/: gdb and the boot-stack check read those files. The initrd copy
-    # drops it, because the loader maps the payload remainder of this file into dom0.
+    # What the loader does not load stays in target/: gdb and the boot-stack check read those
+    # files. The initrd copy drops it, because the loader copies the payload remainder of this file
+    # into dom0's window.
     size = elfstrip.write_initrd(run_dir / "esp" / ESP_INITRD, images)
     (run_dir / "esp" / ESP_COMMAND_LINE).write_text(COMMAND_LINE + "\n")
     if gdb:
@@ -469,7 +470,7 @@ class Tests(unittest.TestCase):
         self.assertIn(f"isa-debug-exit,iobase={244:#x},iosize=0x04", self.options(args, "-device"))
         self.assertEqual(DEBUG_EXIT_PORT, 244)
 
-    def test_the_initrd_drops_debug_sections_and_leaves_the_source(self):
+    def test_the_initrd_drops_unloaded_sections_and_leaves_the_source(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
             loader = run_dir / "aloader.efi"
@@ -482,6 +483,7 @@ class Tests(unittest.TestCase):
             lay_out_esp(run_dir, loader, [image], False, vars_fd)
             initrd = run_dir / "esp" / ESP_INITRD
             self.assertNotIn(".debug_", self.sections(initrd))
+            self.assertNotIn("__llvm_covfun", self.sections(initrd))
             self.assertIn(".debug_info", self.sections(image))
             self.assertEqual(image.read_bytes(), source)
 

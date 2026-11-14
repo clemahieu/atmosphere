@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 
-"""Drop .debug_* sections from ELF copies written into an initrd.
+"""Drop the sections the loader does not load from ELF copies written into an initrd.
 
-The binaries in target/ stay as the compiler wrote them: tools/gdb.py loads those files, and
-tools/check-boot-stack.py disassembles main from the kernel there. Only the bytes concatenated into
-the initrd are stripped. A file that is not an ELF, or that has no .debug_* section, is copied
-unchanged.
+The loader maps each image's segments and copies the payload, the file after dom0, whole into dom0's
+window (design/test-guest-memory/). So the initrd copies keep the allocated sections, which the
+segments hold, and lose the rest: .debug_*, the symbol table, and in a coverage build the coverage
+map, which tools/coverage.py reads from the file in target/. The binaries in target/ stay as the
+compiler wrote them: tools/gdb.py loads those files, and tools/check-boot-stack.py disassembles main
+from the kernel there. A file that is not an ELF is copied unchanged.
 
 usage: tools/elfstrip.py <elf> [<elf> ...]   (stripped bytes on stdout, concatenated)
        tools/elfstrip.py --test
@@ -59,24 +61,25 @@ def objcopy():
     return f"{rustc('--print', 'sysroot').strip()}/lib/rustlib/{host}/bin/llvm-objcopy"
 
 
-def without_debug(path):
-    """The bytes of `path` with .debug_* removed. `path` itself is not modified."""
+def loaded_only(path):
+    """The bytes of `path` without the sections outside its segments, which llvm-objcopy's
+    --strip-all removes with the symbol table. `path` itself is not modified."""
     path = Path(path)
     data = path.read_bytes()
-    if not any(name.startswith(".debug_") for name in section_names(data)):
+    if not section_names(data):
         return data
     with tempfile.TemporaryDirectory() as directory:
         stripped = Path(directory) / "stripped"
-        subprocess.run([objcopy(), "--strip-debug", str(path), str(stripped)], check=True)
+        subprocess.run([objcopy(), "--strip-all", str(path), str(stripped)], check=True)
         return stripped.read_bytes()
 
 
 def write_initrd(destination, images):
-    """Writes each image, debug sections removed, concatenated, and returns the byte count."""
+    """Writes each image, its unloaded sections removed, concatenated, and returns the byte count."""
     size = 0
     with open(destination, "wb") as initrd:
         for image in images:
-            blob = without_debug(image)
+            blob = loaded_only(image)
             initrd.write(blob)
             size += len(blob)
     return size
@@ -87,13 +90,16 @@ EM_AARCH64 = 183
 
 
 def elf_with_debug_section(machine=EM_X86_64):
-    """A small ELF64 for `machine` whose section table names .debug_info, for the initrd tests."""
-    shstr = b"\0.text\0.debug_info\0.shstrtab\0"
+    """A small ELF64 for `machine` whose section table names .debug_info and __llvm_covfun, neither
+    loaded, for the initrd tests."""
+    shstr = b"\0.text\0.debug_info\0.shstrtab\0__llvm_covfun\0"
     text = b"\x90\x90\x90\x90"
     debug = b"DEBUGINF"
+    coverage = b"COVERAGE"
     text_off = 0x80
     debug_off = text_off + len(text)
-    shstr_off = debug_off + len(debug)
+    coverage_off = debug_off + len(debug)
+    shstr_off = coverage_off + len(coverage)
     shoff = (shstr_off + len(shstr) + 7) & ~7
 
     def shdr(name, typ, flags, off, size):
@@ -104,14 +110,15 @@ def elf_with_debug_section(machine=EM_X86_64):
         shdr(1, 1, 6, text_off, len(text)),
         shdr(7, 1, 0, debug_off, len(debug)),
         shdr(19, 3, 0, shstr_off, len(shstr)),
+        shdr(29, 1, 0, coverage_off, len(coverage)),
     ])
     program = struct.pack("<IIQQQQQQ", 1, 5, text_off, 0, 0, len(text), len(text), 0x1000)
     header = struct.pack("<16sHHIQQQIHHHHHH",
                          b"\x7fELF\x02\x01\x01" + b"\0" * 9,
-                         3, machine, 1, 0, 64, shoff, 0, 64, 56, 1, 64, 4, 3)
+                         3, machine, 1, 0, 64, shoff, 0, 64, 56, 1, 64, 5, 3)
     blob = header + program
     blob += b"\0" * (text_off - len(blob))
-    blob += text + debug + shstr
+    blob += text + debug + coverage + shstr
     blob += b"\0" * (shoff - len(blob))
     return blob + sections
 
@@ -123,20 +130,22 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "image"
             image.write_bytes(data)
-            blob = without_debug(image)
+            blob = loaded_only(image)
             self.assertEqual(image.read_bytes(), data)
             return blob
 
-    def test_an_elf_of_either_architecture_loses_its_debug_sections_and_keeps_the_rest(self):
+    def test_an_elf_of_either_architecture_loses_its_unloaded_sections_and_keeps_the_rest(self):
         for machine in (EM_X86_64, EM_AARCH64):
             with self.subTest(machine=machine):
                 source = elf_with_debug_section(machine)
-                self.assertEqual(section_names(source), ["", ".text", ".debug_info", ".shstrtab"])
+                self.assertEqual(section_names(source),
+                                 ["", ".text", ".debug_info", ".shstrtab", "__llvm_covfun"])
                 blob = self.stripped(source)
                 self.assertEqual(section_names(blob), ["", ".text", ".shstrtab"])
                 self.assertEqual(struct.unpack_from("<H", blob, 18)[0], machine)
                 self.assertIn(b"\x90\x90\x90\x90", blob)
                 self.assertNotIn(b"DEBUGINF", blob)
+                self.assertNotIn(b"COVERAGE", blob)
 
     def test_a_file_that_is_not_an_elf_is_copied_unchanged(self):
         self.assertEqual(self.stripped(b"MZ not an ELF"), b"MZ not an ELF")
@@ -149,7 +158,7 @@ class Tests(unittest.TestCase):
             plain.write_bytes(b"payload")
             initrd = Path(directory) / "initrd"
             size = write_initrd(initrd, [elf, plain])
-            self.assertEqual(initrd.read_bytes(), without_debug(elf) + b"payload")
+            self.assertEqual(initrd.read_bytes(), loaded_only(elf) + b"payload")
             self.assertEqual(size, initrd.stat().st_size)
 
 
@@ -157,4 +166,4 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--test"]:
         unittest.main(argv=[sys.argv[0]])
     for image in sys.argv[1:]:
-        sys.stdout.buffer.write(without_debug(image))
+        sys.stdout.buffer.write(loaded_only(image))
