@@ -237,6 +237,8 @@ def boot_log():
             "dom0 counted 41000000 in 3 turns\n"
             "thread counted 39000000 in 3 turns\n"
             "dom0 thread suspended\n"
+            "dom0 thread killed on core 1\n"
+            "core 1 lag 2000 counts\n"
             "dom0 process destroyed\n"
             "dom0 eager backed 40\n"
             "dom0 heap allocator held\n"

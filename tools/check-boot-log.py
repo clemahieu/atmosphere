@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, eager source line, heap line, freed frame
-line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, started thread line, preempted counts, suspended thread line, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -83,6 +83,13 @@ SUSPENDED_LINE = "dom0 thread suspended"
 # The line dom0 prints once it destroyed its child process and claimed a capability from the dead child's
 # table by a move, after the destroys and the derive a dead process must refuse were refused.
 DESTROYED_LINE = "dom0 process destroyed"
+
+# The lines dom0 prints once a thread of its child counting on core 1 stopped counting after dom0 destroyed
+# the child: destroy's IPI reached CPU 1, which moved the thread off at that entry. Then how far the count
+# went past the value dom0 read as the destroy returned, which a stop by the next tick instead of the IPI
+# makes about a slice's worth of counts.
+KILLED_LINE = "dom0 thread killed on core 1"
+KILL_LAG = re.compile(r"^core 1 lag [0-9]+ counts\r?$", re.M)
 
 # The line dom0 prints once it wrote an entry and a stack into its child's first thread and read them back,
 # after the reads and writes the frame must refuse were refused.
@@ -236,6 +243,10 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused(f'the serial log does not show dom0 suspending a thread: "{SUSPENDED_LINE}"')
     if not line_printed(serial, DESTROYED_LINE):
         raise Refused(f'the serial log does not show dom0 destroying its child and claiming a slot: "{DESTROYED_LINE}"')
+    if not line_printed(serial, KILLED_LINE):
+        raise Refused(f'the serial log does not show a thread of dom0\'s child on core 1 stopped by the destroy: "{KILLED_LINE}"')
+    if not KILL_LAG.search(serial):
+        raise Refused("the serial log does not show how far the count on core 1 went past the destroy")
     if not THREAD_TIMES.search(serial):
         raise Refused("the serial log does not show a thread retype's best and mean cycles beside the before numbers")
     if not second_core_idle(serial):
@@ -245,7 +256,7 @@ def boot_log_accepted(serial, arch, translation=False):
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, started thread line, preempted counts, suspended thread line, destroyed process line, "
+            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
@@ -299,6 +310,8 @@ def boot_log():
             "dom0 counted 41000000 in 3 turns\n"
             "thread counted 39000000 in 3 turns\n"
             "dom0 thread suspended\n"
+            "dom0 thread killed on core 1\n"
+            "core 1 lag 2000 counts\n"
             "dom0 process destroyed\n"
             "dom0 eager backed 40\n"
             "dom0 heap allocator held\n"
@@ -339,6 +352,8 @@ class Tests(unittest.TestCase):
             ("dom0 counted 41000000 in 3 turns\n", "both counting"),
             ("thread counted 39000000 in 3 turns\n", "both counting"),
             ("dom0 thread suspended\n", "suspending a thread"),
+            ("dom0 thread killed on core 1\n", "stopped by the destroy"),
+            ("core 1 lag 2000 counts\n", "past the destroy"),
             ("dom0 process destroyed\n", "destroying its child"),
             ("thread mean 33000 before 59384\n", "mean cycles"),
             ("dom0 capability done\n", "exit marker"),

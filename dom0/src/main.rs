@@ -1133,8 +1133,8 @@ unsafe extern "C" {
     fn dom0_child_count();
 }
 
-/// Where the child's thread that counts keeps its count: the third word of the frame both spaces map,
-/// after SWITCHED_WORD and CORE_1_WORD.
+/// Where the child's thread that counts on core 0 keeps its count: the third word of the frame both
+/// spaces map, after SWITCHED_WORD and CORE_1_WORD.
 const CHILD_COUNT_ADDRESS: u64 = CHILD_DATA_ADDRESS + 16;
 
 /// The frame capability in dom0's table from ROOT_FRAME_SLOT, and the page in its block, that holds the
@@ -1268,6 +1268,71 @@ fn core_1_thread_held(caller: &mut Tracked<Caller>, process: u64) -> bool {
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, CORE_1_HELD) } == operation::STATUS_OK
 }
 
+/// Where the child's thread that counts on core 1 keeps its count: the fourth word of the frame both
+/// spaces map, after CHILD_COUNT_ADDRESS.
+const CORE_1_COUNT_ADDRESS: u64 = CHILD_COUNT_ADDRESS + 8;
+
+/// The count of the thread core_1_counting_held starts, read through the shared frame's mapping at
+/// SHARED_ENTRY in dom0's space, which switched_thread_held made.
+fn core_1_count() -> u64 {
+    let count = (entry_address(SHARED_ENTRY) + (CORE_1_COUNT_ADDRESS - CHILD_DATA_ADDRESS)) as *const u64;
+    // The page at `count` is the shared frame's, which retype zeroed; the thread on core 1 is the only
+    // other writer of this word.
+    unsafe { count.read_volatile() }
+}
+
+/// Whether a thread of dom0's child counts on core 1, for destroyed_process_held to kill by destroying
+/// the child. The seventh thread the thread check bound to the child gets the entry dom0_child_count in
+/// the child's space and CORE_1_COUNT_ADDRESS as its first argument; dom0 places it through the root's
+/// capability for core 1, reads its count as zero and starts it. Core 1 runs nothing, so the reschedule
+/// IPI reaches CPU 1, which runs the thread for good: it never enters the kernel. dom0 reads the count
+/// moving on core 0 without entering the kernel.
+fn core_1_counting_held(caller: &mut Tracked<Caller>) -> bool {
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 6;
+    let count = dom0_child_count as *const () as u64;
+    set_frame_word(caller, thread, operation::PC_WORD, CHILD_CODE_ADDRESS + (count & 0xfff)) == operation::STATUS_OK
+        && set_frame_word(caller, thread, ARGUMENT_WORDS[0], CORE_1_COUNT_ADDRESS) == operation::STATUS_OK
+        && place(caller, thread, operation::ROOT_CORE_SLOT + SECOND_CORE, 0).status == operation::STATUS_OK
+        && core_1_count() == 0
+        && start(caller, thread).status == operation::STATUS_OK
+        && (0..SWITCH_READS).any(|_| core_1_count() != 0)
+}
+
+/// What dom0 prints once the count on core 1 stopped after the destroy, which the gate looks for.
+const KILLED_HELD: [u64; 5] = operation::print_words(b"dom0 thread killed on core 1\n");
+
+/// How many reads of the count on core 1 in a row dom0 must find equal before it takes the count as
+/// stopped: tens of milliseconds, many slices of core 1's tick.
+const STILL_READS: u64 = 1 << 24;
+
+/// How many reads dom0 makes before it gives up on the count on core 1 stopping: seconds.
+const KILL_READS: u64 = 1 << 32;
+
+/// Whether the count of the thread core_1_counting_held started on core 1 stops once dom0's destroy of
+/// the thread's process returned, and dom0 prints how far it went past the value it read then. The
+/// destroy's entry sends core 1 the reschedule IPI, its thread having to leave, and CPU 1's
+/// check_current moves the thread off at that entry, so the count stops within the IPI's latency; a
+/// thread left for core 1's next tick would count on for up to a slice.
+fn core_1_count_stopped() -> bool {
+    let destroyed = core_1_count();
+    let mut last = destroyed;
+    let mut still = 0;
+    let mut reads = 0;
+    while still < STILL_READS && reads < KILL_READS {
+        reads += 1;
+        let now = core_1_count();
+        if now == last {
+            still += 1;
+        } else {
+            still = 0;
+            last = now;
+        }
+    }
+    still == STILL_READS
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, KILLED_HELD) } == operation::STATUS_OK
+        && print_count(b"core 1 lag ", last.wrapping_sub(destroyed), b" counts\n") == operation::STATUS_OK
+}
+
 /// What dom0 prints once it started a thread of its child, which the gate looks for.
 const STARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread started\n");
 
@@ -1373,12 +1438,13 @@ const DESTROYED_HELD: [u64; 5] = operation::print_words(b"dom0 process destroyed
 /// down. A table leaf CHILD_LEAF_BELOW_TOP below the untyped's top goes into root entry 0 of the child's
 /// table, through `process`, and inspect finds the power capability derived into that entry's first slot.
 /// A destroy of the empty slot `claim`, of the console slot and of the power slot, none holding a process
-/// or a thread, is refused; the destroy of `process` is accepted and a second refused, the child being
-/// dead. A destroy of the first thread the thread check bound to the child is refused, its process being
-/// dead, and so are a start of the third, placed and Inactive but bound to the dead child, and a derive
-/// into the dead child's table. A move from the child's first slot
-/// into `claim` is accepted, after which inspect finds power's capability in `claim` and refuses the
-/// child's first slot. dom0 prints that it held.
+/// or a thread, is refused; the destroy of `process` is accepted, the count of the thread
+/// core_1_counting_held started on core 1 stops, as core_1_count_stopped says, and a second destroy is
+/// refused, the child being dead. A destroy of the first thread the thread check bound to the child is
+/// refused, its process being dead, and so are a start of the third, placed and Inactive but bound to
+/// the dead child, and a derive into the dead child's table. A move from the child's first slot into
+/// `claim` is accepted, after which inspect finds power's capability in `claim` and refuses the child's
+/// first slot. dom0 prints that it held.
 fn destroyed_process_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, claim: u64) -> bool {
     let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
         return false;
@@ -1399,6 +1465,7 @@ fn destroyed_process_held(caller: &mut Tracked<Caller>, empty: u64, process: u64
         && destroy(caller, operation::ROOT_CONSOLE_SLOT).status == operation::STATUS_REFUSED
         && destroy(caller, operation::ROOT_POWER_SLOT).status == operation::STATUS_REFUSED
         && destroy(caller, process).status == operation::STATUS_OK
+        && core_1_count_stopped()
         && destroy(caller, process).status == operation::STATUS_REFUSED
         && destroy(caller, thread).status == operation::STATUS_REFUSED
         && start(caller, thread + 2).status == operation::STATUS_REFUSED
@@ -1921,6 +1988,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && started_thread_held(caller)
                                 && preempted_thread_held()
                                 && suspended_thread_held(caller, empty + 5)
+                                && core_1_counting_held(caller)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && eager_source_held(caller, empty)
                         })
