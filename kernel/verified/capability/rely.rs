@@ -873,6 +873,7 @@ impl CapKernel {
             Some(Operation::Probe) => Self::lemma_probe_keeps_slots(pre, post, root, frame, out, root),
             Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Start) => Self::lemma_started_keeps_rely(pre, post, root, frame, out, root),
             _ => {},
         }
     }
@@ -1345,6 +1346,7 @@ impl CapKernel {
             Some(Operation::Probe) => Self::lemma_probe_keeps_record(pre, post, root, frame, out, root),
             Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Start) => Self::lemma_started_keeps_rely(pre, post, root, frame, out, root),
             _ => {},
         }
     }
@@ -2275,6 +2277,22 @@ impl CapKernel {
             assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
                 == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
         }
+    }
+
+    /// A start, by any caller: it writes the started thread's state and the run queues and nothing a
+    /// table, a process record, a space or a block count holds.
+    pub proof fn lemma_started_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            Self::spec_started(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+            Self::record_kept(pre, post, root),
+    {
+        let t = pre.payload_of(pre.tables.node_of(caller, frame.slot() as usize)).base;
+        let core = pre.threads.records@[t].value().placement->Some_0.core;
+        Self::lemma_start_keeps_rely(pre, post, t, core, root);
+        Self::lemma_start_keeps_record(pre, post, t, core, root);
     }
 
     /// destroy of a thread, by any caller and from any core.

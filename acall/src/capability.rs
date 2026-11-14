@@ -186,4 +186,37 @@ pub fn place(caller: &mut Tracked<Caller>, slot: u64, core: u64, priority: u64) 
     out
 }
 
+/// Starts the thread the position `slot` names, in the caller's own table, on the core it is placed
+/// on, at its placement's priority.
+pub fn start(caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+        CapKernel::start_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
+        old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
+        old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+    no_unwind
+{
+    let ghost pre = caller@;
+    let out = step(caller, OPERATION_START, slot, 0, 0, 0, 0, 0);
+    proof {
+        let entry = caller@.entry();
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
+            carries(frame, OPERATION_START, slot, 0, 0, 0, 0, 0)
+                && #[trigger] entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_number_names_one_operation(Operation::Start);
+        CapKernel::lemma_start_contract(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+    }
+    out
+}
+
 } // verus!

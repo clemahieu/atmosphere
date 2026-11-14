@@ -347,6 +347,28 @@ impl CapKernel {
         }
     }
 
+    /// Start's contract over the caller's view, for the thread at index i of the caller's own table: ok
+    /// exactly when can_start holds there and refused otherwise, and either way every table's view and
+    /// the block table as they were. The thread runs on the core it is placed on:
+    /// design/cpu-time-as-capability/.
+    pub open spec fn start_contract(pre: Self, post: Self, root: usize, i: usize, out: Outcome) -> bool {
+        &&& out == status_only(if pre.can_start(root, i) { STATUS_OK } else { STATUS_REFUSED })
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& post.blocks == pre.blocks
+    }
+
+    /// Start's specification implies its contract.
+    pub proof fn lemma_start_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::spec_started(pre, post, root, frame, out),
+        ensures
+            Self::start_contract(pre, post, root, frame.slot() as usize, out),
+    {
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
+    }
+
     /// A step that leaves the root entries as they were and changes no node's liveness but n's and m's,
     /// slots', leaves every table's slots as they were.
     pub proof fn lemma_slots_stay(pre: Self, post: Self, n: usize, m: usize, t: usize, j: usize)

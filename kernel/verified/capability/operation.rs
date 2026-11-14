@@ -43,6 +43,8 @@ use crate::capability::revoke::REVOKE_BUDGET;
 #[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::schedule::{at_back_of_priority, queued_at_back};
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::{bound_threads, right_bit};
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
@@ -145,6 +147,7 @@ pub const OPERATION_LINK: u64 = 16;
 pub const OPERATION_PROBE: u64 = 17;
 pub const OPERATION_POWER_OFF: u64 = 18;
 pub const OPERATION_PLACE: u64 = 21;
+pub const OPERATION_START: u64 = 22;
 
 /// Retype's kind in argument 1 for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
@@ -216,6 +219,7 @@ pub enum Operation {
     Probe,
     PowerOff,
     Place,
+    Start,
 }
 
 impl Operation {
@@ -240,6 +244,7 @@ impl Operation {
             Operation::Probe => OPERATION_PROBE,
             Operation::PowerOff => OPERATION_POWER_OFF,
             Operation::Place => OPERATION_PLACE,
+            Operation::Start => OPERATION_START,
         }
     }
 }
@@ -284,6 +289,7 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_PROBE => Some(Operation::Probe),
         OPERATION_POWER_OFF => Some(Operation::PowerOff),
         OPERATION_PLACE => Some(Operation::Place),
+        OPERATION_START => Some(Operation::Start),
         _ => None,
     };
     proof {
@@ -898,6 +904,41 @@ impl CapKernel {
         }
     }
 
+    /// Whether the start in frame is allowed: can_start of the thread at the index the slot names in the
+    /// caller's own table.
+    pub open spec fn allows_start(&self, root: usize, frame: Registers) -> bool {
+        self.can_start(root, frame.slot() as usize)
+    }
+
+    /// A start in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, exactly when allows_start fails, or ok with the thread
+    /// the slot's capability names Runnable on the core it is placed on, at the back of its placement's
+    /// priority there, every core as it was, a reschedule IPI recorded for that core exactly when the
+    /// thread outranks what the core runs, every thread's binding as it was, and the step discharging
+    /// control of the thread. design/cpu-time-as-capability/.
+    pub open spec fn spec_started(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        let n = pre.tables.node_of(root, frame.slot() as usize);
+        let t = pre.payload_of(n).base;
+        let pl = pre.threads.records@[t].value().placement->Some_0;
+        ||| !pre.allows_start(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& pre.allows_start(root, frame)
+            &&& out == status_only(STATUS_OK)
+            &&& pre.threads.records@.contains_key(t)
+            &&& Self::state_written(pre, post, t, ThreadState::Runnable { core: pl.core })
+            &&& queued_at_back(&pre.threads.queues, &post.threads.queues, pl.core as int, pl.priority as int, t)
+            &&& at_back_of_priority(&post.threads.queues, post.threads.records@, pl.core as int, pl.priority, t)
+            &&& post.cores == pre.cores
+            &&& post.resched_ipis@ == if pre.outranks_current(pl.core as int, pl.priority) {
+                pre.resched_ipis@.push(pl.core)
+            } else {
+                pre.resched_ipis@
+            }
+            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+            &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+        }
+    }
+
     /// Whether the invocation in frame by a thread of the process whose table is at root is allowed: for
     /// an operation that can change the kernel, its allows_ predicate over the frame's decoded
     /// arguments; for every other operation, which leaves the kernel unchanged, that spec_outcome is not
@@ -915,6 +956,7 @@ impl CapKernel {
             Some(Operation::Probe) => self.allows_probe(root, frame),
             Some(Operation::Destroy) => self.allows_destroy(root, frame),
             Some(Operation::Place) => self.allows_place(root, frame),
+            Some(Operation::Start) => self.allows_start(root, frame),
             _ => self.spec_outcome(root, frame) != status_only(STATUS_REFUSED),
         }
     }
@@ -922,7 +964,7 @@ impl CapKernel {
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
     /// post with out returned, with each table position decoded from its word: a retype's effect for retype, a derive's for derive, a move's for move, a
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
-    /// unmap, a probe's for probe, a destroy's for destroy, a place's for place, and for every other operation the kernel unchanged with spec_outcome
+    /// unmap, a probe's for probe, a destroy's for destroy, a place's for place, a start's for start, and for every other operation the kernel unchanged with spec_outcome
     /// returned. Each is refused with nothing changed exactly when allows fails, as
     /// lemma_refused_exactly says.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
@@ -938,6 +980,7 @@ impl CapKernel {
             Some(Operation::Probe) => Self::spec_probed(pre, post, root, frame, out),
             Some(Operation::Destroy) => Self::spec_destroyed(pre, post, root, frame, out),
             Some(Operation::Place) => Self::spec_placed(pre, post, root, frame, out),
+            Some(Operation::Start) => Self::spec_started(pre, post, root, frame, out),
             _ => post == pre && out == pre.spec_outcome(root, frame),
         }
     }
@@ -1345,6 +1388,32 @@ impl CapKernel {
     {
     }
 
+    /// A start reaches start: refused with nothing changed unless the slot holds a live, Inactive thread
+    /// with control, bound to a process and placed; ok otherwise, with the thread Runnable at the back of
+    /// its priority on the core it is placed on, and a reschedule IPI recorded for that core exactly when
+    /// it outranks what that core runs. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_start(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Start),
+        ensures
+            ({
+                let i = frame.slot() as usize;
+                let t = pre.payload_of(pre.tables.node_of(root, i)).base;
+                let pl = pre.threads.records@[t].value().placement->Some_0;
+                &&& !pre.can_start(root, i) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_start(root, i) ==> out == status_only(STATUS_OK)
+                    && Self::state_written(pre, post, t, ThreadState::Runnable { core: pl.core })
+                    && at_back_of_priority(&post.threads.queues, post.threads.records@, pl.core as int, pl.priority, t)
+                    && post.resched_ipis@ == if pre.outranks_current(pl.core as int, pl.priority) {
+                        pre.resched_ipis@.push(pl.core)
+                    } else {
+                        pre.resched_ipis@
+                    }
+            }),
+    {
+    }
+
     /// An unmap reaches unmap_at: refused with nothing changed unless the caller may unmap the entry the
     /// address in argument 1 and the level in argument 2 name, in the space of the capability in the
     /// slot; ok otherwise, with that entry unmapped as page_unmapped says and its bits in the results.
@@ -1634,6 +1703,7 @@ impl CapKernel {
             Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(steps))),
             Some(Operation::Destroy) => Some(self.invoke_destroy(c, root, frame, Tracked(steps))),
             Some(Operation::Place) => Some(self.invoke_place(root, frame)),
+            Some(Operation::Start) => Some(self.invoke_start(root, frame)),
             Some(Operation::Print) => Some(status_only_outcome(
                 if self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(steps)) {
                     STATUS_OK
@@ -1921,6 +1991,21 @@ impl CapKernel {
             Self::spec_placed(*old(self), *final(self), root, frame, ret),
     {
         let done = self.place(root, frame.slot() as usize, frame.argument(1) as usize, frame.argument(2) as usize);
+        status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The start in frame, by a thread of the process whose table is at root.
+    fn invoke_start(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_started(*old(self), *final(self), root, frame, ret),
+    {
+        let done = self.start(root, frame.slot() as usize);
         status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
     }
 
