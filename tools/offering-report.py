@@ -29,6 +29,29 @@ epic is not a landed leaf, whatever its close reason names. For each work kind a
   that cost. The sum column is that total, in millions, so a row that landed nothing still shows what
   it spent.
 
+A leaf's rounds are its sessions of kind round, in the order they started. Each after the first is given
+one cause, the first of these its window shows, the window running from the start of the round before
+it to its own start; a gate log counts by when it was last written, a dependency by the created_at of
+its edge in bd list --json:
+
+- prover: its route is needs-land, or the round before reported `Prover:`;
+- bound: its route is retry, or the round before reported `Retry:`;
+- base: a gate log of the leaf, logs/<id>-gate.log or logs/<id>-gate-<n>.log, holds `fails the gate by
+  itself` or a line `exit 4`, or the leaf came to wait on an issue titled `main at <sha> fails the gate
+  by itself`, the bug a round files for a main that fails by itself. A landing overwrites the leaf's
+  gate log, so the bug is often the evidence left;
+- fault: such a log holds a line `exit 1`, the change at fault;
+- conflict: such a log holds a line `exit 3`, a rebase that stopped;
+- waited: the leaf came to wait on another issue;
+- duplicate: it overlaps in time another round on the leaf under another actor;
+- recovered: the round before exited non-zero, ended in an error or gave no report;
+- other: none of these.
+
+One row per work kind and offering gives the rounds beyond the first and each cause's share of them,
+and one line per leaf with more than one round names each such round's cause. A session a signal
+ended is recorded with weighted 0: its tokens are in the token ledger (tools/token-ledger.py), not in
+the record, so the cost columns leave them out.
+
 Points are weekly points of the Claude plan: weighted tokens at the rates tools/leaf-cost.py measured
 (RATES there, one place), by the model id the session's model flag stands for (MODEL_IDS there). A session
 on another harness has no such rate. An agy session adds no points and its model is named on a last
@@ -53,6 +76,7 @@ Exits 0, or 1 when bd list fails.
 import argparse
 import json
 import math
+import os
 import re
 import runpy
 import subprocess
@@ -67,11 +91,18 @@ sys.dont_write_bytecode = True
 TREE = Path(__file__).resolve().parents[1]
 ROOT = TREE.parent
 RECORD = ROOT / "logs" / "loop"
+LOGS = ROOT / "logs"
 LOOP = Path(__file__).with_name("loop.py")
 FLAG_RATE = runpy.run_path(str(Path(__file__).with_name("leaf-cost.py")))["flag_rate"]
 NOT_LEAVES = ("epic", "decision")
 LEAF_KINDS = ("tool", "sys", "proof", "spec", "arch")
 COMMIT = re.compile(r"\b[0-9a-f]{7,40}\b")
+# Why a leaf took a round after its first, in the order they are tried (the opening comment says each).
+CAUSES = ("prover", "bound", "base", "fault", "conflict", "waited", "duplicate", "recovered", "other")
+BASE_BUG = re.compile(r"main at [0-9a-f]{7,40} fails the gate by itself")
+BASE_LOG = re.compile(r"fails the gate by itself|^exit 4$", re.M)
+FAULT_LOG = re.compile(r"^exit 1$", re.M)
+CONFLICT_LOG = re.compile(r"^exit 3$", re.M)
 
 
 def rate(session):
@@ -116,6 +147,55 @@ def taker_of(worked):
     return rounds[0] if rounds else worked[0]
 
 
+def gate_logs(logs, id):
+    """Each gate log of the issue, logs/<id>-gate.log and logs/<id>-gate-<n>.log, as (modified, text)."""
+    found = [Path(logs) / f"{id}-gate.log", *sorted(Path(logs).glob(f"{id}-gate-*.log"))]
+    return [(path.stat().st_mtime, path.read_text(errors="replace")) for path in found if path.is_file()]
+
+
+def dependencies_taken(issue):
+    """Each issue `issue` came to wait on, as (when the edge was made, the issue waited on)."""
+    return [(datetime.fromisoformat(edge["created_at"]).timestamp(), edge["depends_on_id"])
+            for edge in issue.get("dependencies") or [] if edge.get("type") == "blocks"]
+
+
+def ended(session):
+    return session["started"] + 60 * (session["minutes"] or 0)
+
+
+def round_causes(rounds, issue, issues, logs):
+    """The cause of each of a leaf's rounds after its first, from what was written in its window: from the
+    start of the round before it to its own start."""
+    logged = gate_logs(logs, issue["id"])
+    taken = dependencies_taken(issue)
+    causes = []
+    for before, this in zip(rounds, rounds[1:]):
+        def within(when):
+            return before["started"] <= when < this["started"]
+        texts = [text for when, text in logged if within(when)]
+        waited_on = [issues.get(other, {}).get("title") or "" for when, other in taken if within(when)]
+        if this["route"] == "needs-land" or before["prover"]:
+            causes.append("prover")
+        elif this["route"] == "retry" or before["retry"]:
+            causes.append("bound")
+        elif any(BASE_LOG.search(text) for text in texts) or any(BASE_BUG.match(title) for title in waited_on):
+            causes.append("base")
+        elif any(FAULT_LOG.search(text) for text in texts):
+            causes.append("fault")
+        elif any(CONFLICT_LOG.search(text) for text in texts):
+            causes.append("conflict")
+        elif waited_on:
+            causes.append("waited")
+        elif any(other is not this and other["actor"] != this["actor"]
+                 and other["started"] < ended(this) and this["started"] < ended(other) for other in rounds):
+            causes.append("duplicate")
+        elif before["exit"] or before["error"] or before["loop"] is None:
+            causes.append("recovered")
+        else:
+            causes.append("other")
+    return causes
+
+
 def millions(tokens):
     """`tokens` as millions, to 0.01."""
     return f"{tokens / 1e6:.2f}"
@@ -151,7 +231,7 @@ def apportioned(parts, total):
     return [f"{value / 100:.2f}" for value in got]
 
 
-def report(sessions, tracker, since=-math.inf, until=math.inf):
+def report(sessions, tracker, since=-math.inf, until=math.inf, logs=LOGS):
     """The lines of the report over the sessions of the record and the issues of the tracker."""
     issues = {issue["id"]: issue for issue in tracker}
     refuted_at = refutations(tracker)
@@ -190,6 +270,7 @@ def report(sessions, tracker, since=-math.inf, until=math.inf):
             row["rated"] = True
 
     rows = {}
+    caused = {}
     for id, worked in leaves.items():
         taker = taker_of(worked)
         if not since <= taker["started"] < until:
@@ -198,8 +279,14 @@ def report(sessions, tracker, since=-math.inf, until=math.inf):
         kind = (next((session["work_kind"] for session in worked if session["work_kind"] in LEAF_KINDS), None)
                 or label_kind(issue) or "-")
         row = rows.setdefault((kind, taker["offering"] or "-"), dict(
-            taken=0, landed=0, first=0, escalated=0, refuted=0, weighted=0.0, points=0.0, rated=False))
+            taken=0, landed=0, first=0, escalated=0, refuted=0, weighted=0.0, points=0.0, rated=False,
+            causes=dict.fromkeys(CAUSES, 0)))
         rounds = [session for session in worked if session["session"] == "round"]
+        causes = round_causes(rounds, issue, issues, logs)
+        for cause in causes:
+            row["causes"][cause] += 1
+        if causes:
+            caused[id] = (kind, taker["offering"] or "-", causes)
         escalated = any(session["retry"] for session in rounds)
         did_land = issue.get("issue_type") != "epic" and landed(issue)
         row["taken"] += 1
@@ -257,6 +344,16 @@ def report(sessions, tracker, since=-math.inf, until=math.inf):
             f"{kind:<8}{offering:<20}{row['taken']:>6}{row['landed']:>7}{row['first']:>6}{row['escalated']:>10}"
             f"{row['refuted']:>8}{(f'{each(row['weighted']) / 1e6:.2f}' if each else '-'):>10}"
             f"{(f'{each(row['points']):.3f}' if each and row['rated'] else '-'):>8}{millions_text:>8}")
+    lines.append("rounds beyond a leaf's first, by the work kind and the offering that took the leaf, "
+                 "each by its cause")
+    lines.append(f"{'kind':<8}{'offering':<20}{'beyond':>7}" + "".join(f"{cause:>10}" for cause in CAUSES))
+    for kind, offering in leaf_order:
+        counts = rows[(kind, offering)]["causes"]
+        lines.append(f"{kind:<8}{offering:<20}{sum(counts.values()):>7}"
+                     + "".join(f"{counts[cause]:>10}" for cause in CAUSES))
+    lines.append("leaves with more than one round: the leaf, its kind and offering, and the cause of each round after "
+                 "its first")
+    lines += [f"  {id} {kind} {offering}: {', '.join(causes)}" for id, (kind, offering, causes) in sorted(caused.items())]
     lines.append("reviews by the offering that took them; taken, closed on a skeptic pass, closed refuted, "
                  "and the cost of every session on them")
     lines.append(f"{'offering':<20}{'taken':>6}{'passed':>8}{'refuted':>8}{'weighted':>10}{'points':>8}")
@@ -301,26 +398,104 @@ class Tests(unittest.TestCase):
         self.loop = runpy.run_path(str(LOOP))
         self.minute = 0
 
-    def run_session(self, issue, offering, session="round", kind="tool", weighted=1_000_000, retry=None, limited=0, at=None):
-        """One row as tools/loop.py writes it, on an offering of the loop.toml the tests assume."""
+    def run_session(self, issue, offering, session="round", kind="tool", weighted=1_000_000, retry=None, limited=0, at=None,
+                    route=None, prover=None, actor="loop-1", minutes=10.0, exit=0, report="continue"):
+        """One row as tools/loop.py writes it, on an offering of the loop.toml the tests assume. With `at`, the
+        session starts then; otherwise a minute after the one before, from noon."""
         harness, model = {"opus": ("claude", "opus"), "opus-xhigh": ("claude", "opus"),
                           "fable-xhigh": ("claude", "fable"),
                           "carbon-high": ("agy", "gemini-4-carbon-high"),
                           "grok-high": ("grok", "grok-4.7")}[offering]
         self.minute += 1
         self.loop["record_session"](self.folder, {
-            "actor": "loop-1", "session": session, "issue": issue, "work_kind": kind, "route": kind, "offering": offering,
-            "harness": harness, "model": model, "effort": None, "started": (self.NOON if at is None else at) + 60 * self.minute,
-            "minutes": 10.0, "turns": 30, "weighted": weighted, "exit": 0, "error": 0, "limited": limited,
-            "loop": "continue" if session == "round" else None, "prover": None, "retry": retry, "skeptic": None})
+            "actor": actor, "session": session, "issue": issue, "work_kind": kind, "route": route or kind, "offering": offering,
+            "harness": harness, "model": model, "effort": None, "started": self.NOON + 60 * self.minute if at is None else at,
+            "minutes": minutes, "turns": 30, "weighted": weighted, "exit": exit, "error": 0, "limited": limited,
+            "loop": report if session == "round" else None, "prover": prover, "retry": retry, "skeptic": None})
 
-    def issue(self, id, reason="abc1234: landed", status="closed", labels=("kind:tool",), closed=None, type="task"):
+    def issue(self, id, reason="abc1234: landed", status="closed", labels=("kind:tool",), closed=None, type="task",
+              title="", needs=()):
+        """A tracker entry as bd list --json gives it; `needs` holds (issue depended on, epoch seconds the edge was made)."""
         stamp = datetime.fromtimestamp(self.NOON + 86400 if closed is None else closed, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        return {"id": id, "status": status, "issue_type": type, "labels": list(labels), "close_reason": reason,
-                "closed_at": stamp if status == "closed" else None, "parent": id.rsplit(".", 1)[0]}
+        return {"id": id, "title": title, "status": status, "issue_type": type, "labels": list(labels), "close_reason": reason,
+                "closed_at": stamp if status == "closed" else None, "parent": id.rsplit(".", 1)[0],
+                "dependencies": [{"issue_id": id, "depends_on_id": other, "type": "blocks",
+                                  "created_at": datetime.fromtimestamp(made, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+                                 for other, made in needs]}
 
     def lines(self, tracker, **window):
-        return report(self.loop["read_sessions"](self.folder), tracker, **window)
+        return report(self.loop["read_sessions"](self.folder), tracker, logs=self.folder / "logs", **window)
+
+    def gate_log(self, name, text, at):
+        """logs/<name> holding `text`, last written at epoch seconds `at`."""
+        path = self.folder / "logs" / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text)
+        os.utime(path, (at, at))
+
+    def cause_row(self, lines, kind, offering):
+        header = next(i for i, line in enumerate(lines) if line.startswith("rounds beyond"))
+        self.assertEqual(lines[header + 1].split(), ["kind", "offering", "beyond", *CAUSES])
+        return next(line.split()[2:] for line in lines[header + 2:] if line.split()[:2] == [kind, offering])
+
+    def test_each_round_after_a_leafs_first_has_the_first_cause_its_window_shows(self):
+        hour = 3600
+
+        def rounds(id, *rows):
+            """Rounds on `id` an hour apart from noon, each row the run_session options of one."""
+            for n, options in enumerate(rows):
+                self.run_session(id, "opus", at=self.NOON + n * hour, **options)
+
+        rounds("t-1.1", {})
+        rounds("t-1.2", {"prover": "t-1.2"}, {"route": "needs-land"})
+        rounds("t-1.3", {"retry": "t-1.3"}, {"route": "retry"})
+        rounds("t-1.4", {}, {})
+        self.gate_log("t-1.4-gate.log", "land: main at 0123456789ab fails the gate by itself\nexit 4\n", self.NOON + hour / 2)
+        rounds("t-1.5", {}, {})
+        rounds("t-1.6", {}, {})
+        self.gate_log("t-1.6-gate.log", "land: the change is at fault\nexit 1\n", self.NOON + hour / 2)
+        rounds("t-1.7", {}, {}, {})
+        self.gate_log("t-1.7-gate-1.log", "land: a conflict\nexit 3\n", self.NOON + hour / 2)
+        self.gate_log("t-1.7-gate.log", "land: the change is at fault\nexit 1\n", self.NOON + 3 * hour / 2)
+        rounds("t-1.8", {}, {})
+        # t-1.9's second round starts while another actor's first still runs.
+        rounds("t-1.9", {"minutes": 60.0})
+        self.run_session("t-1.9", "opus", actor="loop-2", at=self.NOON + 300)
+        rounds("t-1.10", {"exit": 143, "report": None}, {})
+        # t-1.11's evidence was written before its first round, so it explains neither.
+        rounds("t-1.11", {}, {})
+        self.gate_log("t-1.11-gate.log", "land: main at 0123456789ab fails the gate by itself\nexit 4\n", self.NOON - hour)
+        # t-1.12's third round starts inside its second, under the same actor: not a duplicate.
+        rounds("t-1.12", {}, {})
+        self.run_session("t-1.12", "opus", at=self.NOON + hour + 60)
+        tracker = [self.issue(f"t-1.{n}") for n in (1, 2, 3, 4, 6, 7, 9, 10, 12)] + [
+            self.issue("t-1.20", title="main at 0123456789ab fails the gate by itself"), self.issue("t-1.21"),
+            self.issue("t-1.5", needs=[("t-1.20", self.NOON + hour / 2)]),
+            self.issue("t-1.8", needs=[("t-1.21", self.NOON + hour / 2)]),
+            self.issue("t-1.11", needs=[("t-1.20", self.NOON - hour)])]
+        lines = self.lines(tracker)
+        row = self.cause_row(lines, "tool", "opus")
+        counts = dict(zip(CAUSES, map(int, row[1:])))
+        self.assertEqual(counts, {"prover": 1, "bound": 1, "base": 2, "fault": 2, "conflict": 1, "waited": 1,
+                                  "duplicate": 1, "recovered": 1, "other": 3})
+        self.assertEqual(int(row[0]), sum(counts.values()))
+        listed = next(i for i, line in enumerate(lines) if line.startswith("leaves with more"))
+        causes = {}
+        for line in lines[listed + 1:]:
+            if not line.startswith("  "):
+                break
+            leaf, said = line.split(": ")
+            causes[leaf.split()[0]] = said
+        self.assertEqual(causes, {
+            "t-1.2": "prover", "t-1.3": "bound", "t-1.4": "base", "t-1.5": "base", "t-1.6": "fault",
+            "t-1.7": "conflict, fault", "t-1.8": "waited", "t-1.9": "duplicate", "t-1.10": "recovered",
+            "t-1.11": "other", "t-1.12": "other, other"})
+
+    def test_a_leaf_with_one_round_adds_to_no_cause(self):
+        self.run_session("a-1.1", "opus", kind="sys")
+        self.run_session("a-1.1", "fable-xhigh", session="prover", kind="sys")
+        lines = self.lines([self.issue("a-1.1")])
+        self.assertEqual(self.cause_row(lines, "sys", "opus"), ["0"] * (1 + len(CAUSES)))
 
     def row(self, lines, kind, offering):
         return next(line.split()[2:] for line in lines if line.split()[:2] == [kind, offering])
@@ -438,7 +613,8 @@ class Tests(unittest.TestCase):
         reviews_at = next(i for i, line in enumerate(lines) if line.startswith("reviews "))
         no_leaf_at = next(i for i, line in enumerate(lines) if line.startswith("on no leaf"))
         leaf_header = next(i for i, line in enumerate(lines) if line.split()[:1] == ["kind"])
-        sums = [self.cents(line.split()[-1]) for line in lines[leaf_header + 1:reviews_at]]
+        causes_at = next(i for i, line in enumerate(lines) if line.startswith("rounds beyond"))
+        sums = [self.cents(line.split()[-1]) for line in lines[leaf_header + 1:causes_at]]
         reviews = [self.cents(line.split()[-2]) for line in lines[reviews_at + 2:no_leaf_at]]
         others = []
         for line in lines[no_leaf_at + 1:]:
