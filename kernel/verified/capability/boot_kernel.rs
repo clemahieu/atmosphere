@@ -354,15 +354,15 @@ impl CapKernel {
             iommus_present.wf(),
             iommu_commands.wf(iommus_present@),
             process % PROCESS_BYTES == 0,
-            process / PAGE_SZ + 8 <= NUM_PAGES,
+            old(self).blocks.tracks_addr_run(process, 8),
             leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
-            leaf / PAGE_SZ + 2 <= NUM_PAGES,
+            old(self).blocks.tracks_addr_run(leaf, 2),
             frames % LEAF_BYTES == 0,
             frames != NO_LEAF,
-            frames / PAGE_SZ + 2 <= NUM_PAGES,
+            old(self).blocks.tracks_addr_run(frames, 2),
             t % THREAD_BYTES == 0,
-            t / PAGE_SZ + 2 <= NUM_PAGES,
+            old(self).blocks.tracks_addr_run(t, 2),
             process + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= process,
             process + PROCESS_BYTES <= frames || frames + LEAF_BYTES <= process,
             process + PROCESS_BYTES <= t || t + THREAD_BYTES <= process,
@@ -378,7 +378,7 @@ impl CapKernel {
                 ==> !in_root_blocks(process, leaf, frames, t, j) && j != root / PAGE_SZ,
             image_runs_wf(image@),
             forall|j: int| #[trigger] image_region(image@, region_2m(j)) ==> {
-                &&& 0 <= j < NUM_PAGES
+                &&& old(self).blocks.tracks(j)
                 &&& !in_root_blocks(process, leaf, frames, t, j)
                 &&& !in_runs(free@, free@.len() as int, j)
                 &&& j != root / PAGE_SZ
@@ -814,7 +814,7 @@ impl CapKernel {
             // IOMMU is at or past epoch zero.
             assert forall|k: int, j: nat| 0 <= k < untyped && #[trigger] in_page_block(bs[k], j)
                 implies s4.acknowledged(j as usize) by {
-                assert(bs[k].0 + pow2(bs[k].1) <= NUM_PAGES);
+                assert(s0.blocks.tracks_run(bs[k].0 as int, pow2(bs[k].1) as int));
                 assert(s4.stale_epoch == s0.stale_epoch);
                 assert(s0.stale_epoch.pages@[j as usize as int] == 0);
             }

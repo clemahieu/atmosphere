@@ -209,10 +209,10 @@ impl CapKernel {
             assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
             lemma_runs_blocks(free@, MAX_ORDER as nat);
             let b0 = bs[0];
-            assert(b0.1 <= MAX_ORDER && b0.0 + pow2(b0.1) <= NUM_PAGES);
-            assert(b0.0 * PAGE_SZ <= NUM_PAGES * PAGE_SZ) by (nonlinear_arith)
+            assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));
+            assert(b0.0 * PAGE_SZ <= s0.blocks.page_count() * PAGE_SZ) by (nonlinear_arith)
                 requires
-                    b0.0 <= NUM_PAGES,
+                    b0.0 <= s0.blocks.page_count(),
             ;
             assert(first.base == b0.0 * PAGE_SZ);
             assert((b0.1 as u8) as nat == b0.1);

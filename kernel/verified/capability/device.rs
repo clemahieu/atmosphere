@@ -688,7 +688,7 @@ impl CapKernel {
         &&& device_binding_parent(&pre.list, &pre.tables, n, s)
         &&& post.flush_epoch == pre.flush_epoch + 1
         &&& post.stale_epoch.written(post.flush_epoch, s / PAGE_SZ)
-        &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
+        &&& forall|a: int, g: usize| a < post.flush_epoch && pre.blocks.tracks(g as int) && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
         &&& post.devices.count == pre.devices.count
         &&& post.devices.page == pre.devices.page

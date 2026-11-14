@@ -3668,9 +3668,9 @@ impl CapKernel {
         &&& Self::mappings_shrunk(pre, post)
         &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
         &&& forall|g: int| #![trigger post.stale_epoch.pages@[g]]
-            0 <= g < NUM_PAGES && post.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g]
+            pre.blocks.tracks(g) && post.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g]
             ==> exists|e: usize| #[trigger] a.names_child(base, e) && !b.names_child(base, e) && g == child_at(a, base, e) / PAGE_SZ
-        &&& base / PAGE_SZ < NUM_PAGES
+        &&& pre.blocks.tracks_addr(base)
             ==> post.stale_epoch.pages@[(base / PAGE_SZ) as int] == pre.stale_epoch.pages@[(base / PAGE_SZ) as int]
     }
 
@@ -3945,7 +3945,7 @@ impl CapKernel {
             }
         }
         assert forall|g: int| #![trigger post.stale_epoch.pages@[g]]
-            0 <= g < NUM_PAGES && post.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g]
+            pre.blocks.tracks(g) && post.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g]
             implies exists|i: usize| #[trigger] a.names_child(base, i) && !b.names_child(base, i) && g == child_at(a, base, i) / PAGE_SZ by {
             if mid.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g] {
                 let i = choose|i: usize| #[trigger] a.names_child(base, i) && !m.names_child(base, i) && g == child_at(a, base, i) / PAGE_SZ;
@@ -3960,7 +3960,7 @@ impl CapKernel {
                 assert(a.names_child(base, e) && !b.names_child(base, e) && g == child_at(a, base, e) / PAGE_SZ);
             }
         }
-        if base / PAGE_SZ < NUM_PAGES {
+        if pre.blocks.tracks_addr(base) {
             assert(base % TABLE_PAGE_BYTES == 0) by {
                 if pre.table_pages.maps@.contains_key(base) {
                     assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, base));

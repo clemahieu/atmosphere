@@ -196,7 +196,7 @@ impl CapKernel {
             forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * PAGE_SZ,
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !image_region(runs@, region_2m((p / PAGE_SZ) as int)),
-            old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+            old(self).blocks.tracks_addr(old(self).spaces.kernel_root@)
                 ==> !image_region(runs@, region_2m((old(self).spaces.kernel_root@ / PAGE_SZ) as int)),
             old(self).root_tables_ready(process),
             old(self).root_untyped_free(process),

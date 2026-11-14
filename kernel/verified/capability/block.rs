@@ -1185,11 +1185,11 @@ impl BlockTable {
             assert(region_1g(first as int) == r1);
             assert(pre.pages@[first as int].kind is Reserved);
             pre.lemma_not_free_uncovered(first as int);
-            assert(first + PAGES_PER_2M <= NUM_PAGES) by (nonlinear_arith)
+            assert(first + PAGES_PER_2M <= self.page_count()) by (nonlinear_arith)
                 requires
                     first == r * PAGES_PER_2M,
                     r + 1 <= NUM_2M,
-                    NUM_2M * PAGES_PER_2M == NUM_PAGES,
+                    NUM_2M * PAGES_PER_2M == self.page_count(),
                     PAGES_PER_2M > 0;
         }
         let ghost steps0 = steps.count;
@@ -1200,7 +1200,7 @@ impl BlockTable {
                 steps.count == steps0 + k,
                 r < NUM_2M,
                 first == r * PAGES_PER_2M,
-                first + PAGES_PER_2M <= NUM_PAGES,
+                self.tracks_run(first as int, PAGES_PER_2M as int),
                 self.pages.wf(),
                 forall|i: int| self.tracks(i) ==> #[trigger] self.pages@[i]
                     == if first <= i < first + k { free_entry() } else { pre.pages@[i] },

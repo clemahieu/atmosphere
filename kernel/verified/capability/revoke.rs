@@ -610,7 +610,7 @@ impl CapKernel {
                 pre.flush_epoch <= self.flush_epoch,
                 forall|n: usize, g: usize| pre.mappings@.contains_key(n) && !self.mappings@.contains_key(n)
                     && #[trigger] record_pages(pre.mappings@[n]).contains(g)
-                    ==> self.stale_epoch.above(pre.flush_epoch as int, g) && (g as int) < NUM_PAGES,
+                    ==> self.stale_epoch.above(pre.flush_epoch as int, g) && pre.blocks.tracks(g as int),
                 self.iommus.acked == pre.iommus.acked,
                 self.iommus.present == pre.iommus.present,
                 self.processes.records == pre.processes.records,
@@ -679,7 +679,7 @@ impl CapKernel {
                 // earlier step took stays above the revoke's first epoch, which is no later than this one's.
                 assert forall|n: usize, g: usize| pre.mappings@.contains_key(n) && !self.mappings@.contains_key(n)
                     && #[trigger] record_pages(pre.mappings@[n]).contains(g)
-                    implies self.stale_epoch.above(pre.flush_epoch as int, g) && (g as int) < NUM_PAGES by {
+                    implies self.stale_epoch.above(pre.flush_epoch as int, g) && pre.blocks.tracks(g as int) by {
                     if mid.mappings@.contains_key(n) {
                         assert(mid.mappings@[n] == pre.mappings@[n]);
                         assert(record_pages(mid.mappings@[n]).contains(g));
@@ -755,11 +755,11 @@ impl CapKernel {
             old(self).flush_epoch <= final(self).flush_epoch,
             Self::records_shrunk(*old(self), *final(self)),
             Self::blocks_revoked(*old(self), *final(self)),
-            forall|a: int, g: usize| a <= old(self).flush_epoch && g < NUM_PAGES && old(self).stale_epoch.above(a, g)
+            forall|a: int, g: usize| a <= old(self).flush_epoch && old(self).blocks.tracks(g as int) && old(self).stale_epoch.above(a, g)
                 ==> #[trigger] final(self).stale_epoch.above(a, g),
             forall|n: usize, g: usize| old(self).mappings@.contains_key(n) && !final(self).mappings@.contains_key(n)
                 && #[trigger] record_pages(old(self).mappings@[n]).contains(g)
-                ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g) && (g as int) < NUM_PAGES,
+                ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g) && old(self).blocks.tracks(g as int),
             final(self).iommus.acked == old(self).iommus.acked,
             final(self).iommus.present == old(self).iommus.present,
             final(self).processes.records == old(self).processes.records,
@@ -849,14 +849,14 @@ impl CapKernel {
             // Each part of the step bumps the epoch or keeps it, and a word it writes is at the new epoch,
             // so a page above an acknowledgement no later than the step's first epoch stays above it.
             assert(pre.flush_epoch <= cut.flush_epoch);
-            assert forall|a: int, g: usize| a <= pre.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
+            assert forall|a: int, g: usize| a <= pre.flush_epoch && pre.blocks.tracks(g as int) && pre.stale_epoch.above(a, g)
                 implies #[trigger] cut.stale_epoch.above(a, g) by {
                 if pre.hidden_table(r) {
                     assert(pre.blocks.tracks(g as int));
                 }
             }
             assert(cut.flush_epoch <= mid.flush_epoch);
-            assert forall|a: int, g: usize| a <= cut.flush_epoch && g < NUM_PAGES && cut.stale_epoch.above(a, g)
+            assert forall|a: int, g: usize| a <= cut.flush_epoch && cut.blocks.tracks(g as int) && cut.stale_epoch.above(a, g)
                 implies #[trigger] mid.stale_epoch.above(a, g) by {
             }
             assert(self.stale_epoch == mid.stale_epoch);
@@ -865,7 +865,7 @@ impl CapKernel {
             // Only a mapping's own arm takes a record, at an epoch past the step's first.
             assert forall|n: usize, g: usize| pre.mappings@.contains_key(n) && !self.mappings@.contains_key(n)
                 && #[trigger] record_pages(pre.mappings@[n]).contains(g)
-                implies self.stale_epoch.above(pre.flush_epoch as int, g) && (g as int) < NUM_PAGES by {
+                implies self.stale_epoch.above(pre.flush_epoch as int, g) && pre.blocks.tracks(g as int) by {
                 if pre.list.nodes@[r as int].kind is Mapping {
                     assert(cut == pre);
                     assert(mid.mappings@ == pre.mappings@.remove(r));

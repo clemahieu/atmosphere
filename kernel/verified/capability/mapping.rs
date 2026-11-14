@@ -825,9 +825,9 @@ impl CapKernel {
         let space = tree.record(m.table).space;
         &&& post.flush_epoch == pre.flush_epoch + 1
         &&& forall|g: usize| #[trigger] pages.contains(g) ==> post.stale_epoch.written(post.flush_epoch, g)
-        &&& forall|g: usize| #[trigger] pages.contains(g) ==> (g as int) < NUM_PAGES
-        &&& forall|g: int| 0 <= g < NUM_PAGES && !pages.contains(g as usize) ==> #[trigger] post.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g]
-        &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
+        &&& forall|g: usize| #[trigger] pages.contains(g) ==> pre.blocks.tracks(g as int)
+        &&& forall|g: int| pre.blocks.tracks(g) && !pages.contains(g as usize) ==> #[trigger] post.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g]
+        &&& forall|a: int, g: usize| a < post.flush_epoch && pre.blocks.tracks(g as int) && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
         &&& forall|g: usize| #[trigger] pages.contains(g) && post.flush_awaited() ==> !post.acknowledged(g)
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
@@ -1906,7 +1906,7 @@ impl CapKernel {
             assert forall|g: usize| #[trigger] pages.contains(g) implies self.stale_epoch.written(self.flush_epoch, g) by {
                 assert(frame <= g < frame + count);
             }
-            assert forall|g: usize| #[trigger] pages.contains(g) implies (g as int) < NUM_PAGES by {
+            assert forall|g: usize| #[trigger] pages.contains(g) implies pre.blocks.tracks(g as int) by {
                 assert(frame <= g < frame + count);
             }
             assert(self.tlb@.len() == NUM_CPUS);
@@ -1917,7 +1917,7 @@ impl CapKernel {
                 assert(self.stale_epoch.written(self.flush_epoch, g));
                 Self::lemma_unmap_unacknowledged(pre, *self, g);
             }
-            assert forall|g: int| 0 <= g < NUM_PAGES && !pages.contains(g as usize)
+            assert forall|g: int| pre.blocks.tracks(g) && !pages.contains(g as usize)
                 implies #[trigger] self.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g] by {
                 if frame <= g < frame + count {
                     assert(pages.contains(g as usize));
@@ -2283,7 +2283,7 @@ impl CapKernel {
             t % TABLE_PAGE_BYTES == 0,
             t % PAGE_SZ == 0,
             self.blocks.tracks_addr_run(t, 8),
-            t < NUM_PAGES * PAGE_SZ,
+            t < self.blocks.page_count() * PAGE_SZ,
             self.blocks.pages@[(t / PAGE_SZ) as int].kind is Base,
             self.blocks.pages@[(t / PAGE_SZ) as int].object is TablePage,
             forall|k: int| 0 < k < 8 ==> (#[trigger] self.blocks.pages@[t / PAGE_SZ + k]).kind is Member

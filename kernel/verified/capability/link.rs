@@ -2010,7 +2010,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& forall|a: int, g: usize| a < post.flush_epoch && pre.blocks.tracks(g as int) && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
-        &&& forall|g: int| 0 <= g < NUM_PAGES && g != (t / PAGE_SZ) as int
+        &&& forall|g: int| pre.blocks.tracks(g) && g != (t / PAGE_SZ) as int
             ==> #[trigger] post.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g]
     }
 

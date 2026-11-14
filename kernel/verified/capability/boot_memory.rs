@@ -368,7 +368,7 @@ impl CapKernel {
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
-            old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+            old(self).blocks.tracks_addr(old(self).spaces.kernel_root@)
                 ==> !in_runs(runs@, runs@.len() as int, (old(self).spaces.kernel_root@ / PAGE_SZ) as int),
         ensures
             final(self).frames == old(self).frames,
@@ -433,7 +433,7 @@ impl CapKernel {
                     ==> #[trigger] holds(pages, i),
                 forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                     ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
-                pre.spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                pre.blocks.tracks_addr(pre.spaces.kernel_root@)
                     ==> !in_runs(runs@, runs@.len() as int, (pre.spaces.kernel_root@ / PAGE_SZ) as int),
             decreases runs@.len() - r,
         {
@@ -468,7 +468,7 @@ impl CapKernel {
                 }
                 assert(kernel_root_apart(before.spaces.kernel_root@, start as int, n as int)) by {
                     let kr = (before.spaces.kernel_root@ / PAGE_SZ) as int;
-                    if kr < NUM_PAGES && start <= kr < start + n {
+                    if before.blocks.tracks(kr) && start <= kr < start + n {
                         assert(in_run_at(runs@, r as int, kr));
                         assert(in_runs(runs@, runs@.len() as int, kr));
                     }
@@ -856,7 +856,7 @@ impl CapKernel {
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
-            old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+            old(self).blocks.tracks_addr(old(self).spaces.kernel_root@)
                 ==> !in_runs(runs@, runs@.len() as int, (old(self).spaces.kernel_root@ / PAGE_SZ) as int),
             no_device_space(&old(self).spaces),
         ensures

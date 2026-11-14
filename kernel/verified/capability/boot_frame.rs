@@ -114,7 +114,7 @@ impl CapKernel {
                 == if region_2m(i) == r { free_entry() } else { pre.blocks.pages@[i] },
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                 ==> region_2m((p / PAGE_SZ) as int) != r,
-            pre.spaces.kernel_root@ / PAGE_SZ < NUM_PAGES ==> region_2m((pre.spaces.kernel_root@ / PAGE_SZ) as int) != r,
+            pre.blocks.tracks_addr(pre.spaces.kernel_root@) ==> region_2m((pre.spaces.kernel_root@ / PAGE_SZ) as int) != r,
             post.frames_wf(),
             forall|i: usize| #[trigger] pre.frames@.contains_key(i) ==> post.frames@.contains_key(i),
             forall|i: usize| #[trigger] block_has_page(BlockRef::Two(r), i) ==> post.frames@.contains_key(i),
@@ -573,7 +573,7 @@ impl CapKernel {
                     ==> #[trigger] perms.contains_key(j)
                 &&& forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                     ==> region_2m((p / PAGE_SZ) as int) != frame_region(base)
-                &&& old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                &&& old(self).blocks.tracks_addr(old(self).spaces.kernel_root@)
                     ==> region_2m((old(self).spaces.kernel_root@ / PAGE_SZ) as int) != frame_region(base)
             },
         ensures

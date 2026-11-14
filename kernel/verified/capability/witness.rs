@@ -207,7 +207,7 @@ proof fn lemma_free_2m(k: CapKernel, process: usize, cursor: usize, jb: int, big
     lemma_cursor_block(cursor, jb + 63);
     assert(k.root_table_block(process, cl));
     assert(cl / PAGE_SZ == g + 8 * 63);
-    assert(g + PAGES_PER_2M <= NUM_PAGES);
+    assert(k.blocks.tracks_run(g, PAGES_PER_2M as int));
 }
 
 /// After a 2M retype into index i of the table at root, whose node n held nothing, the slot holds the
@@ -1195,7 +1195,7 @@ impl CapKernel {
                 assert(j == 17);
             }
             assert forall|j: int| #[trigger] image_region(image@, region_2m(j)) implies {
-                &&& 0 <= j < NUM_PAGES
+                &&& self.blocks.tracks(j)
                 &&& !in_root_blocks(process, leaf, frames, t, j)
                 &&& !in_runs(free@, free@.len() as int, j)
                 &&& j != root / PAGE_SZ
@@ -2114,10 +2114,10 @@ impl CapKernel {
             // The first untyped is the first boot block, whose pages boot left acknowledged.
             lemma_runs_blocks(free@, MAX_ORDER as nat);
             let b0 = bs[0];
-            assert(b0.1 <= MAX_ORDER && b0.0 + pow2(b0.1) <= NUM_PAGES);
-            assert(b0.0 * PAGE_SZ <= NUM_PAGES * PAGE_SZ) by (nonlinear_arith)
+            assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));
+            assert(b0.0 * PAGE_SZ <= s0.blocks.page_count() * PAGE_SZ) by (nonlinear_arith)
                 requires
-                    b0.0 <= NUM_PAGES,
+                    b0.0 <= s0.blocks.page_count(),
             ;
             assert(first.base == b0.0 * PAGE_SZ);
             assert((b0.1 as u8) as nat == b0.1);
@@ -9426,7 +9426,7 @@ impl CapKernel {
             // The root page's stale epoch is the unbind's, which the device's IOMMU has not acknowledged.
             assert(s9.stale_epoch.pages@[p] == e) by {
                 assert(child_at(a, base, 0) == bt);
-                assert(0 <= p < NUM_PAGES);
+                assert(s9.blocks.tracks(p));
             }
             assert(s9.iommus.acked == s6.iommus.acked && s9.iommus.present == s6.iommus.present);
             assert(s9.iommu_present(info.iommu as int));
@@ -11782,10 +11782,10 @@ impl CapKernel {
             assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
             lemma_runs_blocks(free@, MAX_ORDER as nat);
             let b0 = bs[0];
-            assert(b0.1 <= MAX_ORDER && b0.0 + pow2(b0.1) <= NUM_PAGES);
-            assert(b0.0 * PAGE_SZ <= NUM_PAGES * PAGE_SZ) by (nonlinear_arith)
+            assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));
+            assert(b0.0 * PAGE_SZ <= s0.blocks.page_count() * PAGE_SZ) by (nonlinear_arith)
                 requires
-                    b0.0 <= NUM_PAGES,
+                    b0.0 <= s0.blocks.page_count(),
             ;
             assert(first.base == b0.0 * PAGE_SZ);
             assert((b0.1 as u8) as nat == b0.1);
