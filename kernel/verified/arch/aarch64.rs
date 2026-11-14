@@ -1142,6 +1142,172 @@ pub fn zero_frame() -> (ret: Registers)
     Registers::zeroed()
 }
 
+/// How many words a thread's saved frame is, in register_words' order: the words read registers and
+/// write registers move. design/syscall-abi-in-registers/, under Thread and process operations.
+pub const FRAME_WORDS: usize = 34;
+
+/// The word of the frame that holds the program counter, elr_el1.
+pub const PC_WORD: usize = 32;
+
+/// The word of the frame that holds the stack pointer, sp_el0.
+pub const SP_WORD: usize = 31;
+
+/// The registers whose words, in register_words' order, are the first FRAME_WORDS of `w`.
+pub open spec fn registers_of(w: Seq<u64>) -> Registers {
+    Registers {
+        x0: w[0],
+        x1: w[1],
+        x2: w[2],
+        x3: w[3],
+        x4: w[4],
+        x5: w[5],
+        x6: w[6],
+        x7: w[7],
+        x8: w[8],
+        x9: w[9],
+        x10: w[10],
+        x11: w[11],
+        x12: w[12],
+        x13: w[13],
+        x14: w[14],
+        x15: w[15],
+        x16: w[16],
+        x17: w[17],
+        x18: w[18],
+        x19: w[19],
+        x20: w[20],
+        x21: w[21],
+        x22: w[22],
+        x23: w[23],
+        x24: w[24],
+        x25: w[25],
+        x26: w[26],
+        x27: w[27],
+        x28: w[28],
+        x29: w[29],
+        x30: w[30],
+        sp_el0: w[31],
+        elr_el1: w[32],
+        spsr_el1: w[33],
+    }
+}
+
+/// A frame is FRAME_WORDS words, with the program counter at PC_WORD and the stack pointer at SP_WORD,
+/// and the registers of its words are the frame.
+pub proof fn lemma_register_words(r: Registers)
+    ensures
+        register_words(r).len() == FRAME_WORDS,
+        register_words(r)[PC_WORD as int] == r.spec_pc(),
+        registers_of(register_words(r)) == r,
+{
+}
+
+/// The words of the registers of FRAME_WORDS words are those words.
+pub proof fn lemma_registers_of(w: Seq<u64>)
+    requires
+        w.len() == FRAME_WORDS,
+    ensures
+        register_words(registers_of(w)) == w,
+{
+    assert(register_words(registers_of(w)) =~= w);
+}
+
+impl Registers {
+    /// Word i of the frame, in register_words' order.
+    pub fn word(&self, i: usize) -> (ret: u64)
+        requires
+            i < FRAME_WORDS,
+        ensures
+            ret == register_words(*self)[i as int],
+    {
+        match i {
+            0 => self.x0,
+            1 => self.x1,
+            2 => self.x2,
+            3 => self.x3,
+            4 => self.x4,
+            5 => self.x5,
+            6 => self.x6,
+            7 => self.x7,
+            8 => self.x8,
+            9 => self.x9,
+            10 => self.x10,
+            11 => self.x11,
+            12 => self.x12,
+            13 => self.x13,
+            14 => self.x14,
+            15 => self.x15,
+            16 => self.x16,
+            17 => self.x17,
+            18 => self.x18,
+            19 => self.x19,
+            20 => self.x20,
+            21 => self.x21,
+            22 => self.x22,
+            23 => self.x23,
+            24 => self.x24,
+            25 => self.x25,
+            26 => self.x26,
+            27 => self.x27,
+            28 => self.x28,
+            29 => self.x29,
+            30 => self.x30,
+            31 => self.sp_el0,
+            32 => self.elr_el1,
+            _ => self.spsr_el1,
+        }
+    }
+
+    /// Sets word i of the frame, in register_words' order, to w, and keeps every other word.
+    pub fn set_word(&mut self, i: usize, w: u64)
+        requires
+            i < FRAME_WORDS,
+        ensures
+            register_words(*final(self)) == register_words(*old(self)).update(i as int, w),
+    {
+        match i {
+            0 => { self.x0 = w; },
+            1 => { self.x1 = w; },
+            2 => { self.x2 = w; },
+            3 => { self.x3 = w; },
+            4 => { self.x4 = w; },
+            5 => { self.x5 = w; },
+            6 => { self.x6 = w; },
+            7 => { self.x7 = w; },
+            8 => { self.x8 = w; },
+            9 => { self.x9 = w; },
+            10 => { self.x10 = w; },
+            11 => { self.x11 = w; },
+            12 => { self.x12 = w; },
+            13 => { self.x13 = w; },
+            14 => { self.x14 = w; },
+            15 => { self.x15 = w; },
+            16 => { self.x16 = w; },
+            17 => { self.x17 = w; },
+            18 => { self.x18 = w; },
+            19 => { self.x19 = w; },
+            20 => { self.x20 = w; },
+            21 => { self.x21 = w; },
+            22 => { self.x22 = w; },
+            23 => { self.x23 = w; },
+            24 => { self.x24 = w; },
+            25 => { self.x25 = w; },
+            26 => { self.x26 = w; },
+            27 => { self.x27 = w; },
+            28 => { self.x28 = w; },
+            29 => { self.x29 = w; },
+            30 => { self.x30 = w; },
+            31 => { self.sp_el0 = w; },
+            32 => { self.elr_el1 = w; },
+            _ => { self.spsr_el1 = w; },
+        }
+        proof {
+            assert(register_words(*self) =~= register_words(*old(self)).update(i as int, w));
+        }
+    }
+}
+
+
 /// What a written frame keeps of SPSR_EL1: the condition flags N, Z, C and V, bits 31 to 28, which
 /// user mode sets itself with MSR NZCV. Arm ARM C5.2.21, the layout for M[4] = 0.
 pub const USER_SPSR_KEPT: u64 = 0xf000_0000;

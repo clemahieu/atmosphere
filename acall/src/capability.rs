@@ -253,4 +253,73 @@ pub fn suspend(caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
     out
 }
 
+/// Reads the four words of the saved frame from word `index` of the Inactive thread the control
+/// capability at index `slot` of the caller's own table names, zero past the frame's end. `index` is
+/// a multiple of four within the frame.
+pub fn read_registers(caller: &mut Tracked<Caller>, slot: u64, index: u64) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+        CapKernel::read_registers_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, index, out),
+        old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
+        old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+    no_unwind
+{
+    let ghost pre = caller@;
+    let out = step(caller, OPERATION_READ_REGISTERS, slot, index, 0, 0, 0, 0);
+    proof {
+        let entry = caller@.entry();
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
+            carries(frame, OPERATION_READ_REGISTERS, slot, index, 0, 0, 0, 0)
+                && #[trigger] entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_number_names_one_operation(Operation::ReadRegisters);
+        CapKernel::lemma_read_registers_contract(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+    }
+    out
+}
+
+/// Writes `words` into the saved frame from word `index` of the Inactive thread the control capability
+/// at index `slot` of the caller's own table names, a word past the frame's end ignored, and makes the
+/// whole frame a user frame. Refused when the program counter the frame would hold is not a user
+/// address. `index` is a multiple of four within the frame.
+pub fn write_registers(caller: &mut Tracked<Caller>, slot: u64, index: u64, words: [u64; 4]) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+        CapKernel::write_registers_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, index, out),
+        old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
+        old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
+            ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+    no_unwind
+{
+    let ghost pre = caller@;
+    let out = step(caller, OPERATION_WRITE_REGISTERS, slot, index, words[0], words[1], words[2], words[3]);
+    proof {
+        let entry = caller@.entry();
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
+            carries(frame, OPERATION_WRITE_REGISTERS, slot, index, words[0], words[1], words[2], words[3])
+                && #[trigger] entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
+        lemma_number_names_one_operation(Operation::WriteRegisters);
+        CapKernel::lemma_write_registers_contract(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+    }
+    out
+}
+
 } // verus!

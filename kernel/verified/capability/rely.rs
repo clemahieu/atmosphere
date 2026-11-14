@@ -878,6 +878,7 @@ impl CapKernel {
             Some(Operation::Unmap) => Self::lemma_unmap_keeps_slots(pre, post, root, frame, out, root),
             Some(Operation::Probe) => Self::lemma_probe_keeps_slots(pre, post, root, frame, out, root),
             Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::WriteRegisters) => Self::lemma_registers_written_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Start) => Self::lemma_started_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Suspend) => Self::lemma_suspended_keeps_rely(pre, post, root, frame, out, root),
@@ -1352,6 +1353,7 @@ impl CapKernel {
             Some(Operation::Unmap) => Self::lemma_unmap_keeps_record(pre, post, root, frame, out, root),
             Some(Operation::Probe) => Self::lemma_probe_keeps_record(pre, post, root, frame, out, root),
             Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::WriteRegisters) => Self::lemma_registers_written_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Start) => Self::lemma_started_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Suspend) => Self::lemma_suspended_keeps_rely(pre, post, root, frame, out, root),
@@ -2236,6 +2238,23 @@ impl CapKernel {
         Self::lemma_destroy_keeps_record(pre, post, p, root);
         Self::lemma_destroy_keeps_space(pre, post, p, root);
         Self::lemma_destroy_keeps_count(pre, post, p, root);
+    }
+
+    /// A write registers, by any caller: a thread's saved frame written, or nothing changed.
+    pub proof fn lemma_registers_written_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            Self::spec_registers_written(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        let t = pre.thread_named(caller, frame.slot() as usize);
+        let input = pre.written_input(caller, frame);
+        if pre.allows_write_registers(caller, frame) {
+            Self::lemma_write_registers_keeps_rely(pre, post, t, input, root);
+        } else {
+            Self::lemma_rely_reflexive(pre, root);
+        }
     }
 
     /// A destroy, by any caller, as the operation in frame says it: a process destroyed or a thread

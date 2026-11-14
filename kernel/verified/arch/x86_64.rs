@@ -1252,6 +1252,133 @@ pub fn zero_frame() -> (ret: Registers)
     Registers::zeroed()
 }
 
+/// How many words a thread's saved frame is, in register_words' order: the words read registers and
+/// write registers move. design/syscall-abi-in-registers/, under Thread and process operations.
+pub const FRAME_WORDS: usize = 21;
+
+/// The word of the frame that holds the program counter, rip.
+pub const PC_WORD: usize = 16;
+
+/// The word of the frame that holds the stack pointer, rsp.
+pub const SP_WORD: usize = 19;
+
+/// The registers whose words, in register_words' order, are the first FRAME_WORDS of `w`.
+pub open spec fn registers_of(w: Seq<u64>) -> Registers {
+    Registers {
+        r15: w[0],
+        r14: w[1],
+        r13: w[2],
+        r12: w[3],
+        rbp: w[4],
+        rbx: w[5],
+        r11: w[6],
+        r10: w[7],
+        r9: w[8],
+        r8: w[9],
+        rcx: w[10],
+        rdx: w[11],
+        rsi: w[12],
+        rdi: w[13],
+        rax: w[14],
+        error_code: w[15],
+        rip: w[16],
+        cs: w[17],
+        flags: w[18],
+        rsp: w[19],
+        ss: w[20],
+    }
+}
+
+/// A frame is FRAME_WORDS words, with the program counter at PC_WORD and the stack pointer at SP_WORD,
+/// and the registers of its words are the frame.
+pub proof fn lemma_register_words(r: Registers)
+    ensures
+        register_words(r).len() == FRAME_WORDS,
+        register_words(r)[PC_WORD as int] == r.spec_pc(),
+        registers_of(register_words(r)) == r,
+{
+}
+
+/// The words of the registers of FRAME_WORDS words are those words.
+pub proof fn lemma_registers_of(w: Seq<u64>)
+    requires
+        w.len() == FRAME_WORDS,
+    ensures
+        register_words(registers_of(w)) == w,
+{
+    assert(register_words(registers_of(w)) =~= w);
+}
+
+impl Registers {
+    /// Word i of the frame, in register_words' order.
+    pub fn word(&self, i: usize) -> (ret: u64)
+        requires
+            i < FRAME_WORDS,
+        ensures
+            ret == register_words(*self)[i as int],
+    {
+        match i {
+            0 => self.r15,
+            1 => self.r14,
+            2 => self.r13,
+            3 => self.r12,
+            4 => self.rbp,
+            5 => self.rbx,
+            6 => self.r11,
+            7 => self.r10,
+            8 => self.r9,
+            9 => self.r8,
+            10 => self.rcx,
+            11 => self.rdx,
+            12 => self.rsi,
+            13 => self.rdi,
+            14 => self.rax,
+            15 => self.error_code,
+            16 => self.rip,
+            17 => self.cs,
+            18 => self.flags,
+            19 => self.rsp,
+            _ => self.ss,
+        }
+    }
+
+    /// Sets word i of the frame, in register_words' order, to w, and keeps every other word.
+    pub fn set_word(&mut self, i: usize, w: u64)
+        requires
+            i < FRAME_WORDS,
+        ensures
+            register_words(*final(self)) == register_words(*old(self)).update(i as int, w),
+    {
+        match i {
+            0 => { self.r15 = w; },
+            1 => { self.r14 = w; },
+            2 => { self.r13 = w; },
+            3 => { self.r12 = w; },
+            4 => { self.rbp = w; },
+            5 => { self.rbx = w; },
+            6 => { self.r11 = w; },
+            7 => { self.r10 = w; },
+            8 => { self.r9 = w; },
+            9 => { self.r8 = w; },
+            10 => { self.rcx = w; },
+            11 => { self.rdx = w; },
+            12 => { self.rsi = w; },
+            13 => { self.rdi = w; },
+            14 => { self.rax = w; },
+            15 => { self.error_code = w; },
+            16 => { self.rip = w; },
+            17 => { self.cs = w; },
+            18 => { self.flags = w; },
+            19 => { self.rsp = w; },
+            _ => { self.ss = w; },
+        }
+        proof {
+            assert(register_words(*self) =~= register_words(*old(self)).update(i as int, w));
+        }
+    }
+}
+
+
 /// The selectors a thread returns to user mode with: the GDT's user code and data entries, 4 and 3,
 /// at privilege 3. See kernel/src/arch/x86_64/gdt/.
 pub const USER_CS: u64 = 0x23;

@@ -51,7 +51,9 @@ use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
 use crate::define::*;
 use crate::pptr::*;
-use crate::arch::{FrameKind, Registers};
+use crate::arch::{FrameKind, Registers, FRAME_WORDS};
+#[cfg(verus_keep_ghost)]
+use crate::arch::{lemma_register_words, lemma_registers_of, register_words, registers_of, user_rip};
 
 /// The operation was done.
 pub const STATUS_OK: u64 = 0;
@@ -146,6 +148,8 @@ pub const OPERATION_INSPECT: u64 = 15;
 pub const OPERATION_LINK: u64 = 16;
 pub const OPERATION_PROBE: u64 = 17;
 pub const OPERATION_POWER_OFF: u64 = 18;
+pub const OPERATION_READ_REGISTERS: u64 = 19;
+pub const OPERATION_WRITE_REGISTERS: u64 = 20;
 pub const OPERATION_PLACE: u64 = 21;
 pub const OPERATION_START: u64 = 22;
 pub const OPERATION_SUSPEND: u64 = 23;
@@ -219,6 +223,8 @@ pub enum Operation {
     Link,
     Probe,
     PowerOff,
+    ReadRegisters,
+    WriteRegisters,
     Place,
     Start,
     Suspend,
@@ -245,6 +251,8 @@ impl Operation {
             Operation::Link => OPERATION_LINK,
             Operation::Probe => OPERATION_PROBE,
             Operation::PowerOff => OPERATION_POWER_OFF,
+            Operation::ReadRegisters => OPERATION_READ_REGISTERS,
+            Operation::WriteRegisters => OPERATION_WRITE_REGISTERS,
             Operation::Place => OPERATION_PLACE,
             Operation::Start => OPERATION_START,
             Operation::Suspend => OPERATION_SUSPEND,
@@ -291,6 +299,8 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_LINK => Some(Operation::Link),
         OPERATION_PROBE => Some(Operation::Probe),
         OPERATION_POWER_OFF => Some(Operation::PowerOff),
+        OPERATION_READ_REGISTERS => Some(Operation::ReadRegisters),
+        OPERATION_WRITE_REGISTERS => Some(Operation::WriteRegisters),
         OPERATION_PLACE => Some(Operation::Place),
         OPERATION_START => Some(Operation::Start),
         OPERATION_SUSPEND => Some(Operation::Suspend),
@@ -366,12 +376,152 @@ pub fn unmap_outcome(r: Unmapped) -> (ret: Outcome)
     }
 }
 
+/// A word index read registers and write registers accept: a multiple of four within the frame.
+/// design/syscall-abi-in-registers/, under Thread and process operations.
+pub open spec fn window_index(index: u64) -> bool {
+    index % 4 == 0 && index < FRAME_WORDS
+}
+
+/// The frame's words with the window of four from index written from arguments 2 to 5 of frame, an
+/// argument past the frame's end ignored: what a write registers stores, before the user-return rule.
+pub open spec fn window_written(words: Seq<u64>, index: int, frame: Registers) -> Seq<u64> {
+    Seq::new(words.len(), |k: int| if index <= k < index + 4 { frame.spec_argument((k - index + 2) as usize) } else { words[k] })
+}
+
+/// Word index + k of the frame's words, or zero past the frame's end.
+pub open spec fn window_word(words: Seq<u64>, index: int, k: int) -> u64 {
+    if index + k < words.len() { words[index + k] } else { 0 }
+}
+
+/// What a read registers of the window of four from index returns: ok, with word index + k - 1 of the
+/// frame in result k, zero past the frame's end.
+pub open spec fn window_read(words: Seq<u64>, index: int) -> Outcome {
+    Outcome {
+        status: STATUS_OK,
+        result_1: window_word(words, index, 0),
+        result_2: window_word(words, index, 1),
+        result_3: window_word(words, index, 2),
+        result_4: window_word(words, index, 3),
+    }
+}
+
+/// Word index + k of r, or zero past the frame's end.
+fn window_word_of(r: &Registers, index: usize, k: usize) -> (ret: u64)
+    requires
+        index < FRAME_WORDS,
+        k < 4,
+    ensures
+        ret == window_word(register_words(*r), index as int, k as int),
+{
+    proof {
+        lemma_register_words(*r);
+    }
+    if index + k < FRAME_WORDS { r.word(index + k) } else { 0 }
+}
+
+/// The outcome of a read of the window of four from index of r.
+fn read_window(r: &Registers, index: usize) -> (ret: Outcome)
+    requires
+        index < FRAME_WORDS,
+    ensures
+        ret == window_read(register_words(*r), index as int),
+{
+    Outcome {
+        status: STATUS_OK,
+        result_1: window_word_of(r, index, 0),
+        result_2: window_word_of(r, index, 1),
+        result_3: window_word_of(r, index, 2),
+        result_4: window_word_of(r, index, 3),
+    }
+}
+
+/// r with the window of four from index written from arguments 2 to 5 of frame.
+fn write_window(r: Registers, index: usize, frame: &Registers) -> (ret: Registers)
+    requires
+        index < FRAME_WORDS,
+    ensures
+        register_words(ret) == window_written(register_words(r), index as int, *frame),
+{
+    proof {
+        lemma_register_words(r);
+    }
+    let mut ret = r;
+    ret.set_word(index, frame.argument(2));
+    if index + 1 < FRAME_WORDS {
+        ret.set_word(index + 1, frame.argument(3));
+    }
+    if index + 2 < FRAME_WORDS {
+        ret.set_word(index + 2, frame.argument(4));
+    }
+    if index + 3 < FRAME_WORDS {
+        ret.set_word(index + 3, frame.argument(5));
+    }
+    proof {
+        assert(register_words(ret) =~= window_written(register_words(r), index as int, *frame));
+    }
+    ret
+}
+
 impl CapKernel {
+    /// The thread the capability at index i of the table at root names.
+    pub open spec fn thread_named(&self, root: usize, i: usize) -> usize {
+        self.payload_of(self.tables.node_of(root, i)).base
+    }
+
+    /// The words of the saved frame of the thread the capability at index i of the table at root
+    /// names, in register_words' order.
+    pub open spec fn frame_words(&self, root: usize, i: usize) -> Seq<u64> {
+        register_words(self.threads.records@[self.thread_named(root, i)].value().frame)
+    }
+
+    /// The frame the write registers in frame asks to store, before the user-return rule: the saved
+    /// frame of the thread the slot names, with the window from argument 1 written from arguments 2 to 5.
+    pub open spec fn written_input(&self, root: usize, frame: Registers) -> Registers {
+        registers_of(window_written(self.frame_words(root, frame.slot() as usize), frame.argument(1) as int, frame))
+    }
+
+    /// Whether the write registers in frame is allowed: argument 1 a multiple of four within the frame,
+    /// the slot, an index in the caller's own table, a control capability for an Inactive thread that is
+    /// not dead, and the program counter the written frame would hold a user address.
+    /// design/syscall-abi-in-registers/, under Thread and process operations.
+    pub open spec fn allows_write_registers(&self, root: usize, frame: Registers) -> bool {
+        &&& window_index(frame.argument(1))
+        &&& self.can_set_registers(root, frame.slot() as usize)
+        &&& user_rip(self.written_input(root, frame).spec_pc())
+    }
+
+    /// A write registers in frame by a thread of the process whose table is at root, from pre to post
+    /// with out returned: refused with nothing changed, exactly when allows_write_registers fails, or ok
+    /// with the saved frame of the thread the slot names written as frame_written says, from
+    /// written_input: the window from argument 1 holds arguments 2 to 5, every other word what the frame
+    /// held, and then the user-return rule applies to the whole frame.
+    pub open spec fn spec_registers_written(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        ||| !pre.allows_write_registers(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& pre.allows_write_registers(root, frame)
+            &&& out == status_only(STATUS_OK)
+            &&& Self::frame_written(pre, post, pre.thread_named(root, frame.slot() as usize), pre.written_input(root, frame))
+        }
+    }
+
+    /// What the read registers in frame returns: refused unless argument 1 is a multiple of four
+    /// within the frame and the slot, an index in the caller's own table, holds a control capability for
+    /// an Inactive thread that is not dead; ok otherwise, with the words of that thread's saved frame
+    /// from argument 1 in results 1 to 4, zero past the frame's end.
+    pub open spec fn spec_read_registers(&self, root: usize, frame: Registers) -> Outcome {
+        if window_index(frame.argument(1)) && self.can_set_registers(root, frame.slot() as usize) {
+            window_read(self.frame_words(root, frame.slot() as usize), frame.argument(1) as int)
+        } else {
+            status_only(STATUS_REFUSED)
+        }
+    }
+
     /// What the invocation in frame returns to a thread of the process whose table is at root, for an
     /// operation that leaves the kernel unchanged: for print, ok exactly when the slot holds a console
     /// capability and refused otherwise; for power-off, ok exactly when the slot holds a power capability
     /// and refused otherwise; for inspect, its outcome at the position the slot's word names, and
-    /// refused for a word that names none; refused for every operation not wired yet;
+    /// refused for a word that names none; for read registers, spec_read_registers; refused for every
+    /// operation not wired yet;
     /// and unknown for a number no operation has. Print's words are arguments 1 to 5 and power-off's
     /// word is argument 1, as design/syscall-abi-in-registers/ places them; neither decides the status.
     /// Print, power-off and inspect call here the predicates their ensures call, as
@@ -402,6 +552,7 @@ impl CapKernel {
                 },
                 None => status_only(STATUS_REFUSED),
             },
+            Some(Operation::ReadRegisters) => self.spec_read_registers(root, frame),
             Some(_) => status_only(STATUS_REFUSED),
             None => status_only(STATUS_UNKNOWN),
         }
@@ -1042,6 +1193,7 @@ impl CapKernel {
             Some(Operation::Unmap) => self.allows_unmap(root, frame),
             Some(Operation::Probe) => self.allows_probe(root, frame),
             Some(Operation::Destroy) => self.allows_destroy(root, frame),
+            Some(Operation::WriteRegisters) => self.allows_write_registers(root, frame),
             Some(Operation::Place) => self.allows_place(root, frame),
             Some(Operation::Start) => self.allows_start(root, frame),
             Some(Operation::Suspend) => self.allows_suspend(root, frame),
@@ -1052,7 +1204,9 @@ impl CapKernel {
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
     /// post with out returned, with each table position decoded from its word: a retype's effect for retype, a derive's for derive, a move's for move, a
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
-    /// unmap, a probe's for probe, a destroy's for destroy, a place's for place, a start's for start, a suspend's for suspend, and for every other operation the kernel unchanged with spec_outcome
+    /// unmap, a probe's for probe, a destroy's for destroy, a write registers' for write registers, a
+    /// place's for place, a start's for start, a suspend's for suspend, and for every other operation the
+    /// kernel unchanged with spec_outcome
     /// returned. Each is refused with nothing changed exactly when allows fails, as
     /// lemma_refused_exactly says.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
@@ -1067,6 +1221,7 @@ impl CapKernel {
             Some(Operation::Unmap) => Self::spec_unmapped(pre, post, root, frame, out),
             Some(Operation::Probe) => Self::spec_probed(pre, post, root, frame, out),
             Some(Operation::Destroy) => Self::spec_destroyed(pre, post, root, frame, out),
+            Some(Operation::WriteRegisters) => Self::spec_registers_written(pre, post, root, frame, out),
             Some(Operation::Place) => Self::spec_placed(pre, post, root, frame, out),
             Some(Operation::Start) => Self::spec_started(pre, post, root, frame, out),
             Some(Operation::Suspend) => Self::spec_suspended(pre, post, root, frame, out),
@@ -1532,6 +1687,55 @@ impl CapKernel {
         assert(Self::suspended_from(pre, post, c, root, frame, out));
     }
 
+    /// A read registers reaches read_registers: the kernel is unchanged; refused unless argument 1 is a
+    /// multiple of four within the frame and the slot holds a control capability for an Inactive thread
+    /// that is not dead; ok otherwise, with that thread's saved frame from argument 1 in results 1 to 4,
+    /// zero past the frame's end. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_read_registers(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::ReadRegisters),
+        ensures
+            post == pre,
+            ({
+                let i = frame.slot() as usize;
+                let index = frame.argument(1);
+                &&& !(window_index(index) && pre.can_set_registers(root, i)) ==> out == status_only(STATUS_REFUSED)
+                &&& window_index(index) && pre.can_set_registers(root, i)
+                    ==> out.status == STATUS_OK && out == window_read(pre.frame_words(root, i), index as int)
+            }),
+    {
+    }
+
+    /// A write registers reaches write_registers: refused with nothing changed unless argument 1 is a
+    /// multiple of four within the frame, the slot holds a control capability for an Inactive thread
+    /// that is not dead, and the frame with the window written returns to a user address; ok otherwise,
+    /// with that thread's saved frame the user frame of the window written over what it held, as
+    /// frame_written says. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_write_registers(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::WriteRegisters),
+        ensures
+            ({
+                let i = frame.slot() as usize;
+                let index = frame.argument(1);
+                let input = pre.written_input(root, frame);
+                &&& !pre.allows_write_registers(root, frame) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.allows_write_registers(root, frame) ==> out == status_only(STATUS_OK)
+                    && Self::frame_written(pre, post, pre.thread_named(root, i), input)
+                &&& pre.allows_write_registers(root, frame) ==> window_index(index) && pre.can_set_registers(root, i)
+                    && user_rip(input.spec_pc())
+                    && register_words(input) == window_written(pre.frame_words(root, i), index as int, frame)
+            }),
+    {
+        if pre.allows_write_registers(root, frame) {
+            let i = frame.slot() as usize;
+            lemma_register_words(pre.threads.records@[pre.thread_named(root, i)].value().frame);
+            lemma_registers_of(window_written(pre.frame_words(root, i), frame.argument(1) as int, frame));
+        }
+    }
+
     /// An unmap reaches unmap_at: refused with nothing changed unless the caller may unmap the entry the
     /// address in argument 1 and the level in argument 2 name, in the space of the capability in the
     /// slot; ok otherwise, with that entry unmapped as page_unmapped says and its bits in the results.
@@ -1822,6 +2026,8 @@ impl CapKernel {
             Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(steps))),
             Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(steps))),
             Some(Operation::Destroy) => Some(self.invoke_destroy(c, root, frame, Tracked(steps))),
+            Some(Operation::ReadRegisters) => Some(self.invoke_read_registers(root, frame)),
+            Some(Operation::WriteRegisters) => Some(self.invoke_write_registers(root, frame)),
             Some(Operation::Place) => Some(self.invoke_place(root, frame)),
             Some(Operation::Start) => Some(self.invoke_start(root, frame)),
             Some(Operation::Suspend) => Some(self.invoke_suspend(c, root, frame)),
@@ -2073,6 +2279,57 @@ impl CapKernel {
             },
         };
         status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The read registers in frame, by a thread of the process whose table is at root.
+    fn invoke_read_registers(&self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+            self.root_live(root),
+        ensures
+            ret == self.spec_read_registers(root, frame),
+    {
+        let index = frame.argument(1);
+        if index % 4 != 0 || index >= FRAME_WORDS as u64 {
+            return status_only_outcome(STATUS_REFUSED);
+        }
+        match self.read_registers(root, frame.slot() as usize) {
+            Some(r) => read_window(&r, index as usize),
+            None => status_only_outcome(STATUS_REFUSED),
+        }
+    }
+
+    /// The write registers in frame, by a thread of the process whose table is at root: the window
+    /// written over the saved frame read_registers returns, then stored by write_registers.
+    fn invoke_write_registers(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_registers_written(*old(self), *final(self), root, frame, ret),
+    {
+        let index = frame.argument(1);
+        if index % 4 != 0 || index >= FRAME_WORDS as u64 {
+            return status_only_outcome(STATUS_REFUSED);
+        }
+        let current = match self.read_registers(root, frame.slot() as usize) {
+            Some(r) => r,
+            None => { return status_only_outcome(STATUS_REFUSED); },
+        };
+        let input = write_window(current, index as usize, &frame);
+        proof {
+            lemma_register_words(input);
+            assert(input == old(self).written_input(root, frame));
+        }
+        if self.write_registers(root, frame.slot() as usize, input) {
+            status_only_outcome(STATUS_OK)
+        } else {
+            status_only_outcome(STATUS_REFUSED)
+        }
     }
 
     /// The destroy in frame, by core c's current thread, of the process whose table is at root.

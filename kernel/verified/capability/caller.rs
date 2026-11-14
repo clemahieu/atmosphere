@@ -397,6 +397,54 @@ impl CapKernel {
         }
     }
 
+    /// Read registers' contract over the caller's view, for the slot at index i of the caller's own
+    /// table and the word index `index`: ok exactly when index is a multiple of four within the frame and
+    /// can_set_registers holds at i, with the words of that thread's saved frame from index in results 1
+    /// to 4, zero past the frame's end; refused otherwise; and either way every table's view and the
+    /// block table as they were.
+    pub open spec fn read_registers_contract(pre: Self, post: Self, root: usize, i: usize, index: u64, out: Outcome) -> bool {
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& post.blocks == pre.blocks
+        &&& window_index(index) && pre.can_set_registers(root, i) ==> out == window_read(pre.frame_words(root, i), index as int)
+        &&& !(window_index(index) && pre.can_set_registers(root, i)) ==> out == status_only(STATUS_REFUSED)
+    }
+
+    /// Read registers' specification implies its contract.
+    pub proof fn lemma_read_registers_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::ReadRegisters),
+        ensures
+            Self::read_registers_contract(pre, post, root, frame.slot() as usize, frame.argument(1), out),
+    {
+    }
+
+    /// Write registers' contract over the caller's view, for the slot at index i of the caller's own
+    /// table and the word index `index`: ok or refused, ok only when index is a multiple of four within
+    /// the frame and can_set_registers holds at i, and either way every table's view and the block table
+    /// as they were. What the write stores is spec_registers_written's.
+    pub open spec fn write_registers_contract(pre: Self, post: Self, root: usize, i: usize, index: u64, out: Outcome) -> bool {
+        &&& out == status_only(STATUS_OK) || out == status_only(STATUS_REFUSED)
+        &&& out == status_only(STATUS_OK) ==> window_index(index) && pre.can_set_registers(root, i)
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& post.blocks == pre.blocks
+    }
+
+    /// Write registers' specification implies its contract.
+    pub proof fn lemma_write_registers_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::spec_registers_written(pre, post, root, frame, out),
+        ensures
+            Self::write_registers_contract(pre, post, root, frame.slot() as usize, frame.argument(1), out),
+    {
+        if pre.allows_write_registers(root, frame) {
+            assert(post.list == pre.list && post.tables == pre.tables && post.blocks == pre.blocks);
+            assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+                assert(post.table_view(t) =~= pre.table_view(t));
+            }
+        }
+    }
+
     /// A step that leaves the root entries as they were and changes no node's liveness but n's and m's,
     /// slots', leaves every table's slots as they were.
     pub proof fn lemma_slots_stay(pre: Self, post: Self, n: usize, m: usize, t: usize, j: usize)
