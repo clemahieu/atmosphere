@@ -604,8 +604,8 @@ impl CapKernel {
                 assert(image_region(runs, q));
             }
         } else {
-            lemma_div_is_ordered(s as int, NUM_PAGES - 1, PAGES_PER_2M as int);
-            assert((NUM_PAGES - 1) / (PAGES_PER_2M as int) < NUM_2M) by (compute_only);
+            assert(NUM_2M * PAGES_PER_2M == cur.blocks.page_count());
+            lemma_multiply_divide_lt(s as int, PAGES_PER_2M as int, NUM_2M as int);
             assert(cur.blocks.regions_2m@[q].refs <= k);
         }
         assert forall|p: usize| #[trigger] cur.list.pages@.dom().contains(p) && cur.blocks.tracks_addr(p)
