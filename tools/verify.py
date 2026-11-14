@@ -20,6 +20,12 @@ line per crate. The script exits 0 when every crate verifies, and otherwise with
 crate's status. A dependency that failed verification is not followed by its dependents, and the
 script names both.
 
+Each rust_verify runs in a systemd user scope of its own, capped at MEMORY_MAX of memory with no
+swap, and the solver it starts runs inside the same cap. A proof that grows past it is killed by
+its own cgroup, alone, and the script says that crate ran out of memory and exits nonzero; the
+kernel's OOM killer is never reached, so the user manager does not stop the unit that started the
+script and everything else in it. An ordinary verify of a crate peaks near 4 GiB.
+
 With --target aarch64 every crate is checked under target_arch = "aarch64": rust_verify gets
 --target aarch64-unknown-none and takes vstd and verus_builtin from the aarch64 build that
 tools/setup-verus.sh writes beside the host one, and the shared crates' rlibs go under
@@ -40,6 +46,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -53,6 +60,9 @@ VERUS = REPO.parent / "verus"
 # The rustc target each --target names. tools/setup-verus.sh builds vstd and verus_builtin for each
 # under source/target-verus/<triple> in the checkout.
 TARGETS = {"aarch64": "aarch64-unknown-none"}
+
+# The memory each rust_verify run, its solvers included, may hold, in systemd's notation.
+MEMORY_MAX = "16G"
 
 
 def cargo_metadata():
@@ -179,6 +189,43 @@ def verify_command(crate, depended_on, triple, verus_out, extra_args):
     return command
 
 
+def capped(command, unit, memory_max):
+    """The command run in the user scope named unit, holding at most memory_max and no swap.
+    systemd-run --scope executes the command itself, so its environment, directory, streams and
+    exit status are the command's."""
+    return [
+        "systemd-run", "--user", "--scope", "--quiet", f"--unit={unit}",
+        "-p", f"MemoryMax={memory_max}", "-p", "MemorySwapMax=0", "--", *command,
+    ]
+
+
+def scope_state(unit):
+    """What the user manager holds for the scope: its LoadState, ActiveState and Result."""
+    shown = subprocess.run(
+        ["systemctl", "--user", "show", f"{unit}.scope", "-p", "LoadState", "-p", "ActiveState", "-p", "Result"],
+        check=True, stdout=subprocess.PIPE, text=True,
+    ).stdout
+    return dict(line.split("=", 1) for line in shown.splitlines())
+
+
+def run_capped(command, unit, memory_max, **kwargs):
+    """Run the command capped, and return its status and whether its cgroup killed it for memory.
+    A scope ends with no record unless the OOM killer failed it, which leaves it loaded with Result
+    oom-kill until the failure is reset; the manager may mark it a moment after the command ends."""
+    status = subprocess.run(capped(command, unit, memory_max), **kwargs).returncode
+    if status != -9:
+        return status, False
+    deadline = time.monotonic() + 10
+    state = scope_state(unit)
+    while state["ActiveState"] in ("active", "deactivating") and time.monotonic() < deadline:
+        time.sleep(0.1)
+        state = scope_state(unit)
+    out_of_memory = state["Result"] == "oom-kill"
+    if state["LoadState"] == "loaded":
+        subprocess.run(["systemctl", "--user", "reset-failed", f"{unit}.scope"], check=True)
+    return status, out_of_memory
+
+
 def pinned_commit(manifest):
     """The Verus commit the workspace manifest pins: its vstd dependency's git revision."""
     with open(manifest, "rb") as file:
@@ -247,11 +294,14 @@ def main(args):
             failed.add(crate["package"])
             continue
         command = verify_command(crate, depended_on, triple, verus_out, extra_args)
-        result = subprocess.run(command, cwd=REPO, env=env, stdin=subprocess.DEVNULL)
-        if result.returncode != 0:
+        unit = f"atmo-verify-{os.getpid()}-{crate['crate']}"
+        returncode, out_of_memory = run_capped(command, unit, MEMORY_MAX, cwd=REPO, env=env, stdin=subprocess.DEVNULL)
+        if out_of_memory:
+            print(f"verify: {crate['package']} ran out of memory: its run is capped at {MEMORY_MAX}", file=sys.stderr)
+        if returncode != 0:
             failed.add(crate["package"])
             if status == 0:
-                status = result.returncode
+                status = returncode
     return status
 
 
@@ -337,6 +387,28 @@ class Tests(unittest.TestCase):
         ]}
         with self.assertRaises(SystemExit):
             marked_crates(metadata)
+
+    def test_rust_verify_runs_in_its_own_scope_capped_at_16_gib_with_no_swap(self):
+        command = capped(["rust_verify", "lib.rs"], "atmo-verify-1-verified", MEMORY_MAX)
+        self.assertEqual(command[:3], ["systemd-run", "--user", "--scope"])
+        self.assertIn("--unit=atmo-verify-1-verified", command)
+        self.assertIn("MemoryMax=16G", command)
+        self.assertIn("MemorySwapMax=0", command)
+        self.assertEqual(command[-3:], ["--", "rust_verify", "lib.rs"])
+
+    def test_a_run_over_its_cap_is_killed_alone_and_reported_out_of_memory(self):
+        unit = f"atmo-verify-test-{os.getpid()}-over"
+        grow = [sys.executable, "-c", "b = bytearray(256 << 20)"]
+        status, out_of_memory = run_capped(grow, unit, "32M", cwd=REPO, env=dict(os.environ))
+        self.assertNotEqual(status, 0)
+        self.assertTrue(out_of_memory)
+        self.assertEqual(scope_state(unit)["LoadState"], "not-found")
+
+    def test_a_run_within_its_cap_keeps_its_status_and_its_environment(self):
+        unit = f"atmo-verify-test-{os.getpid()}-within"
+        env = dict(os.environ, ATMO_VERIFY_PROBE="seen")
+        probe = [sys.executable, "-c", "import os, sys; sys.exit(3 if os.environ['ATMO_VERIFY_PROBE'] == 'seen' else 4)"]
+        self.assertEqual(run_capped(probe, unit, "64M", cwd=REPO, env=env), (3, False))
 
     def test_the_pin_is_the_workspace_vstd_revision(self):
         with tempfile.TemporaryDirectory() as directory:
