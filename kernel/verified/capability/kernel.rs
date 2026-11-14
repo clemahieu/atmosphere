@@ -15,6 +15,8 @@ use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::arch::tag_written;
 use crate::array::Array;
 use crate::column::Column;
+#[cfg(verus_keep_ghost)]
+use crate::column::lemma_word_aligned;
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::derive::badges_inherited;
@@ -37,8 +39,6 @@ use crate::capability::zero::*;
 use crate::define::*;
 use crate::pptr::PointsTo;
 use vstd::raw_ptr::{IsExposed, PointsToRaw};
-#[cfg(verus_keep_ghost)]
-use vstd::layout::{size_of, align_of};
 
 /// One core's view under the lock.
 #[derive(Clone, Copy)]
@@ -987,30 +987,6 @@ pub struct StaleEpochs {
     pub one: Column<usize>,
 }
 
-/// Any address that is a multiple of a word's size is aligned for a word.
-proof fn lemma_word_aligned(x: int)
-    requires
-        0 <= x,
-        x % size_of::<usize>() as int == 0,
-    ensures
-        x % align_of::<usize>() as int == 0,
-{
-    broadcast use vstd::layout::group_align_properties;
-    let a = align_of::<usize>() as int;
-    assert(a > 0);
-    assert(8int % a == 0);
-    let k = 8int / a;
-    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(8int, a);
-    assert(a * k == 8);
-    assert(k > 0) by (nonlinear_arith)
-        requires
-            a > 0,
-            a * k == 8;
-    vstd::arithmetic::div_mod::lemma_mod_mod(x, a, k);
-    assert(x % (a * k) == 0);
-    assert(0int % a == 0);
-}
-
 impl StaleEpochs {
     pub open spec fn wf(&self) -> bool {
         &&& self.pages.wf()
@@ -1552,10 +1528,15 @@ pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &B
     }
 }
 
-/// Each block being zeroed is a live typed region of the block table. It is what keeps a newly typed
-/// region, whose pages were not covered, apart from every block being zeroed.
+/// The cursors are one per page the block table tracks and the active flags one per region of each
+/// size it has, so a block being zeroed is a run of tracked pages. Each block being zeroed is a live
+/// typed region of the block table. It is what keeps a newly typed region, whose pages were not
+/// covered, apart from every block being zeroed.
 pub open spec fn zeroing_typed(z: &Zeroing, blocks: &BlockTable) -> bool {
-    forall|b: usize| #[trigger] z.blocks@.contains_key(b) ==> {
+    &&& z.cursor@.len() == blocks.page_count()
+    &&& z.active_2m@.len() == blocks.num_2m()
+    &&& z.active_1g@.len() == blocks.num_1g()
+    &&& forall|b: usize| #[trigger] z.blocks@.contains_key(b) ==> {
         &&& z.blocks@[b] == PAGES_PER_2M ==> {
             &&& blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed
             &&& !blocks.regions_2m@[(b / PAGES_PER_2M) as int].dead
@@ -2257,10 +2238,6 @@ impl CapKernel {
         self.frames = Tracked(Map::tracked_empty());
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        self.zeroing.cursor.init();
-        self.zeroing.active_2m.init();
-        self.zeroing.active_1g.init();
-        self.zeroing.init(Tracked(&mut steps));
         self.holders = Ghost(IMap::empty());
         self.devices = Devices::new(root);
         self.threads.init(Tracked(&mut steps));
@@ -2275,9 +2252,9 @@ impl CapKernel {
         self.blocks.init(Tracked(&mut steps));
         self.cores.init();
         init_cores(&mut self.cores);
-        // Nothing follows the stale epochs in the carve yet, so what new hands back past them is unused.
-        let (stale_epoch, _past_stale) = StaleEpochs::new(carve, Tracked(carve_perm), Tracked(exposed));
+        let (stale_epoch, Tracked(past_stale)) = StaleEpochs::new(carve, Tracked(carve_perm), Tracked(exposed));
         self.stale_epoch = stale_epoch;
+        self.zeroing = Zeroing::new(carve, self.blocks.page_count(), Tracked(past_stale), Tracked(exposed));
         self.iommus.acked.init();
         self.iommus.zero();
         self.iommus.tlb = Tracked(iotlb);

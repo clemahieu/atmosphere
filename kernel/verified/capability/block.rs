@@ -130,8 +130,9 @@ pub proof fn lemma_whole_regions(n: int)
 
 /// Where each column of the page metadata lies in the region boot carves, as byte offsets from the
 /// region's base, and how many bytes the columns take, which is what boot carves. Each column starts
-/// where the one before it ends; every column is of `usize`, so each starts at a multiple of its
-/// element's size, which is a multiple of its alignment. design/page-metadata-sized-from-the-memory-map/.
+/// where the one before it ends. The word columns come first and the byte columns after them, so each
+/// starts at a multiple of its element's size, which is a multiple of its alignment.
+/// design/page-metadata-sized-from-the-memory-map/.
 #[derive(Clone, Copy)]
 pub struct MetadataLayout {
     /// The stale epochs: one per tracked page, then one per 2M region, then one per 1G region.
@@ -140,6 +141,11 @@ pub struct MetadataLayout {
     pub stale_1g: usize,
     /// Where the stale epochs end: the columns that follow them start here.
     pub stale_end: usize,
+    /// The zeroing cursors, one word per tracked page, from where the stale epochs end.
+    pub zero_cursor: usize,
+    /// The active flags, one byte per 2M region, then one per 1G region.
+    pub active_2m: usize,
+    pub active_1g: usize,
     pub bytes: usize,
 }
 
@@ -149,12 +155,17 @@ pub open spec fn spec_metadata_layout(pages: usize) -> MetadataLayout {
     let stale_2m = pages * w;
     let stale_1g = stale_2m + (pages / PAGES_PER_2M) as int * w;
     let stale_end = stale_1g + (pages / PAGES_PER_1G) as int * w;
+    let active_2m = stale_end + pages * w;
+    let active_1g = active_2m + (pages / PAGES_PER_2M) as int;
     MetadataLayout {
         stale_pages: 0,
         stale_2m: stale_2m as usize,
         stale_1g: stale_1g as usize,
         stale_end: stale_end as usize,
-        bytes: stale_end as usize,
+        zero_cursor: stale_end as usize,
+        active_2m: active_2m as usize,
+        active_1g: active_1g as usize,
+        bytes: (active_1g + (pages / PAGES_PER_1G) as int) as usize,
     }
 }
 
@@ -170,7 +181,11 @@ pub fn metadata_layout(pages: usize) -> (l: MetadataLayout)
         l.stale_2m == pages * size_of::<usize>(),
         l.stale_1g == l.stale_2m + (pages / PAGES_PER_2M) * size_of::<usize>(),
         l.stale_end == l.stale_1g + (pages / PAGES_PER_1G) * size_of::<usize>(),
-        l.stale_end <= l.bytes <= IDENTITY_SPAN,
+        l.zero_cursor == l.stale_end,
+        l.active_2m == l.zero_cursor + pages * size_of::<usize>(),
+        l.active_1g == l.active_2m + pages / PAGES_PER_2M,
+        l.bytes == l.active_1g + pages / PAGES_PER_1G,
+        l.bytes <= IDENTITY_SPAN,
 {
     let w = core::mem::size_of::<usize>();
     proof {
@@ -180,18 +195,22 @@ pub fn metadata_layout(pages: usize) -> (l: MetadataLayout)
             vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(pages as int, 1, PAGES_PER_1G as int);
             vstd::arithmetic::div_mod::lemma_div_basics(pages as int);
         }
-        // Three word columns are at most three words a page, and a page is far larger than that.
-        assert(PAGE_SZ >= 24) by (compute_only);
-        assert(3 * pages * w <= pages * PAGE_SZ) by (nonlinear_arith)
+        // Four word columns and two byte columns are at most five words a page, and a page is far
+        // larger than that.
+        assert(PAGE_SZ >= 40) by (compute_only);
+        assert(5 * pages * w <= pages * PAGE_SZ) by (nonlinear_arith)
             requires
                 w == 8,
-                PAGE_SZ >= 24,
+                PAGE_SZ >= 40,
                 0 <= pages;
     }
     let stale_2m = pages * w;
     let stale_1g = stale_2m + pages / PAGES_PER_2M * w;
     let stale_end = stale_1g + pages / PAGES_PER_1G * w;
-    MetadataLayout { stale_pages: 0, stale_2m, stale_1g, stale_end, bytes: stale_end }
+    let active_2m = stale_end + pages * w;
+    let active_1g = active_2m + pages / PAGES_PER_2M;
+    let bytes = active_1g + pages / PAGES_PER_1G;
+    MetadataLayout { stale_pages: 0, stale_2m, stale_1g, stale_end, zero_cursor: stale_end, active_2m, active_1g, bytes }
 }
 
 /// A page below n regions of p pages each is in one of them.

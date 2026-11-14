@@ -3,15 +3,19 @@
 //! Zeroing a typed block before anything can name it, in bounded steps. A large block takes more than
 //! one kernel entry, so its permissions and its cursor stay here between them, and a later call, by
 //! whoever retypes the block next, resumes where the last one stopped. See
-//! design/teardown-driven-by-retype/.
+//! design/teardown-driven-by-retype/. The cursors and the active flags are columns of the page
+//! metadata boot carves, design/page-metadata-sized-from-the-memory-map/.
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::set_lib::*;
+use vstd::raw_ptr::{IsExposed, PointsToRaw};
 
 verus! {
 
-use crate::array::Array;
 use crate::capability::block::*;
+use crate::column::Column;
+#[cfg(verus_keep_ghost)]
+use crate::column::{lemma_byte_aligned, lemma_word_aligned};
 use crate::define::*;
 use crate::pptr::*;
 use crate::capability::steps::Steps;
@@ -29,14 +33,14 @@ pub open spec fn holds_zero(m: Map<usize, PagePerm4k>, i: usize) -> bool {
 
 pub struct Zeroing {
     /// How many pages of the block at this base are zero.
-    pub cursor: Array<usize, NUM_PAGES>,
+    pub cursor: Column<usize>,
     /// The permissions of the blocks being zeroed.
     pub perms: Tracked<Map<usize, PagePerm4k>>,
     /// The block being zeroed at each base, in pages.
     pub blocks: Ghost<Map<usize, usize>>,
     /// Which 2M and 1G regions are being zeroed, for a later retype to read.
-    pub active_2m: Array<bool, NUM_2M>,
-    pub active_1g: Array<bool, NUM_1G>,
+    pub active_2m: Column<bool>,
+    pub active_1g: Column<bool>,
 }
 
 /// A block of this level, in pages.
@@ -118,6 +122,44 @@ impl Zeroing {
         }
     }
 
+    /// The cursors are one per page of whole 1G regions within the identity-mapped span, and the
+    /// active flags one per 2M and one per 1G region of those pages. How many pages that is, the block
+    /// table says: zeroing_typed.
+    pub open spec fn sizes_wf(&self) -> bool {
+        &&& self.cursor@.len() % PAGES_PER_1G as nat == 0
+        &&& self.cursor@.len() * PAGE_SZ <= IDENTITY_SPAN
+        &&& self.active_2m@.len() == self.cursor@.len() / PAGES_PER_2M as nat
+        &&& self.active_1g@.len() == self.cursor@.len() / PAGES_PER_1G as nat
+    }
+
+    /// A region the active flags cover is a run of the pages the cursors cover, and those pages end
+    /// within the identity-mapped span.
+    pub proof fn lemma_region_in_cursors(&self, level: Large, r: usize)
+        requires
+            self.sizes_wf(),
+            r < self.regions(level),
+        ensures
+            (r + 1) * level_pages(level) <= self.cursor@.len(),
+            r * level_pages(level) + level_pages(level) <= self.cursor@.len(),
+            self.cursor@.len() * PAGE_SZ <= IDENTITY_SPAN,
+            self.cursor@.len() <= IDENTITY_SPAN <= 1usize << 48,
+    {
+        lemma_span_within_48_bits();
+        let n = self.cursor@.len() as int;
+        lemma_whole_regions(n);
+        let p = level_pages(level) as int;
+        let q = n / p;
+        assert(q * p == n);
+        assert((r + 1) * p <= q * p && (r + 1) * p == r * p + p) by (nonlinear_arith)
+            requires
+                r + 1 <= q,
+                p > 0;
+        assert(n <= n * PAGE_SZ) by (nonlinear_arith)
+            requires
+                0 <= n,
+                PAGE_SZ > 0;
+    }
+
     /// An active region's block is being zeroed.
     pub open spec fn active_wf(&self) -> bool {
         &&& self.active_2m.wf()
@@ -175,6 +217,7 @@ impl Zeroing {
 
     pub open spec fn wf(&self) -> bool {
         &&& self.cursor.wf()
+        &&& self.sizes_wf()
         &&& forall|b: usize| #[trigger] self.blocks@.contains_key(b) ==> {
             &&& 0 < self.blocks@[b]
             &&& b + self.blocks@[b] <= self.cursor@.len()
@@ -211,67 +254,75 @@ impl Zeroing {
     {
     }
 
-    /// Start with nothing being zeroed, in place, since the array cannot move by value. A stale
-    /// cursor is harmless: `begin` resets it.
-    pub fn init(&mut self, Tracked(steps): Tracked<&mut Steps>)
+    /// Nothing being zeroed: every cursor zero and no region active, in the carve at `carve`, as
+    /// metadata_layout places the cursors and the active flags in it for `pages` tracked pages. `raw`
+    /// grants the carve from the cursors to its end; each column's permission is split from it and each
+    /// element written, so what the carve held before is not what this relies on.
+    pub fn new(carve: usize, pages: usize, Tracked(raw): Tracked<PointsToRaw>, Tracked(exposed): Tracked<IsExposed>)
+        -> (ret: Self)
         requires
-            old(self).cursor.wf(),
-            old(self).active_2m.wf(),
-            old(self).active_1g.wf(),
+            carve % PAGE_SZ == 0,
+            pages % PAGES_PER_1G == 0,
+            pages * PAGE_SZ <= IDENTITY_SPAN,
+            carve + spec_metadata_layout(pages).bytes <= usize::MAX,
+            raw.is_range(
+                carve + spec_metadata_layout(pages).zero_cursor,
+                spec_metadata_layout(pages).bytes - spec_metadata_layout(pages).zero_cursor,
+            ),
+            raw.provenance() == exposed@,
         ensures
-            final(steps).count <= old(steps).count + old(self).active_2m@.len() + old(self).active_1g@.len(),
-            final(self).wf(),
-            final(self).blocks@ == Map::<usize, usize>::empty(),
+            ret.wf(),
+            ret.blocks@ == Map::<usize, usize>::empty(),
+            ret.cursor@.len() == pages,
+            ret.active_2m@.len() == pages / PAGES_PER_2M,
+            ret.active_1g@.len() == pages / PAGES_PER_1G,
     {
-        self.perms = Tracked(Map::tracked_empty());
-        self.blocks = Ghost(Map::empty());
-        let ghost steps0 = steps.count;
-        let mut r = 0;
-        while r != NUM_2M
-            invariant
-                r <= NUM_2M,
-                steps.count == steps0 + r,
-                self.cursor.wf(),
-                self.active_2m.wf(),
-                self.active_1g.wf(),
-                self.blocks@ == Map::<usize, usize>::empty(),
-                forall|x: int| 0 <= x < r ==> !#[trigger] self.active_2m@[x],
-            decreases NUM_2M - r,
-        {
-            self.active_2m.set(r, false);
-            r = r + 1;
-            proof {
-                steps.step();
-            }
+        let l = metadata_layout(pages);
+        let ghost c = carve as int;
+        proof {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(c, PAGE_SZ as int);
+            let m = c / PAGE_SZ as int;
+            let two = (pages / PAGES_PER_2M) as int;
+            let one = (pages / PAGES_PER_1G) as int;
+            let k = (PAGE_SZ / 8) as int;
+            assert(PAGE_SZ as int == (PAGE_SZ / 8) as int * 8) by (compute_only);
+            let q = m * k + pages + two + one;
+            assert(c + l.zero_cursor == q * 8) by (nonlinear_arith)
+                requires
+                    c == m * PAGE_SZ as int,
+                    PAGE_SZ as int == k * 8,
+                    l.zero_cursor == pages * 8 + two * 8 + one * 8,
+                    q == m * k + pages + two + one;
+            vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q, 8);
+            lemma_word_aligned(c + l.zero_cursor);
+            lemma_byte_aligned::<bool>(c + l.active_2m);
+            lemma_byte_aligned::<bool>(c + l.active_1g);
         }
-        let mut r = 0;
-        while r != NUM_1G
-            invariant
-                r <= NUM_1G,
-                steps.count == steps0 + NUM_2M + r,
-                self.cursor.wf(),
-                self.active_2m.wf(),
-                self.active_1g.wf(),
-                self.blocks@ == Map::<usize, usize>::empty(),
-                forall|x: int| 0 <= x < NUM_2M ==> !#[trigger] self.active_2m@[x],
-                forall|x: int| 0 <= x < r ==> !#[trigger] self.active_1g@[x],
-            decreases NUM_1G - r,
-        {
-            self.active_1g.set(r, false);
-            r = r + 1;
-            proof {
-                steps.step();
-            }
+        let tracked (first, rest) = raw.split(Set::range(c + l.zero_cursor, c + l.active_2m));
+        proof {
+            assert(rest.dom() =~= Set::range(c + l.active_2m, c + l.bytes));
         }
+        let tracked (second, third) = rest.split(Set::range(c + l.active_2m, c + l.active_1g));
+        proof {
+            assert(third.dom() =~= Set::range(c + l.active_1g, c + l.bytes));
+        }
+        let z = Zeroing {
+            cursor: Column::new(carve + l.zero_cursor, pages, 0, Tracked(first), Tracked(exposed)),
+            perms: Tracked(Map::tracked_empty()),
+            blocks: Ghost(Map::empty()),
+            active_2m: Column::new(carve + l.active_2m, pages / PAGES_PER_2M, false, Tracked(second), Tracked(exposed)),
+            active_1g: Column::new(carve + l.active_1g, pages / PAGES_PER_1G, false, Tracked(third), Tracked(exposed)),
+        };
         proof {
             reveal(Zeroing::pages_wf);
-            assert forall|x: usize| x < self.active_2m@.len() && #[trigger] self.active_2m@[x as int] implies false by {
-                assert(!self.active_2m@[x as int]);
+            assert forall|x: usize| x < z.active_2m@.len() && #[trigger] z.active_2m@[x as int] implies false by {
+                assert(!z.active_2m@[x as int]);
             }
-            assert forall|x: usize| x < self.active_1g@.len() && #[trigger] self.active_1g@[x as int] implies false by {
-                assert(!self.active_1g@[x as int]);
+            assert forall|x: usize| x < z.active_1g@.len() && #[trigger] z.active_1g@[x as int] implies false by {
+                assert(!z.active_1g@[x as int]);
             }
         }
+        z
     }
 
     /// Start zeroing a region its caller has just typed, taking its permissions. The caller says the
@@ -287,6 +338,7 @@ impl Zeroing {
         ensures
             final(self).wf(),
             final(self).blocks@ == old(self).blocks@.insert(level_base(level, r), level_pages(level)),
+            final(self).cursor@.len() == old(self).cursor@.len(),
             final(self).cursor@[level_base(level, r) as int] == 0,
             final(self).active(level, r),
             match level {
@@ -297,6 +349,9 @@ impl Zeroing {
             },
     {
         let ghost pre = *old(self);
+        proof {
+            pre.lemma_region_in_cursors(level, r);
+        }
         let pages = pages_of_level(level);
         let base = r * pages;
         self.cursor.set(base, 0);
@@ -373,6 +428,7 @@ impl Zeroing {
             final(self).blocks == old(self).blocks,
             final(self).active_2m == old(self).active_2m,
             final(self).active_1g == old(self).active_1g,
+            final(self).cursor@.len() == old(self).cursor@.len(),
             done == (final(self).cursor@[base as int] == pages),
             old(self).cursor@[base as int] <= final(self).cursor@[base as int],
             old(self).cursor@[base as int] < pages ==> old(self).cursor@[base as int] < final(self).cursor@[base as int],
@@ -388,6 +444,7 @@ impl Zeroing {
                 self.blocks@.contains_key(base),
                 self.blocks@[base] == pages,
                 self.cursor@[base as int] == k,
+                self.cursor@.len() == old(self).cursor@.len(),
                 start <= k <= end <= pages,
                 end - start <= ZERO_CHUNK_PAGES,
                 steps.count == steps0 + (k - start),
@@ -451,6 +508,9 @@ impl Zeroing {
             forall|k: usize| k < level_pages(level) ==> #[trigger] holds_zero(ret@, (level_base(level, r) + k) as usize),
     {
         let ghost pre = *old(self);
+        proof {
+            pre.lemma_region_in_cursors(level, r);
+        }
         let pages = pages_of_level(level);
         let base = r * pages;
         let ghost keys = BlockTable::large_pages(level, r as int);

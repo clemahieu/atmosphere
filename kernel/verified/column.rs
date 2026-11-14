@@ -213,6 +213,47 @@ impl<T: Copy> Column<T> {
     }
 }
 
+/// Any address that is a multiple of a word's size is aligned for a word.
+pub proof fn lemma_word_aligned(x: int)
+    requires
+        0 <= x,
+        x % size_of::<usize>() as int == 0,
+    ensures
+        x % align_of::<usize>() as int == 0,
+{
+    broadcast use vstd::layout::group_align_properties;
+    let a = align_of::<usize>() as int;
+    assert(a > 0);
+    assert(8int % a == 0);
+    let k = 8int / a;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(8int, a);
+    assert(a * k == 8);
+    assert(k > 0) by (nonlinear_arith)
+        requires
+            a > 0,
+            a * k == 8;
+    vstd::arithmetic::div_mod::lemma_mod_mod(x, a, k);
+    assert(x % (a * k) == 0);
+    assert(0int % a == 0);
+}
+
+/// Any address is aligned for a type one byte in size: its alignment divides its size.
+pub proof fn lemma_byte_aligned<T>(x: int)
+    requires
+        size_of::<T>() == 1,
+    ensures
+        x % align_of::<T>() as int == 0,
+{
+    broadcast use vstd::layout::group_align_properties;
+    let a = align_of::<T>() as int;
+    assert(a > 0);
+    assert(1int % a == 0);
+    assert(a == 1) by (nonlinear_arith)
+        requires
+            a > 0,
+            1int % a == 0;
+}
+
 /// Every element of a column whose base is aligned to its element is aligned too: the size of a
 /// type is a multiple of its alignment.
 proof fn lemma_element_aligned<T>(base: int, i: int)
