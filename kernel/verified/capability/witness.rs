@@ -11790,6 +11790,7 @@ impl CapKernel {
                 &&& final(self).threads.boot_thread == old(self).threads.boot_thread
                 &&& final(self).threads.records@.contains_key(t@)
                 &&& t@ != thread
+                &&& base != process
                 &&& same_thread_but_links(final(self).threads.records@[t@].value(), old(self).threads.records@[t@].value())
                 &&& witness_alive(*final(self), process)
                 &&& witness_alive(*final(self), base)
@@ -11975,6 +11976,10 @@ impl CapKernel {
             assert(s2.payload_of(np).rights & right_bit(Right::Control) != 0);
             assert(s2.list.nodes@[np as int].depth == 2);
             assert(s2.is_cap(np));
+            // The root's table keeps its new leaf, which the new process's table lacks, so the two differ.
+            assert(s2.tables.leaf(process, 2) == b2);
+            assert(s2.tables.leaf(base, 2) == NO_LEAF);
+            assert(base != process);
             assert(s1.tables.has_slot(&s1.list, process, ROOT_UNTYPED_SLOT));
             assert(s1.is_cap(u));
             assert(s2.tables.has_slot(&s2.list, process, ROOT_UNTYPED_SLOT));
@@ -12689,6 +12694,184 @@ impl CapKernel {
             assert(saved_frame(registers, FrameKind::Full) == registers);
         }
         ret
+    }
+
+    /// From the state boot leaves, with a second process built at `base` and its thread at
+    /// `base + 10 * PAGE_SZ` placed on core 0 at priority 0 and started as witness_place_and_start
+    /// starts it, the root's thread is placed on core 0 at priority 0 too and entered there, so core 0
+    /// has a thread of each process, one Running and one Runnable. switch_thread then goes straight from
+    /// the root's thread to the second process's, the register on the second space's root, and back to
+    /// the root's thread, the register on the root's space: one write each way, with the core's
+    /// generation kept and no stop at the kernel's root. The returned state is the one between the two
+    /// switches. design/core-names-a-space-while-running-its-thread/.
+    #[verifier::spinoff_prover]
+    pub fn witness_switch_thread_between_processes(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+        kernel_root: usize,
+        registers: Registers,
+    ) -> (mid: Ghost<CapKernel>)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ({
+                let thread = (base + 10 * PAGE_SZ) as usize;
+                &&& thread != t
+                &&& mid@.threads.records@[thread].value().process == Some(base)
+                &&& mid@.threads.records@[t].value().process == Some(process)
+                &&& base != process
+                &&& mid@.cores@[0].current_thread == Some(thread)
+                &&& mid@.threads.records@[thread].value().state == (ThreadState::Running { core: 0 })
+                &&& mid@.threads.records@[t].value().state == (ThreadState::Runnable { core: 0 })
+                &&& mid@.threads.records@[t].value().frame == registers
+                &&& mid@.cores@[0].space == Some(base)
+                &&& mid@.cores@[0].generation == 1
+                &&& mid@.spaces.registers@[0].root() == base + SPACE_ROOT_PAGE * PAGE_SZ
+                &&& final(self).wf()
+                &&& final(self).cores@[0].current_thread == Some(t)
+                &&& final(self).threads.records@[t].value().state == (ThreadState::Running { core: 0 })
+                &&& final(self).threads.records@[thread].value().state == (ThreadState::Runnable { core: 0 })
+                &&& final(self).threads.records@[thread].value().frame == registers
+                &&& final(self).cores@[0].space == Some(process)
+                &&& final(self).cores@[0].generation == 1
+                &&& final(self).spaces.registers@[0].root() == process + SPACE_ROOT_PAGE * PAGE_SZ
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root);
+        }
+        let _ = self.witness_place_and_start(
+            root,
+            process,
+            leaf,
+            frames,
+            Ghost(t),
+            free,
+            image,
+            untyped,
+            frame,
+            present,
+            Ghost(kernel_root),
+            base,
+            0,
+        );
+        let ghost s1 = *self;
+        let thread = base + 10 * PAGE_SZ;
+        proof {
+            assert(s1.cores@.len() == NUM_CPUS) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s1.cores == s0.cores);
+            assert(s1.cores@[0].generation == 1);
+            assert(s1.cores@[0].next_pcid == 1);
+            assert(s1.cores@[0].space is None);
+            assert(s1.cores@[0].current_thread is None);
+            assert(s1.spaces.kernel_root@ == kernel_root);
+            assert(witness_alive(s1, process));
+            assert(witness_alive(s1, base));
+            assert(s1.spaces.roots@.contains_key(process) && s1.spaces.records@[process].value().kind is Process
+                && space_wf(&s1.list, &s1.spaces, &s1.blocks, process)
+                && s1.spaces.roots@.contains_key(base) && s1.spaces.records@[base].value().kind is Process) by {
+                s1.lemma_process_spaces_wf();
+                s1.lemma_space_wf(process);
+            }
+            assert(s1.threads.boot_thread@ == Some(t));
+            assert(s1.threads.records@.contains_key(t));
+            assert(s1.threads.records@[t].value().process == Some(process));
+            assert(s1.threads.records@[t].value().state is Inactive);
+            assert(s1.threads.records@[t].value().placement is None);
+            assert(!s1.threads.records@[t].value().pending_stop);
+            assert(!s1.threads.records@[t].value().dying);
+            assert(thread != t);
+            assert(base != process);
+            s1.lemma_slot(process, ROOT_THREAD_SLOT);
+            assert(THREAD_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(s1.root_live(process));
+            assert(s1.can_control(process, ROOT_THREAD_SLOT));
+            assert(1usize < MAX_DEPTH) by (compute_only);
+            assert(s1.holds_core(process, ROOT_CORE_SLOT, 0));
+            assert(s1.can_place(process, ROOT_THREAD_SLOT, ROOT_CORE_SLOT, 0));
+        }
+        // The root places its own thread on core 0 at priority 0, as boot does: design/root-process-at-boot/.
+        let placed_root = self.place(process, ROOT_THREAD_SLOT, ROOT_CORE_SLOT, 0);
+        let ghost s1p = *self;
+        proof {
+            assert(placed_root);
+            lemma_core_of(core_object(0));
+            assert(core_of(core_object(0)) == 0);
+            assert(Self::placed(s1, s1p, (leaf@ + ROOT_CORE_SLOT) as usize, t, Placement { core: 0, priority: 0 }));
+            assert(s1p.threads.records@[thread] == s1.threads.records@[thread]);
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s1p.threads);
+            assert(s2.processes == s1.processes);
+            assert(s2.cores@[0].current_thread is None);
+            assert(s2.cores@[0].generation == 1);
+            assert(s2.cores@[0].next_pcid <= 2);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.cores@[0].generation == 1);
+            assert(s3.cores@[0].next_pcid <= 2);
+            assert(s3.processes == s1.processes);
+            assert(s3.spaces.kernel_root@ == kernel_root);
+            assert(s3.spaces.roots == s1.spaces.roots);
+            assert(s3.spaces.records == s1.spaces.records);
+            assert(s3.threads.records@.contains_key(thread));
+            assert(same_record_perm_but_links(s2.threads.records@[thread], s3.threads.records@[thread]));
+            assert(s3.threads.records@[thread].value().state == (ThreadState::Runnable { core: 0 }));
+            assert(s3.threads.records@[thread].value().process == Some(base));
+            assert(!s3.threads.records@[thread].value().dying);
+            assert(!s3.must_leave(0));
+            assert(!s3.threads.records@[t].value().pending_stop);
+            assert(witness_alive(s3, base));
+        }
+        // Core 0 leaves the root's thread for the second process's, straight from the root's space.
+        self.switch_thread(0, registers, FrameKind::Full, Some(thread), kernel_root, Tracked(&mut steps));
+        let ghost s4 = *self;
+        proof {
+            assert(saved_frame(registers, FrameKind::Full) == registers);
+            assert(s4.cores@[0].current_thread == Some(thread));
+            assert(s4.cores@[0].generation == 1);
+            assert(s4.cores@[0].next_pcid <= 3);
+            assert(s4.threads.records@[t].value().state == (ThreadState::Runnable { core: 0 }));
+            assert(s4.threads.records@[t].value().process == Some(process));
+            assert(!s4.threads.records@[t].value().dying);
+            assert(s4.threads.records@[thread].value().process == Some(base));
+            assert(s4.processes == s1.processes);
+            assert(s4.spaces.roots == s1.spaces.roots);
+            assert(s4.spaces.records == s1.spaces.records);
+            assert(witness_alive(s4, process));
+            assert(s4.current_live(0));
+        }
+        // And back to the root's thread, straight from the second space.
+        self.switch_thread(0, registers, FrameKind::Full, Some(t), kernel_root, Tracked(&mut steps));
+        proof {
+            assert(self.cores@[0].current_thread == Some(t));
+            assert(self.threads.records@[thread].value().state == (ThreadState::Runnable { core: 0 }));
+        }
+        Ghost(s4)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
