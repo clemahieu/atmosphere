@@ -1708,6 +1708,8 @@ impl CapKernel {
             assert(!s3.processes.records@[process].value().dead);
             assert(!s3.must_leave(0));
         }
+        // The steps are the witness's own; no lock bounds them: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
         self.dispatch(0, registers, Tracked(&mut steps))
     }
 
@@ -1755,6 +1757,8 @@ impl CapKernel {
             assert(!s3.processes.records@[process].value().dead);
             assert(!s3.must_leave(0));
         }
+        // The entry makes its own counter in this one: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
         self.enter(0, registers, Tracked(&mut steps))
     }
 
