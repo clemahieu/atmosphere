@@ -14160,8 +14160,10 @@ impl CapKernel {
     /// starts it, the root's thread is placed on core 0 at priority 0 too and entered there; the
     /// timer's tick on core 0 then selects the second thread, which takes the core, and the root's
     /// thread waits on core 0's queue behind its equals, its frame saved whole with the marker Full.
-    /// The use is two threads of equal priority taking turns on one core.
-    /// design/cpu-time-as-capability/.
+    /// The tick's entry charges the root's thread first, the counter reading `now`, as the glue charges
+    /// at every entry; a read of its consumed time after that charge gives before, and one after the
+    /// tick gives after, the same: the switch keeps the consumed time of the thread it preempts. The
+    /// use is two threads of equal priority taking turns on one core. design/cpu-time-as-capability/.
     #[verifier::spinoff_prover]
     pub fn witness_tick_preempts_for_equal_priority(
         &mut self,
@@ -14178,13 +14180,16 @@ impl CapKernel {
         base: usize,
         kernel_root: usize,
         registers: Registers,
-    ) -> (ret: TickStep)
+        now: u64,
+    ) -> (ret: (TickStep, u64, u64))
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
-            ret is Switched,
+            ret.0 is Switched,
+            ret.2 == ret.1,
+            ret.2 == final(self).threads.records@[t].value().consumed,
             final(self).wf(),
             final(self).cores@[0].current_thread == Some((base + 10 * PAGE_SZ) as usize),
             final(self).threads.records@[t].value().state == (ThreadState::Runnable { core: 0 }),
@@ -14293,14 +14298,43 @@ impl CapKernel {
             assert(witness_alive(s3, base));
             assert(s3.can_run(thread));
         }
-        let ret = self.tick(0, registers, kernel_root, Tracked(&mut steps));
+        // The tick's entry: core 0 charges the root's thread, which it runs.
+        self.charge(0, now);
+        let before = self.thread_consumed(t);
+        let ghost s4 = *self;
         proof {
-            assert(Self::ticked(s3, *self, 0, registers, ret));
-            assert(s3.selected(0, thread));
-            assert(Self::switched(s3, *self, 0, registers, thread));
+            assert(s4.cores@[0].current_thread == Some(t));
+            assert(s4.cores@[0].generation == 1);
+            assert(s4.processes == s3.processes);
+            assert(s4.threads.queues == s3.threads.queues);
+            assert(s4.spaces.kernel_root@ == kernel_root);
+            assert(s4.threads.records@[thread] == s3.threads.records@[thread]);
+            assert(s4.threads.records@[t].value().placement == s3.threads.records@[t].value().placement);
+            assert(s4.threads.records@[t].value().pending_stop == s3.threads.records@[t].value().pending_stop);
+            assert(s4.threads.records@[t].value().dying == s3.threads.records@[t].value().dying);
+            assert(s4.threads.records@[t].value().process == s3.threads.records@[t].value().process);
+            assert forall|u: usize| #[trigger] s4.threads.records@.contains_key(u)
+                && s4.threads.records@[u].value().state == (ThreadState::Runnable { core: 0 })
+                implies thread_priority(s4.threads.records@[u].value()) <= 0 by {
+                assert(s3.threads.records@.contains_key(u));
+                if u != t {
+                    assert(s4.threads.records@[u] == s3.threads.records@[u]);
+                }
+            }
+            assert(s4.selected(0, thread));
+            assert(!s4.must_leave(0));
+            assert(s4.preempts(0, thread));
+            assert(s4.can_run(thread));
+        }
+        let ret = self.tick(0, registers, kernel_root, Tracked(&mut steps));
+        let after = self.thread_consumed(t);
+        proof {
+            assert(Self::ticked(s4, *self, 0, registers, ret));
+            assert(s4.selected(0, thread));
+            assert(Self::switched(s4, *self, 0, registers, thread));
             assert(saved_frame(registers, FrameKind::Full) == registers);
         }
-        ret
+        (ret, before, after)
     }
 
     /// From the state boot leaves, with a second process built at `base` and its thread at

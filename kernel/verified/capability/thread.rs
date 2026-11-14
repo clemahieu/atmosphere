@@ -3289,6 +3289,7 @@ impl CapKernel {
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
+            Self::consumed_kept(*old(self), *final(self)),
             Self::switch_frame(*old(self), *final(self), c as int, t),
             dequeued_from(
                 &old(self).threads.queues,
@@ -3509,6 +3510,7 @@ impl CapKernel {
                 let t = old(self).cores@[c as int].current_thread->Some_0;
                 let prio = thread_priority(old(self).threads.records@[t].value());
                 &&& Self::step_ok(*old(self), *final(self), c as int)
+                &&& Self::consumed_kept(*old(self), *final(self))
                 &&& Self::switch_frame(*old(self), *final(self), c as int, t)
                 &&& old(self).threads.records@.contains_key(t)
                 &&& old(self).threads.records@[t].value().state == (ThreadState::Running { core: c })

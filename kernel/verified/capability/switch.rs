@@ -117,10 +117,13 @@ impl CapKernel {
 
     /// From pre to post, core c left the thread it ran, if any, for thread t: t is current and Running
     /// on c, and the thread c ran is Runnable on c behind its equals, with `frame` saved whole and the
-    /// marker Full. No other core and no process changed, and what a process sees changed only in the
-    /// leaving thread's saved registers.
+    /// marker Full. No other core and no process changed, no thread was typed or freed and none was
+    /// charged, so the leaving thread keeps the consumed time it had, and what a process sees changed
+    /// only in the leaving thread's saved registers.
     pub open spec fn switched(pre: Self, post: Self, c: int, frame: Registers, t: usize) -> bool {
         &&& post.cores@[c].current_thread == Some(t)
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& Self::consumed_kept(pre, post)
         &&& post.threads.records@[t].value().state == (ThreadState::Running { core: c as usize })
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
         &&& post.processes == pre.processes
@@ -166,7 +169,8 @@ impl CapKernel {
     /// thread that must leave with its full frame, then the selection. The thread selected takes the
     /// core from a current thread of no higher priority, which saves its full frame with the marker
     /// Full and waits behind its equals, so equal priorities take turns; ticked says each case. The
-    /// tick takes nothing from user space, so it is never refused. design/cpu-time-as-capability/.
+    /// tick charges no thread, which its entry's charge does, so every thread keeps its consumed time.
+    /// The tick takes nothing from user space, so it is never refused. design/cpu-time-as-capability/.
     /// tick is the selection's entry: the glue runs it once per hold of the kernel's lock, and it makes
     /// its one counter in steps, whatever the caller passed, and holds it to TICK_STEPS, within
     /// ENTRY_STEPS. design/one-lock-bounded-steps/.
@@ -180,6 +184,7 @@ impl CapKernel {
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= TICK_STEPS,
             final(self).current_live(c as int),
             !old(self).must_leave(c as int) ==> Self::ticked(*old(self), *final(self), c as int, frame, ret),
@@ -201,6 +206,11 @@ impl CapKernel {
         proof {
             if pre.must_leave(c as int) {
                 assert(Self::moved_off(pre, mid, c as int, frame, FrameKind::Full));
+                let post = *self;
+                assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && pre.threads.records@.contains_key(x)
+                    implies post.threads.records@[x].value().consumed == pre.threads.records@[x].value().consumed by {
+                    assert(mid.threads.records@.contains_key(x));
+                }
             } else {
                 assert(mid == pre);
             }
@@ -221,6 +231,7 @@ impl CapKernel {
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + SWITCH_THREAD_STEPS,
             final(self).current_live(c as int),
             Self::ticked(*old(self), *final(self), c as int, frame, ret),
@@ -492,6 +503,7 @@ impl CapKernel {
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + SWITCH_THREAD_STEPS,
             final(self).cores@[c as int].current_thread == next,
             forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d],
@@ -634,6 +646,7 @@ impl CapKernel {
                         assert(s1.loaded(d, r) == s0.loaded(d, r));
                     }
                     assert(s5.threads == s1.threads);
+                    assert(Self::consumed_kept(s1, s5));
                     assert forall|x: usize| #[trigger] s5.threads.records@.contains_key(x)
                         && leaving != Some(x)
                         implies same_record_perm_but_links(s0.threads.records@[x], s5.threads.records@[x]) by {
@@ -686,6 +699,8 @@ impl CapKernel {
                 self.switch_in(c, t);
                 proof {
                     let s5 = *self;
+                    assert(Self::consumed_kept(s4, s5));
+                    assert(Self::consumed_kept(s1, s5));
                     assert(s5.processes == s0.processes);
                     assert(s5.current_live(c as int));
                     assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == p)
@@ -739,6 +754,12 @@ impl CapKernel {
         }
         proof {
             let s5 = *self;
+            assert(Self::consumed_kept(s1, s5));
+            assert forall|x: usize| #[trigger] s5.threads.records@.contains_key(x) && s0.threads.records@.contains_key(x)
+                implies s5.threads.records@[x].value().consumed == s0.threads.records@[x].value().consumed by {
+                assert(s1.threads.records@.contains_key(x));
+                assert(s1.threads.records@[x].value().consumed == s0.threads.records@[x].value().consumed);
+            }
             assert(s5.threads.holders == s1.threads.holders);
             assert(saved_registers(&s5.threads) == saved_registers(&s1.threads));
             assert(tree_of(&s5.table_pages, &s5.spaces) == tree_of(&s0.table_pages, &s0.spaces));

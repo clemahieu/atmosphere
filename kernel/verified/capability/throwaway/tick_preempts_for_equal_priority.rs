@@ -74,6 +74,7 @@ impl CapKernel {
         base: usize,
         kernel_root: usize,
         registers: Registers,
+        now: u64,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
@@ -82,7 +83,7 @@ impl CapKernel {
         ensures
             false,
     {
-        self.witness_tick_preempts_for_equal_priority(root, process, leaf, frames, t, free, image, untyped, frame, present, base, kernel_root, registers);
+        self.witness_tick_preempts_for_equal_priority(root, process, leaf, frames, t, free, image, untyped, frame, present, base, kernel_root, registers, now);
     }
 }
 
