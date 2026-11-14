@@ -12,6 +12,8 @@ verus! {
 
 use crate::arch::*;
 use crate::capability::destroy::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
@@ -96,6 +98,7 @@ impl CapKernel {
         &&& Self::entry_unmapped(pre, post, root, slot, p)
         &&& Self::flush_sent(pre, post, pre.payload_of(pre.tables.node_of(root, slot)).base)
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
     }
 
     /// What clearing the entry leaves: the entry the path reaches is empty, its mapping node is the only
@@ -362,6 +365,7 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> {
                 &&& (ret->0).0 == old(self).payload_of(old(self).tables.node_of(root, slot)).base

@@ -10,6 +10,8 @@ use vstd::prelude::*;
 verus! {
 
 use crate::capability::block::{ObjectType, PageKind};
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
@@ -1110,6 +1112,7 @@ impl CapKernel {
         &&& post.blocks == pre.blocks
         &&& post.holders == pre.holders
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& tree.entry(parent, entry) == child_entry(child)
         &&& tree.record(child).parent == Some(TableParent { table: parent, entry })
         &&& tree.record(child).space == Some(s)
@@ -1125,6 +1128,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             pre.wf(),
             linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s),
             tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
@@ -1184,6 +1188,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
@@ -1426,6 +1431,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
@@ -1483,6 +1489,7 @@ impl CapKernel {
             final(self).spaces.registers == old(self).spaces.registers,
             Self::link_done(*old(self), *final(self), parent, entry, child, parent),
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).threads == old(self).threads,
     {
         let ghost pre = *old(self);
@@ -1574,6 +1581,7 @@ impl CapKernel {
             final(self).spaces.registers == old(self).spaces.registers,
             Self::link_done(*old(self), *final(self), parent, entry, child, s),
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).threads == old(self).threads,
     {
         let ghost pre = *old(self);
@@ -1788,6 +1796,7 @@ impl CapKernel {
                 &&& Self::link_done(*old(self), *final(self), parent, entry, child, s)
             },
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).threads == old(self).threads,
             final(self).view() == old(self).view(),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
@@ -1970,6 +1979,7 @@ impl CapKernel {
         &&& post.spaces.bound == pre.spaces.bound
         &&& post.devices == pre.devices
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.threads == pre.threads
     }
 
@@ -2152,6 +2162,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).threads == old(self).threads,
     {
         let ghost pre = *old(self);
@@ -2615,6 +2626,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
@@ -2704,6 +2716,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             pre.wf(),
             post.list == pre.list,
             post.tables == pre.tables,

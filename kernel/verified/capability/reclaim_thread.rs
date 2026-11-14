@@ -13,6 +13,8 @@ use vstd::prelude::*;
 verus! {
 
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -635,6 +637,7 @@ impl CapKernel {
             post.threads.holders == pre.threads.holders,
             post.threads.boot_thread@ == (if pre.threads.boot_thread@ == Some(base) { None } else { pre.threads.boot_thread@ }),
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.mappings == pre.mappings,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -646,6 +649,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let page = base / PAGE_SZ;
@@ -709,6 +713,7 @@ impl CapKernel {
         lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page);
         Self::lemma_threads_freed(pre, post, base);
         lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page);
+        lemma_endpoints_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page);
     }
 
     /// The kernel after the spent thread at `base` frees: nothing but its block, its record and its list
@@ -747,6 +752,7 @@ impl CapKernel {
             post.threads.queues == pre.threads.queues,
             post.threads.boot_thread@ == (if pre.threads.boot_thread@ == Some(base) { None } else { pre.threads.boot_thread@ }),
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.stop_ipis == pre.stop_ipis,
         ensures
             post.wf(),

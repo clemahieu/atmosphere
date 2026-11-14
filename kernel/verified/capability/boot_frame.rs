@@ -18,6 +18,8 @@ verus! {
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::boot::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 #[cfg(verus_keep_ghost)]
@@ -132,6 +134,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.zeroing == pre.zeroing,
             post.holders == pre.holders,
             post.stop_ipis == pre.stop_ipis,
@@ -351,6 +354,17 @@ impl CapKernel {
                 assert(process_block(&a, x));
             }
         }
+        assert(endpoints_wf(&post.list, &post.tables, &post.endpoints, &b)) by {
+            assert forall|e: usize| #[trigger] post.endpoints.records@.contains_key(e) implies endpoint_wf(&post.endpoints, &b, e) by {
+                assert(endpoint_wf(&pre.endpoints, &a, e));
+                assert(a.pages@[(e / PAGE_SZ) as int].kind is Base);
+            }
+            assert forall|x: usize| b.tracks(x as int) && #[trigger] endpoint_block(&b, x)
+                implies post.endpoints.records@.contains_key((x * PAGE_SZ) as usize) by {
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+                assert(endpoint_block(&a, x));
+            }
+        }
         assert(frames_held(post.frames@, post.holders@));
         assert forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
@@ -396,6 +410,7 @@ impl CapKernel {
             post.spaces == pre.spaces,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.list.pages@.dom() == pre.list.pages@.dom(),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -407,6 +422,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -424,6 +440,7 @@ impl CapKernel {
         lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
         lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
         lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
+        lemma_endpoints_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks);
         lemma_holders_frame_new(
             &pre.list,
             &pre.tables,
@@ -472,6 +489,7 @@ impl CapKernel {
             post.spaces == pre.spaces,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.list.pages@.dom() == pre.list.pages@.dom(),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -484,6 +502,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -509,6 +528,7 @@ impl CapKernel {
         lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
         lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, refs, dead);
         assert(frames_held(post.frames@, post.holders@)) by {
             assert forall|k: BlockRef, i: usize| #[trigger] post.holders@.contains_key(k) && #[trigger] block_has_page(k, i)
                 implies post.frames@.contains_key(i) by {
@@ -621,6 +641,7 @@ impl CapKernel {
             final(self).blocks.free_perms == old(self).blocks.free_perms,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).spaces == old(self).spaces,
             final(self).table_pages == old(self).table_pages,
             final(self).list.pages@.dom() == old(self).list.pages@.dom(),

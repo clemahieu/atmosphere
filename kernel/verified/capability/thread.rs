@@ -18,6 +18,8 @@ use crate::capability::cpu::*;
 use crate::capability::derive::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -1677,6 +1679,7 @@ impl CapKernel {
             final(self).table_pages == old(self).table_pages,
             final(self).spaces == old(self).spaces,
             final(self).mappings == old(self).mappings,
+            final(self).endpoints == old(self).endpoints,
     {
         let ghost pre = *old(self);
         proof {
@@ -1796,6 +1799,7 @@ impl CapKernel {
             final(self).blocks == old(self).blocks,
             final(self).holders == old(self).holders,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).frames == old(self).frames,
@@ -2505,6 +2509,7 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 2);
+            lemma_endpoints_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page, 2);
             reveal(frame_save_matches);
             Self::lemma_threads_thread_added(pre, post, base, page, child);
             assert(!pre.threads.records@.contains_key(base)) by {
@@ -2729,6 +2734,7 @@ impl CapKernel {
             },
             post.tables.roots == pre.tables.roots,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
@@ -3003,6 +3009,7 @@ impl CapKernel {
         &&& post.frames == pre.frames
         &&& post.spaces == pre.spaces
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
@@ -3475,6 +3482,7 @@ impl CapKernel {
         &&& post.frames == pre.frames
         &&& post.spaces == pre.spaces
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
@@ -3865,6 +3873,7 @@ impl CapKernel {
         &&& post.frames == pre.frames
         &&& post.spaces == pre.spaces
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
@@ -4742,6 +4751,7 @@ impl CapKernel {
         &&& post.processes.spare == pre.processes.spare
         &&& post.processes.holders == pre.processes.holders
         &&& post.processes.bound@ == pre.processes.bound@.insert(p, pre.processes.bound@[p].insert(t))
+        &&& post.endpoints == pre.endpoints
         &&& post.threads.holders == pre.threads.holders
         &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.queues == pre.threads.queues
@@ -4870,6 +4880,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
             bindings_wf(&post.list, &post.threads, &post.processes),
             current_wf(post.cores@, post.threads.records@),
@@ -4928,6 +4939,8 @@ impl CapKernel {
         assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
         lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
         lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
+        assert(same_endpoints(&pre.list, &pre.tables, &post.list, &post.tables));
+        lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, refs, dead);
         assert(!pre.processes.bound@[p].contains(t)) by {
             if pre.processes.bound@[p].contains(t) {
                 assert(pre.threads.records@[t].value().process == Some(p));
@@ -5385,6 +5398,7 @@ impl CapKernel {
         }
         &&& post.blocks == pre.blocks
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.holders == pre.holders
         &&& post.tables == pre.tables
         &&& post.frames == pre.frames
@@ -5487,6 +5501,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
             bindings_wf(&post.list, &post.threads, &post.processes),
             current_wf(post.cores@, post.threads.records@),
@@ -5562,6 +5577,7 @@ impl CapKernel {
         assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
         lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
         lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &post.blocks);
+        lemma_endpoints_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &post.blocks);
         assert forall|mn: usize| #[trigger] pre.mappings@.contains_key(mn) implies mapping_node_kept(
             &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[mn].frame, mn,
         ) by {

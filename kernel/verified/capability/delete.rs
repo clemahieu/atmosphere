@@ -12,6 +12,8 @@ verus! {
 use crate::capability::device::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 use crate::define::*;
 #[cfg(verus_keep_ghost)]
@@ -68,8 +70,8 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
-    /// What deleting node n did to the object it named: a frame capability's block, or a space, thread
-    /// or process capability's object's block, has one reference fewer, with n gone from its holders and
+    /// What deleting node n did to the object it named: a frame capability's block, or a space, thread,
+    /// process or endpoint capability's object's block, has one reference fewer, with n gone from its holders and
     /// every record as it was; any other node held nothing, so the blocks and the objects are as they
     /// were.
     pub open spec fn object_dropped(pre: Self, post: Self, n: usize) -> bool {
@@ -86,6 +88,7 @@ impl CapKernel {
             &&& post.spaces == pre.spaces
             &&& post.threads == pre.threads
             &&& post.processes == pre.processes
+            &&& post.endpoints == pre.endpoints
         }
         &&& pre.is_cap(n) && pre.payload_of(n).kind is Space ==> {
             let s = pre.payload_of(n).base;
@@ -108,6 +111,7 @@ impl CapKernel {
             &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n))
             &&& post.threads == pre.threads
             &&& post.processes == pre.processes
+            &&& post.endpoints == pre.endpoints
         }
         &&& pre.is_cap(n) && pre.payload_of(n).kind is Thread ==> {
             let t = pre.payload_of(n).base;
@@ -126,6 +130,7 @@ impl CapKernel {
             &&& post.threads.queues == pre.threads.queues
             &&& post.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].remove(n))
             &&& post.processes == pre.processes
+            &&& post.endpoints == pre.endpoints
         }
         &&& pre.is_cap(n) && pre.payload_of(n).kind is Process ==> {
             let p = pre.payload_of(n).base;
@@ -144,11 +149,28 @@ impl CapKernel {
             &&& post.processes.spare == pre.processes.spare
             &&& post.processes.bound == pre.processes.bound
             &&& post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].remove(n))
+            &&& post.endpoints == pre.endpoints
         }
-        &&& !(pre.is_cap(n) && (pre.payload_of(n).kind is Frame || pre.payload_of(n).kind is Space || pre.payload_of(n).kind is Thread
-            || pre.payload_of(n).kind is Process))
+        &&& pre.is_cap(n) && pre.payload_of(n).kind is Endpoint ==> {
+            let e = pre.payload_of(n).base;
+            let br = BlockRef::Small(e / PAGE_SZ);
+            &&& blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            )
+            &&& post.holders == pre.holders
+            &&& post.spaces == pre.spaces
+            &&& post.threads == pre.threads
+            &&& post.processes == pre.processes
+            &&& post.endpoints.records == pre.endpoints.records
+            &&& post.endpoints.holders@ == pre.endpoints.holders@.insert(e, pre.endpoints.holders@[e].remove(n))
+        }
+        &&& !(pre.is_cap(n) && tracked_kind(pre.payload_of(n).kind))
             ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces && post.threads == pre.threads
-            && post.processes == pre.processes
+            && post.processes == pre.processes && post.endpoints == pre.endpoints
     }
 
     /// Deletes the capability at a position: an index of the caller's table, at root, or of the table
@@ -228,6 +250,13 @@ impl CapKernel {
                 drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / PAGE_SZ));
                 self.processes.holders = Ghost(pre.processes.holders@.insert(payload.base, pre.processes.holders@[payload.base].remove(n)));
             },
+            CapKind::Endpoint => {
+                proof {
+                    pre.lemma_endpoint_cap(n);
+                }
+                drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / PAGE_SZ));
+                self.endpoints.holders = Ghost(pre.endpoints.holders@.insert(payload.base, pre.endpoints.holders@[payload.base].remove(n)));
+            },
             _ => {},
         }
         proof {
@@ -251,7 +280,7 @@ impl CapKernel {
     }
 
     /// The holders after node n goes, the only node that changed: a frame capability leaves its block,
-    /// a space, thread or process capability leaves its object, and any other node held nothing. With them, what the
+    /// a space, thread, process or endpoint capability leaves its object, and any other node held nothing. With them, what the
     /// blocks owe the rest of the invariant.
     pub proof fn lemma_delete_holders(pre: Self, post: Self, n: usize)
         requires
@@ -278,6 +307,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         assert forall|x: usize| x != n implies {
@@ -381,6 +411,18 @@ impl CapKernel {
                 (block_refs(&pre.blocks, br) - 1) as usize,
                 block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
             );
+            lemma_endpoints_refs_changed(
+                &pre.list,
+                &pre.tables,
+                &post.list,
+                &post.tables,
+                &pre.endpoints,
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            );
         } else if pre.is_cap(n) && pre.payload_of(n).kind is Space {
             let s = pre.payload_of(n).base;
             let br = BlockRef::Small(s / PAGE_SZ);
@@ -403,6 +445,7 @@ impl CapKernel {
             Self::lemma_spaces_holder_dropped(pre, post, n, s);
             lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
             lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
+            lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, refs, dead);
         } else if pre.is_cap(n) && pre.payload_of(n).kind is Thread {
             let t = pre.payload_of(n).base;
             let br = BlockRef::Small(t / PAGE_SZ);
@@ -425,6 +468,7 @@ impl CapKernel {
             lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
             Self::lemma_threads_holder_dropped(pre, post, n, t);
             lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
+            lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, refs, dead);
         } else if pre.is_cap(n) && pre.payload_of(n).kind is Process {
             let p = pre.payload_of(n).base;
             let br = BlockRef::Small(p / PAGE_SZ);
@@ -447,6 +491,30 @@ impl CapKernel {
             lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
             lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
             Self::lemma_processes_holder_dropped(pre, post, n, p);
+            lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, refs, dead);
+        } else if pre.is_cap(n) && pre.payload_of(n).kind is Endpoint {
+            let e = pre.payload_of(n).base;
+            let br = BlockRef::Small(e / PAGE_SZ);
+            let refs = (block_refs(&pre.blocks, br) - 1) as usize;
+            let dead = block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1;
+            pre.lemma_endpoint_cap(n);
+            lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+            assert(!pre.holders@.contains_key(br)) by {
+                if pre.holders@.contains_key(br) {
+                    assert(pre.blocks.pages@[(e / PAGE_SZ) as int].object is Frame);
+                }
+            }
+            lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, e / PAGE_SZ, refs, dead);
+            lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, e / PAGE_SZ, refs, dead);
+            lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+            assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+            lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, e / PAGE_SZ, refs, dead);
+            lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, e / PAGE_SZ, refs, dead);
+            lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
+            lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
+            lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
+            lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
+            Self::lemma_endpoints_holder_dropped(pre, post, n, e);
         } else {
             lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
             lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
@@ -454,6 +522,7 @@ impl CapKernel {
             lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
             lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
             lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
+            lemma_endpoints_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks);
         }
     }
 

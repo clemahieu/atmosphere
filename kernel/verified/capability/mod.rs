@@ -20,6 +20,7 @@ pub mod derive;
 pub mod destroy;
 pub mod device;
 pub mod device_space;
+pub mod endpoint;
 pub mod guest_space;
 pub mod inspect;
 pub mod kernel;

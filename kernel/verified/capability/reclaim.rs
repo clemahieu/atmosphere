@@ -15,6 +15,8 @@ use crate::capability::link::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
@@ -300,6 +302,7 @@ impl CapKernel {
         &&& post.list == self.list
         &&& post.tables == self.tables
         &&& post.processes == self.processes
+        &&& post.endpoints == self.endpoints
         &&& post.spaces == self.spaces
         &&& post.zeroing == self.zeroing
         &&& post.stale_epoch == self.stale_epoch
@@ -341,6 +344,7 @@ impl CapKernel {
         &&& post.spaces == self.spaces
         &&& post.threads == self.threads
         &&& post.processes == self.processes
+        &&& post.endpoints == self.endpoints
         &&& post.table_pages == self.table_pages
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
@@ -383,6 +387,7 @@ impl CapKernel {
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object: base })
         &&& post.tables == self.tables
         &&& post.processes == self.processes
+        &&& post.endpoints == self.endpoints
         &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == self.list.nodes@[x].depth
     }
 
@@ -447,6 +452,7 @@ impl CapKernel {
         &&& post.iommus == self.iommus
         &&& post.spaces == self.spaces
         &&& post.processes == self.processes
+        &&& post.endpoints == self.endpoints
         &&& post.threads == self.threads
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
@@ -981,6 +987,7 @@ impl CapKernel {
                     self.free_process(c, root, from, base, Tracked(steps))
                 }
             },
+            ObjectType::Endpoint => ReclaimStep::Refused,
             ObjectType::None => ReclaimStep::Refused,
         }
     }
@@ -1034,14 +1041,14 @@ impl CapKernel {
             ==> self.list.childless((base + j) as usize)
     }
 
-    /// Capability n is a frame capability on block br, or a space, thread or process capability whose
-    /// object's block is br.
+    /// Capability n is a frame capability on block br, or a space, thread, process or endpoint capability
+    /// whose object's block is br.
     pub open spec fn cap_names_block(&self, n: usize, br: BlockRef) -> bool {
         let p = self.payload_of(n);
         &&& self.is_cap(n)
         &&& {
             ||| p.kind is Frame && br == block_ref(&self.blocks, p.base / PAGE_SZ)
-            ||| (p.kind is Space || p.kind is Thread || p.kind is Process) && br == BlockRef::Small(p.base / PAGE_SZ)
+            ||| (p.kind is Space || p.kind is Thread || p.kind is Process || p.kind is Endpoint) && br == BlockRef::Small(p.base / PAGE_SZ)
         }
     }
 
@@ -1354,7 +1361,7 @@ impl CapKernel {
             let br = block_ref(&mid.blocks, p.base / PAGE_SZ);
             assert(pre.cap_names_block(n, br));
             assert(pre.leaf_slot_names(base, br));
-        } else if p.kind is Space || p.kind is Thread || p.kind is Process {
+        } else if p.kind is Space || p.kind is Thread || p.kind is Process || p.kind is Endpoint {
             let br = BlockRef::Small(p.base / PAGE_SZ);
             assert(pre.cap_names_block(n, br));
             assert(pre.leaf_slot_names(base, br));
@@ -1950,6 +1957,7 @@ impl CapKernel {
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).threads == old(self).threads,
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
@@ -2230,6 +2238,7 @@ impl CapKernel {
             post.spaces == pre.spaces,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.mappings == pre.mappings,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -2241,6 +2250,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let page = base / PAGE_SZ;
@@ -2301,6 +2311,7 @@ impl CapKernel {
         lemma_thread_node_pages_kept(&pre.list, &post.list, &pre.tables, &pre.threads, &pre.blocks, base);
         lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page);
         lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page);
+        lemma_endpoints_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page);
     }
 
     /// The kernel after the empty leaf at `base` frees: nothing but its block, its owner entry and its
@@ -2340,6 +2351,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
         ensures
             post.wf(),
             post.view() == pre.view(),
@@ -2552,6 +2564,7 @@ impl CapKernel {
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
     }
 
     /// One step of an empty table page going: its table, record and spare page go with its block.
@@ -2615,6 +2628,7 @@ impl CapKernel {
         ensures
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
     {
         let page = base / PAGE_SZ;
         Self::lemma_node_block_list_pages(pre, post, base);
@@ -2628,6 +2642,7 @@ impl CapKernel {
         }
         lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page);
         lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page);
+        lemma_endpoints_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page);
     }
 
     /// A list page after the step is in no page of the freed block.
@@ -2661,6 +2676,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
     {
         let page = base / PAGE_SZ;
@@ -3122,6 +3138,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
     {
         let page = base / PAGE_SZ;
@@ -3629,6 +3646,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& post.devices == pre.devices
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.threads == pre.threads
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
@@ -4455,6 +4473,7 @@ impl CapKernel {
         &&& post.iommus.commands == pre.iommus.commands
         &&& post.devices == pre.devices
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.threads == pre.threads
         &&& post.table_pages.records == pre.table_pages.records
         &&& post.table_pages.spare == pre.table_pages.spare
@@ -4566,11 +4585,13 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).threads == old(self).threads,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
@@ -4628,11 +4649,13 @@ impl CapKernel {
             post.spaces == mid.spaces,
             post.devices == mid.devices,
             post.processes == mid.processes,
+            post.endpoints == mid.endpoints,
             post.threads == mid.threads,
             post.frames == mid.frames,
             post.zeroing == mid.zeroing,
             post.cores == mid.cores,
             post.processes == mid.processes,
+            post.endpoints == mid.endpoints,
             post.iommus.acked == mid.iommus.acked,
             post.iommus.present == mid.iommus.present,
             post.iommus.commands == mid.iommus.commands,
@@ -5021,6 +5044,7 @@ impl CapKernel {
         &&& post.list == self.list
         &&& post.tables == self.tables
         &&& post.processes == self.processes
+        &&& post.endpoints == self.endpoints
         &&& post.spaces == self.spaces
         &&& post.stale_epoch == self.stale_epoch
         &&& post.cores == self.cores
@@ -5124,6 +5148,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).threads == old(self).threads,
             final(self).spaces == old(self).spaces,
             final(self).zeroing == old(self).zeroing,
@@ -5210,6 +5235,7 @@ impl CapKernel {
             final(self).blocks.small_free(page as int, 0),
             final(self).frames@ == old(self).frames@.remove(page),
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).spaces == old(self).spaces,
             final(self).zeroing == old(self).zeroing,
             final(self).stale_epoch == old(self).stale_epoch,

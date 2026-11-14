@@ -12,6 +12,8 @@ use vstd::prelude::*;
 verus! {
 
 use crate::array::Array;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -738,6 +740,7 @@ impl CapKernel {
             final(self).mappings == old(self).mappings,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).holders == old(self).holders,
             final(self).stop_ipis == old(self).stop_ipis,
             final(self).flush_ipis == old(self).flush_ipis,
@@ -853,6 +856,7 @@ impl CapKernel {
             final(self).blocks == old(self).blocks,
             final(self).iommus == old(self).iommus,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).spaces == old(self).spaces,
             final(self).flush_epoch == old(self).flush_epoch,
             ret ==> final(self).list.parent@ == old(self).list.parent@.insert(old(self).tables.node_of(root, slot), first),
@@ -935,6 +939,7 @@ impl CapKernel {
             post.spaces == pre.spaces,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.zeroing == pre.zeroing,
             post.table_pages == pre.table_pages,
             post.list.pages@.dom() == pre.list.pages@.dom(),
@@ -947,6 +952,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -965,6 +971,7 @@ impl CapKernel {
         lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
         lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
         lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
+        lemma_endpoints_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks);
     }
 
     /// The devices after device d's capability is added: it is d's, and every other device capability
@@ -1105,6 +1112,7 @@ impl CapKernel {
             final(self).blocks == old(self).blocks,
             final(self).iommus == old(self).iommus,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).spaces == old(self).spaces,
             final(self).flush_epoch == old(self).flush_epoch,
             ret ==> {
@@ -1168,6 +1176,7 @@ impl CapKernel {
                 self.blocks == pre.blocks,
                 self.iommus == pre.iommus,
                 self.processes == pre.processes,
+                self.endpoints == pre.endpoints,
                 self.spaces == pre.spaces,
                 self.flush_epoch == pre.flush_epoch,
                 forall|j: int| 0 <= j < k ==> #[trigger] pre.can_add_device_at(root, slot, devices@, j),
@@ -1564,6 +1573,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
@@ -1678,6 +1688,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
             bindings_wf(&post.list, &post.threads, &post.processes),
             current_wf(post.cores@, post.threads.records@),
@@ -1745,6 +1756,7 @@ impl CapKernel {
         Self::lemma_spaces_bound_added(pre, post, s, d as usize);
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
         lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, refs, dead);
         assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n) implies mapping_node_kept(
             &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[n].frame, n,
         ) by {
@@ -2125,6 +2137,7 @@ impl CapKernel {
                 &&& final(self).mappings == old(self).mappings
                 &&& final(self).threads == old(self).threads
                 &&& final(self).processes == old(self).processes
+                &&& final(self).endpoints == old(self).endpoints
                 &&& final(self).holders == old(self).holders
                 &&& final(self).iommus == old(self).iommus
                 &&& final(self).cores == old(self).cores

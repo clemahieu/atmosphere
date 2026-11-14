@@ -14,6 +14,8 @@ verus! {
 #[cfg(verus_keep_ghost)]
 use crate::capability::inspect::inspected;
 use crate::capability::inspect::inspect_outcome;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::tree_of;
@@ -494,6 +496,7 @@ impl CapKernel {
             space_mapping(tree_of(&post.table_pages, &post.spaces), r) == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
         &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 3)
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
     }
 

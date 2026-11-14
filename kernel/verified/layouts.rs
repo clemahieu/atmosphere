@@ -6,6 +6,7 @@
 
 use vstd::prelude::*;
 
+use crate::capability::endpoint::EndpointRecord;
 use crate::capability::list::NodePage;
 use crate::capability::space::{SpaceCores, SpaceRecord, TableRecord};
 use crate::capability::table::{PayloadPage, TableRoot};
@@ -38,6 +39,7 @@ global layout ThreadRecord is size == 248, align == 8;
 #[cfg(target_arch = "aarch64")]
 global layout ThreadRecord is size == 352, align == 8;
 global layout ProcessRecord is size == 1, align == 1;
+global layout EndpointRecord is size == 24, align == 8;
 
 /// A page becomes an uninitialised node page.
 pub proof fn page_into_node_page(tracked page: PagePerm4k) -> (tracked ret: PointsTo<NodePage>)
@@ -98,6 +100,18 @@ pub proof fn page_into_process_record(tracked page: PagePerm4k) -> (tracked ret:
         ret.is_uninit(),
 {
     crate::pptr::page_into_typed::<ProcessRecord>(page)
+}
+
+/// A page becomes an uninitialised endpoint record.
+pub proof fn page_into_endpoint_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<EndpointRecord>)
+    requires
+        page.is_uninit(),
+        page.addr() % PAGE_SZ == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<EndpointRecord>(page)
 }
 
 /// A page becomes an uninitialised list of a space's cores.

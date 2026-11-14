@@ -14,6 +14,8 @@ use crate::arch::load_translation_root;
 use crate::arch::tag_written;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -301,6 +303,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
     {
         let ghost pre = *old(self);
         proof {
@@ -493,6 +496,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
     {
         let ghost pre = *old(self);
         let state = *self.cores.get(c);
@@ -734,6 +738,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
             post.flush_epoch == pre.flush_epoch,
         ensures
             post.wf(),
@@ -1696,6 +1701,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
     {
@@ -1863,6 +1869,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);

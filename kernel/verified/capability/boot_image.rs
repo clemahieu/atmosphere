@@ -20,6 +20,8 @@ use crate::capability::boot_frame::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::boot_memory::*;
 use crate::capability::decompose::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
@@ -273,6 +275,7 @@ pub open spec fn image_progress(
     &&& cur.tables.owner == pre.tables.owner
     &&& cur.threads == pre.threads
     &&& cur.processes == pre.processes
+    &&& cur.endpoints == pre.endpoints
     &&& cur.spaces == pre.spaces
     &&& cur.table_pages == pre.table_pages
     &&& cur.list.pages@.dom() == pre.list.pages@.dom()
@@ -372,6 +375,7 @@ impl CapKernel {
                 &&& post.blocks.free_perms == cur.blocks.free_perms
                 &&& post.threads == cur.threads
                 &&& post.processes == cur.processes
+                &&& post.endpoints == cur.endpoints
                 &&& post.spaces == cur.spaces
                 &&& post.table_pages == cur.table_pages
                 &&& post.list.pages@.dom() == cur.list.pages@.dom()
@@ -814,6 +818,7 @@ impl CapKernel {
                 &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
                 &&& final(self).threads == old(self).threads
                 &&& final(self).processes == old(self).processes
+                &&& final(self).endpoints == old(self).endpoints
                 &&& final(self).spaces == old(self).spaces
                 &&& final(self).list.pages@.dom() == old(self).list.pages@.dom()
                 &&& forall|o: usize| #[trigger] final(self).view().reach(process, o)

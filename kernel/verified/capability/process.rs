@@ -17,6 +17,8 @@ verus! {
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::derive::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -818,6 +820,7 @@ impl CapKernel {
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
             post.payload_of(child).kind is Process,
+            post.endpoints == pre.endpoints,
         ensures
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -825,6 +828,7 @@ impl CapKernel {
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             zeroing_typed(&post.zeroing, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
     {
         let a = &pre.blocks;
         let b = &post.blocks;
@@ -879,6 +883,13 @@ impl CapKernel {
             assert(t != child);
         }
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, b);
+        assert(same_endpoints(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert forall|k: int| 0 <= k < 8 implies !((#[trigger] b.pages@[page + k]).object is Endpoint) by {
+            if k == 0 {
+                assert(b.pages@[page as int].object is Process);
+            }
+        }
+        lemma_endpoints_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, a, b, page, 8);
     }
 
     /// The spaces after a process's retype: the new one lies in the process's block with what the
@@ -1191,6 +1202,7 @@ impl CapKernel {
     /// root is the block's first page, a record that says it is live, and an address space holding the
     /// kernel's entries and nothing else, loaded on no core. All of these come from user space, and a
     /// refusal changes nothing.
+    #[verifier::spinoff_prover]
     pub fn retype_process(&mut self, root: usize, from: usize, to: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),

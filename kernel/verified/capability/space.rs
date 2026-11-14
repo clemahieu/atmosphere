@@ -15,6 +15,8 @@ use crate::array::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -2063,6 +2065,7 @@ impl CapKernel {
             same_spaces(&pre.list, &pre.tables, &post.list, &post.tables),
             same_threads(&pre.list, &pre.tables, &post.list, &post.tables),
             same_processes(&pre.list, &pre.tables, &post.list, &post.tables),
+            same_endpoints(&pre.list, &pre.tables, &post.list, &post.tables),
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             forall|x: usize| #[trigger] pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
     {
@@ -2107,6 +2110,18 @@ impl CapKernel {
             Self::lemma_table_page_cap(pre, post, x);
         }
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_table_page_cap(pre, post, x);
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Endpoint implies {
+            &&& pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.payload_of(x) == post.tables.payload_of(x)
+        } by {
+            Self::lemma_table_page_cap(pre, post, x);
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Endpoint implies {
             &&& post.tables.is_cap(&post.list, x)
             &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
         } by {
@@ -2322,6 +2337,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
         ensures
             post.wf(),
             forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
@@ -2415,6 +2431,7 @@ impl CapKernel {
             },
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
         ensures
             bindings_wf(&post.list, &post.threads, &post.processes),
             same_bindings(&pre.list, &post.list),
@@ -2470,6 +2487,7 @@ impl CapKernel {
             post.spaces == pre.spaces,
             post.threads == pre.threads,
             post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
         ensures
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -2479,6 +2497,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
             zeroing_typed(&post.zeroing, &post.blocks),
     {
         let a = &pre.blocks;
@@ -2513,6 +2532,12 @@ impl CapKernel {
             }
         }
         lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, a, b, page, 8);
+        assert forall|k: int| 0 <= k < 8 implies !((#[trigger] b.pages@[page + k]).object is Endpoint) by {
+            if k == 0 {
+                assert(b.pages@[page as int].object is TablePage);
+            }
+        }
+        lemma_endpoints_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, a, b, page, 8);
         lemma_holders_small_typed(&pre.list, &pre.tables, a, b, &pre.zeroing, pre.holders@, page, 3);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, b, &pre.zeroing, pre.holders@);
         assert forall|br: BlockRef| #[trigger] pre.holders@.contains_key(br) implies block_typed(a, br) by {}
@@ -2905,6 +2930,7 @@ impl CapKernel {
                 &&& final(self).tables == old(self).tables
                 &&& final(self).spaces == old(self).spaces
                 &&& final(self).processes == old(self).processes
+                &&& final(self).endpoints == old(self).endpoints
                 &&& final(self).threads == old(self).threads
                 &&& final(self).table_pages.maps@ == old(self).table_pages.maps@.insert(base, final(self).table_pages.maps@[base])
                 &&& final(self).table_pages.records@ == old(self).table_pages.records@.insert(base, final(self).table_pages.records@[base])
@@ -3410,6 +3436,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).iommus == old(self).iommus,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).tables.roots == old(self).tables.roots,
             final(self).table_pages == old(self).table_pages,
             final(self).stale_epoch == old(self).stale_epoch,
@@ -3628,6 +3655,7 @@ impl CapKernel {
                 }
             }
             lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 8);
+            lemma_endpoints_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, page, 8);
             Self::lemma_space_links(pre, post, base, page);
             Self::lemma_space_mappings(pre, post, base, page);
             assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)

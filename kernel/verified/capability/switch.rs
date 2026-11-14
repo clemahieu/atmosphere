@@ -11,6 +11,8 @@ verus! {
 use crate::arch::*;
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::mem_valid;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -117,6 +119,7 @@ impl CapKernel {
         &&& post.threads.records@[t].value().state == (ThreadState::Running { core: c as usize })
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& match pre.cores@[c].current_thread {
             Some(o) => {
                 let r = post.threads.records@[o].value();
@@ -411,6 +414,7 @@ impl CapKernel {
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
+            final(self).endpoints == old(self).endpoints,
             final(self).threads.records@.dom() == old(self).threads.records@.dom(),
             final(self).threads.holders == old(self).threads.holders,
             final(self).threads.boot_thread == old(self).threads.boot_thread,

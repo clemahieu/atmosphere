@@ -44,6 +44,7 @@ pub enum ObjectType {
     Space,
     Thread,
     Process,
+    Endpoint,
 }
 
 #[derive(Clone, Copy)]

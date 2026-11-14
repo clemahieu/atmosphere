@@ -21,6 +21,8 @@ use crate::capability::boot_image::*;
 use crate::capability::boot_memory::*;
 use crate::capability::boot_table::*;
 use crate::capability::decompose::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -263,6 +265,7 @@ impl CapKernel {
         &&& post.wf()
         &&& post.tables == pre.tables
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.threads == pre.threads
         &&& post.spaces == pre.spaces
         &&& post.list.seq@[0] == pre.list.seq@[0]
@@ -310,6 +313,7 @@ impl CapKernel {
         &&& cur.wf()
         &&& cur.tables == pre.tables
         &&& cur.processes == pre.processes
+        &&& cur.endpoints == pre.endpoints
         &&& cur.threads == pre.threads
         &&& cur.spaces == pre.spaces
         &&& cur.list.seq@[0] == pre.list.seq@[0]

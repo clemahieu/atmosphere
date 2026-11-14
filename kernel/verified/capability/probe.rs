@@ -13,6 +13,8 @@ verus! {
 use crate::arch::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::BlockTable;
+#[cfg(verus_keep_ghost)]
+use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
@@ -299,6 +301,7 @@ impl CapKernel {
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
+        &&& post.endpoints == pre.endpoints
         &&& post.stop_ipis == pre.stop_ipis
     }
 

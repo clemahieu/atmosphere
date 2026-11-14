@@ -23,6 +23,7 @@ use crate::capability::decompose::*;
 use crate::capability::delete::*;
 use crate::capability::derive::*;
 use crate::capability::destroy::*;
+use crate::capability::endpoint::*;
 use crate::capability::device_space::{device_path, device_range_bytes, DeviceRange};
 use crate::capability::guest_space::{guest_path, guest_range_bytes, GuestPhysRange};
 use crate::capability::device::{

@@ -1546,8 +1546,8 @@ impl CapKernel {
 
     /// Derive's condition over the caller's view, for the source position from, the destination position
     /// to, the rights, the base and the order: the rights fit 32 bits and the order 8; the source is a
-    /// slot of the caller's own table holding a capability that is not a device's and that the child
-    /// narrows; the destination is in a table, through a process capability with control naming no dead
+    /// slot of the caller's own table holding a capability that is not a device's or an endpoint's and
+    /// that the child narrows; the destination is in a table, through a process capability with control naming no dead
     /// process when it goes through one, and its slot is empty; and the source's capability names no dead
     /// process or thread, is above the deepest depth and, for a kind whose block counts its references,
     /// names a block below the reference limit. The destination's emptiness, the process's and the
@@ -1567,6 +1567,7 @@ impl CapKernel {
         &&& self.empty_slot(table->0, to->0.index)
         &&& v.contains_key(i)
         &&& !(v[i].kind is Device)
+        &&& !(v[i].kind is Endpoint)
         &&& view_narrows(v[i], rights as u32, base, order as u8)
         &&& !self.cap_dead(n)
         &&& self.list.nodes@[n as int].depth < MAX_DEPTH
