@@ -84,7 +84,8 @@ proof fn lemma_returned_unmap_fields(pre: CapKernel, mid: CapKernel, post: CapKe
 
 /// Retypes, on the authority of the untyped at index `untyped` of the caller's table, the block at
 /// `base` as `kind`: a frame into the empty slot at index `word`, a 2M frame the same, a table page of
-/// `level`, or a leaf into the root entry the position `word` names.
+/// `level`, a leaf into the root entry the position `word` names, a process into the empty slot at index
+/// `word`, or a thread into that slot bound to the process whose capability is at index `level`.
 pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, word: u64, level: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),

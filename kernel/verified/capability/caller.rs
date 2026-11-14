@@ -48,6 +48,8 @@ use crate::capability::retype::FRAME_RIGHTS;
 use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::thread::{THREAD_ORDER, THREAD_RIGHTS};
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::zero::{large_level, level_pages, level_regions};
@@ -104,6 +106,12 @@ pub open spec fn frame_view(base: usize, order: u8, parent: usize) -> SlotView {
 /// under the capability at node parent.
 pub open spec fn process_view(base: usize, parent: usize) -> SlotView {
     SlotView { kind: CapKind::Process, base, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, priority: 0, parent }
+}
+
+/// What a slot says that holds the thread capability a retype makes of the order-1 block at base,
+/// under the capability at node parent.
+pub open spec fn thread_view(base: usize, parent: usize) -> SlotView {
+    SlotView { kind: CapKind::Thread, base, order: THREAD_ORDER, rights: THREAD_RIGHTS, priority: 0, parent }
 }
 
 /// The page at this offset of the block a slot's frame capability names, as frame_of reads it.
@@ -1132,7 +1140,9 @@ impl CapKernel {
     /// position whose root entry is free, its order-1 block covered and free, and a base that is not
     /// zero; the free kind needs the frame of the order in level at base dead under the untyped, which
     /// reads the block table outside the view; a process needs its order-3 block covered and free and
-    /// the caller's slot the word names empty. Every other kind is refused.
+    /// the caller's slot the word names empty; a thread needs what can_retype_thread reads, with the
+    /// process capability's index in level, which reads the block table outside the view. Every other
+    /// kind is refused.
     pub open spec fn retype_allowed(&self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize) -> bool {
         let at = spec_position(word);
         ||| {
@@ -1168,6 +1178,7 @@ impl CapKernel {
             &&& self.empty_slot(root, word as usize)
             &&& self.small_block_free(base, 3)
         }
+        ||| kind == RETYPE_THREAD && self.can_retype_thread(root, from, word as usize, base, level)
     }
 
     /// Every page of every frame capability in any table's view in pre lies in the block it did in post,
@@ -1348,7 +1359,8 @@ impl CapKernel {
     /// and every index of the root entry it fills an empty slot of the position's table. The free kind:
     /// again, with every table's view and the block table as they were, or ok, with every table's view
     /// as it was. A process: ok, with the caller's slot the word names now holding the process
-    /// capability, the untyped's child, and every other slot of every table as it was.
+    /// capability, the untyped's child, and every other slot of every table as it was. A thread: the
+    /// same with the thread capability, and no frame capability's block or count changed.
     pub open spec fn retype_contract(pre: Self, post: Self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize, out: Outcome) -> bool {
         let allowed = pre.retype_allowed(root, kind, from, base, word, level);
         let to = word as usize;
@@ -1430,6 +1442,119 @@ impl CapKernel {
                 &&& post.table_view(root) == pre.table_view(root).insert(to, process_view(base, parent))
                 &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
                 &&& Self::frame_blocks_kept(pre, post)
+            }
+            ||| {
+                &&& kind == RETYPE_THREAD
+                &&& allowed
+                &&& out == status_only(STATUS_OK)
+                &&& post.table_view(root) == pre.table_view(root).insert(to, thread_view(base, parent))
+                &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& Self::frame_blocks_kept(pre, post)
+            }
+        }
+    }
+
+    /// lemma_slot_added for a thread's retype, which makes the node page at base besides filling the
+    /// slot: every slot is the slot it was, of the node it was, and every node in a slot but the new
+    /// capability's has the liveness and kind it had, so only the slot at index to of the table at root
+    /// changed in any table's view.
+    pub proof fn lemma_slot_added_thread(pre: Self, post: Self, root: usize, to: usize, v: SlotView, base: usize)
+        requires
+            pre.wf(),
+            pre.empty_slot(root, to),
+            Self::retype_keeps(pre, post, pre.tables.node_of(root, to), (base / PAGE_SZ) as int, 1, None),
+            Self::typed_nodes(pre.list, post.list, pre.tables.node_of(root, to), base),
+            post.tables.roots == pre.tables.roots,
+            forall|x: usize| x != pre.tables.node_of(root, to) && x != base ==> #[trigger] post.list.parent@[x] == pre.list.parent@[x],
+            post.is_cap(pre.tables.node_of(root, to)),
+            post.slot_view(root, to) == v,
+        ensures
+            post.table_view(root) == pre.table_view(root).insert(to, v),
+            forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t),
+    {
+        let n = pre.tables.node_of(root, to);
+        pre.lemma_slot(root, to);
+        assert forall|t: usize| #[trigger] post.table_view(t) == if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) } by {
+            assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == (if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) }).contains_key(j)
+                && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == (if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) })[j]) by {
+                pre.lemma_table_view(t, j);
+                post.lemma_table_view(t, j);
+                if pre.tables.has_slot(&pre.list, t, j) {
+                    pre.lemma_slot(t, j);
+                    let m = pre.tables.node_of(t, j);
+                    pre.lemma_slot_bound(m);
+                    if m == n {
+                        pre.tables.lemma_entry(t, index_entry(j));
+                        pre.tables.lemma_entry(root, index_entry(to));
+                        lemma_index_parts(j, to);
+                    } else {
+                        assert(m != base);
+                        assert(post.list.nodes@[m as int].live == pre.list.nodes@[m as int].live);
+                        assert(post.list.nodes@[m as int].kind == pre.list.nodes@[m as int].kind);
+                        assert(post.is_cap(m) == pre.is_cap(m));
+                        assert(post.list.parent@[m] == pre.list.parent@[m]);
+                    }
+                } else {
+                    let e = index_entry(j);
+                    let leaf = pre.tables.leaf(t, e);
+                    if index_ok(j) && pre.tables.roots@.contains_key(t) && leaf != NO_LEAF {
+                        assert(0 <= e < ROOT_ENTRIES);
+                        assert(post.tables.leaf(t, e) == leaf);
+                        pre.tables.lemma_entry(t, e);
+                        pre.tables.lemma_leaf(&pre.list, leaf);
+                        assert(leaf % PAGE_SZ == 0);
+                        pre.lemma_slot_bound(leaf);
+                        assert(leaf != base);
+                        assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+                    }
+                    assert(!post.tables.has_slot(&post.list, t, j));
+                }
+            }
+            assert(post.table_view(t) =~= if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) });
+        }
+    }
+
+    /// A step that typed the free order-1 run at page and changed no other page but the process page
+    /// q, and no region, keeps the block and the count of every page of every frame capability in pre's
+    /// view: neither the run nor a process's page is a frame's block.
+    pub proof fn lemma_thread_keeps_frame_blocks(pre: Self, post: Self, page: int, q: int)
+        requires
+            pre.wf(),
+            pre.blocks.pages@[page].kind is Free,
+            pre.blocks.pages@[page + 1].kind is Free,
+            pre.blocks.pages@[q].kind is Base,
+            pre.blocks.pages@[q].object is Process,
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) && i != q ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            Self::frame_blocks_kept(pre, post),
+    {
+        assert forall|t: usize, j: usize, p: usize|
+            pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame
+                && (p as int) * PAGE_SZ < block_bytes(pre.table_view(t)[j].order) implies {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(t)[j], p));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(t)[j], p)) == br
+                &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br)
+            } by {
+            pre.lemma_view_frame_counted(t, j, p);
+            pre.lemma_table_view(t, j);
+            pre.lemma_frame_page(pre.tables.node_of(t, j), p);
+            assert(objects_wf(&pre.tables, &pre.blocks, pre.holders@));
+            let i = view_frame(pre.table_view(t)[j], p);
+            let br = block_ref(&pre.blocks, i);
+            if let BlockRef::Small(b) = br {
+                assert(pre.blocks.tracks(b as int));
+                assert(pre.blocks.pages@[b as int].kind is Base);
+                assert(pre.blocks.pages@[b as int].object is Frame);
+                assert(b != q);
+                assert(!(page <= b < page + 2));
+                assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
+                if page <= i < page + 2 || i == q {
+                    assert(br == BlockRef::Small(i));
+                    assert(false);
+                }
+                assert(post.blocks.pages@[i as int] == pre.blocks.pages@[i as int]);
             }
         }
     }
@@ -1841,6 +1966,13 @@ impl CapKernel {
                     assert(space_mapping(tree_of(&post.table_pages, &post.spaces), r) =~= space_mapping(tree_of(&pre.table_pages, &pre.spaces), r));
                 }
             }
+        } else if kind == RETYPE_THREAD {
+            let v = thread_view(base, parent);
+            let n = pre.tables.node_of(root, level);
+            assert(post.slot_view(root, to) == v);
+            Self::lemma_slot_added_thread(pre, post, root, to, v, base);
+            pre.lemma_process_cap(n);
+            Self::lemma_thread_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, (pre.payload_of(n).base / PAGE_SZ) as int);
         } else if kind == RETYPE_FREE {
             if out == status_only(STATUS_OK) {
                 let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, root, from, base, level);

@@ -103,6 +103,11 @@ pub const RETYPE_FREE: u64 = 4;
 /// capability, with control, in the empty slot in argument 3.
 pub const RETYPE_PROCESS: u64 = 5;
 
+/// Retype's kind in argument 1 for a thread: the free order-1 block at the base in argument 2 as a thread
+/// bound to the process whose capability, with control, is in the slot in argument 4, and its capability,
+/// with control, in the empty slot in argument 3.
+pub const RETYPE_THREAD: u64 = 6;
+
 /// The kind numbers inspect returns in result 1.
 pub const KIND_UNTYPED: u64 = 0;
 pub const KIND_FRAME: u64 = 1;

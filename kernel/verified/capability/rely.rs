@@ -617,8 +617,9 @@ impl CapKernel {
 
     /// A retype, by any caller, keeps sealed the caller's own process and every process whose table
     /// is a root: the frame kinds add a frame capability, which names no process and no thread, the
-    /// process kind a process capability to the caller's table naming a table that was no root, every
-    /// other kind adds no slot, and no kind binds a thread it did not bind or rebinds one.
+    /// process kind a process capability to the caller's table naming a table that was no root, the
+    /// thread kind a thread capability to the caller's table, its thread bound to a process the
+    /// caller's table names, every other kind adds no slot, and no kind rebinds a thread.
     pub proof fn lemma_retype_keeps_sealed(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
@@ -665,6 +666,8 @@ impl CapKernel {
             assert(after == bound);
         } else if kind == RETYPE_PROCESS {
             assert(after == bound);
+        } else if kind == RETYPE_THREAD {
+            Self::lemma_retype_thread_keeps_sealed(pre, post, caller, frame, out, root);
         } else if kind == RETYPE_FREE {
             if out == status_only(STATUS_OK) {
                 let c = choose|c: usize| c < crate::define::NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, caller, from, base, frame.argument(4) as usize);
@@ -685,7 +688,7 @@ impl CapKernel {
                 assert(post.payload_of(p) == pre.payload_of(p));
             }
         }
-        if pre.sealed(root) {
+        if pre.sealed(root) && kind != RETYPE_THREAD {
             assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
                 implies !post.names_process(post.table_view(t)[j], root) by {
                 let v = post.table_view(t)[j];
@@ -699,6 +702,62 @@ impl CapKernel {
                     assert(!pre.names_process(pre.table_view(t)[j], root));
                     if after.contains_key(v.base) {
                         assert(bound.contains_key(v.base) && after[v.base] == bound[v.base]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// lemma_retype_keeps_sealed for the thread kind: the thread capability goes to the caller's
+    /// table, its thread bound to the process the caller's slot names, which is root only if the
+    /// caller, when no root, held a slot naming root; and the one thread bound anew is at a block that
+    /// was free, which no thread capability named.
+    proof fn lemma_retype_thread_keeps_sealed(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_retyped(pre, post, caller, frame, out),
+            frame.argument(1) == RETYPE_THREAD,
+            out != status_only(STATUS_REFUSED),
+        ensures
+            pre.sealed(root) ==> post.sealed(root),
+    {
+        Self::lemma_retype_contract(pre, post, caller, frame, out);
+        let from = frame.slot() as usize;
+        let base = frame.argument(2) as usize;
+        let to = frame.argument(3) as usize;
+        let k = frame.argument(4) as usize;
+        let parent = pre.tables.node_of(caller, from);
+        let n = pre.tables.node_of(caller, k);
+        let bound = bound_threads(&pre.list, &pre.tables);
+        let after = bound_threads(&post.list, &post.tables);
+        assert(Self::thread_retyped(pre, post, caller, from, to, base, k));
+        assert(after == bound.insert(base, pre.payload_of(n).base));
+        if pre.sealed(root) {
+            assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                implies !post.names_process(post.table_view(t)[j], root) by {
+                let v = post.table_view(t)[j];
+                if t == caller && j == to {
+                    pre.lemma_table_view(caller, k);
+                    assert(v == thread_view(base, parent));
+                    if post.names_process(v, root) {
+                        assert(after[base] == pre.payload_of(n).base);
+                        assert(pre.names_process(pre.table_view(caller)[k], root));
+                        assert(false);
+                    }
+                } else {
+                    assert(pre.table_view(t).contains_key(j) && v == pre.table_view(t)[j]);
+                    assert(!pre.names_process(pre.table_view(t)[j], root));
+                    if v.kind is Thread {
+                        if v.base == base {
+                            // A thread capability's block is typed, and the new thread's was free.
+                            pre.lemma_table_view(t, j);
+                            pre.lemma_thread_cap(pre.tables.node_of(t, j));
+                            assert(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Free);
+                            assert(false);
+                        }
+                        if after.contains_key(v.base) {
+                            assert(bound.contains_key(v.base) && after[v.base] == bound[v.base]);
+                        }
                     }
                 }
             }

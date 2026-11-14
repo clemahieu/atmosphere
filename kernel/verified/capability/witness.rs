@@ -11658,6 +11658,7 @@ impl CapKernel {
             assert(crate::capability::map::frame_of(cap, 0) == fp);
             assert(s3.can_map(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path, WITNESS_LARGE_FRAME_SLOT, 0));
             assert(c2 % PAGE_SZ == 0);
+            assert((0int + 1) / NODES_PER_PAGE as int == 0 && (0int + 1) % NODES_PER_PAGE as int == 1) by (compute_only);
             assert(m == c2 + 1);
         }
 

@@ -2339,6 +2339,7 @@ impl CapKernel {
             ret ==> final(self).threads.boot_thread == old(self).threads.boot_thread,
             ret ==> final(self).threads.queues == old(self).threads.queues,
             ret ==> final(self).tables.roots == old(self).tables.roots,
+            ret ==> final(self).table_pages == old(self).table_pages,
             ret ==> forall|x: usize| x != base ==> #[trigger] thread_process(&final(self).threads, x) == thread_process(&old(self).threads, x),
             ret ==> forall|x: usize| #[trigger] old(self).threads.records@.contains_key(x) ==> {
                 &&& final(self).threads.records@.contains_key(x)
@@ -2779,6 +2780,41 @@ impl CapKernel {
         }
     }
 
+    /// What a retype of the order-1 block at base as a thread did, under the untyped at index from of
+    /// the table at root, with the capability at index to, bound to the process whose capability is at
+    /// index j: the retype was allowed; the thread capability is the untyped's child in that slot, the
+    /// binding at base the process capability's child, and these the two entries the parent map gains;
+    /// the thread is bound to the process; the tables' roots, the table pages and the spaces are as they
+    /// were, every other node and capability as retype_keeps and typed_nodes say; the block table
+    /// changed in the thread's free block and the process's page alone; and the step discharges the
+    /// retype's effect.
+    pub open spec fn thread_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, j: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        let n = pre.tables.node_of(root, j);
+        let p = pre.payload_of(n).base;
+        let page = (base / PAGE_SZ) as int;
+        &&& pre.can_retype_thread(root, from, to, base, j)
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& post.view().holds(root, child)
+        &&& post.is_cap(child)
+        &&& post.payload_of(child) == thread_of(base)
+        &&& post.list.is_child(parent, child)
+        &&& post.list.is_child(n, base)
+        &&& post.list.parent@ == pre.list.parent@.insert(child, parent).insert(base, n)
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).insert(base, p)
+        &&& post.tables.roots == pre.tables.roots
+        &&& post.table_pages == pre.table_pages
+        &&& post.spaces == pre.spaces
+        &&& Self::retype_keeps(pre, post, child, page, 1, None)
+        &&& Self::typed_nodes(pre.list, post.list, child, base)
+        &&& pre.blocks.pages@[page].kind is Free
+        &&& pre.blocks.pages@[page + 1].kind is Free
+        &&& forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) && i != p / PAGE_SZ
+            ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i]
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
+    }
+
     /// Retypes the free order-1 block at `base` as a thread in the process whose capability is at
     /// index `j`, under the untyped at index `from` of the table at `root`, with its capability at the
     /// empty index `to`. In one step the thread is typed, its control capability derived under the
@@ -2856,6 +2892,7 @@ impl CapKernel {
                 &&& Self::retype_keeps(*old(self), *final(self), child, page, 1, None)
                 &&& Self::typed_nodes(old(self).list, final(self).list, child, base)
             },
+            ret ==> Self::thread_retyped(*old(self), *final(self), root, from, to, base, j),
     {
         let ghost pre = *old(self);
         let n = match self.process_slot(root, j) {
@@ -2930,6 +2967,8 @@ impl CapKernel {
                 assert(mid.threads.records@.contains_key(x));
             }
             Self::lemma_bound_nodes(pre.list, mid.list, post.list, child, base);
+            assert(post.tables.roots == pre.tables.roots);
+            assert(post.table_pages == pre.table_pages);
         }
         true
     }
