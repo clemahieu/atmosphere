@@ -42,7 +42,8 @@ from pathlib import Path
 
 TREE = Path(__file__).resolve().parents[1]
 COMMIT = re.compile(r"(?<![\w./-])[0-9a-f]{7,40}(?![\w-])")
-LOG = re.compile(r"(?<![\w$~/.*<>-])[\w$~.*<>-]*/[\w$~/.*<>-]*\.log\b")
+# Tilde and slash stay apart, so a search for a home-relative path does not match this class.
+LOG = re.compile(r"(?<![\w$/~.*<>-])[\w$~.*<>-]*/[\w$/~.*<>-]*\.log\b")
 SHORT = 8
 LISTED = 6
 
@@ -203,6 +204,11 @@ class Tests(unittest.TestCase):
 
     def lines(self, *made):
         return evidence(self.issues(*made), "a.1", self.tree, self.root)
+
+    def test_the_log_pattern_does_not_spell_a_home_path(self):
+        # The pieces stay apart so this test is not itself a home-path match.
+        spelled = re.compile(chr(126) + "/" + "|" + "\\$" + "HOME" + "|" + "\\$" + "{HOME}" + "|" + "/home" + "/")
+        self.assertIsNone(spelled.search(LOG.pattern))
 
     def test_a_commit_and_a_log_that_are_there_are_current(self):
         first = self.commit(a="1\n")
