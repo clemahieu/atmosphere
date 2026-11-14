@@ -62,6 +62,11 @@ pub const KERNEL_TAG: usize = 0;
 /// See design/one-lock-bounded-steps/.
 pub const ACKNOWLEDGE_STEPS: usize = 0;
 
+/// flush_iommu's bound in the step counter: one, the wait for the IOMMU's invalidate, which the IOMMU
+/// sets and the kernel's state does not.
+/// See design/one-lock-bounded-steps/.
+pub const FLUSH_IOMMU_STEPS: usize = 1;
+
 pub open spec fn id_generation(word: usize) -> usize {
     (word / PCID_MAX) as usize
 }
@@ -2879,7 +2884,7 @@ impl CapKernel {
             i < NUM_IOMMUS,
             old(self).iommu_present(i as int),
         ensures
-            final(steps).count <= old(steps).count + 1,
+            final(steps).count <= old(steps).count + FLUSH_IOMMU_STEPS,
             final(self).wf(),
             final(self).iommu_acked(i as int) == old(self).flush_epoch,
             forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommu_acked(j) == old(self).iommu_acked(j),

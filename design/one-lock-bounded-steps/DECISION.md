@@ -24,6 +24,7 @@ Each operation dispatch runs states its bound, a constant named for it in `kerne
 - probe, `INVOKE_PROBE_STEPS`: an entry each, `PROBE_MAX`, 64.
 - print, `PRINT_BYTES`: a byte each, 40.
 - derive, move, delete, link, map, power-off (`POWER_OFF_STEPS`), inspect (`INSPECT_STEPS`) and the entry's check of its current thread (`CHECK_CURRENT_STEPS`): 0, since each runs no loop and calls nothing counted; a loop added to one raises a bound already in its specification. A core's acknowledgement of a flush, `ACKNOWLEDGE_STEPS`, is 0 the same way.
+- an IOMMU's invalidate and acknowledgement, `FLUSH_IOMMU_STEPS`: the wait for the invalidate, 1.
 
 Shared and under the lock: all of the `Kernel` value, including the per-CPU list and every thread's state. Per CPU and outside the lock: stacks, GDT and TSS, in `kernel/src`'s `Cpu`. A core's user-mode execution depends on its current thread and the tables it has loaded, which is what the retype rule in `design/teardown-driven-by-retype/` protects.
 
