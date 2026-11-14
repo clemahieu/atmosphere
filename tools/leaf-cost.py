@@ -78,6 +78,8 @@ RATES = {
     "claude-fable-5-1": (0.64, "2026-11-10"),
     "claude-opus-5-5": (0.12, "2026-11-10"),
 }
+# The model id each Claude model flag of loop.toml resolves to today.
+MODEL_IDS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-2"}
 LOOP = ("round", "prover", "skeptic")
 NOT_LEAVES = ("epic", "decision")
 COMMIT = re.compile(r"\b[0-9a-f]{7,40}\b")
@@ -104,6 +106,15 @@ def points(model, counts):
     if model not in RATES:
         return None
     return RATES[model][0] * sum(count * weight for count, weight in zip(counts, WEIGHTS)) / 1e6
+
+
+def flag_rate(harness, model):
+    """Weekly points a million weighted tokens of a session the loop ran on `harness` with the model flag
+    `model`, or None: a session off Claude, or on a model RATES does not hold."""
+    if harness != "claude" or not model:
+        return None
+    model = MODEL_IDS.get(model, model)
+    return RATES[model][0] if model in RATES else None
 
 
 def grok_model(model):
@@ -277,6 +288,13 @@ class Tests(unittest.TestCase):
         opus, fable = self.found(self.issue("a-1"), self.issue("a-2"))[0]
         self.assertAlmostEqual(opus.points, 0.12 * 8.25)
         self.assertAlmostEqual(fable.points, 0.57 * 8.25)
+
+    def test_a_loop_sessions_model_flag_is_priced_at_the_model_it_stands_for(self):
+        self.assertEqual(flag_rate("claude", "fable"), RATES["claude-fable-5-2"][0])
+        self.assertEqual(flag_rate("claude", "claude-opus-5-5"), RATES["claude-opus-5-5"][0])
+        self.assertIsNone(flag_rate("claude", "haiku"))
+        self.assertIsNone(flag_rate("claude", None))
+        self.assertIsNone(flag_rate("agy", "fable"))
 
     def test_a_leafs_model_is_the_one_its_rounds_cost_most_on(self):
         self.spend("a-1", "round", self.OPUS, output=100_000)

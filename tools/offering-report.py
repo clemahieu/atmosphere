@@ -30,7 +30,7 @@ epic is not a landed leaf, whatever its close reason names. For each work kind a
   it spent.
 
 Points are weekly points of the Claude plan: weighted tokens at the rates tools/leaf-cost.py measured
-(RATES there, one place), by the model id the session's model flag stands for (MODEL_IDS). A session
+(RATES there, one place), by the model id the session's model flag stands for (MODEL_IDS there). A session
 on another harness has no such rate. An agy session adds no points and its model is named on a last
 line; its offering's points are `-` when none of its sessions has a rate. A grok session is not
 unrated. The plan is a flat subscription, so it has no weekly points, and its cost is the weighted
@@ -68,9 +68,7 @@ TREE = Path(__file__).resolve().parents[1]
 ROOT = TREE.parent
 RECORD = ROOT / "logs" / "loop"
 LOOP = Path(__file__).with_name("loop.py")
-RATES = runpy.run_path(str(Path(__file__).with_name("leaf-cost.py")))["RATES"]
-# The model id each Claude model flag of loop.toml resolves to today.
-MODEL_IDS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-2"}
+FLAG_RATE = runpy.run_path(str(Path(__file__).with_name("leaf-cost.py")))["flag_rate"]
 NOT_LEAVES = ("epic", "decision")
 LEAF_KINDS = ("tool", "sys", "proof", "spec", "arch")
 COMMIT = re.compile(r"\b[0-9a-f]{7,40}\b")
@@ -78,10 +76,7 @@ COMMIT = re.compile(r"\b[0-9a-f]{7,40}\b")
 
 def rate(session):
     """Weekly points a million weighted tokens of the session's model, or None."""
-    if session["harness"] != "claude" or not session["model"]:
-        return None
-    model = MODEL_IDS.get(session["model"], session["model"])
-    return RATES[model][0] if model in RATES else None
+    return FLAG_RATE(session["harness"], session["model"])
 
 
 def closed_at(issue):
