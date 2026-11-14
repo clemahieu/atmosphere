@@ -1175,9 +1175,41 @@ impl CapKernel {
     /// returned, from the core the caller runs on: invoked does not name the core, and dispatched says
     /// which it is. Refused with nothing changed exactly when allows_suspend fails; again only for a
     /// thread Running on a core other than the caller's, whose stop is then pending; ok otherwise, with
-    /// the thread Inactive and the caller's core running nothing when it was the thread it ran.
+    /// the thread Inactive and the caller's core running nothing when it was the thread it ran. The
+    /// arm calls suspend_answered for the step the outcome names, the predicate suspend's ensures
+    /// calls. design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn spec_suspended(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        exists|c: usize| c < NUM_CPUS && #[trigger] Self::suspended_from(pre, post, c, root, frame, out)
+        exists|c: usize| {
+            let i = frame.slot() as usize;
+            &&& c < NUM_CPUS
+            &&& #[trigger] Self::suspended_from(pre, post, c, root, frame, out)
+            &&& {
+                ||| out == status_only(STATUS_REFUSED) && Self::suspend_answered(
+                    pre,
+                    post,
+                    c,
+                    root,
+                    i,
+                    SuspendStep::Refused,
+                )
+                ||| out == status_only(STATUS_OK) && Self::suspend_answered(
+                    pre,
+                    post,
+                    c,
+                    root,
+                    i,
+                    SuspendStep::Suspended,
+                )
+                ||| out == status_only(STATUS_AGAIN) && Self::suspend_answered(
+                    pre,
+                    post,
+                    c,
+                    root,
+                    i,
+                    SuspendStep::Again,
+                )
+            }
+        }
     }
 
     /// Whether the invocation in frame by a thread of the process whose table is at root is allowed: for
