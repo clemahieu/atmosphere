@@ -596,19 +596,33 @@ impl CapKernel {
         }
     }
 
+    /// Every thread is bound to the process it was bound to from pre to post. An operation's ensures and
+    /// its arm of invoked both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn threads_bound_kept(pre: Self, post: Self) -> bool {
+        bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
     /// A probe in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when can_probe fails over the arguments, or ok with the accessed and dirty bits of the count in
     /// argument 2 of level 1 entries, from the one the address in argument 1 names in the space of the
     /// capability in the slot, read and cleared, the accessed mask in result 1, the dirty mask in result 2,
-    /// and whether the target maintains each bit in results 3 and 4, 1 when it does and 0 when it does not.
+    /// and whether the target maintains each bit in results 3 and 4, 1 when it does and 0 when it does not;
+    /// either way the step discharges as a local one and every thread stays bound as it was.
     pub open spec fn spec_probed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| !pre.allows_probe(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& out.status == STATUS_OK
-            &&& pre.allows_probe(root, frame)
-            &&& out.result_3 <= 1
-            &&& out.result_4 <= 1
-            &&& exists|read: Seq<usize>| Self::probe_done(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] probed_of(out, read))
+        let slot = frame.slot() as usize;
+        let va = frame.argument(1);
+        let count = frame.argument(2);
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+        &&& Self::threads_bound_kept(pre, post)
+        &&& {
+            ||| out == status_only(STATUS_REFUSED) && Self::probe_answered(pre, post, root, slot, va, count, false)
+            ||| {
+                &&& out.status == STATUS_OK
+                &&& Self::probe_answered(pre, post, root, slot, va, count, true)
+                &&& out.result_3 <= 1
+                &&& out.result_4 <= 1
+                &&& exists|read: Seq<usize>| Self::probe_done(pre, post, root, slot, va, count, #[trigger] probed_of(out, read))
+            }
         }
     }
 

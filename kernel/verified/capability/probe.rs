@@ -308,6 +308,15 @@ impl CapKernel {
         &&& post.stop_ipis == pre.stop_ipis
     }
 
+    /// Whether a probe of count entries from the address va, in the space of the capability at index
+    /// slot of the table at root, answered ok exactly when can_probe holds, and left the kernel as it
+    /// was when it refused. probe_at's ensures and spec_probed both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn probe_answered(pre: Self, post: Self, root: usize, slot: usize, va: u64, count: u64, ok: bool) -> bool {
+        &&& ok == pre.can_probe(root, slot, va, count)
+        &&& !ok ==> post == pre
+    }
+
     /// What a probe of count entries from the address va, in the space of the capability at index slot of
     /// the table at root, left: only the accessed and dirty bits of the level 1 table's words changed, so
     /// every entry, every table walk and the view are as they were; each entry in the range was probed
@@ -404,11 +413,10 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + PROBE_MAX,
             final(self).wf(),
-            ret is Some == old(self).can_probe(root, slot, va, count),
-            ret is None ==> *final(self) == *old(self),
+            Self::probe_answered(*old(self), *final(self), root, slot, va, count, ret is Some),
             ret is Some ==> Self::probe_done(*old(self), *final(self), root, slot, va, count, ret->0),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            Self::threads_bound_kept(*old(self), *final(self)),
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
