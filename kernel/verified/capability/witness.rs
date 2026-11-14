@@ -13268,7 +13268,9 @@ impl CapKernel {
             assert(s4.outranks_current(core as int, 0));
             assert(s5.resched_ipis@ == s4.resched_ipis@.push(core));
             assert(s0.threads.records@.contains_key(t@));
-            assert(s3.threads.records@.contains_key(t@) && t@ != bt && s3.threads.records@[t@] == s0.threads.records@[t@]);
+            assert(s3.threads.records@.contains_key(t@) && t@ != bt && s3.threads.records@[t@] == s0.threads.records@[t@]) by {
+                reveal(CapKernel::thread_retyped_records);
+            }
             assert(s4.threads.records@[t@] == s3.threads.records@[t@]);
             assert(s5.threads.records@.contains_key(t@));
             assert(same_record_perm_but_links(s4.threads.records@[t@], s5.threads.records@[t@]));

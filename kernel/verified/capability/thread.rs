@@ -2878,6 +2878,74 @@ impl CapKernel {
         &&& block_refs(&post.blocks, BlockRef::Small(p / PAGE_SZ)) == block_refs(&pre.blocks, BlockRef::Small(p / PAGE_SZ)) + 1
     }
 
+    /// Whether a retype of the order-1 block at base as a thread, under the untyped at index from of the
+    /// table at root into the slot at index to, bound to the process whose capability is at index j,
+    /// answered ok exactly when can_retype_thread holds, and left the kernel as it was when it refused.
+    /// retype_thread's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn thread_retype_answered(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, j: usize, ok: bool) -> bool {
+        &&& ok == pre.can_retype_thread(root, from, to, base, j)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a retype of a thread leaves as it was, whether it answered ok or refused: both epochs, the
+    /// cores, the IOMMUs, the spaces, the boot thread and the run queues. retype_thread's ensures and
+    /// spec_retyped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn thread_retype_kept(pre: Self, post: Self) -> bool {
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.cores == pre.cores
+        &&& post.iommus == pre.iommus
+        &&& post.spaces == pre.spaces
+        &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& post.threads.queues == pre.threads.queues
+    }
+
+    /// What a retype of the order-1 block at base as a thread did when it answered ok, beside what
+    /// thread_retyped says: the block is a live thread block with one reference, the block table changed
+    /// in it and the process's page alone, that page as dead as it was; the thread's record is a fresh
+    /// one bound to the process at p, which counts it among its threads and holds one reference more;
+    /// the binding at base is live, the process capability's child, and the rest of its node page not
+    /// live; the process capability can no longer be deleted; and the thread capability holds the
+    /// control right. retype_thread's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn thread_retype_done(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, j: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        let n = pre.tables.node_of(root, j);
+        let p = pre.payload_of(n).base;
+        let page = (base / PAGE_SZ) as int;
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& pre.blocks.pages@[page].kind is Free
+        &&& pre.blocks.pages@[page + 1].kind is Free
+        &&& post.blocks.pages@[page].kind is Base
+        &&& post.blocks.pages@[page].object is Thread
+        &&& post.blocks.pages@[page].order == 1
+        &&& post.blocks.pages@[page].refs == 1
+        &&& forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) && i != p / PAGE_SZ
+            ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i]
+        &&& post.threads.records@.contains_key(base)
+        &&& post.threads.records@[base].value() == ThreadRecord { process: Some(p), ..fresh_thread() }
+        &&& post.list.is_child(n, base)
+        &&& post.list.parent@ == pre.list.parent@.insert(child, parent).insert(base, n)
+        &&& post.list.nodes@[base as int].live
+        &&& post.list.nodes@[base as int].kind is Binding
+        &&& forall|i: int| base < i < base + NODES_PER_PAGE ==> !#[trigger] post.list.nodes@[i].live
+        &&& block_refs(&post.blocks, BlockRef::Small(p / PAGE_SZ))
+            == block_refs(&pre.blocks, BlockRef::Small(p / PAGE_SZ)) + 1
+        &&& post.blocks.pages@[(p / PAGE_SZ) as int].dead == pre.blocks.pages@[(p / PAGE_SZ) as int].dead
+        &&& post.processes.bound@ == pre.processes.bound@.insert(p, pre.processes.bound@[p].insert(base))
+        &&& !post.can_delete(root, j)
+        &&& post.view().holds(root, child)
+        &&& post.payload_of(child) == thread_of(base)
+        &&& post.payload_of(child).rights & right_bit(Right::Control) != 0
+        &&& post.list.is_child(parent, child)
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).insert(base, p)
+        &&& Self::retype_keeps(pre, post, child, page, 1, None)
+        &&& Self::typed_nodes(pre.list, post.list, child, base)
+    }
+
     /// Retypes the free order-1 block at `base` as a thread in the process whose capability is at
     /// index `j`, under the untyped at index `from` of the table at `root`, with its capability at the
     /// empty index `to`. In one step the thread is typed, its control capability derived under the
@@ -2893,57 +2961,9 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + RETYPE_THREAD_STEPS,
             final(self).wf(),
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).cores == old(self).cores,
-            final(self).iommus == old(self).iommus,
-            final(self).spaces == old(self).spaces,
-            final(self).threads.boot_thread == old(self).threads.boot_thread,
-            final(self).threads.queues == old(self).threads.queues,
-            !ret ==> *final(self) == *old(self),
-            !ret ==> bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret == old(self).can_retype_thread(root, from, to, base, j),
-            ret ==> forall|x: usize| #[trigger] old(self).threads.records@.contains_key(x) ==> {
-                &&& x != base
-                &&& final(self).threads.records@.contains_key(x)
-                &&& final(self).threads.records@[x] == old(self).threads.records@[x]
-            },
-            ret ==> {
-                let parent = old(self).tables.node_of(root, from);
-                let child = old(self).tables.node_of(root, to);
-                let n = old(self).tables.node_of(root, j);
-                let p = old(self).payload_of(n).base;
-                let page = (base / PAGE_SZ) as int;
-                &&& old(self).view().holds_right(root, parent, Right::Retype)
-                &&& old(self).blocks.pages@[page].kind is Free
-                &&& old(self).blocks.pages@[page + 1].kind is Free
-                &&& final(self).blocks.pages@[page].kind is Base
-                &&& final(self).blocks.pages@[page].object is Thread
-                &&& final(self).blocks.pages@[page].order == 1
-                &&& final(self).blocks.pages@[page].refs == 1
-                &&& forall|i: int| old(self).blocks.tracks(i) && !(page <= i < page + 2) && i != p / PAGE_SZ
-                    ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
-                &&& final(self).threads.records@.contains_key(base)
-                &&& final(self).threads.records@[base].value() == ThreadRecord { process: Some(p), ..fresh_thread() }
-                &&& final(self).list.is_child(n, base)
-                &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent).insert(base, n)
-                &&& final(self).list.nodes@[base as int].live
-                &&& final(self).list.nodes@[base as int].kind is Binding
-                &&& forall|i: int| base < i < base + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[i].live
-                &&& block_refs(&final(self).blocks, BlockRef::Small(p / PAGE_SZ))
-                    == block_refs(&old(self).blocks, BlockRef::Small(p / PAGE_SZ)) + 1
-                &&& final(self).blocks.pages@[(p / PAGE_SZ) as int].dead == old(self).blocks.pages@[(p / PAGE_SZ) as int].dead
-                &&& final(self).processes.bound@ == old(self).processes.bound@.insert(p, old(self).processes.bound@[p].insert(base))
-                &&& !final(self).can_delete(root, j)
-                &&& final(self).view().holds(root, child)
-                &&& final(self).payload_of(child) == thread_of(base)
-                &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
-                &&& final(self).list.is_child(parent, child)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
-                &&& bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).insert(base, p)
-                &&& Self::retype_keeps(*old(self), *final(self), child, page, 1, None)
-                &&& Self::typed_nodes(old(self).list, final(self).list, child, base)
-            },
+            Self::thread_retype_answered(*old(self), *final(self), root, from, to, base, j, ret),
+            Self::thread_retype_kept(*old(self), *final(self)),
+            ret ==> Self::thread_retype_done(*old(self), *final(self), root, from, to, base, j),
             ret ==> Self::thread_retyped(*old(self), *final(self), root, from, to, base, j),
     {
         let ghost pre = *old(self);

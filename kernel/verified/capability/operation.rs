@@ -709,6 +709,9 @@ impl CapKernel {
         ||| {
             &&& frame.argument(1) == RETYPE_THREAD
             &&& out == status_only(STATUS_OK)
+            &&& Self::thread_retype_answered(pre, post, root, from, to, base, level, true)
+            &&& Self::thread_retype_kept(pre, post)
+            &&& Self::thread_retype_done(pre, post, root, from, to, base, level)
             &&& Self::thread_retyped(pre, post, root, from, to, base, level)
         }
     }
