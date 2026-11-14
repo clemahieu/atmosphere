@@ -1873,14 +1873,16 @@ impl CapKernel {
     }
 
     /// Derive's condition over the caller's view, for the source position from, the destination position
-    /// to, the rights, the base and the order: the rights fit 32 bits and the order 8; the source is a
-    /// slot of the caller's own table holding a capability that is not a device's, an endpoint's or a notification's and
-    /// that the child narrows; the destination is in a table, through a process capability with control naming no dead
-    /// process when it goes through one, and its slot is empty; and the source's capability names no dead
+    /// to, the rights, the base, the order and the badge: the rights fit 32 bits and the order 8; the
+    /// source is a slot of the caller's own table holding a capability that is not a device's or a notification's
+    /// and that the child narrows; the destination is in a table, through a process capability with control naming no dead
+    /// process when it goes through one, and its slot is empty; the source's capability names no dead
     /// process or thread, is above the deepest depth and, for a kind whose block counts its references,
-    /// names a block below the reference limit. The destination's emptiness, the process's and the
-    /// source's liveness, the depth and the block's count read the kernel outside the view.
-    pub open spec fn derive_allowed(&self, root: usize, from: Option<Position>, to: Option<Position>, rights: u64, base: usize, order: u64) -> bool {
+    /// names a block below the reference limit; and the badge is 0, or fits 48 bits with the source an
+    /// endpoint's capability whose own badge is 0. The destination's emptiness, the process's and the
+    /// source's liveness, the depth, the block's count and the source's badge read the kernel outside
+    /// the view.
+    pub open spec fn derive_allowed(&self, root: usize, from: Option<Position>, to: Option<Position>, rights: u64, base: usize, order: u64, badge: u64) -> bool {
         let v = self.table_view(root);
         let i = from->0.index;
         let n = self.tables.node_of(root, i);
@@ -1895,18 +1897,18 @@ impl CapKernel {
         &&& self.empty_slot(table->0, to->0.index)
         &&& v.contains_key(i)
         &&& !(v[i].kind is Device)
-        &&& !queue_kind(v[i].kind)
+        &&& !(v[i].kind is Notification)
         &&& view_narrows(v[i], rights as u32, base, order as u8)
         &&& !self.cap_dead(n)
         &&& self.list.nodes@[n as int].depth < MAX_DEPTH
-        &&& (v[i].kind is Frame || v[i].kind is Space || v[i].kind is Thread || v[i].kind is Process)
-            ==> block_refs(&self.blocks, block_ref(&self.blocks, v[i].base / PAGE_SZ)) != usize::MAX
+        &&& tracked_kind(v[i].kind) ==> block_refs(&self.blocks, block_ref(&self.blocks, v[i].base / PAGE_SZ)) != usize::MAX
+        &&& badge_allowed(self.payload_of(n), badge as usize)
     }
 
     /// Derive's condition over the caller's view is the one allows_derive reads.
     pub proof fn lemma_derive_allowed(&self, root: usize, frame: Registers)
         ensures
-            self.derive_allowed(root, spec_position(frame.slot()), spec_position(frame.argument(1)), frame.argument(2), frame.argument(3) as usize, frame.argument(4))
+            self.derive_allowed(root, spec_position(frame.slot()), spec_position(frame.argument(1)), frame.argument(2), frame.argument(3) as usize, frame.argument(4), frame.argument(5))
                 == self.allows_derive(root, frame),
     {
         let from = spec_position(frame.slot());
@@ -1933,9 +1935,9 @@ impl CapKernel {
     /// is one more holder of the block the source lies in, a frame in the caller's view, and that
     /// count alone changed; the child of any other capability leaves every frame capability's block
     /// and count as they were.
-    pub open spec fn derive_contract(pre: Self, post: Self, root: usize, from: Option<Position>, to: Option<Position>, rights: u64, base: usize, order: u64, out: Outcome) -> bool {
+    pub open spec fn derive_contract(pre: Self, post: Self, root: usize, from: Option<Position>, to: Option<Position>, rights: u64, base: usize, order: u64, badge: u64, out: Outcome) -> bool {
         ||| {
-            &&& !pre.derive_allowed(root, from, to, rights, base, order)
+            &&& !pre.derive_allowed(root, from, to, rights, base, order, badge)
             &&& out == status_only(STATUS_REFUSED)
             &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
             &&& post.blocks == pre.blocks
@@ -1946,7 +1948,7 @@ impl CapKernel {
             let source = pre.table_view(root)[i];
             let child = derived_view(source, rights as u32, base, order as u8, pre.tables.node_of(root, i));
             let br = block_ref(&pre.blocks, view_frame(source, 0));
-            &&& pre.derive_allowed(root, from, to, rights, base, order)
+            &&& pre.derive_allowed(root, from, to, rights, base, order, badge)
             &&& out == status_only(STATUS_OK)
             &&& post.table_view(table) == pre.table_view(table).insert(to->0.index, child)
             &&& forall|t: usize| t != table ==> #[trigger] post.table_view(t) == pre.table_view(t)
@@ -1965,7 +1967,7 @@ impl CapKernel {
             pre.wf(),
             Self::spec_derived(pre, post, root, frame, out),
         ensures
-            Self::derive_contract(pre, post, root, spec_position(frame.slot()), spec_position(frame.argument(1)), frame.argument(2), frame.argument(3) as usize, frame.argument(4), out),
+            Self::derive_contract(pre, post, root, spec_position(frame.slot()), spec_position(frame.argument(1)), frame.argument(2), frame.argument(3) as usize, frame.argument(4), frame.argument(5), out),
     {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
@@ -1992,8 +1994,8 @@ impl CapKernel {
             let parent = pre.tables.node_of(root, i);
             let p = pre.payload_of(parent);
             if !(p.kind is Frame) {
-                // A space's, a thread's or a process's block is typed as that object, and a frame
-                // capability's block as a frame, so the block that gained a holder is no frame's.
+                // A space's, a thread's, a process's or an endpoint's block is typed as that object, and
+                // a frame capability's block as a frame, so the block that gained a holder is no frame's.
                 if p.kind is Space {
                     pre.lemma_space_cap(parent);
                 }
@@ -2002,6 +2004,9 @@ impl CapKernel {
                 }
                 if p.kind is Process {
                     pre.lemma_process_cap(parent);
+                }
+                if p.kind is Endpoint {
+                    pre.lemma_endpoint_cap(parent);
                 }
                 assert forall|t: usize, j: usize, page: usize|
                     pre.table_view(t).contains_key(j) && pre.table_view(t)[j].kind is Frame

@@ -408,6 +408,79 @@ impl CapKernel {
         self.blocks.lemma_not_free_uncovered((e / PAGE_SZ) as int);
     }
 
+    /// The endpoints after endpoint capability n, the only capability that changed, joins endpoint e
+    /// with one more reference on its block.
+    pub proof fn lemma_endpoints_holder_added(pre: Self, post: Self, n: usize, e: usize)
+        requires
+            pre.wf(),
+            forall|x: usize| x != n ==> #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
+            forall|x: usize| x != n && #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
+            !pre.is_cap(n),
+            post.is_cap(n),
+            post.payload_of(n).kind is Endpoint,
+            post.payload_of(n).base == e,
+            post.payload_of(n).order == 0,
+            pre.endpoints.records@.contains_key(e),
+            block_refs(&pre.blocks, BlockRef::Small(e / PAGE_SZ)) < usize::MAX,
+            blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                BlockRef::Small(e / PAGE_SZ),
+                (block_refs(&pre.blocks, BlockRef::Small(e / PAGE_SZ)) + 1) as usize,
+                block_dead(&pre.blocks, BlockRef::Small(e / PAGE_SZ)),
+            ),
+            post.endpoints.records == pre.endpoints.records,
+            post.endpoints.holders@ == pre.endpoints.holders@.insert(e, pre.endpoints.holders@[e].insert(n)),
+        ensures
+            endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+    {
+        let ha = pre.endpoints.holders@;
+        let hb = post.endpoints.holders@;
+        let a = &pre.blocks;
+        let b = &post.blocks;
+        let br = BlockRef::Small(e / PAGE_SZ);
+        assert(endpoint_wf(&pre.endpoints, a, e));
+        assert(!ha[e].contains(n));
+        vstd::set::lemma_set_insert_len(ha[e], n);
+        assert forall|u: usize| #[trigger] post.endpoints.records@.contains_key(u)
+            implies endpoint_wf(&post.endpoints, b, u) by {
+            assert(endpoint_wf(&pre.endpoints, a, u));
+            if u != e {
+                lemma_endpoint_pages_distinct(u, e);
+                let x = BlockRef::Small(u / PAGE_SZ);
+                assert(block_typed(a, x));
+                assert(x != br);
+                assert(block_refs(b, x) == block_refs(a, x));
+                assert(block_dead(b, x) == block_dead(a, x));
+                assert(hb[u] == ha[u]);
+            }
+        }
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] endpoint_block(b, x)
+            implies post.endpoints.records@.contains_key((x * PAGE_SZ) as usize) by {
+            assert(endpoint_block(a, x));
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && queue_kind(post.tables.payload_of(x).kind) implies {
+            &&& post.endpoints.records@.contains_key(post.tables.payload_of(x).base)
+            &&& hb[post.tables.payload_of(x).base].contains(x)
+            &&& post.tables.payload_of(x).order == 0
+        } by {
+            if x != n {
+                assert(pre.tables.is_cap(&pre.list, x));
+            }
+        }
+        assert forall|u: usize, x: usize| post.endpoints.records@.contains_key(u) && #[trigger] hb[u].contains(x) implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& queue_kind(post.tables.payload_of(x).kind)
+            &&& post.tables.payload_of(x).base == u
+        } by {
+            if !(u == e && x == n) {
+                assert(ha[u].contains(x));
+                assert(pre.tables.is_cap(&pre.list, x));
+                assert(x != n);
+            }
+        }
+    }
+
     /// The endpoints after endpoint or notification capability n, the only capability that changed,
     /// leaves the object at e, taking its reference on the block with it.
     pub proof fn lemma_endpoints_holder_dropped(pre: Self, post: Self, n: usize, e: usize)

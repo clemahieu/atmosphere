@@ -135,6 +135,9 @@ pub const WITNESS_SEALED_PROCESS_SLOT: usize = 3;
 /// again: slot 1 of root entry 2.
 pub const WITNESS_LARGE_FRAME_SLOT: usize = 257;
 
+/// The index of the root's table a badged endpoint capability is derived into: slot 2 of root entry 2.
+pub const WITNESS_BADGED_SLOT: usize = 258;
+
 /// What a 2M retype naming the block at page has left to zero: the pages past the cursor while its
 /// region is being zeroed, and the whole region otherwise. A step that says Again lowers it.
 pub open spec fn witness_zero_left(k: CapKernel, page: usize) -> int {
@@ -2526,14 +2529,14 @@ impl CapKernel {
             assert(UNTYPED_RIGHTS & right_bit(Right::Control) == 0) by (compute_only);
             assert(block_within(bd, 1, first));
             assert(narrows(child_of(first, UNTYPED_RIGHTS, bd, 1), first));
-            assert(s4.can_derive_between(process, ROOT_UNTYPED_SLOT, base, WITNESS_CHILD_SLOT, UNTYPED_RIGHTS, bd, 1));
-            assert(s4.can_derive_at(process, ROOT_UNTYPED_SLOT, at3, UNTYPED_RIGHTS, bd, 1));
+            assert(s4.can_derive_between(process, ROOT_UNTYPED_SLOT, base, WITNESS_CHILD_SLOT, UNTYPED_RIGHTS, bd, 1, 0));
+            assert(s4.can_derive_at(process, ROOT_UNTYPED_SLOT, at3, UNTYPED_RIGHTS, bd, 1, 0));
         }
-        let ok5 = self.derive(process, ROOT_UNTYPED_SLOT, at3, UNTYPED_RIGHTS, bd, 1);
+        let ok5 = self.derive(process, ROOT_UNTYPED_SLOT, at3, UNTYPED_RIGHTS, bd, 1, 0);
         proof {
             let s5 = *self;
             assert(ok5);
-            assert(Self::cap_derived_between(s4, s5, process, ROOT_UNTYPED_SLOT, base, WITNESS_CHILD_SLOT, UNTYPED_RIGHTS, bd, 1));
+            assert(Self::cap_derived_between(s4, s5, process, ROOT_UNTYPED_SLOT, base, WITNESS_CHILD_SLOT, UNTYPED_RIGHTS, bd, 1, 0));
             assert(s5.view().holds(base, child));
             assert(s5.list.is_child(u, child));
             assert(s5.payload_of(child) == child_of(first, UNTYPED_RIGHTS, bd, 1));
@@ -5620,14 +5623,14 @@ impl CapKernel {
                 assert(s.table_at(process, None) == Some(process));
                 assert(s.root_live(process));
                 assert(!s.cap_dead(u));
-                assert(s.can_derive_between(process, ROOT_UNTYPED_SLOT, process, j, UNTYPED_RIGHTS, base, 3));
-                assert(s.can_derive_at(process, ROOT_UNTYPED_SLOT, to, UNTYPED_RIGHTS, base, 3));
+                assert(s.can_derive_between(process, ROOT_UNTYPED_SLOT, process, j, UNTYPED_RIGHTS, base, 3, 0));
+                assert(s.can_derive_at(process, ROOT_UNTYPED_SLOT, to, UNTYPED_RIGHTS, base, 3, 0));
             }
-            let ok = self.derive(process, ROOT_UNTYPED_SLOT, to, UNTYPED_RIGHTS, base, 3);
+            let ok = self.derive(process, ROOT_UNTYPED_SLOT, to, UNTYPED_RIGHTS, base, 3, 0);
             proof {
                 let s2 = *self;
                 assert(ok);
-                assert(Self::cap_derived_between(s, s2, process, ROOT_UNTYPED_SLOT, process, j, UNTYPED_RIGHTS, base, 3));
+                assert(Self::cap_derived_between(s, s2, process, ROOT_UNTYPED_SLOT, process, j, UNTYPED_RIGHTS, base, 3, 0));
                 assert(s2.list.is_child(u, child));
                 assert(Self::derive_step(s, s2, child));
                 assert(s.list.wf() && s2.list.wf()) by {
@@ -5722,6 +5725,11 @@ impl CapKernel {
                 &&& final(self).view().holds(process, ne)
                 &&& final(self).endpoints.records@.contains_key(base)
                 &&& final(self).endpoints.records@[base].value() == fresh_record()
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& final(self).root_live(process)
+                &&& final(self).list.nodes@[ne as int].depth == 2
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
+                &&& witness_empty(*final(self), process, WITNESS_BADGED_SLOT, (base + 2 * PAGE_SZ + 2) as usize)
             }),
     {
         hide(CapKernel::wf);
@@ -5818,6 +5826,10 @@ impl CapKernel {
             assert(s1.tables.has_slot(&s1.list, process, WITNESS_FRAME_SLOT));
             assert(s1.tables.node_of(process, WITNESS_FRAME_SLOT) == lb + 3);
             assert(witness_empty(s1, process, WITNESS_FRAME_SLOT, (lb + 3) as usize));
+            assert(index_ok(WITNESS_BADGED_SLOT) && index_entry(WITNESS_BADGED_SLOT) == 2);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_BADGED_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_BADGED_SLOT) == lb + 2);
+            assert(witness_empty(s1, process, WITNESS_BADGED_SLOT, (lb + 2) as usize));
             assert(s0.blocks.tracks(ep));
             assert(s1.blocks.pages@[ep].kind is Free);
             assert(s1.blocks.regions_2m@ == s0.blocks.regions_2m@);
@@ -5849,8 +5861,105 @@ impl CapKernel {
             assert(s2.view().holds(process, ne));
             assert(s2.payload_of(ne) == endpoint_of(base));
             assert(s2.is_cap(ne));
+            assert(s2.list.nodes@[ne as int].depth == 2);
+            assert(s2.blocks.pages@[ep].refs == 1);
+            assert(s2.processes == s1.processes);
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.root_live(process));
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_BADGED_SLOT));
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_BADGED_SLOT));
+            assert(s2.tables.node_of(process, WITNESS_BADGED_SLOT) == lb + 2);
+            assert(!s2.list.nodes@[(lb + 2) as int].live);
+            assert(witness_empty(s2, process, WITNESS_BADGED_SLOT, (lb + 2) as usize));
         }
         (ok1, ok2)
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: retype an endpoint as
+    /// witness_root_retypes_an_endpoint does, then derive from its capability, whose badge is 0, a
+    /// capability with the send right alone and badge 7 into slot 2 of the leaf. derive accepts it: the
+    /// child names the same endpoint with that right and that badge, one depth below. The use is a
+    /// server handing a client a capability to send to it, whose badge tells the server which client
+    /// sent. design/witness-per-way-an-operation-succeeds/, design/syscall-abi-in-registers/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_derives_a_badged_endpoint(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret,
+            ({
+                let ne = (base + 2 * PAGE_SZ + 3) as usize;
+                let n = (base + 2 * PAGE_SZ + 2) as usize;
+                let p = final(self).payload_of(n);
+                &&& final(self).wf()
+                &&& final(self).slot_holds(process, WITNESS_BADGED_SLOT, n, p)
+                &&& p.kind is Endpoint
+                &&& p.base == base
+                &&& p.rights == right_bit(Right::Send)
+                &&& p.badge == 7
+                &&& final(self).list.is_child(ne, n)
+                &&& final(self).list.nodes@[n as int].depth == 3
+            }),
+    {
+        hide(CapKernel::wf);
+        let _ = self.witness_root_retypes_an_endpoint(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
+        let ghost s1 = *self;
+        let send: u32 = 16;
+        let to = Position { through: None, index: WITNESS_BADGED_SLOT };
+        let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
+        let ghost n = (base + 2 * PAGE_SZ + 2) as usize;
+        proof {
+            lemma2_to64();
+            assert(right_bit(Right::Send) == 16) by (compute_only);
+            assert(endpoint_of(base).rights == ENDPOINT_RIGHTS);
+            assert(16u32 & !ENDPOINT_RIGHTS == 0) by (compute_only);
+            assert(endpoint_of(base).badge == 0);
+            assert(endpoint_of(base).order == 0);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_FRAME_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_FRAME_SLOT) == ne);
+            assert(s1.is_cap(ne));
+            assert(s1.payload_of(ne).kind is Endpoint);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_BADGED_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_BADGED_SLOT) == n);
+            assert(!s1.list.nodes@[n as int].live);
+            s1.lemma_endpoint_derive(process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, 7);
+            assert(7 < BADGE_LIMIT);
+            assert(block_refs(&s1.blocks, BlockRef::Small(base / PAGE_SZ)) == 1);
+            assert(s1.can_derive_between(process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, 7));
+            assert(s1.table_at(process, None) == Some(process));
+            assert(s1.can_derive_at(process, WITNESS_FRAME_SLOT, to, send, base, 0, 7));
+        }
+        let ok = self.derive(process, WITNESS_FRAME_SLOT, to, send, base, 0, 7);
+        proof {
+            let s2 = *self;
+            assert(ok);
+            assert(Self::cap_derived_between(s1, s2, process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, 7));
+            assert(s2.payload_of(n) == badged_child_of(endpoint_of(base), send, base, 0, 7));
+            assert(s2.payload_of(n).rights == 16);
+            assert(s2.payload_of(n).badge == 7);
+            assert(s2.list.nodes@[n as int].depth == 3);
+            assert(Self::derive_step(s1, s2, n));
+            Self::lemma_slot_stays(s1, s2, process, WITNESS_BADGED_SLOT);
+            assert(s2.slot_holds(process, WITNESS_BADGED_SLOT, n, s2.payload_of(n)));
+        }
+        ok
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -12001,20 +12110,20 @@ impl CapKernel {
             assert(s1.payload_of(parent) == core_payload(0, MAX_PRIORITY));
             assert(s1.list.nodes@[parent as int].depth == 1);
             assert(CORE_RIGHTS & !CORE_RIGHTS == 0) by (compute_only);
-            s1.lemma_console_power_derive(process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7);
+            s1.lemma_console_power_derive(process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7, 0);
             assert(core_object(0) == CORE_OBJECTS);
-            assert(s1.can_derive_between(process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7));
+            assert(s1.can_derive_between(process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7, 0));
         }
         let to = Position { through: None, index: WITNESS_DEVICE_SLOT };
         proof {
             assert(s1.table_at(process, None) == Some(process));
-            assert(s1.can_derive_at(process, ROOT_CORE_SLOT, to, CORE_RIGHTS, CORE_OBJECTS, 7));
+            assert(s1.can_derive_at(process, ROOT_CORE_SLOT, to, CORE_RIGHTS, CORE_OBJECTS, 7, 0));
         }
-        let ok2 = self.derive(process, ROOT_CORE_SLOT, to, CORE_RIGHTS, CORE_OBJECTS, 7);
+        let ok2 = self.derive(process, ROOT_CORE_SLOT, to, CORE_RIGHTS, CORE_OBJECTS, 7, 0);
         proof {
             let s2 = *self;
             assert(ok2);
-            assert(Self::cap_derived_between(s1, s2, process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7));
+            assert(Self::cap_derived_between(s1, s2, process, ROOT_CORE_SLOT, process, WITNESS_DEVICE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7, 0));
             assert(s2.payload_of(n) == child_of(core_payload(0, MAX_PRIORITY), CORE_RIGHTS, CORE_OBJECTS, 7));
             assert(s2.payload_of(n) == core_payload(0, 7));
             assert(s2.list.nodes@[n as int].depth == 2);

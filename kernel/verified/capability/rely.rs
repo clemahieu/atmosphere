@@ -250,7 +250,7 @@ impl CapKernel {
         Self::lemma_derive_contract(pre, post, caller, frame, out);
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
-        if pre.sealed(root) && pre.derive_allowed(caller, from, to, frame.argument(2), frame.argument(3) as usize, frame.argument(4)) {
+        if pre.sealed(root) && pre.derive_allowed(caller, from, to, frame.argument(2), frame.argument(3) as usize, frame.argument(4), frame.argument(5)) {
             pre.lemma_sealed_table_not_root(caller, to->0.through, root);
         }
     }
@@ -722,7 +722,7 @@ impl CapKernel {
         let rights = frame.argument(2);
         let base = frame.argument(3) as usize;
         let order = frame.argument(4);
-        if pre.sealed(root) && pre.derive_allowed(caller, from, to, rights, base, order) {
+        if pre.sealed(root) && pre.derive_allowed(caller, from, to, rights, base, order, frame.argument(5)) {
             let i = from->0.index;
             let v = pre.table_view(caller)[i];
             let table = pre.view_table_at(caller, to->0.through)->0;
@@ -1667,7 +1667,7 @@ impl CapKernel {
         let rights = frame.argument(2);
         let base = frame.argument(3) as usize;
         let order = frame.argument(4);
-        if pre.derive_allowed(caller, from, to, rights, base, order) {
+        if pre.derive_allowed(caller, from, to, rights, base, order, frame.argument(5)) {
             let i = from->0.index;
             let source = pre.table_view(caller)[i];
             let table = pre.view_table_at(caller, to->0.through)->0;

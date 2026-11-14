@@ -590,10 +590,11 @@ impl CapKernel {
     /// A derive in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_derive fails, or ok with a child of the capability at the position the
     /// slot's word names, in the caller's own table, put at the position the word in argument 1 names,
-    /// with the rights in argument 2 and the block of the order in argument 4 at the base in argument 3,
+    /// with the rights in argument 2, the block of the order in argument 4 at the base in argument 3 and
+    /// the badge in argument 5, or the parent's when it is 0,
     /// the one entry the parent map gains and the only node whose kind, liveness or capability changed,
     /// the block the parent lies in holding one more reference when the parent is a frame, a space, a
-    /// thread or a process and the block table as it was otherwise,
+    /// thread, a process or an endpoint and the block table as it was otherwise,
     /// no root entry changed, every thread bound as it was, and every space's tables as they were.
     /// Rights wider than 32 bits and an order wider than 8 are refused, since no capability holds them,
     /// and so is a source word naming another process's table: derive takes its parent from the
@@ -610,7 +611,7 @@ impl CapKernel {
             &&& from is Some
             &&& from->0.through is None
             &&& to is Some
-            &&& Self::cap_derived_at(pre, post, root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8)
+            &&& Self::cap_derived_at(pre, post, root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8, frame.argument(5) as usize)
             &&& Self::derive_counted(pre, post, pre.tables.node_of(root, from->0.index))
             &&& post.list.parent@ == pre.list.parent@.insert(child, pre.tables.node_of(root, from->0.index))
             &&& post.tables.roots == pre.tables.roots
@@ -717,7 +718,7 @@ impl CapKernel {
 
     /// Whether the derive in frame is allowed: rights that fit 32 bits in argument 2, an order that fits
     /// 8 in argument 4, a slot word naming a position of the caller's own table and argument 1 a
-    /// position, and can_derive_at over them and the base in argument 3.
+    /// position, and can_derive_at over them, the base in argument 3 and the badge in argument 5.
     pub open spec fn allows_derive(&self, root: usize, frame: Registers) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
@@ -726,7 +727,7 @@ impl CapKernel {
         &&& from is Some
         &&& from->0.through is None
         &&& to is Some
-        &&& self.can_derive_at(root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8)
+        &&& self.can_derive_at(root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8, frame.argument(5) as usize)
     }
 
     /// Whether the move in frame is allowed: the slot word and argument 1 each a position, and
@@ -1172,8 +1173,9 @@ impl CapKernel {
 
     /// A derive reaches derive: refused with nothing changed unless the rights in argument 2 fit 32 bits,
     /// the order in argument 4 fits 8, the slot's word names a position of the caller's own table,
-    /// argument 1 names a position, and can_derive_at holds over them and the base in argument 3; ok when
-    /// they do, with the capability derived at argument 1's position as cap_derived_at says.
+    /// argument 1 names a position, and can_derive_at holds over them, the base in argument 3 and the
+    /// badge in argument 5; ok when they do, with the capability derived at argument 1's position as
+    /// cap_derived_at says.
     /// design/witness-per-way-an-operation-succeeds/.
     pub proof fn lemma_entry_reaches_derive(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
@@ -1186,12 +1188,13 @@ impl CapKernel {
                 let rights = frame.argument(2);
                 let base = frame.argument(3) as usize;
                 let order = frame.argument(4);
+                let badge = frame.argument(5) as usize;
                 let succeeds = rights <= u32::MAX as u64 && order <= u8::MAX as u64 && from is Some
                     && from->0.through is None && to is Some
-                    && pre.can_derive_at(root, from->0.index, to->0, rights as u32, base, order as u8);
+                    && pre.can_derive_at(root, from->0.index, to->0, rights as u32, base, order as u8, badge);
                 &&& !succeeds ==> out == status_only(STATUS_REFUSED) && post == pre
                 &&& succeeds ==> out == status_only(STATUS_OK)
-                    && Self::cap_derived_at(pre, post, root, from->0.index, to->0, rights as u32, base, order as u8)
+                    && Self::cap_derived_at(pre, post, root, from->0.index, to->0, rights as u32, base, order as u8, badge)
             }),
     {
     }
@@ -1556,7 +1559,7 @@ impl CapKernel {
         };
         let done = match (from, position(frame.argument(1))) {
             (Some(from), Some(to)) => frame.argument(2) <= u32::MAX as u64 && frame.argument(4) <= u8::MAX as u64
-                && self.derive(root, from, to, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8),
+                && self.derive(root, from, to, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8, frame.argument(5) as usize),
             _ => false,
         };
         status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })

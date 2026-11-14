@@ -418,17 +418,17 @@ impl CapKernel {
             assert(s3.threads.records@[bt].value().placement is None);
             assert(s3.flush_epoch == 0);
             assert(CORE_RIGHTS & !CORE_RIGHTS == 0) by (compute_only);
-            s3.lemma_console_power_derive(process, ROOT_CORE_SLOT, process, WITNESS_CORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7);
+            s3.lemma_console_power_derive(process, ROOT_CORE_SLOT, process, WITNESS_CORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7, 0);
             assert(core_object(0) == CORE_OBJECTS);
-            assert(s3.can_derive_between(process, ROOT_CORE_SLOT, process, WITNESS_CORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7));
+            assert(s3.can_derive_between(process, ROOT_CORE_SLOT, process, WITNESS_CORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7, 0));
             assert(s3.table_at(process, None) == Some(process));
-            assert(s3.can_derive_at(process, ROOT_CORE_SLOT, to1, CORE_RIGHTS, CORE_OBJECTS, 7));
+            assert(s3.can_derive_at(process, ROOT_CORE_SLOT, to1, CORE_RIGHTS, CORE_OBJECTS, 7, 0));
         }
-        let d1 = self.derive(process, ROOT_CORE_SLOT, to1, CORE_RIGHTS, CORE_OBJECTS, 7);
+        let d1 = self.derive(process, ROOT_CORE_SLOT, to1, CORE_RIGHTS, CORE_OBJECTS, 7, 0);
         let ghost s4 = *self;
         proof {
             assert(d1);
-            assert(Self::cap_derived_between(s3, s4, process, ROOT_CORE_SLOT, process, WITNESS_CORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7));
+            assert(Self::cap_derived_between(s3, s4, process, ROOT_CORE_SLOT, process, WITNESS_CORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 7, 0));
             assert(Self::derive_step(s3, s4, nd));
             assert(s4.payload_of(nd) == child_of(core_payload(0, MAX_PRIORITY), CORE_RIGHTS, CORE_OBJECTS, 7));
             assert(s4.payload_of(nd) == core_payload(0, 7));
@@ -457,20 +457,20 @@ impl CapKernel {
             assert(s4.is_cap(nt) && s4.payload_of(nt) == thread_of(bt));
             assert(s4.root_live(process));
             assert(s4.flush_epoch == 0);
-            s4.lemma_console_power_derive(process, WITNESS_CORE_SLOT, process, WITNESS_SUBCORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 5);
+            s4.lemma_console_power_derive(process, WITNESS_CORE_SLOT, process, WITNESS_SUBCORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 5, 0);
             assert(2usize < MAX_DEPTH) by (compute_only);
-            assert(s4.can_derive_between(process, WITNESS_CORE_SLOT, process, WITNESS_SUBCORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 5));
+            assert(s4.can_derive_between(process, WITNESS_CORE_SLOT, process, WITNESS_SUBCORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 5, 0));
             assert(s4.table_at(process, None) == Some(process));
         }
         let to2 = Position { through: None, index: WITNESS_SUBCORE_SLOT };
         proof {
-            assert(s4.can_derive_at(process, WITNESS_CORE_SLOT, to2, CORE_RIGHTS, CORE_OBJECTS, 5));
+            assert(s4.can_derive_at(process, WITNESS_CORE_SLOT, to2, CORE_RIGHTS, CORE_OBJECTS, 5, 0));
         }
-        let d2 = self.derive(process, WITNESS_CORE_SLOT, to2, CORE_RIGHTS, CORE_OBJECTS, 5);
+        let d2 = self.derive(process, WITNESS_CORE_SLOT, to2, CORE_RIGHTS, CORE_OBJECTS, 5, 0);
         let ghost s5 = *self;
         proof {
             assert(d2);
-            assert(Self::cap_derived_between(s4, s5, process, WITNESS_CORE_SLOT, process, WITNESS_SUBCORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 5));
+            assert(Self::cap_derived_between(s4, s5, process, WITNESS_CORE_SLOT, process, WITNESS_SUBCORE_SLOT, CORE_RIGHTS, CORE_OBJECTS, 5, 0));
             assert(Self::derive_step(s4, s5, nm));
             assert(s5.payload_of(nm) == child_of(core_payload(0, 7), CORE_RIGHTS, CORE_OBJECTS, 5));
             assert(s5.payload_of(nm) == core_payload(0, 5));
