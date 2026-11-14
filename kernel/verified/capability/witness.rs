@@ -1056,6 +1056,59 @@ proof fn lemma_slot_kept_two(pre: CapKernel, post: CapKernel, root: usize, i: us
     assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
 }
 
+/// What the witnesses that load the root's space and enter its thread read of `booted`. They hide
+/// `booted`, whose quantifiers over the root's reach, its image and its untyped blocks they never
+/// read, so their queries do not carry them; how close those queries run to the solver's budget
+/// then no longer moves with the rest of the crate.
+proof fn lemma_booted_entry(
+    k: CapKernel,
+    root: usize,
+    process: usize,
+    leaf: usize,
+    frames: usize,
+    t: usize,
+    free: Seq<(usize, usize)>,
+    image: Seq<ImageRun>,
+    untyped: usize,
+    frame: usize,
+    present: Seq<bool>,
+    kernel_root: usize,
+)
+    requires
+        k.booted(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root),
+    ensures
+        k.wf(),
+        k.slot_holds(process, ROOT_PROCESS_SLOT, (leaf + 1) as usize, process_of(process)),
+        k.slot_holds(process, ROOT_THREAD_SLOT, (leaf + 2) as usize, thread_of(t)),
+        k.threads.boot_thread@ == Some(t),
+        k.threads.records@.contains_key(t),
+        k.threads.records@[t].value().process == Some(process),
+        k.threads.records@[t].value().state is Inactive,
+        !k.threads.records@[t].value().dying,
+        !k.threads.records@[t].value().pending_stop,
+        k.processes.records@.contains_key(process),
+        !k.processes.records@[process].value().dead,
+        process_spaces_wf(&k.spaces, &k.processes),
+        space_wf(&k.list, &k.spaces, &k.blocks, process),
+        k.spaces.roots@.contains_key(process),
+        k.spaces.records@[process].value().kind is Process,
+        k.root_live(process),
+        boot_registers(k.spaces.registers@, kernel_root),
+        k.spaces.kernel_root@ == kernel_root,
+        kernel_root % PAGE_SZ == 0,
+        crate::util::page_ptr_util_u::mem_valid(kernel_root),
+        forall|c: int| 0 <= c < NUM_CPUS ==> {
+            &&& (#[trigger] k.cores@[c]).current_thread is None
+            &&& k.cores@[c].generation == 1
+            &&& k.cores@[c].next_pcid == 1
+            &&& k.cores@[c].space is None
+        },
+{
+    reveal(CapKernel::wf);
+    reveal(current_wf);
+    assert(k.cores@[0].space is None);
+}
+
 impl CapKernel {
     /// From no prior state of `self`, boot's one verified step builds the capability kernel and its
     /// root process from the pages and models the trust boundary hands over: one page initialised as
@@ -1229,15 +1282,10 @@ impl CapKernel {
             },
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            reveal(CapKernel::wf);
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&s0.spaces, &s0.processes));
-            assert(s0.spaces.roots@.contains_key(process));
-            assert(s0.spaces.records@[process].value().kind is Process);
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root);
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -1251,6 +1299,7 @@ impl CapKernel {
         self.switch_space(0, None, kernel_root, KERNEL_TAG);
         proof {
             let s3 = *self;
+            reveal(CapKernel::wf);
             reveal(registers_wf);
             assert(s3.spaces.registers@.contains_key(0));
             assert(register_names(s3.spaces.registers@[0], s3.cores@[0].space, s3.spaces.loaded@, 0, kernel_root));
@@ -1297,15 +1346,10 @@ impl CapKernel {
             final(self).threads.records@[t].value().process == Some(process),
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            reveal(CapKernel::wf);
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&s0.spaces, &s0.processes));
-            assert(s0.spaces.roots@.contains_key(process));
-            assert(s0.spaces.records@[process].value().kind is Process);
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -1348,15 +1392,10 @@ impl CapKernel {
             final(self).threads.records@[t].value().process == Some(process),
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            reveal(CapKernel::wf);
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&s0.spaces, &s0.processes));
-            assert(s0.spaces.roots@.contains_key(process));
-            assert(s0.spaces.records@[process].value().kind is Process);
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -1415,17 +1454,10 @@ impl CapKernel {
             final(self).threads.records@[t].value().state == (ThreadState::Running { core: 0 }),
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            reveal(CapKernel::wf);
-            reveal(current_wf);
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&s0.spaces, &s0.processes));
-            assert(s0.spaces.roots@.contains_key(process));
-            assert(s0.spaces.records@[process].value().kind is Process);
-            assert(!s0.threads.records@[t].value().pending_stop);
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -1486,15 +1518,10 @@ impl CapKernel {
             !final(self).threads.records@[t].value().pending_stop,
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            reveal(CapKernel::wf);
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&s0.spaces, &s0.processes));
-            assert(s0.spaces.roots@.contains_key(process));
-            assert(s0.spaces.records@[process].value().kind is Process);
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -1567,15 +1594,10 @@ impl CapKernel {
             final(self).threads.records@[t].value().save@ == (FrameSave::Syscall { frame: registers }),
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            reveal(CapKernel::wf);
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&s0.spaces, &s0.processes));
-            assert(s0.spaces.roots@.contains_key(process));
-            assert(s0.spaces.records@[process].value().kind is Process);
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
         }
         let tracked mut steps = Steps::fresh();
         let pcid = self.load_space(0, process, Tracked(&mut steps));
@@ -1650,17 +1672,10 @@ impl CapKernel {
             final(self).wf(),
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            reveal(CapKernel::wf);
-            reveal(current_wf);
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&s0.spaces, &s0.processes));
-            assert(s0.spaces.roots@.contains_key(process));
-            assert(s0.spaces.records@[process].value().kind is Process);
-            assert(!s0.threads.records@[t].value().pending_stop);
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
