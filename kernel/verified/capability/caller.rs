@@ -1292,6 +1292,21 @@ impl CapKernel {
         &&& self.tables.leaf(table->0, at.index as int) == NO_LEAF
     }
 
+    /// The process a thread's retype binds the thread to, over the caller's view: index j of the table
+    /// at root holds a process capability with the control right. The process's liveness, the
+    /// capability's depth and the reference count of the process's block read the kernel outside the
+    /// view.
+    pub open spec fn thread_process_allowed(&self, root: usize, j: usize) -> bool {
+        let v = self.table_view(root);
+        let n = self.tables.node_of(root, j);
+        &&& v.contains_key(j)
+        &&& v[j].kind is Process
+        &&& v[j].rights & right_bit(Right::Control) != 0
+        &&& !self.cap_dead(n)
+        &&& self.list.nodes@[n as int].depth < MAX_DEPTH
+        &&& block_refs(&self.blocks, BlockRef::Small(v[j].base / PAGE_SZ)) != usize::MAX
+    }
+
     /// Retype's condition over the caller's view, by the kind, for the untyped at index from of the
     /// caller's table at root, the base, the word in argument 3 and the level: a 4K frame needs the
     /// untyped to cover the page, the caller's slot the word names empty and the page free; a 2M frame
@@ -1300,9 +1315,9 @@ impl CapKernel {
     /// position whose root entry is free, its order-1 block covered and free, and a base that is not
     /// zero; the free kind needs the frame of the order in level at base dead under the untyped, which
     /// reads the block table outside the view; a process needs its order-3 block covered and free and
-    /// the caller's slot the word names empty; a thread needs what can_retype_thread reads, with the
-    /// process capability's index in level, which reads the block table outside the view. Every other
-    /// kind is refused.
+    /// the caller's slot the word names empty; a thread needs its order-1 block covered and free, the
+    /// caller's slot the word names empty and, at the index in level, a process capability with control
+    /// to a process that can take one more thread. Every other kind is refused.
     pub open spec fn retype_allowed(&self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize) -> bool {
         let at = spec_position(word);
         ||| {
@@ -1338,7 +1353,13 @@ impl CapKernel {
             &&& self.empty_slot(root, word as usize)
             &&& self.small_block_free(base, 3)
         }
-        ||| kind == RETYPE_THREAD && self.can_retype_thread(root, from, word as usize, base, level)
+        ||| {
+            &&& kind == RETYPE_THREAD
+            &&& self.retype_under_allowed(root, from, base, THREAD_ORDER)
+            &&& self.empty_slot(root, word as usize)
+            &&& self.small_block_free(base, THREAD_ORDER as usize)
+            &&& self.thread_process_allowed(root, level)
+        }
     }
 
     /// Every page of every frame capability in any table's view in pre lies in the block it did in post,
@@ -1749,12 +1770,12 @@ impl CapKernel {
     }
 
     /// The binding `retype_contract` states on `RETYPE_THREAD`: the thread at base is bound to the
-    /// process whose capability is at index j of the table at root, and every other binding is as it
-    /// was. Kept opaque outside `lemma_retype_contract` and caller proofs that reveal it.
+    /// process the caller's view of the table at root says index j names, and every other binding is
+    /// as it was. Kept opaque outside `lemma_retype_contract` and caller proofs that reveal it.
     #[verifier::opaque]
     pub open spec fn retype_thread_contract_fields(pre: Self, post: Self, root: usize, base: usize, j: usize) -> bool {
         bound_threads(&post.list, &post.tables)
-            == bound_threads(&pre.list, &pre.tables).insert(base, pre.payload_of(pre.tables.node_of(root, j)).base)
+            == bound_threads(&pre.list, &pre.tables).insert(base, pre.table_view(root)[j].base)
     }
 
     /// Additional preservation facts of `retype_contract` on `RETYPE_TABLE_PAGE`, kept opaque outside
