@@ -3,9 +3,6 @@
 target
 build
 
-*.mb
-*.mb2
-*.mbr
 *.rlib
 
 *.sw*
