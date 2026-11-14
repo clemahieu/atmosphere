@@ -19,7 +19,7 @@ pub type PageMapPtr = usize;
 //1 for now
 pub const KERNEL_MEM_END_L4INDEX: usize = 1;
 
-/// Pages the kernel tracks: 4 GiB from address 0. design/test-guest-memory/.
+/// Pages the compile-time tables cover. design/page-metadata-sized-from-the-memory-map/.
 pub const NUM_PAGES: usize = 1024 * 1024;
 
 /// Bytes in a page. Every page-shaped size below is written from this and ENTRIES, so the granule is

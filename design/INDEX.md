@@ -2,7 +2,7 @@
 
 # Design decisions
 
-43 records: 43 active, 0 superseded.
+44 records: 44 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -85,6 +85,9 @@ in `revisit if` what would make it worth reopening.
 - **[page-buddy-metadata-in-the-span](./page-buddy-metadata-in-the-span/DECISION.md)** (2026-11-11): aheap's page buddy reserves spans of two blocks, gives each block a block buddy of its own, and keeps both buddies' records and the link to the next held span in the span's metadata page, the first page of its second block, allocated there as a run of order 0; held spans form one list, so the only refusal is the source's and every page of a held span is a free block, a run or that page.
   - *confidence:* Proven in the tree, aheap/src/page.rs: lemma_view states the partition of both blocks and where each metadata page lies, alloc_run refuses only when the source did, and aheap/src/witness.rs holds PAGE_BYTES / BLOCK_PAGES + 1 whole blocks at once. The two-block span is a judgement about the cost of address space against the cost of a metadata page that lives apart from what it describes.
   - *revisit if:* A reservation from the source becomes costly enough that the second block of each span is a measured waste, a caller needs runs larger than one block, or the node outgrows one page.
+- **[page-metadata-sized-from-the-memory-map](./page-metadata-sized-from-the-memory-map/DECISION.md)** (2026-11-14): The block table owns one length, the tracked page count: boot takes the highest RAM the map names, rounds it up to 1 GiB, refuses it past the identity-mapped span, and carves one region holding a page entry, region entries, counts, a stale epoch and a zeroing cursor for every page from address 0, holes included.
+  - *confidence:* The tiling and the overflow bound are arithmetic on the span and the 4K granule. That a closed per-element points-to map verifies at the cost of the fixed arrays is a judgement; the storage change measures it.
+  - *revisit if:* A machine's address holes cost more metadata than its RAM, so a dense table of only the RAM pages pays for an address-to-index translation; or the identity-mapped span has to exceed 2^48, which the page-table address mask and the device names both stop; or a boot must track RAM the loader has not identity-mapped.
 - **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-10): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area.
   - *confidence:* A structural choice; the no-cycles property it buys is what rules out the delete-cascade problem Nevill's thesis describes, and the table invariant is proven in kernel/verified/capability/table.rs.
   - *revisit if:* Threads in one process need distinct authority, or a process needs more slots than the two levels give, or a table must be passed as a capability, or a supported core's XSAVE area outgrows the 3072 bytes a thread's record page leaves it.
@@ -112,9 +115,9 @@ in `revisit if` what would make it worth reopening.
 - **[teardown-driven-by-retype](./teardown-driven-by-retype/DECISION.md)** (2026-11-12): An object is dead when its references reach zero or, for a process or thread, when destroyed through a control capability; every operation then refuses it. There is no kernel list of dead objects: a retype of the block by the holder of its untyped detaches, then dismantles, a bounded slice per entry, until the block is free. The kernel never kills on its own.
   - *confidence:* The human's choice of who pays, and of the kernel deciding no kill policy, after a precedent survey. The block state machine, references, zeroing, reclaim and two-way detach are in the tree; the dismantle arms land with each object kind.
   - *revisit if:* Memory held by dead objects nobody retypes becomes a real shortage that pager policy cannot collect, or a workload needs the kernel to kill a whole process on a fault.
-- **[test-guest-memory](./test-guest-memory/DECISION.md)** (2026-11-10): The gate, the boot-stack check and the pinned measurement boot a 2.5 GiB guest, and the kernel tracks the pages of addresses 0 to 4 GiB, which hold all of it on the PC, where RAM starts at 0, and on QEMU virt, where it starts at 1 GiB. The firmware allocates from the top of RAM and the loader from the bottom, so boot hands the root one whole 1G untyped, 1 to 2 GiB on the PC and 2 to 3 GiB on virt, which the boot check names per target. The loader's pools, the stacks and dom0's window are sized to what they hold, not to the guest, and the memory map crosses as typed ranges.
-  - *confidence:* The pool sizes are judgement from the reservation arithmetic below. That 1 to 2 GiB is wholly free on the PC is a measurement of this firmware's map under this loader, not a guarantee of either; the gate's boots recheck it each time. That 2 to 3 GiB is free on virt is a measurement of the firmware's map alone: no kernel has booted there, and the first boot there settles it.
-  - *revisit if:* A functional or performance test needs more RAM than 2.5 GiB; a machine the kernel must run on has RAM at or above 4 GiB, which the kernel does not track; or a firmware or loader change puts an allocation into a machine's free 1G region, which a boot there reports as the 1G untyped missing.
+- **[test-guest-memory](./test-guest-memory/DECISION.md)** (2026-11-14): The gate, the boot-stack check and the pinned measurement boot a 2.5 GiB guest. The firmware allocates from the top of RAM and the loader from the bottom, so boot hands the root one whole 1G untyped, 1 to 2 GiB on the PC, where RAM starts at 0, and 2 to 3 GiB on QEMU virt, where it starts at 1 GiB, which the boot check names per target. The loader's pools, the stacks and dom0's window are sized to what they hold, not to the guest, and the memory map crosses as typed ranges.
+  - *confidence:* The pool sizes are judgement from the reservation arithmetic below. That 1 to 2 GiB is wholly free on the PC, and that 2 to 3 GiB is wholly free on virt, are measurements of this firmware's map under this loader, not a guarantee of either; the gate's boot on each target rechecks them.
+  - *revisit if:* A functional or performance test needs more RAM than 2.5 GiB; the loader's identity map no longer covers this guest's tracked end; or a firmware or loader change puts an allocation into a machine's free 1G region, which a boot there reports as the 1G untyped missing.
 - **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-10): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
   - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
   - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
@@ -147,7 +150,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
 - `arch`: who-vouches-for-an-unproven-claim
-- `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
+- `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
 - `gate`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, witness-per-way-an-operation-succeeds
@@ -161,7 +164,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `license`: license-stated-in-every-source-file
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
-- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, region-map-owns-the-address-space, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
+- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, region-map-owns-the-address-space, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `network`: network-stack-proven-at-tier-1
 - `pagetable`: arch-module
@@ -184,6 +187,6 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `tracker`: loops-select-by-work-kind-and-stage, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `trusted-base`: region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
-- `verified`: arch-module, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, witness-per-way-an-operation-succeeds
+- `verified`: arch-module, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, witness-per-way-an-operation-succeeds
 - `virtualization`: vmm-over-svm
 - `witness`: witness-per-way-an-operation-succeeds

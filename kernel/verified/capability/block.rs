@@ -6,7 +6,8 @@
 //! 2M and 1G region counts what is not free inside it, so that zero means all of it is free. A large
 //! block cannot write its page entries in a bounded step, so its state is in its region's entry, its
 //! pages' entries stay Free, and a page is free only if neither region above it is typed. See
-//! design/teardown-driven-by-retype/.
+//! design/teardown-driven-by-retype/. How many pages this table covers is
+//! design/page-metadata-sized-from-the-memory-map/.
 //!
 //! Untyped authorisation is a precondition its caller proves, since capabilities live a level above.
 use vstd::prelude::*;

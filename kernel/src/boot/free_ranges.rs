@@ -11,7 +11,8 @@
 
 use astd::boot::{PhysicalMemoryType, PhysicalRange, PAGE_BYTES};
 
-/// Pages the kernel tracks. `boot/mod.rs` checks this against `verified::define::NUM_PAGES`.
+/// Pages the compile-time tables cover. `boot/mod.rs` checks this against `verified::define::NUM_PAGES`.
+/// design/page-metadata-sized-from-the-memory-map/.
 pub const PAGE_SLOTS: usize = 1024 * 1024;
 
 /// First address that is not a tracked page.
