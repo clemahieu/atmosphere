@@ -14,6 +14,7 @@ pub mod pptr;
 pub mod queue_lock;
 pub mod layouts;
 pub mod array;
+pub mod column;
 pub mod pagetable;
 #[cfg(throwaway)]
 pub mod throwaway;
