@@ -169,14 +169,7 @@ impl CapKernel {
             assert(b0.0 <= bp);
             assert(bp + 8 <= b0.0 + pw);
             assert(self.blocks.tracks_run(bp, 8));
-            assert(bp / (PAGES_PER_2M as int) < NUM_2M) by (nonlinear_arith)
-                requires
-                    self.blocks.tracks(bp),
-            ;
-            assert(bp / (PAGES_PER_1G as int) < NUM_1G) by (nonlinear_arith)
-                requires
-                    self.blocks.tracks(bp),
-            ;
+            self.blocks.lemma_tracked_regions(bp);
             assert(!self.blocks.covered(bp));
             assert forall|k: int| 0 <= k < 8 implies #[trigger] self.blocks.pages@[b / PAGE_SZ + k].kind is Free by {
                 assert(b0.0 <= bp + k < b0.0 + pw);

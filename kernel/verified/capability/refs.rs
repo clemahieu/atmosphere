@@ -239,13 +239,15 @@ pub proof fn lemma_leaf_page(base: usize)
     assert(base as int / PAGE_SZ as int == 2 * q);
 }
 
-/// A page's base lies on that page.
-pub proof fn lemma_page_base(b: usize)
+/// A tracked page's base lies on that page.
+pub proof fn lemma_page_base(blocks: &BlockTable, b: usize)
     requires
-        b < NUM_PAGES,
+        blocks.span_wf(),
+        blocks.tracks(b as int),
     ensures
         ((b * PAGE_SZ) as usize) / PAGE_SZ == b,
 {
+    blocks.lemma_tracked_in_span(b as int);
     lemma_div_by_multiple(b as int, PAGE_SZ as int);
 }
 
@@ -771,6 +773,7 @@ pub proof fn lemma_objects_small_typed(
     requires
         objects_wf(ta, a, holders),
         forall|br: BlockRef| #[trigger] holders.contains_key(br) ==> block_typed(a, br),
+        a.span_wf(),
         a.tracks(base as int),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
         forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
@@ -787,7 +790,7 @@ pub proof fn lemma_objects_small_typed(
     ensures
         objects_wf(tb, b, holders),
 {
-    lemma_page_base(base);
+    lemma_page_base(a, base);
     assert forall|x: usize| #[trigger] holders.contains_key(BlockRef::Small(x)) implies b.pages@[x as int].object is Frame by {
         assert(block_typed(a, BlockRef::Small(x)));
         if base <= x < base + size {
@@ -984,8 +987,7 @@ pub proof fn lemma_same_structure(a: &BlockTable, b: &BlockTable)
         forall|x: BlockRef| #[trigger] block_typed(b, x) == block_typed(a, x),
 {
     assert forall|i: usize| a.tracks(i as int) implies #[trigger] block_ref(b, i) == block_ref(a, i) by {
-        assert(i / PAGES_PER_2M < NUM_2M);
-        assert(i / PAGES_PER_1G < NUM_1G);
+        a.lemma_tracked_regions(i as int);
     }
 }
 
@@ -1016,31 +1018,31 @@ proof fn lemma_region_of_bytes(addr: int, r: int, pages: int, regions: int)
     lemma_fundamental_div_mod_converse(p, pages, r, p - r * pages);
 }
 
-/// The 2M region of a byte address, from the region's bounds.
-pub proof fn lemma_region_2m_of_bytes(addr: int, r: usize)
+/// The 2M region of a byte address, from the region's bounds: the address is on a tracked page.
+pub proof fn lemma_region_2m_of_bytes(blocks: &BlockTable, addr: int, r: usize)
     requires
         r < NUM_2M,
         r * SIZE_2M <= addr < (r + 1) * SIZE_2M,
     ensures
-        0 <= addr / (PAGE_SZ as int) < NUM_PAGES,
+        0 <= addr / (PAGE_SZ as int) < blocks.page_count(),
         (addr / PAGE_SZ as int) / PAGES_PER_2M as int == r,
 {
     assert(SIZE_2M as int == PAGES_PER_2M as int * PAGE_SZ as int) by (compute);
-    assert(NUM_2M as int * PAGES_PER_2M as int == NUM_PAGES as int) by (compute);
+    blocks.lemma_region_counts();
     lemma_region_of_bytes(addr, r as int, PAGES_PER_2M as int, NUM_2M as int);
 }
 
-/// The 1G region of a byte address, from the region's bounds.
-pub proof fn lemma_region_1g_of_bytes(addr: int, r: usize)
+/// The 1G region of a byte address, from the region's bounds: the address is on a tracked page.
+pub proof fn lemma_region_1g_of_bytes(blocks: &BlockTable, addr: int, r: usize)
     requires
         r < NUM_1G,
         r * SIZE_1G <= addr < (r + 1) * SIZE_1G,
     ensures
-        0 <= addr / (PAGE_SZ as int) < NUM_PAGES,
+        0 <= addr / (PAGE_SZ as int) < blocks.page_count(),
         (addr / PAGE_SZ as int) / PAGES_PER_1G as int == r,
 {
     assert(SIZE_1G as int == PAGES_PER_1G as int * PAGE_SZ as int) by (compute);
-    assert(NUM_1G as int * PAGES_PER_1G as int == NUM_PAGES as int) by (compute);
+    blocks.lemma_region_counts();
     lemma_region_of_bytes(addr, r as int, PAGES_PER_1G as int, NUM_1G as int);
 }
 
@@ -1106,11 +1108,11 @@ pub proof fn lemma_child_same_block(blocks: &BlockTable, parent: Payload, child:
             assert(child.base == parent.base);
         },
         BlockRef::Two(r) => {
-            lemma_region_2m_of_bytes(child.base as int, r);
+            lemma_region_2m_of_bytes(blocks, child.base as int, r);
             assert(cb / PAGES_PER_2M == r);
         },
         BlockRef::One(r) => {
-            lemma_region_1g_of_bytes(child.base as int, r);
+            lemma_region_1g_of_bytes(blocks, child.base as int, r);
             assert(cb / PAGES_PER_1G == r);
             lemma_in_1g_block(blocks, cb, r);
         },

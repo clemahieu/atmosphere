@@ -197,8 +197,8 @@ pub open spec fn kernel_root_reserved(blocks: &BlockTable, kernel_root: usize) -
 
 /// The kernel root's page, when the blocks track it, is none of the `n` pages from `start`: a boot step
 /// handing those pages to the blocks leaves the root's page Reserved.
-pub open spec fn kernel_root_apart(kernel_root: usize, start: int, n: int) -> bool {
-    kernel_root / PAGE_SZ < NUM_PAGES ==> !(start <= kernel_root / PAGE_SZ < start + n)
+pub open spec fn kernel_root_apart(blocks: &BlockTable, kernel_root: usize, start: int, n: int) -> bool {
+    blocks.tracks_addr(kernel_root) ==> !(start <= kernel_root / PAGE_SZ < start + n)
 }
 
 /// The kernel holds each core's base register, and what each last wrote is what the core's record
@@ -687,8 +687,7 @@ pub proof fn lemma_refs_changed_translatable(a: &BlockTable, b: &BlockTable, br:
 {
     assert forall|g: usize| translatable(a, g) implies #[trigger] translatable(b, g) by {
         let i = g as int;
-        assert(0 <= region_2m(i) < NUM_2M);
-        assert(0 <= region_1g(i) < NUM_1G);
+        a.lemma_tracked_regions(i);
         assert(b.pages@[i].kind == a.pages@[i].kind);
         assert(b.regions_2m@[region_2m(i)].typed == a.regions_2m@[region_2m(i)].typed);
         assert(b.regions_1g@[region_1g(i)].typed == a.regions_1g@[region_1g(i)].typed);
@@ -2498,7 +2497,7 @@ impl CapKernel {
         requires
             pre.wf(),
             post.spaces.kernel_root == pre.spaces.kernel_root,
-            kernel_root_apart(pre.spaces.kernel_root@, start, n),
+            kernel_root_apart(&pre.blocks, pre.spaces.kernel_root@, start, n),
             forall|i: int| pre.blocks.tracks(i) && !(start <= i < start + n) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
         ensures
             kernel_root_reserved(&post.blocks, post.spaces.kernel_root@),

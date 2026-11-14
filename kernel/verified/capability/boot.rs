@@ -159,8 +159,8 @@ impl CapKernel {
             base + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= base,
             !(base <= root < base + PROCESS_BYTES),
             !(leaf <= root < leaf + LEAF_BYTES),
-            kernel_root_apart(old(self).spaces.kernel_root@, (base / PAGE_SZ) as int, 8),
-            kernel_root_apart(old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
+            kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (base / PAGE_SZ) as int, 8),
+            kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
             forall|i: usize| base / PAGE_SZ <= i < base / PAGE_SZ + 8 || leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
                 ==> #[trigger] holds(pages, i),
         ensures
@@ -444,7 +444,7 @@ impl CapKernel {
             !old(self).blocks.covered((t / PAGE_SZ) as int),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !(t / PAGE_SZ <= p / PAGE_SZ < t / PAGE_SZ + 2),
-            kernel_root_apart(old(self).spaces.kernel_root@, (t / PAGE_SZ) as int, 2),
+            kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (t / PAGE_SZ) as int, 2),
             forall|i: usize| t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
@@ -740,7 +740,7 @@ impl CapKernel {
             !old(self).blocks.covered((leaf / PAGE_SZ) as int),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !(leaf / PAGE_SZ <= p / PAGE_SZ < leaf / PAGE_SZ + 2),
-            kernel_root_apart(old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
+            kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
             forall|i: usize| leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
@@ -876,10 +876,10 @@ impl CapKernel {
             !(leaf <= root < leaf + LEAF_BYTES),
             !(frames <= root < frames + LEAF_BYTES),
             !(t <= root < t + THREAD_BYTES),
-            kernel_root_apart(old(self).spaces.kernel_root@, (process / PAGE_SZ) as int, 8),
-            kernel_root_apart(old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
-            kernel_root_apart(old(self).spaces.kernel_root@, (frames / PAGE_SZ) as int, 2),
-            kernel_root_apart(old(self).spaces.kernel_root@, (t / PAGE_SZ) as int, 2),
+            kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (process / PAGE_SZ) as int, 8),
+            kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
+            kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (frames / PAGE_SZ) as int, 2),
+            kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (t / PAGE_SZ) as int, 2),
             forall|i: usize| process / PAGE_SZ <= i < process / PAGE_SZ + 8 || leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
                 || frames / PAGE_SZ <= i < frames / PAGE_SZ + 2 || t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
@@ -2086,7 +2086,7 @@ impl CapKernel {
                 == if start <= i < start + n { free_entry() } else { pre.blocks.pages@[i] },
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                 ==> !(start <= p / PAGE_SZ < start + n),
-            kernel_root_apart(pre.spaces.kernel_root@, start as int, n as int),
+            kernel_root_apart(&pre.blocks, pre.spaces.kernel_root@, start as int, n as int),
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
@@ -2329,8 +2329,8 @@ impl CapKernel {
             base + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= base,
             !(base <= root < base + PROCESS_BYTES),
             !(leaf <= root < leaf + LEAF_BYTES),
-            kernel_root_apart(pre.spaces.kernel_root@, (base / PAGE_SZ) as int, 8),
-            kernel_root_apart(pre.spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
+            kernel_root_apart(&pre.blocks, pre.spaces.kernel_root@, (base / PAGE_SZ) as int, 8),
+            kernel_root_apart(&pre.blocks, pre.spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
             (base / PAGE_SZ) * PAGE_SZ == base,
             (leaf / PAGE_SZ) * PAGE_SZ == leaf,
             (leaf / PAGE_SZ) % 2 == 0,

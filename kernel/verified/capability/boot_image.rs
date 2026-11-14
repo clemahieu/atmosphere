@@ -617,7 +617,7 @@ impl CapKernel {
                 assert(image_region(runs, q));
             }
         } else {
-            assert(NUM_2M * PAGES_PER_2M == cur.blocks.page_count());
+            cur.blocks.lemma_region_counts();
             lemma_multiply_divide_lt(s as int, PAGES_PER_2M as int, NUM_2M as int);
             assert(cur.blocks.regions_2m@[q].refs <= k);
         }

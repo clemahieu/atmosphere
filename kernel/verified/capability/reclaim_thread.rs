@@ -591,7 +591,7 @@ impl CapKernel {
             assert(post.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
             assert(thread_block(&pre.blocks, x));
             assert(x != page);
-            lemma_page_base(x);
+            lemma_page_base(&post.blocks, x);
             lemma_fundamental_div_mod(base as int, PAGE_SZ as int);
         }
         assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && post.tables.payload_of(n).kind is Thread implies {

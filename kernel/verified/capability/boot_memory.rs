@@ -473,7 +473,7 @@ impl CapKernel {
                         assert(in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int));
                     }
                 }
-                assert(kernel_root_apart(before.spaces.kernel_root@, start as int, n as int)) by {
+                assert(kernel_root_apart(&before.blocks, before.spaces.kernel_root@, start as int, n as int)) by {
                     let kr = (before.spaces.kernel_root@ / PAGE_SZ) as int;
                     if before.blocks.tracks(kr) && start <= kr < start + n {
                         assert(in_run_at(runs@, r as int, kr));

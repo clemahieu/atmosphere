@@ -1261,8 +1261,7 @@ impl CapKernel {
             assert(pre.holders@.contains_key(br));
             assert(!block_active(&pre.zeroing, br));
             assert(br != lr);
-            assert(i / PAGES_PER_2M < NUM_2M);
-            assert(i / PAGES_PER_1G < NUM_1G);
+            pre.blocks.lemma_tracked_regions(i as int);
             match level {
                 Large::Two => {
                     if i / PAGES_PER_2M == r {

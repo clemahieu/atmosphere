@@ -942,7 +942,7 @@ impl CapKernel {
             implies post.tables.owner@.contains_key((b * PAGE_SZ) as usize) by {
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
             assert(leaf_block(&pre.blocks, b));
-            lemma_page_base(b);
+            lemma_page_base(&post.blocks, b);
         }
     }
 

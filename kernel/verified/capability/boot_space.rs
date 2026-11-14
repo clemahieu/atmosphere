@@ -152,8 +152,7 @@ impl CapKernel {
     {
         let i = (b / PAGE_SZ) as int;
         assert(pre.blocks.tracks(i));
-        assert(0 <= region_2m(i) < NUM_2M);
-        assert(0 <= region_1g(i) < NUM_1G);
+        pre.blocks.lemma_tracked_regions(i);
         assert forall|k: int| 0 <= k < 8 implies #[trigger] post.blocks.pages@[b / PAGE_SZ + k].kind is Free by {
             assert(pre.blocks.tracks(b / PAGE_SZ + k));
             assert(pre.blocks.pages@[b / PAGE_SZ + k].kind is Free);

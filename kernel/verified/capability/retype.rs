@@ -89,7 +89,6 @@ pub fn large_region(base: usize, order: u8) -> (ret: Option<(Large, usize)>)
             &&& r < level_regions(level)
             &&& level_base(level, r) == base / PAGE_SZ
             &&& r * level_pages(level) == base / PAGE_SZ
-            &&& base / PAGE_SZ < NUM_PAGES
             &&& base == (base / PAGE_SZ) * PAGE_SZ
         },
 {

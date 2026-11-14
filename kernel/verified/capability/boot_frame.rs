@@ -695,7 +695,7 @@ impl CapKernel {
             assert(mid.list == pre.list && mid.tables == pre.tables);
             assert(same_but_contents(pre.view(), mid.view()));
             lemma_contents_same_reach(pre.view(), mid.view());
-            lemma_region_2m_of_bytes(base as int, r);
+            lemma_region_2m_of_bytes(&mid.blocks, base as int, r);
             assert(block_ref(&mid.blocks, base / PAGE_SZ) == BlockRef::Two(r));
         }
         if typed {

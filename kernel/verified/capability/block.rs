@@ -224,6 +224,26 @@ impl BlockTable {
         lemma_whole_regions(self.spec_page_count() as int);
     }
 
+    /// The region arrays hold one entry for each 2M and each 1G region of the tracked pages.
+    pub proof fn lemma_region_counts(&self)
+        ensures
+            NUM_2M * PAGES_PER_2M == self.spec_page_count(),
+            NUM_1G * PAGES_PER_1G == self.spec_page_count(),
+    {
+        assert(NUM_2M * PAGES_PER_2M == NUM_PAGES) by (compute);
+        assert(NUM_1G * PAGES_PER_1G == NUM_PAGES) by (compute);
+    }
+
+    /// A tracked page's 2M and 1G regions are entries of the region arrays.
+    pub proof fn lemma_tracked_regions(&self, i: int)
+        requires
+            self.tracks(i),
+        ensures
+            0 <= region_2m(i) < NUM_2M,
+            0 <= region_1g(i) < NUM_1G,
+    {
+    }
+
     /// Page i is one the table tracks.
     pub open spec fn tracks(&self, i: int) -> bool {
         0 <= i < NUM_PAGES
