@@ -294,6 +294,34 @@ impl CapKernel {
         assert(b.controlled(dst, dst, 0));
     }
 
+    /// Whether a move from position `from` to position `to`, by a caller whose table is at `root`,
+    /// answered ok exactly when can_move_at holds, and left the kernel as it was when it refused.
+    /// move_cap's ensures and spec_moved both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn move_answered(pre: Self, post: Self, root: usize, from: Position, to: Position, ok: bool) -> bool {
+        &&& ok == pre.can_move_at(root, from, to)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a move leaves as it was, whether it answered ok or refused: the cores, the block table, the
+    /// IOMMUs, the process records and which are bound, the device records and their count, the space
+    /// records and which are bound, the flush epoch, and the process each thread is bound to.
+    /// move_cap's ensures and spec_moved both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn move_kept(pre: Self, post: Self) -> bool {
+        &&& post.cores == pre.cores
+        &&& post.blocks == pre.blocks
+        &&& post.iommus == pre.iommus
+        &&& post.processes.records == pre.processes.records
+        &&& post.processes.bound == pre.processes.bound
+        &&& post.devices.records == pre.devices.records
+        &&& post.devices.count == pre.devices.count
+        &&& post.spaces.records == pre.spaces.records
+        &&& post.spaces.bound == pre.spaces.bound
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
     /// Moves the capability at position `from` to the empty position `to`: each an index of the
     /// caller's table, at `root`, or of the table of a process the caller controls. A source in the
     /// caller's own table, however named, is refused when it names a dead process or thread; a source
@@ -307,21 +335,10 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            final(self).cores == old(self).cores,
+            Self::move_answered(*old(self), *final(self), root, from, to, ret),
             Self::same_tree(*old(self), *final(self)),
-            ret == old(self).can_move_at(root, from, to),
-            !ret ==> *final(self) == *old(self),
             ret ==> Self::cap_moved_at(*old(self), *final(self), root, from, to),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            final(self).blocks == old(self).blocks,
-            final(self).iommus == old(self).iommus,
-            final(self).processes.records == old(self).processes.records,
-            final(self).processes.bound == old(self).processes.bound,
-            final(self).devices.records == old(self).devices.records,
-            final(self).devices.count == old(self).devices.count,
-            final(self).spaces.records == old(self).spaces.records,
-            final(self).spaces.bound == old(self).spaces.bound,
-            final(self).flush_epoch == old(self).flush_epoch,
+            Self::move_kept(*old(self), *final(self)),
     {
         let ghost pre = *old(self);
         let src = match self.find_table(root, from.through) {

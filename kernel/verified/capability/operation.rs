@@ -722,20 +722,30 @@ impl CapKernel {
     }
 
     /// A move in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, exactly when allows_move fails, or ok with the capability at the position the slot's
-    /// word names moved to the position the word in argument 1 names, every thread bound as it was and
-    /// every space's tables as they were.
+    /// returned: refused with nothing changed, exactly when allows_move fails, or ok with the capability
+    /// at the position the slot's word names moved to the position the word in argument 1 names, as
+    /// cap_moved_at says, and every space's tables as they were; either way the cores, the block table,
+    /// the IOMMUs, the process, device and space records, the flush epoch and every thread's binding are
+    /// as move_kept says.
     pub open spec fn spec_moved(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
-        ||| !pre.allows_move(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& out == status_only(STATUS_OK)
-            &&& from is Some
-            &&& to is Some
-            &&& Self::cap_moved_at(pre, post, root, from->0, to->0)
-            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
-            &&& Self::same_tree(pre, post)
+        &&& Self::move_kept(pre, post)
+        &&& {
+            ||| {
+                &&& !pre.allows_move(root, frame)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& post == pre
+                &&& from is Some && to is Some ==> Self::move_answered(pre, post, root, from->0, to->0, false)
+            }
+            ||| {
+                &&& out == status_only(STATUS_OK)
+                &&& from is Some
+                &&& to is Some
+                &&& Self::move_answered(pre, post, root, from->0, to->0, true)
+                &&& Self::cap_moved_at(pre, post, root, from->0, to->0)
+                &&& Self::same_tree(pre, post)
+            }
         }
     }
 
