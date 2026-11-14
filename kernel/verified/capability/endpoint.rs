@@ -410,8 +410,8 @@ impl CapKernel {
         self.blocks.lemma_not_free_uncovered((e / PAGE_SZ) as int);
     }
 
-    /// The endpoints after endpoint capability n, the only capability that changed, joins endpoint e
-    /// with one more reference on its block.
+    /// The endpoints after endpoint or notification capability n, the only capability that changed,
+    /// joins the object at e with one more reference on its block.
     pub proof fn lemma_endpoints_holder_added(pre: Self, post: Self, n: usize, e: usize)
         requires
             pre.wf(),
@@ -419,7 +419,7 @@ impl CapKernel {
             forall|x: usize| x != n && #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
             !pre.is_cap(n),
             post.is_cap(n),
-            post.payload_of(n).kind is Endpoint,
+            queue_kind(post.payload_of(n).kind),
             post.payload_of(n).base == e,
             post.payload_of(n).order == 0,
             pre.endpoints.records@.contains_key(e),

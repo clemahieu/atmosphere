@@ -613,7 +613,7 @@ impl CapKernel {
     /// the badge in argument 5, or the parent's when it is 0,
     /// the one entry the parent map gains and the only node whose kind, liveness or capability changed,
     /// the block the parent lies in holding one more reference when the parent is a frame, a space, a
-    /// thread, a process or an endpoint and the block table as it was otherwise,
+    /// thread, a process, an endpoint or a notification and the block table as it was otherwise,
     /// no root entry changed, every thread bound as it was, and every space's tables as they were.
     /// Rights wider than 32 bits and an order wider than 8 are refused, since no capability holds them,
     /// and so is a source word naming another process's table: derive takes its parent from the

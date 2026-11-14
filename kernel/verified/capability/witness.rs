@@ -6163,6 +6163,11 @@ impl CapKernel {
                 &&& final(self).view().holds(process, ne)
                 &&& final(self).endpoints.records@.contains_key(base)
                 &&& final(self).endpoints.records@[base].value() == fresh_record()
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& final(self).root_live(process)
+                &&& final(self).list.nodes@[ne as int].depth == 2
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
+                &&& witness_empty(*final(self), process, WITNESS_BADGED_SLOT, (base + 2 * PAGE_SZ + 2) as usize)
             }),
     {
         hide(CapKernel::wf);
@@ -6259,6 +6264,10 @@ impl CapKernel {
             assert(s1.tables.has_slot(&s1.list, process, WITNESS_FRAME_SLOT));
             assert(s1.tables.node_of(process, WITNESS_FRAME_SLOT) == lb + 3);
             assert(witness_empty(s1, process, WITNESS_FRAME_SLOT, (lb + 3) as usize));
+            assert(index_ok(WITNESS_BADGED_SLOT) && index_entry(WITNESS_BADGED_SLOT) == 2);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_BADGED_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_BADGED_SLOT) == lb + 2);
+            assert(witness_empty(s1, process, WITNESS_BADGED_SLOT, (lb + 2) as usize));
             assert(s0.blocks.tracks(ep));
             assert(s1.blocks.pages@[ep].kind is Free);
             assert(s1.blocks.regions_2m@ == s0.blocks.regions_2m@);
@@ -6290,8 +6299,107 @@ impl CapKernel {
             assert(s2.view().holds(process, ne));
             assert(s2.payload_of(ne) == notification_of(base));
             assert(s2.is_cap(ne));
+            assert(s2.list.nodes@[ne as int].depth == 2);
+            assert(s2.blocks.pages@[ep].refs == 1);
+            assert(s2.processes == s1.processes);
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.root_live(process));
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_BADGED_SLOT));
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_BADGED_SLOT));
+            assert(s2.tables.node_of(process, WITNESS_BADGED_SLOT) == lb + 2);
+            assert(!s2.list.nodes@[(lb + 2) as int].live);
+            assert(witness_empty(s2, process, WITNESS_BADGED_SLOT, (lb + 2) as usize));
         }
         (ok1, ok2)
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: retype a notification as
+    /// witness_root_retypes_a_notification does, then derive from its capability, whose badge is 0, a
+    /// capability with the send right alone and badge 2^62, a bit past the 48 an endpoint's badge may
+    /// use and below the waiter bit, into slot 2 of the leaf. derive accepts it: the child names the
+    /// same notification with that right and that badge, one depth below. The use is a waiter handing a
+    /// source a capability to signal it, whose one-bit badge tells the waiter which source signalled.
+    /// design/witness-per-way-an-operation-succeeds/, design/notification-word-reserves-the-waiter-bit/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_derives_a_badged_notification(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret,
+            ({
+                let ne = (base + 2 * PAGE_SZ + 3) as usize;
+                let n = (base + 2 * PAGE_SZ + 2) as usize;
+                let p = final(self).payload_of(n);
+                &&& final(self).wf()
+                &&& final(self).slot_holds(process, WITNESS_BADGED_SLOT, n, p)
+                &&& p.kind is Notification
+                &&& p.base == base
+                &&& p.rights == right_bit(Right::Send)
+                &&& p.badge == 0x4000_0000_0000_0000 // not a page size: bit 62 of the word
+                &&& final(self).list.is_child(ne, n)
+                &&& final(self).list.nodes@[n as int].depth == 3
+            }),
+    {
+        hide(CapKernel::wf);
+        let _ = self.witness_root_retypes_a_notification(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
+        let ghost s1 = *self;
+        let send: u32 = 16;
+        let badge: usize = 0x4000_0000_0000_0000; // not a page size: bit 62 of the word
+        let to = Position { through: None, index: WITNESS_BADGED_SLOT };
+        let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
+        let ghost n = (base + 2 * PAGE_SZ + 2) as usize;
+        proof {
+            lemma2_to64();
+            assert(right_bit(Right::Send) == 16) by (compute_only);
+            assert(notification_of(base).rights == NOTIFICATION_RIGHTS);
+            assert(16u32 & !NOTIFICATION_RIGHTS == 0) by (compute_only);
+            assert(notification_of(base).badge == 0);
+            assert(notification_of(base).order == 0);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_FRAME_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_FRAME_SLOT) == ne);
+            assert(s1.is_cap(ne));
+            assert(s1.payload_of(ne).kind is Notification);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_BADGED_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_BADGED_SLOT) == n);
+            assert(!s1.list.nodes@[n as int].live);
+            s1.lemma_notification_derive(process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge);
+            assert(badge < NOTIFICATION_BADGE_LIMIT);
+            assert(block_refs(&s1.blocks, BlockRef::Small(base / PAGE_SZ)) == 1);
+            assert(s1.can_derive_between(process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge));
+            assert(s1.table_at(process, None) == Some(process));
+            assert(s1.can_derive_at(process, WITNESS_FRAME_SLOT, to, send, base, 0, badge));
+        }
+        let ok = self.derive(process, WITNESS_FRAME_SLOT, to, send, base, 0, badge);
+        proof {
+            let s2 = *self;
+            assert(ok);
+            assert(Self::cap_derived_between(s1, s2, process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge));
+            assert(s2.payload_of(n) == badged_child_of(notification_of(base), send, base, 0, badge));
+            assert(s2.payload_of(n).rights == 16);
+            assert(s2.payload_of(n).badge == badge);
+            assert(s2.list.nodes@[n as int].depth == 3);
+            assert(Self::derive_step(s1, s2, n));
+            Self::lemma_slot_stays(s1, s2, process, WITNESS_BADGED_SLOT);
+            assert(s2.slot_holds(process, WITNESS_BADGED_SLOT, n, s2.payload_of(n)));
+        }
+        ok
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -7745,7 +7853,9 @@ impl CapKernel {
             assert(s4.can_map(process, WITNESS_SPACE_SLOT, SpaceKind::Device, path, WITNESS_FRAME_SLOT, 0));
             assert(s4.can_map_device(process, WITNESS_SPACE_SLOT, r, WITNESS_FRAME_SLOT, 0));
             assert(c2 % PAGE_SZ == 0);
-            assert(m == c2 + 1);
+            assert(m == c2 + 1) by {
+                assert(1int / (NODES_PER_PAGE as int) == 0 && 1int % (NODES_PER_PAGE as int) == 1) by (compute_only);
+            }
         }
         let ok5 = self.map_device(process, WITNESS_SPACE_SLOT, r, WITNESS_FRAME_SLOT, 0);
         let ghost s5 = *self;

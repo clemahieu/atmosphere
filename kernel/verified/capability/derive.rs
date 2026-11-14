@@ -43,13 +43,14 @@ pub open spec fn child_of(parent: Payload, rights: u32, base: usize, order: u8) 
     }
 }
 
-/// A derive may set this badge on a child of parent: 0, which keeps the parent's, or one that fits 48
-/// bits on a child of an endpoint's capability whose own badge is 0. A badge, once set, is in every
-/// capability derived below it, as badges_inherited states, so a receiver can tell which lineage a
-/// sender holds.
+/// A derive may set this badge on a child of parent: 0, which keeps the parent's, or, on a child of a
+/// capability whose own badge is 0, one that fits 48 bits from an endpoint's or leaves bit 63 clear from
+/// a notification's. A badge, once set, is in every capability derived below it, as badges_inherited
+/// states, so a receiver can tell which lineage a sender holds.
 pub open spec fn badge_allowed(parent: Payload, badge: usize) -> bool {
     ||| badge == 0
     ||| parent.kind is Endpoint && parent.badge == 0 && badge < BADGE_LIMIT
+    ||| parent.kind is Notification && parent.badge == 0 && badge < NOTIFICATION_BADGE_LIMIT
 }
 
 /// The child a derive with this badge makes: child_of, with the badge when it is not 0.
@@ -62,9 +63,11 @@ pub open spec fn badged_child_of(parent: Payload, rights: u32, base: usize, orde
     }
 }
 
-/// A child of an endpoint's capability with a badge is an endpoint's capability with that badge.
+/// A child of an endpoint's or a notification's capability with a badge is a capability of the same
+/// kind with that badge.
 pub open spec fn badge_kept(parent: Payload, child: Payload) -> bool {
-    parent.kind is Endpoint && parent.badge != 0 ==> child.kind is Endpoint && child.badge == parent.badge
+    (parent.kind is Endpoint || parent.kind is Notification) && parent.badge != 0
+        ==> child.kind == parent.kind && child.badge == parent.badge
 }
 
 /// Node x keeps its parent's badge, when its parent is a capability.
@@ -195,11 +198,12 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 
 impl CapKernel {
     /// The refusals of a derive from index from of the table at src into index to of the table at dst:
-    /// an index that names no slot, a parent that is no capability, a device's, a notification's, a
-    /// reply's, a dead process's or thread's, or at the deepest depth, a child's slot in use, a child that does not
-    /// narrow its parent, a badge badge_allowed refuses, or a block that counts its holders and has no room for
-    /// one more. A console's, power's or endpoint's child names its parent's object, with rights no
-    /// wider, and so does a core capability's, with a maximum priority, the order, no higher.
+    /// an index that names no slot, a parent that is no capability, a device's, a reply's, a dead
+    /// process's or thread's, or at the deepest depth, a child's slot in use, a child that does not narrow
+    /// its parent, a badge badge_allowed refuses, or a block that counts its holders and has no room for
+    /// one more. A console's, power's, endpoint's or notification's child names its parent's object,
+    /// with rights no wider, and so does a core capability's, with a maximum priority, the order, no
+    /// higher.
     pub open spec fn can_derive_between(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8, badge: usize) -> bool {
         let parent = self.tables.node_of(src, from);
         let child = self.tables.node_of(dst, to);
@@ -207,7 +211,6 @@ impl CapKernel {
         &&& self.tables.has_slot(&self.list, dst, to)
         &&& self.is_cap(parent)
         &&& !(self.payload_of(parent).kind is Device)
-        &&& !(self.payload_of(parent).kind is Notification)
         &&& !(self.payload_of(parent).kind is Reply)
         &&& !self.cap_dead(parent)
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
@@ -346,8 +349,39 @@ impl CapKernel {
         lemma_object_within(p, base, order);
     }
 
+    /// A notification capability derives a child naming its notification, with rights no wider, and
+    /// with a badge only when its own is 0 and the badge leaves bit 63 clear, while the notification's
+    /// block has room for one more holder.
+    pub proof fn lemma_notification_derive(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8, badge: usize)
+        requires
+            self.wf(),
+            self.tables.has_slot(&self.list, src, from),
+            self.tables.has_slot(&self.list, dst, to),
+            self.is_cap(self.tables.node_of(src, from)),
+            self.payload_of(self.tables.node_of(src, from)).kind is Notification,
+        ensures
+            ({
+                let parent = self.tables.node_of(src, from);
+                let p = self.payload_of(parent);
+                self.can_derive_between(src, from, dst, to, rights, base, order, badge) <==> {
+                    &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
+                    &&& !self.list.nodes@[self.tables.node_of(dst, to) as int].live
+                    &&& rights & !p.rights == 0
+                    &&& base == p.base
+                    &&& order == 0
+                    &&& badge == 0 || (p.badge == 0 && badge < NOTIFICATION_BADGE_LIMIT)
+                    &&& block_refs(&self.blocks, BlockRef::Small(p.base / PAGE_SZ)) != usize::MAX
+                }
+            }),
+    {
+        let n = self.tables.node_of(src, from);
+        let p = self.payload_of(n);
+        self.lemma_endpoint_cap(n);
+        lemma_object_within(p, base, order);
+    }
+
     /// What a derive from the capability at node parent does to the block table: the child of a frame,
-    /// a space, a thread, a process or an endpoint is one more holder of the block its parent lies in, which had
+    /// a space, a thread, a process, an endpoint or a notification is one more holder of the block its parent lies in, which had
     /// room for it, and that block's count alone changed; any other child holds no block, and the block
     /// table is as it was.
     pub open spec fn derive_counted(pre: Self, post: Self, parent: usize) -> bool {
@@ -508,32 +542,34 @@ impl CapKernel {
             if payload.kind is Process {
                 pre.lemma_process_cap(parent);
             }
-            if payload.kind is Endpoint {
+            if payload.kind is Endpoint || payload.kind is Notification {
                 pre.lemma_endpoint_cap(parent);
             }
         }
         if self.is_cap_dead(parent, payload) {
             return false;
         }
-        // Only an endpoint's child takes a badge, and only from a parent that has none, so a badge is
-        // fixed once set; it fits the 48 bits a receive returns it in.
+        // Only an endpoint's or a notification's child takes a badge, and only from a parent that has
+        // none, so a badge is fixed once set. An endpoint's fits the 48 bits a receive returns it in, and
+        // a notification's leaves clear the word's waiter bit, bit 63.
         if badge != 0 {
-            let endpoint = match payload.kind {
-                CapKind::Endpoint => true,
-                _ => false,
+            let limit = match payload.kind {
+                CapKind::Endpoint => BADGE_LIMIT,
+                CapKind::Notification => NOTIFICATION_BADGE_LIMIT,
+                _ => 0,
             };
-            if !endpoint || payload.badge != 0 || badge >= BADGE_LIMIT {
+            if payload.badge != 0 || badge >= limit {
                 return false;
             }
         }
         // A device is bound to one space at a time, so its capability has no children: it moves instead.
-        // A notification's or a reply's capability has none either: its retype makes the one capability that
-        // names it. The console's, power's, an endpoint's and a core's name one page, so a child names that page
-        // as its parent does. A core capability's child takes the order as its maximum priority, which it
-        // may lower and not raise.
+        // A reply's capability has none either: its retype makes the one capability that names it. The
+        // console's, power's, an endpoint's, a notification's and a core's name one page, so a child names
+        // that page as its parent does. A core capability's child takes the order as its maximum priority,
+        // which it may lower and not raise.
         let allowed = match payload.kind {
-            CapKind::Device | CapKind::Notification | CapKind::Reply => false,
-            CapKind::Console | CapKind::Power | CapKind::Endpoint => rights & !payload.rights == 0 && base == payload.base && order == payload.order,
+            CapKind::Device | CapKind::Reply => false,
+            CapKind::Console | CapKind::Power | CapKind::Endpoint | CapKind::Notification => rights & !payload.rights == 0 && base == payload.base && order == payload.order,
             CapKind::Core => rights & !payload.rights == 0 && base == payload.base && order as usize <= payload.priority,
             _ => may_derive(payload, rights, base, order),
         };
@@ -541,7 +577,7 @@ impl CapKernel {
             return false;
         }
         proof {
-            if payload.kind is Console || payload.kind is Power || payload.kind is Endpoint {
+            if payload.kind is Console || payload.kind is Power || payload.kind is Endpoint || payload.kind is Notification {
                 lemma_object_within(payload, base, order);
             }
             if payload.kind is Core {
@@ -553,11 +589,11 @@ impl CapKernel {
             _ => (order, 0usize),
         };
         let counted = match payload.kind {
-            CapKind::Frame | CapKind::Space | CapKind::Thread | CapKind::Process | CapKind::Endpoint => true,
+            CapKind::Frame | CapKind::Space | CapKind::Thread | CapKind::Process | CapKind::Endpoint | CapKind::Notification => true,
             _ => false,
         };
-        // A derived frame, space, thread, process or endpoint holds a reference on the block its parent
-        // lies in.
+        // A derived frame, space, thread, process, endpoint or notification holds a reference on the
+        // block its parent lies in.
         let block = if counted {
             let br = locate(&self.blocks, payload.base / PAGE_SZ);
             if !add_block_ref(&mut self.blocks, br) {
@@ -601,7 +637,7 @@ impl CapKernel {
                     CapKind::Process => {
                         self.processes.holders = Ghost(pre.processes.holders@.insert(base, pre.processes.holders@[base].insert(child)));
                     },
-                    CapKind::Endpoint => {
+                    CapKind::Endpoint | CapKind::Notification => {
                         self.endpoints.holders = Ghost(pre.endpoints.holders@.insert(base, pre.endpoints.holders@[base].insert(child)));
                     },
                     _ => { self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].insert(child))); },
@@ -641,8 +677,8 @@ impl CapKernel {
     }
 
     /// The holders after a derive: a frame child joins its parent's block, a space's, thread's,
-    /// process's or endpoint's child joins its parent's object, and any other child holds nothing. With them, what the blocks owe the rest of
-    /// the invariant.
+    /// process's, endpoint's or notification's child joins its parent's object, and any other child
+    /// holds nothing. With them, what the blocks owe the rest of the invariant.
     proof fn lemma_derive_holders(pre: Self, post: Self, parent: usize, child: usize, block: Option<BlockRef>)
         requires
             Self::derive_step(pre, post, child),
@@ -699,7 +735,7 @@ impl CapKernel {
                 &&& post.processes.bound == pre.processes.bound
                 &&& post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].insert(child))
             },
-            block is Some && pre.payload_of(parent).kind is Endpoint ==> {
+            block is Some && queue_kind(pre.payload_of(parent).kind) ==> {
                 let e = pre.payload_of(parent).base;
                 &&& post.holders == pre.holders
                 &&& post.spaces == pre.spaces
@@ -710,9 +746,8 @@ impl CapKernel {
             },
             block is None ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces
                 && post.threads == pre.threads && post.processes == pre.processes,
-            !(pre.payload_of(parent).kind is Notification),
             !(pre.payload_of(parent).kind is Reply),
-            !(pre.payload_of(parent).kind is Endpoint) ==> post.endpoints == pre.endpoints,
+            !queue_kind(pre.payload_of(parent).kind) ==> post.endpoints == pre.endpoints,
             post.replies == pre.replies,
             post.table_pages == pre.table_pages,
         ensures
@@ -842,7 +877,7 @@ impl CapKernel {
                     lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_replies_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                 } else {
-                    // An endpoint is its block's base, so the child names the parent's endpoint.
+                    // An endpoint or a notification is its block's base, so the child names the parent's.
                     pre.lemma_endpoint_cap(parent);
                     let e = pp.base;
                     assert(br == BlockRef::Small(e / PAGE_SZ));

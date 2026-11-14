@@ -105,16 +105,22 @@ pub open spec fn tracked_kind(k: CapKind) -> bool {
 /// A badge fits the 48 bits above a receive's status: design/syscall-abi-in-registers/.
 pub const BADGE_LIMIT: usize = 0x1_0000_0000_0000; // not a page size: the bound of a 48-bit badge
 
+/// A notification's badge leaves bit 63 of the word, the kernel's waiter bit, alone:
+/// design/notification-word-reserves-the-waiter-bit/.
+pub const NOTIFICATION_BADGE_LIMIT: usize = 0x8000_0000_0000_0000; // not a page size: bit 63, the waiter bit
+
 /// What a capability says is well formed: a block for a memory capability, the console's one page for
 /// a console's, power's one page for a power capability's, a core's one page, with a maximum priority
-/// no higher than MAX_PRIORITY, for a core capability's, and a badge below BADGE_LIMIT for an
-/// endpoint capability's, so a receive can return it whole.
+/// no higher than MAX_PRIORITY, for a core capability's, a badge below BADGE_LIMIT for an endpoint
+/// capability's, so a receive can return it whole, and a badge below NOTIFICATION_BADGE_LIMIT for a
+/// notification capability's, so a signal leaves the waiter bit alone.
 pub open spec fn cap_wf(p: Payload) -> bool {
     &&& names_block(p.kind) ==> payload_wf(p)
     &&& p.kind is Console ==> p.base == CONSOLE_OBJECT && p.order == 0
     &&& p.kind is Power ==> p.base == POWER_OBJECT && p.order == 0
     &&& p.kind is Core ==> is_core_object(p.base) && p.order == 0 && p.priority <= MAX_PRIORITY
     &&& p.kind is Endpoint ==> p.badge < BADGE_LIMIT
+    &&& p.kind is Notification ==> p.badge < NOTIFICATION_BADGE_LIMIT
 }
 
 /// The bit of a capability's rights word that grants control.

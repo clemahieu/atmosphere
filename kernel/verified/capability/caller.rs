@@ -2005,12 +2005,13 @@ impl CapKernel {
 
     /// Derive's condition over the caller's view, for the source position from, the destination position
     /// to, the rights, the base, the order and the badge: the rights fit 32 bits and the order 8; the
-    /// source is a slot of the caller's own table holding a capability that is not a device's, a notification's
-    /// or a reply's and that the child narrows; the destination is in a table, through a process capability with
-    /// control naming no dead process when it goes through one, and its slot is empty; the source's capability names no dead
+    /// source is a slot of the caller's own table holding a capability that is not a device's or a reply's
+    /// and that the child narrows; the destination is in a table, through a process capability with control
+    /// naming no dead process when it goes through one, and its slot is empty; the source's capability names no dead
     /// process or thread, is above the deepest depth and, for a kind whose block counts its references,
-    /// names a block below the reference limit; and the badge is 0, or fits 48 bits with the source an
-    /// endpoint's capability whose own badge is 0. The destination's emptiness, the process's and the
+    /// names a block below the reference limit; and the badge is 0, or, with the source's own badge 0,
+    /// fits 48 bits with the source an endpoint's capability or leaves bit 63 clear with the source a
+    /// notification's. The destination's emptiness, the process's and the
     /// source's liveness, the depth, the block's count and the source's badge read the kernel outside
     /// the view.
     pub open spec fn derive_allowed(&self, root: usize, from: Option<Position>, to: Option<Position>, rights: u64, base: usize, order: u64, badge: u64) -> bool {
@@ -2028,7 +2029,6 @@ impl CapKernel {
         &&& self.empty_slot(table->0, to->0.index)
         &&& v.contains_key(i)
         &&& !(v[i].kind is Device)
-        &&& !(v[i].kind is Notification)
         &&& !(v[i].kind is Reply)
         &&& view_narrows(v[i], rights as u32, base, order as u8)
         &&& !self.cap_dead(n)
@@ -2126,8 +2126,9 @@ impl CapKernel {
             let parent = pre.tables.node_of(root, i);
             let p = pre.payload_of(parent);
             if !(p.kind is Frame) {
-                // A space's, a thread's, a process's or an endpoint's block is typed as that object, and
-                // a frame capability's block as a frame, so the block that gained a holder is no frame's.
+                // A space's, a thread's, a process's, an endpoint's or a notification's block is typed as
+                // that object, and a frame capability's block as a frame, so the block that gained a
+                // holder is no frame's.
                 if p.kind is Space {
                     pre.lemma_space_cap(parent);
                 }
@@ -2137,7 +2138,7 @@ impl CapKernel {
                 if p.kind is Process {
                     pre.lemma_process_cap(parent);
                 }
-                if p.kind is Endpoint {
+                if p.kind is Endpoint || p.kind is Notification {
                     pre.lemma_endpoint_cap(parent);
                 }
                 assert forall|t: usize, j: usize, page: usize|
