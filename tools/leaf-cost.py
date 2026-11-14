@@ -17,7 +17,10 @@ reads the Beads tree and the landing logs, and prints, for the leaves closed in 
 - the reviews closed in the window, passed and refuted.
 
 A landed leaf is a closed issue that is not an epic, a decision or a review, whose close reason names
-a commit and which the ledger has a round for. Its cost is every call the ledger counts under its
+a commit reachable from main, and which the ledger has a round for. A commit is named by a run of 7 to
+40 hex digits that is the start of a commit `git rev-list main` gives; a pid in an actor's name, a
+count or a decimal is not one, and neither is a commit main does not contain. tools/offering-report.py
+counts landed by this same rule (`landed` and `main_commits` here). Its cost is every call the ledger counts under its
 id, in weekly points: a point is one percent of the plan's seven-day limit, which is what runs out
 and what the human budgets in. List dollars are not given, since the meter does not charge by list
 price and a dollar on one model moves it further than a dollar on another. Its model is the one its
@@ -53,6 +56,7 @@ usage: tools/leaf-cost.py [--since WHEN] [--until WHEN]   (local time: 2026-11-1
        tools/leaf-cost.py --test                          (this script's own tests)
 """
 import argparse
+import bisect
 import json
 import math
 import re
@@ -82,7 +86,7 @@ RATES = {
 MODEL_IDS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-2"}
 LOOP = ("round", "prover", "skeptic")
 NOT_LEAVES = ("epic", "decision")
-COMMIT = re.compile(r"\b[0-9a-f]{7,40}\b")
+HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
 FAULT = re.compile(r"^exit 1$", re.M)
 
 
@@ -145,20 +149,35 @@ def spent(ledger):
     return issues, sessions, hours, unrated
 
 
-def landed(issue):
-    """Whether a Beads issue is a leaf closed on a commit."""
+def main_commits(tree=TREE):
+    """Every commit main contains, as full SHAs, sorted."""
+    listed = subprocess.run(["git", "-C", str(tree), "rev-list", "main"], capture_output=True, text=True, check=True)
+    return sorted(listed.stdout.split())
+
+
+def names_commit(reason, commits):
+    """Whether the text names one of `commits` (sorted full SHAs) by a run of 7 to 40 hex digits it starts with."""
+    for run in HEX.findall(reason):
+        at = bisect.bisect_left(commits, run)
+        if at < len(commits) and commits[at].startswith(run):
+            return True
+    return False
+
+
+def landed(issue, commits):
+    """Whether a Beads issue is a leaf closed on a commit of `commits`, main's (`main_commits`)."""
     return (issue["status"] == "closed" and issue.get("issue_type") not in NOT_LEAVES
             and "review" not in (issue.get("labels") or [])
-            and COMMIT.search(issue.get("close_reason") or "") is not None)
+            and names_commit(issue.get("close_reason") or "", commits))
 
 
-def leaves(tracker, issues, sessions, logs):
-    """The landed leaves the ledger has a round for."""
+def leaves(tracker, issues, sessions, logs, commits):
+    """The landed leaves the ledger has a round for; `commits` are main's (`main_commits`)."""
     found = []
     for issue in tracker:
         costs = issues.get(issue["id"], {})
         rounds = {model: cost for (kind, model), cost in costs.items() if kind == "round"}
-        if not rounds or not landed(issue):
+        if not rounds or not landed(issue, commits):
             continue
         notes = issue.get("notes") or ""
         log = logs / f"{issue['id']}-gate.log"
@@ -236,12 +255,14 @@ def main(arguments):
     issues, sessions, hours, unrated = spent(ledger)
     since = options.since.timestamp() if options.since else -math.inf
     until = options.until.timestamp() if options.until else math.inf
-    print("\n".join(report(leaves(tracker, issues, sessions, ROOT / "logs"), hours, tracker, since, until, unrated)))
+    print("\n".join(report(leaves(tracker, issues, sessions, ROOT / "logs", main_commits()), hours, tracker, since, until, unrated)))
     return 0
 
 
 class Tests(unittest.TestCase):
     OPUS, FABLE = "claude-opus-5-5", "claude-fable-5-2"
+    # Main's commits as the tests assume them: the SHA the default close reason names.
+    COMMITS = ["abc1234" + "0" * 33]
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -271,7 +292,7 @@ class Tests(unittest.TestCase):
 
     def found(self, *tracker):
         issues, sessions, hours, unrated = spent(self.ledger)
-        return leaves(list(tracker), issues, sessions, self.logs), hours, unrated
+        return leaves(list(tracker), issues, sessions, self.logs, self.COMMITS), hours, unrated
 
     def test_a_leaf_costs_every_session_under_its_id_at_each_models_rate(self):
         self.spend("a-1", "round", self.OPUS, sessions=("s1", "s2"), output=1_000_000, cache_read=10_000_000)
@@ -304,12 +325,13 @@ class Tests(unittest.TestCase):
         self.assertEqual(leaf.model, self.FABLE)
 
     def test_only_a_leaf_closed_on_a_commit_with_a_round_in_the_ledger_is_landed(self):
-        for id in ("a-1", "a-2", "a-3", "a-4", "a-5", "a-6"):
+        for id in ("a-1", "a-2", "a-3", "a-4", "a-5", "a-6", "a-8", "a-9"):
             self.spend(id, "round", self.OPUS, sessions=(id,), output=1000)
         found, _, _ = self.found(
             self.issue("a-1"), self.issue("a-2", type="epic"), self.issue("a-3", labels=["review"], reason="skeptic pass: abc1234"),
             self.issue("a-4", reason="Already true, no commit"), self.issue("a-5", status="open"), self.issue("a-6", type="decision"),
-            self.issue("a-7"))
+            self.issue("a-7"), self.issue("a-8", reason="No commit: loop-3251189 found it done, 1.3707578953832915 points"),
+            self.issue("a-9", reason="fedcba9: landed on a branch main does not contain"))
         self.assertEqual([leaf.id for leaf in found], ["a-1"])
 
     def test_the_label_the_notes_and_the_gate_log_say_what_a_leaf_took(self):

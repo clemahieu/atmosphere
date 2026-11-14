@@ -18,7 +18,10 @@ counted in the period when the session that took it started; what became of it i
 epic is not a landed leaf, whatever its close reason names. For each work kind and offering:
 
 - taken: the leaves it took;
-- landed: those that are not epics and closed on a commit (a close reason naming a SHA);
+- landed: those that are not epics and closed on a commit reachable from main: a close reason with a
+  run of 7 to 40 hex digits that starts a commit `git rev-list main` gives, so a pid in an actor's
+  name, a count or a commit main does not contain is not one (`landed` of tools/leaf-cost.py, the
+  one rule both tools count by);
 - first: those landed with no round on them reporting `Retry:`, so no attempt ended at its bound;
 - escalated: those with a round on them reporting `Retry:`, whichever offering ran the retry;
 - refuted: those landed whose epic had a review close `refuted` after the leaf closed, the epic the
@@ -93,10 +96,10 @@ ROOT = TREE.parent
 RECORD = ROOT / "logs" / "loop"
 LOGS = ROOT / "logs"
 LOOP = Path(__file__).with_name("loop.py")
-FLAG_RATE = runpy.run_path(str(Path(__file__).with_name("leaf-cost.py")))["flag_rate"]
+LEAF_COST = runpy.run_path(str(Path(__file__).with_name("leaf-cost.py")))
+FLAG_RATE, LANDED, MAIN_COMMITS = LEAF_COST["flag_rate"], LEAF_COST["landed"], LEAF_COST["main_commits"]
 NOT_LEAVES = ("epic", "decision")
 LEAF_KINDS = ("tool", "sys", "proof", "spec", "arch")
-COMMIT = re.compile(r"\b[0-9a-f]{7,40}\b")
 # Why a leaf took a round after its first, in the order they are tried (the opening comment says each).
 CAUSES = ("prover", "bound", "base", "fault", "conflict", "waited", "duplicate", "recovered", "other")
 BASE_BUG = re.compile(r"main at [0-9a-f]{7,40} fails the gate by itself")
@@ -112,10 +115,6 @@ def rate(session):
 
 def closed_at(issue):
     return datetime.fromisoformat(issue["closed_at"]).timestamp() if issue.get("closed_at") else None
-
-
-def landed(issue):
-    return issue["status"] == "closed" and COMMIT.search(issue.get("close_reason") or "") is not None
 
 
 def label_kind(issue):
@@ -231,8 +230,9 @@ def apportioned(parts, total):
     return [f"{value / 100:.2f}" for value in got]
 
 
-def report(sessions, tracker, since=-math.inf, until=math.inf, logs=LOGS):
-    """The lines of the report over the sessions of the record and the issues of the tracker."""
+def report(sessions, tracker, commits, since=-math.inf, until=math.inf, logs=LOGS):
+    """The lines of the report over the sessions of the record and the issues of the tracker;
+    `commits` are main's, which a landed leaf's close reason names one of."""
     issues = {issue["id"]: issue for issue in tracker}
     refuted_at = refutations(tracker)
     by_issue, other = {}, []
@@ -288,7 +288,7 @@ def report(sessions, tracker, since=-math.inf, until=math.inf, logs=LOGS):
         if causes:
             caused[id] = (kind, taker["offering"] or "-", causes)
         escalated = any(session["retry"] for session in rounds)
-        did_land = issue.get("issue_type") != "epic" and landed(issue)
+        did_land = LANDED(issue, commits)
         row["taken"] += 1
         row["escalated"] += escalated
         if did_land:
@@ -384,12 +384,14 @@ def main(arguments):
     sessions = runpy.run_path(str(LOOP))["read_sessions"](RECORD)
     since = options.since.timestamp() if options.since else -math.inf
     until = options.until.timestamp() if options.until else math.inf
-    print("\n".join(report(sessions, json.loads(listed.stdout), since, until)))
+    print("\n".join(report(sessions, json.loads(listed.stdout), MAIN_COMMITS(), since, until)))
     return 0
 
 
 class Tests(unittest.TestCase):
     NOON = datetime(2026, 11, 12, 12).timestamp()
+    # Main's commits as the tests assume them: the SHA the default close reason names.
+    COMMITS = ["abc1234" + "0" * 33]
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -424,7 +426,7 @@ class Tests(unittest.TestCase):
                                  for other, made in needs]}
 
     def lines(self, tracker, **window):
-        return report(self.loop["read_sessions"](self.folder), tracker, logs=self.folder / "logs", **window)
+        return report(self.loop["read_sessions"](self.folder), tracker, self.COMMITS, logs=self.folder / "logs", **window)
 
     def gate_log(self, name, text, at):
         """logs/<name> holding `text`, last written at epoch seconds `at`."""
@@ -566,6 +568,16 @@ class Tests(unittest.TestCase):
             no_leaf.append(line.split())
         self.assertEqual(no_leaf, [["fable-xhigh", "1", "0", "2.00"], ["opus", "1", "0", "1.00"]])
         self.assertIn("accounted 3 sessions, 7.00M weighted", lines)
+
+    def test_a_close_reason_naming_a_pid_and_no_commit_of_main_is_not_landed(self):
+        self.run_session("a-1.1", "opus")
+        self.run_session("a-1.2", "opus")
+        self.run_session("a-1.3", "opus")
+        tracker = [self.issue("a-1.1", reason="No commit: the leaves were already true; loop-3251189 and grok-1958135 held it"),
+                   self.issue("a-1.2", reason="fedcba9: landed on a branch main does not contain"),
+                   self.issue("a-1.3", reason="abc1234: landed")]
+        self.assertEqual(self.row(self.lines(tracker[:1]), "tool", "opus")[:2], ["1", "0"])
+        self.assertEqual(self.row(self.lines(tracker), "tool", "opus")[:2], ["3", "1"])
 
     def review_row(self, lines, offering):
         start = next(i for i, line in enumerate(lines) if line.startswith("reviews "))
