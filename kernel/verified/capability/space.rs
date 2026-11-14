@@ -2115,13 +2115,13 @@ impl CapKernel {
         } by {
             Self::lemma_table_page_cap(pre, post, x);
         }
-        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Endpoint implies {
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && queue_kind(post.tables.payload_of(x).kind) implies {
             &&& pre.tables.is_cap(&pre.list, x)
             &&& pre.tables.payload_of(x) == post.tables.payload_of(x)
         } by {
             Self::lemma_table_page_cap(pre, post, x);
         }
-        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Endpoint implies {
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && queue_kind(pre.tables.payload_of(x).kind) implies {
             &&& post.tables.is_cap(&post.list, x)
             &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
         } by {
@@ -2532,7 +2532,7 @@ impl CapKernel {
             }
         }
         lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, a, b, page, 8);
-        assert forall|k: int| 0 <= k < 8 implies !((#[trigger] b.pages@[page + k]).object is Endpoint) by {
+        assert forall|k: int| 0 <= k < 8 implies !queue_object((#[trigger] b.pages@[page + k]).object) by {
             if k == 0 {
                 assert(b.pages@[page as int].object is TablePage);
             }

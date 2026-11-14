@@ -884,7 +884,7 @@ impl CapKernel {
         }
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, b);
         assert(same_endpoints(&pre.list, &pre.tables, &post.list, &post.tables));
-        assert forall|k: int| 0 <= k < 8 implies !((#[trigger] b.pages@[page + k]).object is Endpoint) by {
+        assert forall|k: int| 0 <= k < 8 implies !queue_object((#[trigger] b.pages@[page + k]).object) by {
             if k == 0 {
                 assert(b.pages@[page as int].object is Process);
             }

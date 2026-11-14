@@ -45,6 +45,7 @@ pub enum ObjectType {
     Thread,
     Process,
     Endpoint,
+    Notification,
 }
 
 #[derive(Clone, Copy)]

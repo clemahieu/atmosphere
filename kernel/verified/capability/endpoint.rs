@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-//! Endpoints as retyped objects. An endpoint is an order-0 block whose page holds its record: whether
-//! it is dead, and the queue of threads waiting on it, empty and receiving no one when it is made. A
-//! capability names an endpoint by its block's base and carries send, receive and grant, and the
-//! capabilities naming it hold its block's references. See design/ipc-with-reply-object/.
+//! Endpoints and notifications as retyped objects, the objects threads wait on. Each is an order-0
+//! block whose page holds its record: whether it is dead, the queue of threads waiting on it, and a
+//! notification's word, all empty when it is made. A capability names one by its block's base, an
+//! endpoint's carrying send, receive and grant and a notification's send and receive, and the
+//! capabilities naming it hold its block's references. Both kinds are kept in one store, `Endpoints`,
+//! by one invariant. See design/ipc-with-reply-object/ and
+//! design/notification-word-reserves-the-waiter-bit/.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -42,27 +45,35 @@ use crate::define::*;
 use crate::layouts::*;
 use crate::pptr::*;
 
-/// retype_endpoint's bound in the step counter: typing the block. See design/one-lock-bounded-steps/.
+/// retype_endpoint's and retype_notification's bound in the step counter: typing the block. See
+/// design/one-lock-bounded-steps/.
 pub const RETYPE_ENDPOINT_STEPS: usize = 2 * SMALL_PAGES_MAX;
+pub const RETYPE_NOTIFICATION_STEPS: usize = 2 * SMALL_PAGES_MAX;
 
 /// An endpoint capability carries send, receive and grant.
 pub const ENDPOINT_RIGHTS: u32 = 112;
 
-/// What an endpoint keeps in its page.
+/// A notification capability carries send, to signal, and receive, to wait.
+pub const NOTIFICATION_RIGHTS: u32 = 48;
+
+/// What an endpoint or a notification keeps in its page.
 #[derive(Clone, Copy)]
-pub struct EndpointRecord {
+pub struct QueueRecord {
     /// Destroyed; its block waits for its references to go.
     pub dead: bool,
     /// The first and last thread waiting on it, 0 when none waits.
     pub head: usize,
     pub tail: usize,
-    /// The threads waiting receive rather than send.
+    /// An endpoint's waiting threads receive rather than send.
     pub receiving: bool,
+    /// A notification's word: the badges signalled since the last wait, with bit 63 set while a thread
+    /// waits. See design/notification-word-reserves-the-waiter-bit/.
+    pub word: u64,
 }
 
-/// A new endpoint's record: live, with no thread waiting.
-pub open spec fn fresh_endpoint() -> EndpointRecord {
-    EndpointRecord { dead: false, head: 0, tail: 0, receiving: false }
+/// A new endpoint's or notification's record: live, with no thread waiting and nothing signalled.
+pub open spec fn fresh_record() -> QueueRecord {
+    QueueRecord { dead: false, head: 0, tail: 0, receiving: false, word: 0 }
 }
 
 /// An endpoint capability's payload.
@@ -70,26 +81,52 @@ pub open spec fn endpoint_of(base: usize) -> Payload {
     Payload { kind: CapKind::Endpoint, order: 0, rights: ENDPOINT_RIGHTS, base, badge: 0, priority: 0 }
 }
 
-/// Each endpoint's record by its block's address, and the capabilities holding its block.
+/// A notification capability's payload, as its retype makes it: badge 0.
+pub open spec fn notification_of(base: usize) -> Payload {
+    Payload { kind: CapKind::Notification, order: 0, rights: NOTIFICATION_RIGHTS, base, badge: 0, priority: 0 }
+}
+
+/// The objects threads wait on, which `Endpoints` keeps: an endpoint or a notification.
+pub open spec fn queue_object(o: ObjectType) -> bool {
+    o is Endpoint || o is Notification
+}
+
+/// The capabilities naming them.
+pub open spec fn queue_kind(k: CapKind) -> bool {
+    k is Endpoint || k is Notification
+}
+
+/// The object a capability of a queue kind names.
+pub open spec fn queue_object_of(k: CapKind) -> ObjectType {
+    if k is Endpoint { ObjectType::Endpoint } else { ObjectType::Notification }
+}
+
+/// The payload a retype of a queue kind gives its capability.
+pub open spec fn queue_of(k: CapKind, base: usize) -> Payload {
+    if k is Endpoint { endpoint_of(base) } else { notification_of(base) }
+}
+
+/// Each endpoint's and notification's record by its block's address, and the capabilities holding its
+/// block.
 pub struct Endpoints {
-    pub records: Tracked<Map<usize, PointsTo<EndpointRecord>>>,
+    pub records: Tracked<Map<usize, PointsTo<QueueRecord>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
 }
 
 impl Endpoints {
     pub fn new() -> (ret: Self)
         ensures
-            ret.records@ == Map::<usize, PointsTo<EndpointRecord>>::empty(),
+            ret.records@ == Map::<usize, PointsTo<QueueRecord>>::empty(),
             ret.holders@ == IMap::<usize, Set<usize>>::empty(),
     {
         Endpoints { records: Tracked(Map::tracked_empty()), holders: Ghost(IMap::empty()) }
     }
 }
 
-/// The block at page b holds an endpoint.
+/// The block at page b holds an endpoint or a notification.
 pub open spec fn endpoint_block(blocks: &BlockTable, b: usize) -> bool {
     &&& blocks.pages@[b as int].kind is Base
-    &&& blocks.pages@[b as int].object is Endpoint
+    &&& queue_object(blocks.pages@[b as int].object)
 }
 
 /// Two distinct endpoints lie on distinct pages.
@@ -105,40 +142,40 @@ pub proof fn lemma_endpoint_pages_distinct(e: usize, u: usize)
     lemma_fundamental_div_mod(u as int, PAGE_SZ as int);
 }
 
-/// The endpoint at e has its record in its block's page. Its block's references are exactly its
-/// holders, and it is dead at once when they go.
+/// The endpoint or notification at e has its record in its block's page. Its block's references are
+/// exactly its holders, and it is dead at once when they go.
 pub open spec fn endpoint_wf(endpoints: &Endpoints, blocks: &BlockTable, e: usize) -> bool {
     &&& e % PAGE_SZ == 0
     &&& blocks.tracks_addr(e)
     &&& endpoints.records@[e].addr() == e
     &&& endpoints.records@[e].is_init()
     &&& blocks.pages@[(e / PAGE_SZ) as int].kind is Base
-    &&& blocks.pages@[(e / PAGE_SZ) as int].object is Endpoint
+    &&& queue_object(blocks.pages@[(e / PAGE_SZ) as int].object)
     &&& blocks.pages@[(e / PAGE_SZ) as int].order == 0
     &&& endpoints.holders@.contains_key(e)
     &&& endpoints.holders@[e].len() == blocks.pages@[(e / PAGE_SZ) as int].refs
     &&& blocks.pages@[(e / PAGE_SZ) as int].refs == 0 ==> blocks.pages@[(e / PAGE_SZ) as int].dead
 }
 
-/// Each endpoint is well formed, an endpoint's block is one of these, and the capabilities of kind
-/// Endpoint are exactly the holders.
+/// Each endpoint and notification is well formed, an endpoint's or a notification's block is one of
+/// these, and the capabilities of kind Endpoint or Notification are exactly the holders.
 pub open spec fn endpoints_wf(list: &Tree, tables: &Tables, endpoints: &Endpoints, blocks: &BlockTable) -> bool {
     &&& forall|e: usize| #[trigger] endpoints.records@.contains_key(e) ==> endpoint_wf(endpoints, blocks, e)
     &&& forall|b: usize| blocks.tracks(b as int) && #[trigger] endpoint_block(blocks, b)
         ==> endpoints.records@.contains_key((b * PAGE_SZ) as usize)
-    &&& forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Endpoint ==> {
+    &&& forall|n: usize| #[trigger] tables.is_cap(list, n) && queue_kind(tables.payload_of(n).kind) ==> {
         &&& endpoints.records@.contains_key(tables.payload_of(n).base)
         &&& endpoints.holders@[tables.payload_of(n).base].contains(n)
         &&& tables.payload_of(n).order == 0
     }
     &&& forall|e: usize, n: usize| endpoints.records@.contains_key(e) && #[trigger] endpoints.holders@[e].contains(n) ==> {
         &&& tables.is_cap(list, n)
-        &&& tables.payload_of(n).kind is Endpoint
+        &&& queue_kind(tables.payload_of(n).kind)
         &&& tables.payload_of(n).base == e
     }
 }
 
-/// Each endpoint's holders after node i is renamed n.
+/// Each endpoint's and notification's holders after node i is renamed n.
 pub open spec fn moved_endpoint_holders(holders: IMap<usize, Set<usize>>, i: usize, n: usize) -> IMap<usize, Set<usize>> {
     IMap::new(
         |e: usize| holders.contains_key(e),
@@ -146,13 +183,13 @@ pub open spec fn moved_endpoint_holders(holders: IMap<usize, Set<usize>>, i: usi
     )
 }
 
-/// The endpoint capabilities of a and b are the same, saying the same.
+/// The endpoint and notification capabilities of a and b are the same, saying the same.
 pub open spec fn same_endpoints(list_a: &Tree, tables_a: &Tables, list_b: &Tree, tables_b: &Tables) -> bool {
-    &&& forall|x: usize| #[trigger] tables_b.is_cap(list_b, x) && tables_b.payload_of(x).kind is Endpoint ==> {
+    &&& forall|x: usize| #[trigger] tables_b.is_cap(list_b, x) && queue_kind(tables_b.payload_of(x).kind) ==> {
         &&& tables_a.is_cap(list_a, x)
         &&& tables_a.payload_of(x) == tables_b.payload_of(x)
     }
-    &&& forall|x: usize| #[trigger] tables_a.is_cap(list_a, x) && tables_a.payload_of(x).kind is Endpoint ==> {
+    &&& forall|x: usize| #[trigger] tables_a.is_cap(list_a, x) && queue_kind(tables_a.payload_of(x).kind) ==> {
         &&& tables_b.is_cap(list_b, x)
         &&& tables_b.payload_of(x) == tables_a.payload_of(x)
     }
@@ -173,7 +210,7 @@ pub proof fn lemma_endpoints_same_caps(
     ensures
         endpoints_wf(list_b, tables_b, endpoints, blocks),
 {
-    assert forall|n: usize| #[trigger] tables_b.is_cap(list_b, n) && tables_b.payload_of(n).kind is Endpoint implies {
+    assert forall|n: usize| #[trigger] tables_b.is_cap(list_b, n) && queue_kind(tables_b.payload_of(n).kind) implies {
         &&& endpoints.records@.contains_key(tables_b.payload_of(n).base)
         &&& endpoints.holders@[tables_b.payload_of(n).base].contains(n)
         &&& tables_b.payload_of(n).order == 0
@@ -182,7 +219,7 @@ pub proof fn lemma_endpoints_same_caps(
     }
     assert forall|e: usize, n: usize| endpoints.records@.contains_key(e) && #[trigger] endpoints.holders@[e].contains(n) implies {
         &&& tables_b.is_cap(list_b, n)
-        &&& tables_b.payload_of(n).kind is Endpoint
+        &&& queue_kind(tables_b.payload_of(n).kind)
         &&& tables_b.payload_of(n).base == e
     } by {
         assert(tables_a.is_cap(list_a, n));
@@ -223,7 +260,7 @@ pub proof fn lemma_endpoints_refs_changed(
         endpoints_wf(list_a, tables_a, endpoints, a),
         blocks_refs_changed(a, b, br, refs, dead),
         match br {
-            BlockRef::Small(x) => !(a.pages@[x as int].object is Endpoint),
+            BlockRef::Small(x) => !queue_object(a.pages@[x as int].object),
             _ => true,
         },
         same_endpoints(list_a, tables_a, list_b, tables_b),
@@ -261,7 +298,7 @@ pub proof fn lemma_endpoints_small_typed(
         endpoints_wf(list_a, tables_a, endpoints, a),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
         forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
-        forall|k: int| 0 <= k < size ==> !((#[trigger] b.pages@[base + k]).object is Endpoint),
+        forall|k: int| 0 <= k < size ==> !queue_object((#[trigger] b.pages@[base + k]).object),
         same_endpoints(list_a, tables_a, list_b, tables_b),
     ensures
         endpoints_wf(list_b, tables_b, endpoints, b),
@@ -277,7 +314,7 @@ pub proof fn lemma_endpoints_small_typed(
     }
     assert forall|x: usize| b.tracks(x as int) && #[trigger] endpoint_block(b, x) implies endpoints.records@.contains_key((x * PAGE_SZ) as usize) by {
         if base <= x < base + size {
-            assert(!(b.pages@[base + (x - base)].object is Endpoint));
+            assert(!queue_object(b.pages@[base + (x - base)].object));
         }
         assert(b.pages@[x as int] == a.pages@[x as int]);
         assert(endpoint_block(a, x));
@@ -291,7 +328,7 @@ pub proof fn lemma_endpoints_outside_block(list: &Tree, tables: &Tables, endpoin
         blocks.wf(),
         blocks.tracks(base as int),
         blocks.pages@[base as int].kind is Base,
-        !(blocks.pages@[base as int].object is Endpoint),
+        !queue_object(blocks.pages@[base as int].object),
     ensures
         forall|e: usize| #[trigger] endpoints.records@.contains_key(e) ==> !blocks.in_block(base as int, (e / PAGE_SZ) as int),
 {
@@ -320,7 +357,7 @@ pub proof fn lemma_endpoints_small_freed(
         a.wf(),
         a.tracks(base as int),
         a.pages@[base as int].kind is Base,
-        !(a.pages@[base as int].object is Endpoint),
+        !queue_object(a.pages@[base as int].object),
         forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
             if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
         same_endpoints(list_a, tables_a, list_b, tables_b),
@@ -344,20 +381,20 @@ pub proof fn lemma_endpoints_small_freed(
 }
 
 impl CapKernel {
-    /// An endpoint capability names an endpoint, whose block holds its reference, lies in no typed
-    /// region and so is read as the small block at its base.
+    /// An endpoint or notification capability names one, whose block holds its reference, lies in no
+    /// typed region and so is read as the small block at its base.
     pub proof fn lemma_endpoint_cap(&self, n: usize)
         requires
             self.wf(),
             self.is_cap(n),
-            self.payload_of(n).kind is Endpoint,
+            queue_kind(self.payload_of(n).kind),
         ensures
             self.endpoints.records@.contains_key(self.payload_of(n).base),
             self.endpoints.holders@[self.payload_of(n).base].contains(n),
             self.payload_of(n).base % PAGE_SZ == 0,
             self.blocks.tracks_addr(self.payload_of(n).base),
             self.payload_of(n).order == 0,
-            self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object is Endpoint,
+            queue_object(self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object),
             block_typed(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)),
             block_refs(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)) > 0,
             block_ref(&self.blocks, self.payload_of(n).base / PAGE_SZ) == BlockRef::Small(self.payload_of(n).base / PAGE_SZ),
@@ -371,15 +408,15 @@ impl CapKernel {
         self.blocks.lemma_not_free_uncovered((e / PAGE_SZ) as int);
     }
 
-    /// The endpoints after endpoint capability n, the only capability that changed, leaves endpoint e,
-    /// taking its reference on the block with it.
+    /// The endpoints after endpoint or notification capability n, the only capability that changed,
+    /// leaves the object at e, taking its reference on the block with it.
     pub proof fn lemma_endpoints_holder_dropped(pre: Self, post: Self, n: usize, e: usize)
         requires
             pre.wf(),
             forall|x: usize| x != n ==> #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
             forall|x: usize| x != n && #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
             pre.is_cap(n),
-            pre.payload_of(n).kind is Endpoint,
+            queue_kind(pre.payload_of(n).kind),
             pre.payload_of(n).base == e,
             !post.is_cap(n),
             blocks_refs_changed(
@@ -420,7 +457,7 @@ impl CapKernel {
             implies post.endpoints.records@.contains_key((x * PAGE_SZ) as usize) by {
             assert(endpoint_block(a, x));
         }
-        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Endpoint implies {
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && queue_kind(post.tables.payload_of(x).kind) implies {
             &&& post.endpoints.records@.contains_key(post.tables.payload_of(x).base)
             &&& hb[post.tables.payload_of(x).base].contains(x)
             &&& post.tables.payload_of(x).order == 0
@@ -430,7 +467,7 @@ impl CapKernel {
         }
         assert forall|u: usize, x: usize| post.endpoints.records@.contains_key(u) && #[trigger] hb[u].contains(x) implies {
             &&& post.tables.is_cap(&post.list, x)
-            &&& post.tables.payload_of(x).kind is Endpoint
+            &&& queue_kind(post.tables.payload_of(x).kind)
             &&& post.tables.payload_of(x).base == u
         } by {
             assert(ha[u].contains(x));
@@ -439,8 +476,8 @@ impl CapKernel {
         }
     }
 
-    /// What an endpoint's retype does to the block table: the free page at `page` is typed as the
-    /// endpoint at `base`, the list gains no page, and no frame's holder changed.
+    /// What an endpoint's or a notification's retype does to the block table: the free page at `page`
+    /// is typed as the object at `base`, the list gains no page, and no frame's holder changed.
     proof fn lemma_endpoint_blocks(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
@@ -459,14 +496,14 @@ impl CapKernel {
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             post.blocks.pages@[page as int].kind is Base,
-            post.blocks.pages@[page as int].object is Endpoint,
+            queue_object(post.blocks.pages@[page as int].object),
             post.blocks.pages@[page as int].order == 0,
             post.blocks.pages@[page as int].refs == 1,
             !post.blocks.pages@[page as int].dead,
             post.list.pages@.dom() == pre.list.pages@.dom(),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
-            post.payload_of(child).kind is Endpoint,
+            queue_kind(post.payload_of(child).kind),
         ensures
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -516,7 +553,7 @@ impl CapKernel {
         assert forall|x: usize| b.tracks(x as int) && #[trigger] table_block(b, x)
             implies pre.table_pages.maps@.contains_key((x * PAGE_SZ) as usize) by {
             if x == page {
-                assert(b.pages@[page as int].object is Endpoint);
+                assert(queue_object(b.pages@[page as int].object));
             }
         }
         assert(table_pages_wf(&pre.list, &pre.table_pages, b));
@@ -530,8 +567,8 @@ impl CapKernel {
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, b);
     }
 
-    /// The endpoints after an endpoint's retype at base: the new one has its record and holds its one
-    /// capability, and every other lay outside the page and keeps its holders.
+    /// The endpoints after an endpoint's or a notification's retype at base: the new one has its record
+    /// and holds its one capability, and every other lay outside the page and keeps its holders.
     proof fn lemma_endpoints_endpoint_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
@@ -542,7 +579,7 @@ impl CapKernel {
             pre.blocks.pages@[page as int].kind is Free,
             forall|i: int| pre.blocks.tracks(i) && i != page ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             post.blocks.pages@[page as int].kind is Base,
-            post.blocks.pages@[page as int].object is Endpoint,
+            queue_object(post.blocks.pages@[page as int].object),
             post.blocks.pages@[page as int].order == 0,
             post.blocks.pages@[page as int].refs == 1,
             !post.blocks.pages@[page as int].dead,
@@ -552,7 +589,9 @@ impl CapKernel {
             post.endpoints.holders@ == pre.endpoints.holders@.insert(base, set![child]),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
-            post.payload_of(child) == endpoint_of(base),
+            queue_kind(post.payload_of(child).kind),
+            post.payload_of(child).base == base,
+            post.payload_of(child).order == 0,
         ensures
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
     {
@@ -594,7 +633,7 @@ impl CapKernel {
                 assert(endpoint_block(a, x));
             }
         }
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && post.tables.payload_of(n).kind is Endpoint implies {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && queue_kind(post.tables.payload_of(n).kind) implies {
             &&& eb.records@.contains_key(post.tables.payload_of(n).base)
             &&& eb.holders@[post.tables.payload_of(n).base].contains(n)
             &&& post.tables.payload_of(n).order == 0
@@ -611,7 +650,7 @@ impl CapKernel {
         }
         assert forall|e: usize, n: usize| eb.records@.contains_key(e) && #[trigger] eb.holders@[e].contains(n) implies {
             &&& post.tables.is_cap(&post.list, n)
-            &&& post.tables.payload_of(n).kind is Endpoint
+            &&& queue_kind(post.tables.payload_of(n).kind)
             &&& post.tables.payload_of(n).base == e
         } by {
             if e == base {
@@ -625,9 +664,9 @@ impl CapKernel {
         }
     }
 
-    /// The view of an endpoint's retype: one child under the untyped, naming the new endpoint, which no
-    /// table root is, so it holds nothing.
-    proof fn lemma_endpoint_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
+    /// The view of an endpoint's or a notification's retype: one child under the untyped, naming the
+    /// new object, which no table root is, so it holds nothing.
+    proof fn lemma_endpoint_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, kind: CapKind)
         requires
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             post.frames@ == pre.frames@,
@@ -637,7 +676,7 @@ impl CapKernel {
             pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
-            post.payload_of(pre.tables.node_of(root, to)) == endpoint_of(base),
+            post.payload_of(pre.tables.node_of(root, to)) == queue_of(kind, base),
             block_within(base, 0, pre.payload_of(pre.tables.node_of(root, from))),
             !pre.tables.roots@.contains_key(base),
             Self::same_tree(pre, post),
@@ -680,6 +719,47 @@ impl CapKernel {
         assert(b.names[child] == base);
     }
 
+    /// What an endpoint's or a notification's retype of the free page at `base`, under the untyped at
+    /// index `from` of the table at `root`, with its capability at the empty index `to`, made of `pre`:
+    /// the page is a live object of that kind with one reference, its record says it is live with no
+    /// thread waiting and nothing signalled, the root holds its one capability, and the retype
+    /// discharges the reach lemma.
+    pub open spec fn queue_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, kind: CapKind) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        let page = (base / PAGE_SZ) as int;
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& post.blocks.pages@[page].kind is Base
+        &&& post.blocks.pages@[page].object == queue_object_of(kind)
+        &&& post.blocks.pages@[page].order == 0
+        &&& post.blocks.pages@[page].refs == 1
+        &&& !post.blocks.pages@[page].dead
+        &&& forall|i: int| pre.blocks.tracks(i) && i != page ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i]
+        &&& post.endpoints.records@.contains_key(base)
+        &&& post.endpoints.records@[base].value() == fresh_record()
+        &&& post.view().holds(root, child)
+        &&& post.payload_of(child) == queue_of(kind, base)
+        &&& post.list.is_child(parent, child)
+        &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
+        &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& Self::retype_keeps(pre, post, child, page, 0, None)
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(0), into: None })
+    }
+
+    /// What an endpoint's or a notification's retype leaves as it was.
+    pub open spec fn queue_retype_keeps(pre: Self, post: Self) -> bool {
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& Self::same_tree(pre, post)
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.cores == pre.cores
+        &&& post.iommus == pre.iommus
+        &&& post.devices == pre.devices
+        &&& post.threads == pre.threads
+        &&& post.processes == pre.processes
+        &&& post.mappings == pre.mappings
+    }
+
     /// Retypes the free page at `base` as an endpoint, under the untyped at index `from` of the table at
     /// `root`, with its capability at the empty index `to`: a record that says it is live, with no
     /// thread waiting. All of these come from user space, and a refusal changes nothing.
@@ -691,40 +771,49 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + RETYPE_ENDPOINT_STEPS,
             final(self).wf(),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            Self::same_tree(*old(self), *final(self)),
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).cores == old(self).cores,
-            final(self).iommus == old(self).iommus,
-            final(self).devices == old(self).devices,
-            final(self).threads == old(self).threads,
-            final(self).processes == old(self).processes,
-            final(self).mappings == old(self).mappings,
+            Self::queue_retype_keeps(*old(self), *final(self)),
             ret == old(self).can_retype_block(root, from, to, base, 0),
             !ret ==> *final(self) == *old(self),
-            ret ==> {
-                let parent = old(self).tables.node_of(root, from);
-                let child = old(self).tables.node_of(root, to);
-                let page = (base / PAGE_SZ) as int;
-                &&& old(self).view().holds_right(root, parent, Right::Retype)
-                &&& final(self).blocks.pages@[page].kind is Base
-                &&& final(self).blocks.pages@[page].object is Endpoint
-                &&& final(self).blocks.pages@[page].order == 0
-                &&& final(self).blocks.pages@[page].refs == 1
-                &&& !final(self).blocks.pages@[page].dead
-                &&& forall|i: int| old(self).blocks.tracks(i) && i != page
-                    ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
-                &&& final(self).endpoints.records@.contains_key(base)
-                &&& final(self).endpoints.records@[base].value() == fresh_endpoint()
-                &&& final(self).view().holds(root, child)
-                &&& final(self).payload_of(child) == endpoint_of(base)
-                &&& final(self).list.is_child(parent, child)
-                &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
-                &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
-                &&& Self::retype_keeps(*old(self), *final(self), child, page, 0, None)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(0), into: None })
-            },
+            ret ==> Self::queue_retyped(*old(self), *final(self), root, from, to, base, CapKind::Endpoint),
+    {
+        self.retype_queue(root, from, to, base, CapKind::Endpoint, Tracked(steps))
+    }
+
+    /// Retypes the free page at `base` as a notification, under the untyped at index `from` of the table
+    /// at `root`, with its capability at the empty index `to`, carrying badge 0: a record that says it
+    /// is live, with no thread waiting and a word of 0. All of these come from user space, and a
+    /// refusal changes nothing.
+    pub fn retype_notification(&mut self, root: usize, from: usize, to: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(steps).count <= old(steps).count + RETYPE_NOTIFICATION_STEPS,
+            final(self).wf(),
+            Self::queue_retype_keeps(*old(self), *final(self)),
+            ret == old(self).can_retype_block(root, from, to, base, 0),
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::queue_retyped(*old(self), *final(self), root, from, to, base, CapKind::Notification),
+    {
+        self.retype_queue(root, from, to, base, CapKind::Notification, Tracked(steps))
+    }
+
+    /// Retypes the free page at `base` as an object of `kind`, an endpoint or a notification, as
+    /// retype_endpoint and retype_notification say.
+    fn retype_queue(&mut self, root: usize, from: usize, to: usize, base: usize, kind: CapKind, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+            queue_kind(kind),
+        ensures
+            final(steps).count <= old(steps).count + 2 * SMALL_PAGES_MAX,
+            final(self).wf(),
+            Self::queue_retype_keeps(*old(self), *final(self)),
+            ret == old(self).can_retype_block(root, from, to, base, 0),
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::queue_retyped(*old(self), *final(self), root, from, to, base, kind),
     {
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, 0) {
@@ -740,7 +829,19 @@ impl CapKernel {
             assert(base % PAGE_SZ == 0);
             assert(page * PAGE_SZ == base);
         }
-        let Tracked(perms) = match self.blocks.try_type(page, 0, ObjectType::Endpoint, Tracked(&mut *steps)) {
+        let (object, payload) = match kind {
+            CapKind::Endpoint => (
+                ObjectType::Endpoint,
+                Payload { kind: CapKind::Endpoint, order: 0, rights: ENDPOINT_RIGHTS, base, badge: 0, priority: 0 },
+            ),
+            _ => (
+                ObjectType::Notification,
+                Payload { kind: CapKind::Notification, order: 0, rights: NOTIFICATION_RIGHTS, base, badge: 0, priority: 0 },
+            ),
+        };
+        assert(object == queue_object_of(kind));
+        assert(payload == queue_of(kind, base));
+        let Tracked(perms) = match self.blocks.try_type(page, 0, object, Tracked(&mut *steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -765,8 +866,8 @@ impl CapKernel {
             pre.list.lemma_valid_bound(child);
             pre.list.lemma_seq_fits();
         }
-        let tracked mut record = page_into_endpoint_record(first);
-        PPtr::<EndpointRecord>::from_usize(base).put(Tracked(&mut record), EndpointRecord { dead: false, head: 0, tail: 0, receiving: false });
+        let tracked mut record = page_into_queue_record(first);
+        PPtr::<QueueRecord>::from_usize(base).put(Tracked(&mut record), QueueRecord { dead: false, head: 0, tail: 0, receiving: false, word: 0 });
         proof {
             self.endpoints.records.borrow_mut().tracked_insert(base, record);
         }
@@ -775,12 +876,7 @@ impl CapKernel {
         proof {
             self.tables.lemma_wf_same_pages(&mid, &self.list);
         }
-        self.tables.set_payload(
-            &self.list,
-            root,
-            to,
-            Payload { kind: CapKind::Endpoint, order: 0, rights: ENDPOINT_RIGHTS, base, badge: 0, priority: 0 },
-        );
+        self.tables.set_payload(&self.list, root, to, payload);
         self.endpoints.holders = Ghost(pre.endpoints.holders@.insert(base, set![child]));
         proof {
             let post = *self;
@@ -792,10 +888,11 @@ impl CapKernel {
                 pre.list.lemma_valid_bound(x);
             }
             assert(Self::space_step(pre, post, child));
-            assert(post.payload_of(child) == endpoint_of(base));
+            assert(post.payload_of(child) == queue_of(kind, base));
             assert(payload_wf(post.payload_of(child)));
             assert(post.is_cap(child));
             assert(ENDPOINT_RIGHTS & 128 == 0) by (compute_only);
+            assert(NOTIFICATION_RIGHTS & 128 == 0) by (compute_only);
             Self::lemma_space_caps_wf(pre, post, child);
             Self::lemma_tlb_same(pre, post);
             assert(list_grown(pre.list, mid));
@@ -867,7 +964,7 @@ impl CapKernel {
             assert(post.wf());
             Self::lemma_bound_threads_same(pre, post);
             assert(right_bit(Right::Retype) == 8);
-            Self::lemma_endpoint_view(pre, post, root, from, to, base);
+            Self::lemma_endpoint_view(pre, post, root, from, to, base, kind);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
             pre.lemma_retype_covers(root, from, base, 0);

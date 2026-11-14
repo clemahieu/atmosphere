@@ -987,7 +987,7 @@ impl CapKernel {
                     self.free_process(c, root, from, base, Tracked(steps))
                 }
             },
-            ObjectType::Endpoint => ReclaimStep::Refused,
+            ObjectType::Endpoint | ObjectType::Notification => ReclaimStep::Refused,
             ObjectType::None => ReclaimStep::Refused,
         }
     }
@@ -1048,7 +1048,7 @@ impl CapKernel {
         &&& self.is_cap(n)
         &&& {
             ||| p.kind is Frame && br == block_ref(&self.blocks, p.base / PAGE_SZ)
-            ||| (p.kind is Space || p.kind is Thread || p.kind is Process || p.kind is Endpoint) && br == BlockRef::Small(p.base / PAGE_SZ)
+            ||| (p.kind is Space || p.kind is Thread || p.kind is Process || p.kind is Endpoint || p.kind is Notification) && br == BlockRef::Small(p.base / PAGE_SZ)
         }
     }
 
@@ -1361,7 +1361,7 @@ impl CapKernel {
             let br = block_ref(&mid.blocks, p.base / PAGE_SZ);
             assert(pre.cap_names_block(n, br));
             assert(pre.leaf_slot_names(base, br));
-        } else if p.kind is Space || p.kind is Thread || p.kind is Process || p.kind is Endpoint {
+        } else if p.kind is Space || p.kind is Thread || p.kind is Process || p.kind is Endpoint || p.kind is Notification {
             let br = BlockRef::Small(p.base / PAGE_SZ);
             assert(pre.cap_names_block(n, br));
             assert(pre.leaf_slot_names(base, br));

@@ -122,7 +122,7 @@ impl CapKernel {
         &&& self.processes.spare@ == Map::<usize, PagePerm4k>::empty()
         &&& self.processes.holders@ == IMap::<usize, Set<usize>>::empty()
         &&& self.processes.bound@ == IMap::<usize, Set<usize>>::empty()
-        &&& self.endpoints.records@ == Map::<usize, PointsTo<EndpointRecord>>::empty()
+        &&& self.endpoints.records@ == Map::<usize, PointsTo<QueueRecord>>::empty()
         &&& self.endpoints.holders@ == IMap::<usize, Set<usize>>::empty()
         &&& self.threads.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty()
         &&& self.threads.holders@ == IMap::<usize, Set<usize>>::empty()
@@ -2754,7 +2754,7 @@ impl CapKernel {
                 implies post.endpoints.records@.contains_key((x * PAGE_SZ) as usize) by {
                 assert(x == pb || x == lb);
             }
-            assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n) && post.tables.payload_of(n).kind is Endpoint implies false by {
+            assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n) && queue_kind(post.tables.payload_of(n).kind) implies false by {
                 assert(post.is_cap(n));
                 assert(n == cap);
             }

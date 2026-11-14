@@ -1197,7 +1197,7 @@ pub struct CapKernel {
     pub threads: Threads,
     /// The processes, each a record named by capabilities, beside its table's root and its space.
     pub processes: Processes,
-    /// The endpoints, each a record named by capabilities.
+    /// The endpoints and notifications, each a record named by capabilities.
     pub endpoints: Endpoints,
     /// The cores sent an IPI to act on a pending stop, in the order sent. The send is ghost: see
     /// design/one-lock-bounded-steps/.
@@ -2730,7 +2730,7 @@ impl CapKernel {
             pre.blocks.tracks(base as int),
             pre.blocks.pages@[base as int].kind is Base,
             !(pre.blocks.pages@[base as int].object is Process),
-            !(pre.blocks.pages@[base as int].object is Endpoint),
+            !queue_object(pre.blocks.pages@[base as int].object),
             pre.blocks.pages@[base as int].refs == 0,
             pre.no_stale_translation(base),
             post.blocks.wf(),

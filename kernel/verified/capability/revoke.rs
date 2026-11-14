@@ -200,7 +200,7 @@ impl CapKernel {
             },
             !(old(self).is_cap(n) && old(self).payload_of(n).kind is Process) && !(old(self).list.nodes@[n as int].kind is Binding)
                 ==> final(self).processes == old(self).processes,
-            old(self).is_cap(n) && old(self).payload_of(n).kind is Endpoint ==> {
+            old(self).is_cap(n) && queue_kind(old(self).payload_of(n).kind) ==> {
                 let e = old(self).payload_of(n).base;
                 let br = BlockRef::Small(e / PAGE_SZ);
                 &&& blocks_refs_changed(
@@ -213,7 +213,7 @@ impl CapKernel {
                 &&& final(self).holders == old(self).holders
                 &&& final(self).endpoints.holders@ == old(self).endpoints.holders@.insert(e, old(self).endpoints.holders@[e].remove(n))
             },
-            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Endpoint) ==> final(self).endpoints == old(self).endpoints,
+            !(old(self).is_cap(n) && queue_kind(old(self).payload_of(n).kind)) ==> final(self).endpoints == old(self).endpoints,
             final(self).endpoints.records == old(self).endpoints.records,
             final(self).processes.records == old(self).processes.records,
             final(self).processes.spare == old(self).processes.spare,
@@ -290,7 +290,7 @@ impl CapKernel {
                         drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / PAGE_SZ));
                         self.processes.holders = Ghost(pre.processes.holders@.insert(payload.base, pre.processes.holders@[payload.base].remove(n)));
                     },
-                    CapKind::Endpoint => {
+                    CapKind::Endpoint | CapKind::Notification => {
                         proof {
                             pre.lemma_endpoint_cap(n);
                         }
@@ -1113,7 +1113,7 @@ impl CapKernel {
             },
             !(pre.is_cap(r) && pre.payload_of(r).kind is Process) && !(pre.list.nodes@[r as int].kind is Binding)
                 ==> mid.processes == pre.processes,
-            pre.is_cap(r) && pre.payload_of(r).kind is Endpoint ==> {
+            pre.is_cap(r) && queue_kind(pre.payload_of(r).kind) ==> {
                 let e = pre.payload_of(r).base;
                 let br = BlockRef::Small(e / PAGE_SZ);
                 &&& blocks_refs_changed(
@@ -1126,7 +1126,7 @@ impl CapKernel {
                 &&& mid.holders == pre.holders
                 &&& mid.endpoints.holders@ == pre.endpoints.holders@.insert(e, pre.endpoints.holders@[e].remove(r))
             },
-            !(pre.is_cap(r) && pre.payload_of(r).kind is Endpoint) ==> mid.endpoints == pre.endpoints,
+            !(pre.is_cap(r) && queue_kind(pre.payload_of(r).kind)) ==> mid.endpoints == pre.endpoints,
             mid.endpoints.records == pre.endpoints.records,
             mid.processes.records == pre.processes.records,
             mid.processes.spare == pre.processes.spare,
@@ -1550,7 +1550,7 @@ impl CapKernel {
         lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, 0, true);
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, 0, true);
         lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, 0, true);
-        assert(!(pre.blocks.pages@[(n / PAGE_SZ) as int].object is Endpoint));
+        assert(!queue_object(pre.blocks.pages@[(n / PAGE_SZ) as int].object));
         lemma_endpoints_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, br, 0, true);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
         lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n / PAGE_SZ, 0, true);

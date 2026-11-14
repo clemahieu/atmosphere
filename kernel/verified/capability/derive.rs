@@ -155,10 +155,11 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 
 impl CapKernel {
     /// The refusals of a derive from index from of the table at src into index to of the table at dst:
-    /// an index that names no slot, a parent that is no capability, a device's, an endpoint's, a dead process's or
-    /// thread's, or at the deepest depth, a child's slot in use, or a child that does not narrow its
-    /// parent. A console's or power's child names its parent's object, with rights no wider, and so does
-    /// a core capability's, with a maximum priority, the order, no higher.
+    /// an index that names no slot, a parent that is no capability, a device's, an endpoint's, a
+    /// notification's, a dead process's or thread's, or at the deepest depth, a child's slot in use, or
+    /// a child that does not narrow its parent. A console's or power's child names its parent's object,
+    /// with rights no wider, and so does a core capability's, with a maximum priority, the order, no
+    /// higher.
     pub open spec fn can_derive_between(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(src, from);
         let child = self.tables.node_of(dst, to);
@@ -166,7 +167,7 @@ impl CapKernel {
         &&& self.tables.has_slot(&self.list, dst, to)
         &&& self.is_cap(parent)
         &&& !(self.payload_of(parent).kind is Device)
-        &&& !(self.payload_of(parent).kind is Endpoint)
+        &&& !queue_kind(self.payload_of(parent).kind)
         &&& !self.cap_dead(parent)
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
         &&& !self.list.nodes@[child as int].live
@@ -434,12 +435,13 @@ impl CapKernel {
             return false;
         }
         // A device is bound to one space at a time, so its capability has no children: it moves instead.
-        // An endpoint's capability has none either: its retype makes the one capability that names it.
+        // An endpoint's or a notification's capability has none either: its retype makes the one
+        // capability that names it.
         // The console's, power's and a core's name a page past memory, so a child names that page as its
         // parent does. A core capability's child takes the order as its maximum priority, which it may
         // lower and not raise.
         let allowed = match payload.kind {
-            CapKind::Device | CapKind::Endpoint => false,
+            CapKind::Device | CapKind::Endpoint | CapKind::Notification => false,
             CapKind::Console | CapKind::Power => rights & !payload.rights == 0 && base == payload.base && order == payload.order,
             CapKind::Core => rights & !payload.rights == 0 && base == payload.base && order as usize <= payload.priority,
             _ => may_derive(payload, rights, base, order),
@@ -599,7 +601,7 @@ impl CapKernel {
             },
             block is None ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces
                 && post.threads == pre.threads && post.processes == pre.processes,
-            !(pre.payload_of(parent).kind is Endpoint),
+            !queue_kind(pre.payload_of(parent).kind),
             post.endpoints == pre.endpoints,
             post.table_pages == pre.table_pages,
         ensures
