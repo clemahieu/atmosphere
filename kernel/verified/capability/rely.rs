@@ -872,6 +872,7 @@ impl CapKernel {
             Some(Operation::Unmap) => Self::lemma_unmap_keeps_slots(pre, post, root, frame, out, root),
             Some(Operation::Probe) => Self::lemma_probe_keeps_slots(pre, post, root, frame, out, root),
             Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
             _ => {},
         }
     }
@@ -1343,6 +1344,7 @@ impl CapKernel {
             Some(Operation::Unmap) => Self::lemma_unmap_keeps_record(pre, post, root, frame, out, root),
             Some(Operation::Probe) => Self::lemma_probe_keeps_record(pre, post, root, frame, out, root),
             Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
             _ => {},
         }
     }
@@ -2244,6 +2246,34 @@ impl CapKernel {
         } else {
             let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o);
             Self::lemma_destroy_thread_keeps_rely(pre, post, c, o, root);
+        }
+    }
+
+    /// A place, by any caller: it adds a placement node under the core capability, which is no
+    /// capability and binds no thread, and writes the placed thread's record, so every table's view,
+    /// every process record, every space and every block count stay as they were.
+    pub proof fn lemma_placed_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_placed(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+            Self::record_kept(pre, post, root),
+    {
+        if !pre.allows_place(caller, frame) {
+            Self::lemma_rely_reflexive(pre, root);
+            Self::lemma_tables_kept_keeps_slots(pre, post, root);
+        } else {
+            let n = pre.tables.node_of(caller, frame.slot() as usize);
+            let m = pre.tables.node_of(caller, frame.argument(1) as usize);
+            let t = pre.payload_of(n).base;
+            pre.lemma_placement_node_apart(t);
+            Self::lemma_map_slots(pre, post, placement_node(t), m);
+            Self::lemma_views_kept_keeps_slots(pre, post, root);
+            Self::lemma_blocks_kept_keeps_count(pre, post, root);
+            assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+                == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
         }
     }
 

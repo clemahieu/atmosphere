@@ -15,6 +15,8 @@ verus! {
 use crate::capability::inspect::inspected;
 use crate::capability::inspect::inspect_outcome;
 #[cfg(verus_keep_ghost)]
+use crate::capability::cpu::core_of;
+#[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reply::*;
@@ -142,6 +144,7 @@ pub const OPERATION_INSPECT: u64 = 15;
 pub const OPERATION_LINK: u64 = 16;
 pub const OPERATION_PROBE: u64 = 17;
 pub const OPERATION_POWER_OFF: u64 = 18;
+pub const OPERATION_PLACE: u64 = 21;
 
 /// Retype's kind in argument 1 for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
@@ -212,6 +215,7 @@ pub enum Operation {
     Link,
     Probe,
     PowerOff,
+    Place,
 }
 
 impl Operation {
@@ -235,6 +239,7 @@ impl Operation {
             Operation::Link => OPERATION_LINK,
             Operation::Probe => OPERATION_PROBE,
             Operation::PowerOff => OPERATION_POWER_OFF,
+            Operation::Place => OPERATION_PLACE,
         }
     }
 }
@@ -278,6 +283,7 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_LINK => Some(Operation::Link),
         OPERATION_PROBE => Some(Operation::Probe),
         OPERATION_POWER_OFF => Some(Operation::PowerOff),
+        OPERATION_PLACE => Some(Operation::Place),
         _ => None,
     };
     proof {
@@ -848,6 +854,40 @@ impl CapKernel {
         }
     }
 
+    /// Whether the place in frame is allowed: can_place of the thread at the index the slot names, through
+    /// the core capability at the index argument 1 names, both in the caller's own table, at the priority
+    /// in argument 2.
+    pub open spec fn allows_place(&self, root: usize, frame: Registers) -> bool {
+        self.can_place(root, frame.slot() as usize, frame.argument(1) as usize, frame.argument(2) as usize)
+    }
+
+    /// A place in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, exactly when allows_place fails, or ok with the thread the
+    /// slot's capability names placed under the core capability at argument 1 on its core at the priority
+    /// in argument 2, as placed says, that core capability no longer deletable, every capability and every
+    /// thread's binding as they were, and the step discharging control of the thread.
+    pub open spec fn spec_placed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        let i = frame.slot() as usize;
+        let j = frame.argument(1) as usize;
+        let n = pre.tables.node_of(root, i);
+        let m = pre.tables.node_of(root, j);
+        let t = pre.payload_of(n).base;
+        let pl = Placement { core: core_of(pre.payload_of(m).base), priority: frame.argument(2) as usize };
+        ||| !pre.allows_place(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& pre.allows_place(root, frame)
+            &&& out == status_only(STATUS_OK)
+            &&& pre.threads.records@.contains_key(t)
+            &&& pl.core < NUM_CPUS
+            &&& pre.payload_of(m).base == core_object(pl.core as int)
+            &&& Self::placed(pre, post, m, t, pl)
+            &&& !post.can_delete(root, j)
+            &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+            &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+        }
+    }
+
     /// Whether the invocation in frame by a thread of the process whose table is at root is allowed: for
     /// an operation that can change the kernel, its allows_ predicate over the frame's decoded
     /// arguments; for every other operation, which leaves the kernel unchanged, that spec_outcome is not
@@ -864,6 +904,7 @@ impl CapKernel {
             Some(Operation::Unmap) => self.allows_unmap(root, frame),
             Some(Operation::Probe) => self.allows_probe(root, frame),
             Some(Operation::Destroy) => self.allows_destroy(root, frame),
+            Some(Operation::Place) => self.allows_place(root, frame),
             _ => self.spec_outcome(root, frame) != status_only(STATUS_REFUSED),
         }
     }
@@ -871,7 +912,7 @@ impl CapKernel {
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
     /// post with out returned, with each table position decoded from its word: a retype's effect for retype, a derive's for derive, a move's for move, a
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
-    /// unmap, a probe's for probe, a destroy's for destroy, and for every other operation the kernel unchanged with spec_outcome
+    /// unmap, a probe's for probe, a destroy's for destroy, a place's for place, and for every other operation the kernel unchanged with spec_outcome
     /// returned. Each is refused with nothing changed exactly when allows fails, as
     /// lemma_refused_exactly says.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
@@ -886,6 +927,7 @@ impl CapKernel {
             Some(Operation::Unmap) => Self::spec_unmapped(pre, post, root, frame, out),
             Some(Operation::Probe) => Self::spec_probed(pre, post, root, frame, out),
             Some(Operation::Destroy) => Self::spec_destroyed(pre, post, root, frame, out),
+            Some(Operation::Place) => Self::spec_placed(pre, post, root, frame, out),
             _ => post == pre && out == pre.spec_outcome(root, frame),
         }
     }
@@ -1270,6 +1312,29 @@ impl CapKernel {
     {
     }
 
+    /// A place reaches place: refused with nothing changed unless the slot holds a live, Inactive,
+    /// unplaced thread with control and argument 1 a core capability below the depth limit whose
+    /// maximum priority is at least the priority in argument 2; ok otherwise, with the thread placed on
+    /// that core at that priority under the core capability, as placed says.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_place(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Place),
+        ensures
+            ({
+                let i = frame.slot() as usize;
+                let j = frame.argument(1) as usize;
+                let priority = frame.argument(2) as usize;
+                let m = pre.tables.node_of(root, j);
+                let t = pre.payload_of(pre.tables.node_of(root, i)).base;
+                &&& !pre.can_place(root, i, j, priority) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_place(root, i, j, priority) ==> out == status_only(STATUS_OK)
+                    && Self::placed(pre, post, m, t, Placement { core: core_of(pre.payload_of(m).base), priority })
+            }),
+    {
+    }
+
     /// An unmap reaches unmap_at: refused with nothing changed unless the caller may unmap the entry the
     /// address in argument 1 and the level in argument 2 name, in the space of the capability in the
     /// slot; ok otherwise, with that entry unmapped as page_unmapped says and its bits in the results.
@@ -1558,6 +1623,7 @@ impl CapKernel {
             Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(steps))),
             Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(steps))),
             Some(Operation::Destroy) => Some(self.invoke_destroy(c, root, frame, Tracked(steps))),
+            Some(Operation::Place) => Some(self.invoke_place(root, frame)),
             Some(Operation::Print) => Some(status_only_outcome(
                 if self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(steps)) {
                     STATUS_OK
@@ -1830,6 +1896,21 @@ impl CapKernel {
                 }
             }
         }
+        status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The place in frame, by a thread of the process whose table is at root.
+    fn invoke_place(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_placed(*old(self), *final(self), root, frame, ret),
+    {
+        let done = self.place(root, frame.slot() as usize, frame.argument(1) as usize, frame.argument(2) as usize);
         status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
     }
 

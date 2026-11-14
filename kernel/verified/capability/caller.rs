@@ -48,7 +48,7 @@ use crate::capability::retype::FRAME_RIGHTS;
 use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
-use crate::capability::thread::{THREAD_ORDER, THREAD_RIGHTS};
+use crate::capability::thread::{placement_node, THREAD_ORDER, THREAD_RIGHTS};
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 #[cfg(verus_keep_ghost)]
@@ -310,6 +310,37 @@ impl CapKernel {
                 let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o);
                 assert(post.list == pre.list && post.tables == pre.tables && post.blocks == pre.blocks);
             }
+            assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+                assert(post.table_view(t) =~= pre.table_view(t));
+            }
+        }
+    }
+
+    /// Place's contract over the caller's view, for the thread at index i and the core capability at
+    /// index j of the caller's own table at `priority`: ok exactly when can_place holds there and
+    /// refused otherwise, and either way every table's view and the block table as they were. The
+    /// placement is a binding under the core capability, no slot: design/cpu-time-as-capability/.
+    pub open spec fn place_contract(pre: Self, post: Self, root: usize, i: usize, j: usize, priority: usize, out: Outcome) -> bool {
+        &&& out == status_only(if pre.can_place(root, i, j, priority) { STATUS_OK } else { STATUS_REFUSED })
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& post.blocks == pre.blocks
+    }
+
+    /// Place's specification implies its contract.
+    pub proof fn lemma_place_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::spec_placed(pre, post, root, frame, out),
+        ensures
+            Self::place_contract(pre, post, root, frame.slot() as usize, frame.argument(1) as usize, frame.argument(2) as usize, out),
+    {
+        if pre.allows_place(root, frame) {
+            let n = pre.tables.node_of(root, frame.slot() as usize);
+            let m = pre.tables.node_of(root, frame.argument(1) as usize);
+            let t = pre.payload_of(n).base;
+            pre.lemma_placement_node_apart(t);
+            Self::lemma_map_slots(pre, post, placement_node(t), m);
+        } else {
             assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
                 assert(post.table_view(t) =~= pre.table_view(t));
             }
