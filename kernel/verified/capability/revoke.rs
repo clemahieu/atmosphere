@@ -798,6 +798,7 @@ impl CapKernel {
             forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
+            adds_no_waiter(old(self).view(), final(self).view()),
             final(self).flush_epoch <= old(self).flush_epoch + 1,
             old(self).flush_epoch <= final(self).flush_epoch,
             Self::records_shrunk(*old(self), *final(self)),
@@ -866,6 +867,7 @@ impl CapKernel {
                 assert(self.view().shares == cut.view().shares);
                 assert(self.devices == pre.devices);
                 assert(self.view().binds == pre.view().binds);
+                assert(cut.threads == pre.threads);
                 Self::lemma_revoke_step(pre, *self, root, c, r);
                 Self::lemma_cut_recorded_same(pre, cut, *self, r);
                 Self::lemma_cut_shrunk(pre, cut, r);
@@ -893,6 +895,9 @@ impl CapKernel {
                 assert(self.threads.boot_thread == pre.threads.boot_thread);
                 assert(self.threads.queues == pre.threads.queues);
             }
+            // The cut leaves the threads, and the rest of the step only takes a thread off Blocked.
+            assert(cut.threads == pre.threads);
+            assert(adds_no_waiter(pre.view(), self.view()));
             // Each part of the step bumps the epoch or keeps it, and a word it writes is at the new epoch,
             // so a page above an acknowledgement no later than the step's first epoch stays above it.
             assert(pre.flush_epoch <= cut.flush_epoch);
@@ -1241,6 +1246,7 @@ impl CapKernel {
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, post, r),
             forall|x: usize| #[trigger] post.is_cap(x) ==> pre.is_cap(x),
             discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
+            forall|w: (ObjectId, ObjectId)| #[trigger] blocked_on(&post.threads).contains(w) ==> blocked_on(&pre.threads).contains(w),
             pre.list.nodes@[r as int].kind is Binding
                 ==> bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).remove(r),
             !(pre.list.nodes@[r as int].kind is Binding)
@@ -1291,6 +1297,21 @@ impl CapKernel {
             }
         }
         assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+        // The thread whose binding or placement went is off Blocked; every other waits as it did.
+        assert forall|t: usize| #[trigger] waits_on(&post.threads, t) is Some
+            implies waits_on(&post.threads, t) == waits_on(&pre.threads, t) by {
+            if pre.list.nodes@[r as int].kind is Binding {
+                if t != r {
+                    assert(same_record_perm_but_links(pre.threads.records@[t], post.threads.records@[t]));
+                }
+            } else if pre.list.nodes@[r as int].kind is Placement {
+                let t0 = page_of(r);
+                if t != t0 {
+                    assert(same_record_perm_but_links(pre.threads.records@[t], post.threads.records@[t]));
+                }
+            }
+        }
+        lemma_blocked_on_shrinks(&pre.threads, &post.threads);
         Self::lemma_revoke_step(pre, post, root, c, r);
         Self::lemma_delete_caps_wf(pre, post, r);
         assert(revoked_one(pre.list, post.list, c, r));
@@ -2478,6 +2499,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            forall|w: (ObjectId, ObjectId)| #[trigger] blocked_on(&post.threads).contains(w) ==> blocked_on(&pre.threads).contains(w),
             pre.wf(),
             post.list.wf(),
             pre.is_cap(c),

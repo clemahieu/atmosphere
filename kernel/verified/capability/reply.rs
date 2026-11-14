@@ -629,6 +629,7 @@ impl CapKernel {
     proof fn lemma_reply_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(&pre.list, root, from),

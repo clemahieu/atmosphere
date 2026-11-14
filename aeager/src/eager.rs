@@ -327,6 +327,48 @@ spec fn step_seq_well_ended(steps: Seq<AcallStep>) -> bool {
     }
 }
 
+/// The calls made backing a run so far, then those made backing the page at `addr` of it, are calls
+/// made backing the run.
+proof fn lemma_calls_in_window_append(
+    s1: Seq<AcallStep>,
+    s2: Seq<AcallStep>,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    max_pages: usize,
+    slots: u64,
+    window: usize,
+    start: int,
+    pages: nat,
+    addr: int,
+)
+    requires
+        start <= addr,
+        addr + PAGE_BYTES <= start + pages * PAGE_BYTES,
+        forall|j: int| 0 <= j < s1.len() ==> acall_call_in_window(#[trigger] s1[j], space, untyped, memory, max_pages, slots, window, start, pages),
+        forall|j: int| 0 <= j < s2.len() ==> acall_call_in_window(#[trigger] s2[j], space, untyped, memory, max_pages, slots, window, addr, 1),
+    ensures
+        forall|j: int| 0 <= j < (s1 + s2).len() ==> acall_call_in_window(#[trigger] (s1 + s2)[j], space, untyped, memory, max_pages, slots, window, start, pages),
+{
+    let s = s1 + s2;
+    assert forall|j: int| 0 <= j < s.len() implies acall_call_in_window(#[trigger] s[j], space, untyped, memory, max_pages, slots, window, start, pages) by {
+        reveal(acall_call_in_window);
+        if j < s1.len() {
+            assert(s[j] == s1[j]);
+        } else {
+            let st = s2[j - s1.len()];
+            assert(s[j] == st);
+            assert(acall_call_in_window(st, space, untyped, memory, max_pages, slots, window, addr, 1));
+            if let AcallCall::Map { va, .. } = st.call {
+                if !acall_setup_call(st.call, space, untyped, memory, max_pages, slots, window) {
+                    assert(run_pages(addr, 1).contains(va as int));
+                    assert(run_pages(start, pages).contains(va as int));
+                }
+            }
+        }
+    }
+}
+
 /// Appending a well-ended step sequence after an accepted prefix yields a well-ended step sequence.
 proof fn lemma_well_ended_append(s1: Seq<AcallStep>, s2: Seq<AcallStep>)
     requires
@@ -3904,13 +3946,17 @@ impl Record {
         no_unwind
     {
         // The kernel's invariant and serves stay folded: the body only hands them from one call to
-        // the next.
+        // the next. So does what accepted says of each step: the body only joins step sequences.
         hide(CapKernel::wf);
         hide(Record::serves);
+        hide(acall_ok);
         let ghost parked = forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a);
         let ghost c0 = caller@;
         let ghost mut steps = Seq::<AcallStep>::empty();
         proof {
+            assert(acall_ok(steps)) by {
+                reveal(acall_ok);
+            }
             lemma_acall_steps_none(c0);
             if old(self).free_capacity() >= pages as int {
                 lemma_capacity_implies_can_back(*old(self), start as int, pages as nat);
@@ -4015,8 +4061,11 @@ impl Record {
             proof {
                 lemma_acall_steps_append(c0, cmid, caller@, prev, sp);
                 lemma_well_ended_append(prev, sp);
-                assert forall|j: int| 0 <= j < next_steps.len() implies acall_call_in_window(
-                    #[trigger] next_steps[j],
+                assert(start as int <= addr as int);
+                assert(addr + PAGE_BYTES <= start + pages * PAGE_BYTES);
+                lemma_calls_in_window_append(
+                    prev,
+                    sp,
                     old(self).space,
                     old(self).untyped,
                     old(self).memory,
@@ -4025,24 +4074,8 @@ impl Record {
                     old(self).window,
                     start as int,
                     pages as nat,
-                ) by {
-                    reveal(acall_call_in_window);
-                    if j < prev.len() {
-                        assert(next_steps[j] == prev[j]);
-                    } else {
-                        let st = sp[j - prev.len()];
-                        assert(next_steps[j] == st);
-                        assert(acall_call_in_window(st, old(self).space, old(self).untyped, old(self).memory, old(self).pages, old(self).slots, old(self).window, addr as int, 1));
-                        if let AcallCall::Map { va, .. } = st.call {
-                            if !acall_setup_call(st.call, old(self).space, old(self).untyped, old(self).memory, old(self).pages, old(self).slots, old(self).window) {
-                                assert(run_pages(addr as int, 1).contains(va as int));
-                                assert(start as int <= addr as int);
-                                assert(addr + PAGE_BYTES <= start + pages * PAGE_BYTES);
-                                assert(run_pages(start as int, pages as nat).contains(va as int));
-                            }
-                        }
-                    }
-                }
+                    addr as int,
+                );
             }
             match backed {
                 Some(page) => {

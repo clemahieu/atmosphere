@@ -305,6 +305,7 @@ impl CapKernel {
             assert(p != 0);
             assert(post.list.seq@[0] == pre.list.seq@[0]);
             lemma_parents_removed(pre.list, post.list, n);
+            assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
             Self::lemma_delete_removes(pre, post, n);
             lemma_removes_cap_discharges(pre.view(), post.view(), root, n);
             Self::lemma_tlb_same(pre, post);
@@ -679,6 +680,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::caps_frame(pre, post, n, n),
             pre.is_cap(n),
             !post.list.nodes@[n as int].live,

@@ -453,6 +453,7 @@ impl CapKernel {
         if ret {
             proof {
                 assert(saved_registers(&self.threads) =~= saved_registers(&pre.threads));
+                assert(blocked_on(&self.threads) =~= blocked_on(&pre.threads));
                 match to.through {
                     None => {
                         Self::lemma_derive_discharges(pre, *self, root, from, to.index);
@@ -1156,6 +1157,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
             post.view().shares == pre.view().shares,
             post.devices == pre.devices,
@@ -1237,6 +1239,7 @@ impl CapKernel {
     pub proof fn lemma_places_child_view(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize)
         requires
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
             post.view().shares == pre.view().shares,
@@ -1278,6 +1281,7 @@ impl CapKernel {
     proof fn lemma_derive_discharges(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             post.frames@ == pre.frames@,
             Self::derive_step(pre, post, pre.tables.node_of(root, to)),
             Self::same_tree(pre, post),
@@ -1315,6 +1319,7 @@ impl CapKernel {
     proof fn lemma_derive_into_discharges(pre: Self, post: Self, root: usize, c: usize, from: usize, d: usize, to: usize)
         requires
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             post.frames@ == pre.frames@,
             Self::derive_step(pre, post, pre.tables.node_of(d, to)),
             Self::same_tree(pre, post),

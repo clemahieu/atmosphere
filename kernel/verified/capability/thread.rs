@@ -2294,6 +2294,7 @@ impl CapKernel {
     proof fn lemma_thread_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(&pre.list, root, from),
@@ -2637,6 +2638,7 @@ impl CapKernel {
             assert(pre.view().holds_right(root, parent, Right::Retype));
             pre.lemma_retype_covers(root, from, base, THREAD_ORDER);
             lemma_adds_object_discharges_retype(pre.view(), typed.view(), root, parent, child, live, base, pow2(1));
+            assert(post.threads.records@[base].value() == fresh_thread());
             Self::lemma_record_then(pre, post, root, parent, base);
             Self::lemma_type_thread_keeps(pre, post, mid, root, to, page as int);
             Self::lemma_typed_nodes(pre.list, mid, post.list, child, base);
@@ -2652,12 +2654,21 @@ impl CapKernel {
             discharges(pre.view(), (CapKernel { threads: pre.threads, ..post }).view(), root,
                 Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None }),
             post.threads.records@ == pre.threads.records@.insert(base, post.threads.records@[base]),
+            !pre.threads.records@.contains_key(base),
+            !(post.threads.records@[base].value().state is Blocked),
         ensures
             discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None }),
     {
         let typed = CapKernel { threads: pre.threads, ..post };
         let e = Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None };
         lemma2_to64();
+        // The new record is not Blocked, and base had none: every thread waits as it did.
+        assert forall|x: usize| #[trigger] waits_on(&post.threads, x) == waits_on(&pre.threads, x) by {
+            if x != base {
+                assert(post.threads.records@.contains_key(x) == pre.threads.records@.contains_key(x));
+            }
+        }
+        lemma_blocked_on_same(&pre.threads, &post.threads);
         assert(same_but_contents(typed.view(), post.view()));
         assert forall|o: ObjectId| #[trigger] State::changed(typed.view(), post.view(), o) implies may_change(pre.view(), e, o) by {
             if o != base {
@@ -2977,6 +2988,7 @@ impl CapKernel {
             assert(post.list.is_child(parent, child));
             assert(post.view().holds(root, child));
             assert(saved_registers(&post.threads) =~= saved_registers(&mid.threads));
+            assert(blocked_on(&post.threads) =~= blocked_on(&mid.threads));
             Self::lemma_leaf_added_discharges(mid, post, root, n, base);
             assert forall|x: NodeId| #[trigger] mid.view().names.contains_key(x) implies post.view().names.contains_key(x) by {
                 assert(post.is_cap(x) == mid.is_cap(x));
@@ -3764,6 +3776,12 @@ impl CapKernel {
             let (a, b) = (pre.view(), post.view());
             let e = Effect::Control { cap: pre.tables.node_of(root, i), thread: t };
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads).insert(t, user_frame(frame)));
+            assert forall|o: usize| #[trigger] waits_on(&post.threads, o) == waits_on(&pre.threads, o) by {
+                if o != t && post.threads.records@.contains_key(o) {
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
+            lemma_blocked_on_same(&pre.threads, &post.threads);
             assert(same_but_contents(a, b));
             assert forall|o: ObjectId| #[trigger] State::changed(a, b, o) implies may_change(a, e, o) by {
                 if o != t {
@@ -3947,6 +3965,12 @@ impl CapKernel {
                 }
             }
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            assert forall|o: usize| #[trigger] waits_on(&post.threads, o) == waits_on(&pre.threads, o) by {
+                if o != t && post.threads.records@.contains_key(o) {
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
+            lemma_blocked_on_same(&pre.threads, &post.threads);
             assert(post.view() == pre.view());
         }
         true
@@ -3981,6 +4005,23 @@ impl CapKernel {
         &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
         &&& post.threads.records@[t].is_init()
         &&& same_thread_but_links(post.threads.records@[t].value(), r)
+    }
+
+    /// A step that wrote thread t's record as r left every other thread waiting as it was, and t
+    /// waiting as r says.
+    pub proof fn lemma_record_written_waits(pre: Self, post: Self, t: usize, r: ThreadRecord)
+        requires
+            Self::record_written(pre, post, t, r),
+            pre.threads.records@.contains_key(t),
+        ensures
+            forall|x: usize| x != t ==> #[trigger] waits_on(&post.threads, x) == waits_on(&pre.threads, x),
+            waits_on(&post.threads, t) == if r.state is Blocked { Some(r.state->Blocked_object) } else { None },
+    {
+        assert forall|x: usize| x != t implies #[trigger] waits_on(&post.threads, x) == waits_on(&pre.threads, x) by {
+            if post.threads.records@.contains_key(x) {
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+            }
+        }
     }
 
     /// The step set thread t's state and nothing else of its record or of any other record, and left
@@ -4062,6 +4103,12 @@ impl CapKernel {
                             }
                         }
                         assert(saved_registers(&self.threads) =~= saved_registers(&pre.threads));
+                        assert forall|o: usize| #[trigger] waits_on(&self.threads, o) == waits_on(&pre.threads, o) by {
+                            if o != t && post.threads.records@.contains_key(o) {
+                                assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                            }
+                        }
+                        lemma_blocked_on_same(&pre.threads, &self.threads);
                         assert(self.view() == pre.view());
                     }
                     return SuspendStep::Again;
@@ -4184,6 +4231,12 @@ impl CapKernel {
                 }
             }
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            assert forall|o: usize| #[trigger] waits_on(&post.threads, o) == waits_on(&pre.threads, o) by {
+                if o != t && post.threads.records@.contains_key(o) {
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
+            lemma_blocked_on_same(&pre.threads, &post.threads);
             assert(post.view() == pre.view());
         }
         SuspendStep::Suspended
@@ -4290,6 +4343,12 @@ impl CapKernel {
                 }
             }
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            assert forall|o: usize| #[trigger] waits_on(&post.threads, o) == waits_on(&pre.threads, o) by {
+                if o != t && post.threads.records@.contains_key(o) {
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
+            lemma_blocked_on_same(&pre.threads, &post.threads);
             assert(post.view() == pre.view());
         }
     }
@@ -4737,6 +4796,12 @@ impl CapKernel {
             }
             Self::lemma_switch_wf(pre, post, c as int, t);
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads).insert(t, saved_frame(frame, saved)));
+            assert forall|o: usize| #[trigger] waits_on(&post.threads, o) == waits_on(&pre.threads, o) by {
+                if o != t && post.threads.records@.contains_key(o) {
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
+            lemma_blocked_on_same(&pre.threads, &post.threads);
             assert(same_but_contents(pre.view(), post.view()));
             assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) implies o == t by {
                 assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
@@ -5979,6 +6044,7 @@ impl CapKernel {
                 broadcast use vstd::set::lemma_set_filter;
             }
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
             Self::lemma_leaf_added_discharges(pre, post, root, m, x);
             let e = Effect::Control { cap: n, thread: t };
             assert(authorized(pre.view(), root, e));

@@ -1750,6 +1750,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
             pre.can_link(root, slot, parent, entry, from, child),
             Self::link_done(pre, post, parent, entry, child, s),
@@ -2437,6 +2438,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::tree_cut(pre, post, t),
             post.list == pre.list,
             post.tables == pre.tables,

@@ -1187,6 +1187,7 @@ impl CapKernel {
                 taken > 0 ==> !pre.leaf_is_empty(base) && pre.flush_epoch < usize::MAX,
                 forall|j: int| 0 <= j < k ==> !(#[trigger] self.list.nodes@[base + j]).live,
                 discharges(pre.view(), self.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object }),
+                adds_no_waiter(pre.view(), self.view()),
                 forall|h: (ObjectId, NodeId)| #[trigger] self.view().held.contains(h) ==> pre.view().held.contains(h),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
                 base + NODES_PER_PAGE <= NODE_SPACE,
@@ -1467,12 +1468,14 @@ impl CapKernel {
             discharges(pre.view(), mid.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object }),
             tears_down(mid.view(), post.view(), base, object),
             mid.list.parent == pre.list.parent,
+            adds_no_waiter(pre.view(), mid.view()),
             post.tables.owner == mid.tables.owner,
             forall|x: usize| #[trigger] post.is_cap(x) ==> mid.is_cap(x),
             forall|h: (ObjectId, NodeId)| #[trigger] mid.view().held.contains(h) ==> pre.view().held.contains(h),
         ensures
             discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object }),
             forall|h: (ObjectId, NodeId)| #[trigger] post.view().held.contains(h) ==> pre.view().held.contains(h),
+            adds_no_waiter(pre.view(), post.view()),
     {
         Self::lemma_held_shrinks(mid, post);
         lemma_teardown_steps_compose(pre.view(), mid.view(), post.view(), root, untyped, base, 0, object);
@@ -1554,6 +1557,7 @@ impl CapKernel {
             Self::lemma_badges_caps_frame(pre, post, n, n);
             Self::lemma_delete_holders(pre, post, n);
             Self::lemma_tlb_same(pre, post);
+            assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
             Self::lemma_delete_removes(pre, post, n);
             assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) by {
                 if x != n {
@@ -2169,6 +2173,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
             pre.leaf_is_empty(base),
             post.tables.wf(&pre.list),
@@ -3492,6 +3497,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::caps_frame(pre, post, base, base),
             base % PAGE_SZ == 0,
             post.list.parent == pre.list.parent,
@@ -4560,6 +4566,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::caps_frame(pre, post, n, n),
             pre.list.nodes@[n as int].kind is Mapping,
             !post.list.nodes@[n as int].live,

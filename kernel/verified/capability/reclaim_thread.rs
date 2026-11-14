@@ -121,8 +121,9 @@ impl CapKernel {
     /// What unlinking the binding of the dead thread at `base` did to self: its record names no process,
     /// the process's block lost the reference, and the list lost the binding node alone, so every other
     /// node keeps its kind and its depth, and a node whose only child was the binding has none. The node
-    /// was no capability and no mapping, so the view is as it was, and so are the spaces, the table
-    /// pages, the stale epochs, the flush epoch, the cores and the IOMMUs.
+    /// was no capability and no mapping, so the view is as it was but for who waits, which lost the
+    /// thread if it was Blocked and gained no one, and the spaces, the table pages, the stale epochs,
+    /// the flush epoch, the cores and the IOMMUs are as they were.
     pub open spec fn thread_unbound(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         &&& self.view().holds_right(root, untyped, Right::Retype)
@@ -146,7 +147,8 @@ impl CapKernel {
         &&& post.flush_epoch == self.flush_epoch
         &&& post.thread_is_dead(base)
         &&& post.thread_work(base) < self.thread_work(base)
-        &&& post.view() == self.view()
+        &&& post.view() == (State { waiting: post.view().waiting, ..self.view() })
+        &&& adds_no_waiter(self.view(), post.view())
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables).remove(base)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object: base })
     }
@@ -170,7 +172,7 @@ impl CapKernel {
         &&& !post.list.pages@.dom().contains(base)
         &&& post.thread_work(base) < self.thread_work(base)
         &&& Self::step_ok(*self, post, c as int)
-        &&& same_but_contents(self.view(), post.view())
+        &&& unwaits(self.view(), post.view())
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: pow2(THREAD_ORDER as nat), object: base })
     }
@@ -256,12 +258,14 @@ impl CapKernel {
         }
     }
 
-    /// A step that takes a binding node away leaves the view as it was: the node was no capability, and
-    /// every capability says what it did under the parent it had.
+    /// A step that takes a binding node away leaves the view as it was but for who waits, which it
+    /// only takes from: the node was no capability, and every capability says what it did under the
+    /// parent it had.
     proof fn lemma_binding_view_same(pre: Self, post: Self, n: usize)
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            forall|w: (ObjectId, ObjectId)| #[trigger] blocked_on(&post.threads).contains(w) ==> blocked_on(&pre.threads).contains(w),
             Self::caps_frame(pre, post, n, n),
             pre.list.nodes@[n as int].kind is Binding,
             !post.list.nodes@[n as int].live,
@@ -270,7 +274,8 @@ impl CapKernel {
             post.devices == pre.devices,
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
-            post.view() == pre.view(),
+            post.view() == (State { waiting: post.view().waiting, ..pre.view() }),
+            adds_no_waiter(pre.view(), post.view()),
     {
         let (a, b) = (pre.view(), post.view());
         assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
@@ -283,7 +288,7 @@ impl CapKernel {
         assert(b.names =~= a.names);
         assert(b.pages =~= a.pages);
         assert(b.rights =~= a.rights);
-        assert(b == a);
+        assert(b == (State { waiting: b.waiting, ..a }));
     }
 
     /// Unlinks binding node t with its thread's binding and its reference on the process's block.
@@ -315,7 +320,8 @@ impl CapKernel {
             final(self).table_pages == old(self).table_pages,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
-            final(self).view() == old(self).view(),
+            final(self).view() == (State { waiting: final(self).view().waiting, ..old(self).view() }),
+            adds_no_waiter(old(self).view(), final(self).view()),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).remove(t),
     {
         let ghost pre = *old(self);
@@ -356,6 +362,16 @@ impl CapKernel {
                 }
             }
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            // The unbound thread is off Blocked; every other waits as it did.
+            assert forall|o: usize| #[trigger] waits_on(&post.threads, o) is Some
+                implies waits_on(&post.threads, o) == waits_on(&pre.threads, o) by {
+                if o != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                } else {
+                    assert(!(crate::capability::thread::unbound_record(pre.threads.records@[t].value()).state is Blocked));
+                }
+            }
+            lemma_blocked_on_shrinks(&pre.threads, &post.threads);
             Self::lemma_binding_view_same(pre, post, t);
             assert(!pre.is_cap(t));
             lemma_only_child_gone(pre.list, post.list, t, p);
@@ -765,7 +781,7 @@ impl CapKernel {
             post.stop_ipis == pre.stop_ipis,
         ensures
             post.wf(),
-            same_but_contents(pre.view(), post.view()),
+            unwaits(pre.view(), post.view()),
             forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) ==> o == base,
             bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
     {
@@ -794,7 +810,12 @@ impl CapKernel {
         assert(b.pages =~= a.pages);
         assert(b.rights =~= a.rights);
         assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads).remove(base));
-        assert(same_but_contents(a, b));
+        assert forall|t: usize| #[trigger] waits_on(&post.threads, t) is Some
+            implies waits_on(&post.threads, t) == waits_on(&pre.threads, t) by {
+            assert(t != base);
+        }
+        lemma_blocked_on_shrinks(&pre.threads, &post.threads);
+        assert(unwaits(a, b));
         assert forall|o: ObjectId| #[trigger] State::changed(a, b, o) implies o == base by {
             if o != base {
                 assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
@@ -896,7 +917,7 @@ impl CapKernel {
             !final(self).threads.records@.contains_key(base),
             !final(self).list.pages@.dom().contains(base),
             final(self).cores == old(self).cores,
-            same_but_contents(old(self).view(), final(self).view()),
+            unwaits(old(self).view(), final(self).view()),
             forall|o: ObjectId| #[trigger] State::changed(old(self).view(), final(self).view(), o) ==> o == base,
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -1038,7 +1059,7 @@ impl CapKernel {
             proof {
                 let post = *self;
                 pre.lemma_retype_covers(root, from, base, THREAD_ORDER);
-                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0, base);
+                lemma_unwaits_discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object: base });
                 assert(post.threads.records@.contains_key(base));
                 assert(post.blocks.pages@[page as int].refs == 0) by {
                     let p = pre.threads.records@[base].value().process->Some_0;
@@ -1085,7 +1106,7 @@ impl CapKernel {
             assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) implies may_change(pre.view(), e, o) by {
                 assert(o == base);
             }
-            lemma_contents_only(pre.view(), post.view(), root, e);
+            lemma_unwaits_discharges(pre.view(), post.view(), root, e);
             assert(pre.thread_freed(post, c, root, from, base));
         }
         ReclaimStep::Freed

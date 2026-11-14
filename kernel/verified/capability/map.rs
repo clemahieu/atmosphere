@@ -2856,6 +2856,7 @@ impl CapKernel {
     /// post's authority is all in pre, under the renaming returned, which renames nothing.
     pub proof fn lemma_leaf_added_simulates(pre: Self, post: Self, f: usize, node: usize) -> (m: (spec_fn(NodeId) -> bool, spec_fn(NodeId) -> NodeId))
         requires
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,
@@ -2926,6 +2927,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,
@@ -2958,6 +2960,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,
@@ -2987,6 +2990,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,

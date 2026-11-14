@@ -547,6 +547,7 @@ impl CapKernel {
             assert(right_bit(Right::Retype) == 8);
             Self::lemma_derive_step_adds_cap(pre, post, child);
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
             Self::lemma_places_child_view(pre, post, root, from, root, to);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
@@ -1285,6 +1286,7 @@ impl CapKernel {
             }
             pre.lemma_retype_covers(root, from, base, 1);
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
             Self::lemma_leaf_discharges(pre, post, root, parent, base, pre.through_node(root, at.through));
             Self::lemma_leaf_keeps(pre, post, table, r, base);
         }
@@ -2019,6 +2021,7 @@ impl CapKernel {
     proof fn lemma_leaf_discharges(pre: Self, post: Self, root: usize, parent: usize, leaf: usize, into: Option<usize>)
         requires
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::leaf_step(pre, post, leaf),
             Self::same_tree(pre, post),
             post.list.parent@ == pre.list.parent@.insert(leaf, parent),

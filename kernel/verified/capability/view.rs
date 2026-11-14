@@ -4,9 +4,10 @@
 //! so what a process holds, what each capability names and which rights it carries are read from the
 //! tables here and nowhere else, beside what each device space maps, read from the walks of its tables,
 //! and which space each device is bound to, read from the device records, and what a process sees of
-//! a frame, read from its page's permission, and of a thread, read from the registers its record saves.
-//! The fields for process mappings and threads, and the contents of objects other than frames and
-//! threads, stay empty until the objects behind them exist. See design/theorem-over-reach/ and design/device-binding-under-the-space-capability/.
+//! a frame, read from its page's permission, and of a thread, read from the registers its record saves,
+//! and which threads wait on what, read from the threads Blocked on an object. The fields for process
+//! mappings and threads, and the contents of objects other than frames and threads, stay empty until
+//! the objects behind them exist. See design/theorem-over-reach/ and design/device-binding-under-the-space-capability/.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
@@ -425,6 +426,43 @@ pub open spec fn saved_registers(threads: &Threads) -> Map<ObjectId, Registers> 
     threads.records@.map_values(|r: PointsTo<ThreadRecord>| r.value().frame)
 }
 
+/// The object thread t is Blocked on, if t has a record and it says t is Blocked.
+pub open spec fn waits_on(threads: &Threads, t: usize) -> Option<ObjectId> {
+    if threads.records@.contains_key(t) && threads.records@[t].value().state is Blocked {
+        Some(threads.records@[t].value().state->Blocked_object)
+    } else {
+        None
+    }
+}
+
+/// Each thread Blocked on an object, with that object: (o, t) when t's record says t waits on o.
+/// A thread a queue still lists after it left Blocked is not here: reach counts only who waits now.
+pub open spec fn blocked_on(threads: &Threads) -> ISet<(ObjectId, ObjectId)> {
+    ISet::new(|w: (ObjectId, ObjectId)| waits_on(threads, w.1) == Some(w.0))
+}
+
+/// Threads each Blocked on what they were, or on nothing in both, wait as they did.
+pub proof fn lemma_blocked_on_same(a: &Threads, b: &Threads)
+    requires
+        forall|t: usize| #[trigger] waits_on(b, t) == waits_on(a, t),
+    ensures
+        blocked_on(b) == blocked_on(a),
+{
+    assert(blocked_on(b) =~= blocked_on(a));
+}
+
+/// Threads each Blocked on what they were, or on nothing now, wait on no more than they did.
+pub proof fn lemma_blocked_on_shrinks(a: &Threads, b: &Threads)
+    requires
+        forall|t: usize| #[trigger] waits_on(b, t) is Some ==> waits_on(b, t) == waits_on(a, t),
+    ensures
+        forall|w: (ObjectId, ObjectId)| #[trigger] blocked_on(b).contains(w) ==> blocked_on(a).contains(w),
+{
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] blocked_on(b).contains(w) implies blocked_on(a).contains(w) by {
+        assert(waits_on(b, w.1) is Some);
+    }
+}
+
 /// What a process sees of object o: a thread's saved registers, as bytes, and a frame's page otherwise.
 pub open spec fn contents_of(registers: Map<ObjectId, Registers>, frames: Map<usize, PagePerm4k>, o: ObjectId) -> Seq<u8> {
     if registers.contains_key(o) {
@@ -456,14 +494,15 @@ pub proof fn lemma_contents_in_pages(a: Map<usize, PagePerm4k>, b: Map<usize, Pa
 }
 
 /// What the view reads: the list and the tables, what the device spaces map through the table tree,
-/// which space each device is bound to, the threads' saved registers and the frames' pages, so a step
-/// that leaves those alone leaves the view alone.
+/// which space each device is bound to, the threads' saved registers and what each is Blocked on, and
+/// the frames' pages, so a step that leaves those alone leaves the view alone.
 pub open spec fn view_of(
     list: &Tree,
     tables: &Tables,
     tree: TableTree,
     devices: &Devices,
     registers: Map<ObjectId, Registers>,
+    waiting: ISet<(ObjectId, ObjectId)>,
     frames: Map<usize, PagePerm4k>,
 ) -> State {
     State {
@@ -476,7 +515,7 @@ pub open spec fn view_of(
         parent: list.parent@,
         maps: Set::empty(),
         process_of: Map::empty(),
-        waiting: Set::empty(),
+        waiting,
         bound: Map::empty(),
         shares: shares_of(tree),
         binds: binds_of(devices),
@@ -537,7 +576,7 @@ impl CapKernel {
     }
 
     pub open spec fn view(&self) -> State {
-        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.devices, saved_registers(&self.threads), self.frames@)
+        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.devices, saved_registers(&self.threads), blocked_on(&self.threads), self.frames@)
     }
 
     /// Without a device space nothing is shared through one.

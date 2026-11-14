@@ -84,7 +84,7 @@ pub ghost struct State {
     /// The process each thread belongs to.
     pub process_of: Map<ObjectId, ObjectId>,
     /// (endpoint or notification, thread): the thread is blocked waiting on it.
-    pub waiting: Set<(ObjectId, ObjectId)>,
+    pub waiting: ISet<(ObjectId, ObjectId)>,
     /// The caller bound to each reply.
     pub bound: Map<ObjectId, ObjectId>,
     /// (device space, frame): the device space maps the frame, so whoever sees the space reaches it.
@@ -761,7 +761,7 @@ pub proof fn lemma_teardown_steps_compose(a: State, b: State, c: State, p: Objec
         discharges(a, b, p, Effect::Teardown { untyped, block, pages, object }),
         tears_down(b, c, block, object),
         a.parent == b.parent,
-        a.waiting == b.waiting,
+        adds_no_waiter(a, b),
         forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) ==> a.held.contains(h),
     ensures
         discharges(a, c, p, Effect::Teardown { untyped, block, pages, object }),
@@ -3036,7 +3036,7 @@ pub open spec fn example() -> State {
         parent: Map::empty(),
         maps: set![(1usize, EXAMPLE_BASE)],
         process_of: Map::empty(),
-        waiting: Set::empty(),
+        waiting: ISet::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
         binds: IMap::empty(),
@@ -3145,7 +3145,7 @@ pub open spec fn control_example() -> State {
         parent: Map::empty(),
         maps: Set::empty(),
         process_of: map![3usize => 2usize],
-        waiting: Set::empty(),
+        waiting: ISet::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
         binds: IMap::empty(),
@@ -3332,7 +3332,7 @@ pub open spec fn retype_example() -> State {
         parent: Map::empty(),
         maps: Set::empty(),
         process_of: Map::empty(),
-        waiting: Set::empty(),
+        waiting: ISet::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
         binds: IMap::empty(),
@@ -3520,7 +3520,7 @@ pub open spec fn waiter_example(owner: ObjectId) -> State {
 
 /// `waiter_example` with WAITER listed as waiting on EXAMPLE_BASE, which process 1 reaches.
 pub open spec fn waiting_example(owner: ObjectId) -> State {
-    State { waiting: set![(EXAMPLE_BASE, WAITER)], ..waiter_example(owner) }
+    State { waiting: ISet::empty().insert((EXAMPLE_BASE, WAITER)), ..waiter_example(owner) }
 }
 
 /// A step by process 1 may list a thread of its own as waiting on an object it reaches.
@@ -3586,7 +3586,7 @@ pub open spec fn send_example() -> State {
         parent: Map::empty(),
         maps: Set::empty(),
         process_of: Map::empty(),
-        waiting: Set::empty(),
+        waiting: ISet::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
         binds: IMap::empty(),
@@ -3663,7 +3663,7 @@ pub open spec fn share_example() -> State {
         parent: Map::empty(),
         maps: Set::empty(),
         process_of: Map::empty(),
-        waiting: Set::empty(),
+        waiting: ISet::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
         binds: IMap::empty().insert(DEVICE_OBJECTS, EXAMPLE_BASE),
@@ -3957,6 +3957,31 @@ proof fn lemma_new_waiter_is_the_steppers(
 /// a and b differ in contents alone.
 pub open spec fn same_but_contents(a: State, b: State) -> bool {
     b == (State { contents: b.contents, ..a })
+}
+
+/// a and b differ in contents and in who waits alone, and b lists no waiter a does not: a step that
+/// moves threads off Blocked, or frees the record of one.
+pub open spec fn unwaits(a: State, b: State) -> bool {
+    &&& b == (State { contents: b.contents, waiting: b.waiting, ..a })
+    &&& adds_no_waiter(a, b)
+}
+
+/// Such a step, by a process e authorizes, changing what e may change, discharges e: taking a waiter
+/// off moves no authority.
+pub proof fn lemma_unwaits_discharges(a: State, b: State, p: ObjectId, e: Effect)
+    requires
+        authorized(a, p, e),
+        unwaits(a, b),
+        forall|o: ObjectId| #[trigger] State::changed(a, b, o) ==> may_change(a, e, o),
+    ensures
+        discharges(a, b, p, e),
+{
+    assert(b.held == a.held && b.names == a.names && b.pages == a.pages && b.rights == a.rights);
+    assert(b.parent == a.parent && b.maps == a.maps && b.process_of == a.process_of);
+    assert(b.shares == a.shares && b.binds == a.binds);
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] b.reach(r, o) && !a.reach(r, o) implies may_grow(a, p, e, r, o) by {
+        lemma_same_authority_same_reach(b, a, r, o);
+    }
 }
 
 /// a and b differ only in what a process sees of thread t: the step saved the frame t entered the

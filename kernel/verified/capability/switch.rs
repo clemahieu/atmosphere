@@ -640,6 +640,14 @@ impl CapKernel {
             assert(s5.threads.holders == s1.threads.holders);
             assert(saved_registers(&s5.threads) == saved_registers(&s1.threads));
             assert(tree_of(&s5.table_pages, &s5.spaces) == tree_of(&s0.table_pages, &s0.spaces));
+            // The leaving thread goes off Running and the arriving one onto it: neither waits, before or
+            // after, and every other thread's record is as it was.
+            assert forall|x: usize| #[trigger] waits_on(&s5.threads, x) == waits_on(&s0.threads, x) by {
+                if s5.threads.records@.contains_key(x) && leaving != Some(x) && next != Some(x) {
+                    assert(same_record_perm_but_links(s0.threads.records@[x], s5.threads.records@[x]));
+                }
+            }
+            lemma_blocked_on_same(&s0.threads, &s5.threads);
             match leaving {
                 Some(o) => {
                     assert(same_but_contents(s0.view(), s5.view()));

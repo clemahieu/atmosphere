@@ -357,6 +357,7 @@ impl CapKernel {
                 let i = pre.tables.node_of(src, from.index);
                 let n = pre.tables.node_of(dst, to.index);
                 let a = pre.view();
+                assert(blocked_on(&self.threads) =~= blocked_on(&pre.threads));
                 match to.through {
                     Some(d) => {
                         // The caller commands the node, and its control chains lead to the table
@@ -746,6 +747,7 @@ impl CapKernel {
     /// one table.
     proof fn lemma_move_simulates(pre: Self, post: Self, i: usize, n: usize)
         requires
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.tables.owner@[page_of(n)].0 == pre.tables.owner@[page_of(i)].0,
@@ -809,6 +811,7 @@ impl CapKernel {
     /// by the table it came from.
     proof fn lemma_move_simulated(pre: Self, post: Self, i: usize, n: usize)
         requires
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
         ensures
@@ -905,6 +908,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.tables.owner@[page_of(i)].0 == root,
@@ -958,6 +962,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.is_cap(c),
@@ -1000,6 +1005,7 @@ impl CapKernel {
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.view().holds_right(root, d, Right::Control),

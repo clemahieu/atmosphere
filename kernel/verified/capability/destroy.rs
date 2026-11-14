@@ -339,8 +339,18 @@ impl CapKernel {
                 }
                 self.destroy_thread(c, payload.base);
                 proof {
+                    let post = *self;
+                    let r = pre.threads.records@[payload.base].value();
                     assert(saved_registers(&self.threads) =~= saved_registers(&pre.threads));
-                    assert(self.view() == pre.view());
+                    match r.state {
+                        ThreadState::Running { .. } => Self::lemma_record_written_waits(pre, post, payload.base,
+                            ThreadRecord { pending_stop: true, dying: true, ..r }),
+                        _ => Self::lemma_record_written_waits(pre, post, payload.base,
+                            ThreadRecord { state: ThreadState::Dead, pending_stop: false, dying: false, ..r }),
+                    }
+                    lemma_blocked_on_shrinks(&pre.threads, &post.threads);
+                    assert(unwaits(pre.view(), post.view()));
+                    lemma_unwaits_discharges(pre.view(), post.view(), root, Effect::Destroy { cap: n });
                     if pre.destroys_own(c as int, root, i) {
                         reveal(current_wf);
                         assert(runs(pre.cores@, c as int, payload.base));
