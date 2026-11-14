@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy, place and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -65,6 +65,10 @@
 //! base not aligned to the block are refused; inspect finds a thread with control in the first slot, a
 //! second retype of its block is refused, and dom0 prints the best and the mean cycles of a thread's
 //! retype beside new_thread's before numbers.
+//! It places the first of those threads on core 0 through its core capability at its own priority, 0,
+//! after a place of the console slot, one whose core argument is the console slot and one at priority
+//! 256 are refused, and after a copy of the core capability derived with maximum 0 refuses the thread
+//! at priority 1 and is deleted; a second place of the thread is refused, and dom0 prints that it held.
 //! It retypes a table leaf into root entry 0 of the child's table, through the child's process
 //! capability, and derives its power capability into that entry's first slot, which inspect finds there.
 //! A destroy of an empty slot, of the console and of the power capability is refused; the destroy of the
@@ -88,7 +92,7 @@
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
 //! `svc #1` returns unknown and prints nothing.
 //!
-//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, link and map through acall's wrappers,
+//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, place, link and map through acall's wrappers,
 //! whose ensures are the kernel's proven contracts, so the code those proofs speak of is the code that
 //! boots. dom0 is not verified: the caller token it threads through them erases in its build, and
 //! nothing here checks the wrappers' requires.
@@ -103,7 +107,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 
-use acall::capability::{delete, destroy, move_cap, revoke};
+use acall::capability::{delete, destroy, move_cap, place, revoke};
 use acall::memory::{derive, link, map, retype};
 use acall::step::Caller;
 use asys::operation;
@@ -910,6 +914,33 @@ fn retyped_threads_held(caller: &mut Tracked<Caller>, empty: u64, process: u64) 
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, THREADS_HELD) } == operation::STATUS_OK
 }
 
+/// What dom0 prints once it placed a thread of its child on core 0, which the gate looks for.
+const PLACED_HELD: [u64; 5] = operation::print_words(b"dom0 thread placed\n");
+
+/// Whether dom0 places the first thread the thread check retyped on core 0 through ROOT_CORE_SLOT at
+/// dom0's own priority, 0, using the empty slot `copy` for a derived core capability and freeing it
+/// again. A place of the console slot, which holds no thread, is refused, and so are one whose core
+/// argument is the console slot and one at priority 256, above any core capability's maximum. A copy of
+/// core 0's capability derived with maximum 0 refuses the thread at priority 1 and is deleted. The place
+/// through ROOT_CORE_SLOT is accepted and a second refused, the thread being placed already. dom0
+/// prints that it held.
+fn placed_thread_held(caller: &mut Tracked<Caller>, copy: u64) -> bool {
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 1;
+    let Ok(core) = inspect(caller, operation::ROOT_CORE_SLOT) else {
+        return false;
+    };
+    core.kind == operation::KIND_CORE
+        && place(caller, operation::ROOT_CONSOLE_SLOT, operation::ROOT_CORE_SLOT, 0).status == operation::STATUS_REFUSED
+        && place(caller, thread, operation::ROOT_CONSOLE_SLOT, 0).status == operation::STATUS_REFUSED
+        && place(caller, thread, operation::ROOT_CORE_SLOT, 256).status == operation::STATUS_REFUSED
+        && derive(caller, operation::ROOT_CORE_SLOT, copy, core.rights, core.base, 0).status == operation::STATUS_OK
+        && place(caller, thread, copy, 1).status == operation::STATUS_REFUSED
+        && delete(caller, copy).status == operation::STATUS_OK
+        && place(caller, thread, operation::ROOT_CORE_SLOT, 0).status == operation::STATUS_OK
+        && place(caller, thread, operation::ROOT_CORE_SLOT, 0).status == operation::STATUS_REFUSED
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, PLACED_HELD) } == operation::STATUS_OK
+}
+
 /// How far below the top of the gigabyte untyped the child's table leaf starts: the order-1 block below the
 /// thread check's, above the eager source's block, where nothing else retypes.
 const CHILD_LEAF_BELOW_TOP: u64 = THREADS_BELOW_TOP + LEAF_BYTES;
@@ -1462,6 +1493,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && retyped_process_held(caller, untyped, tables[0], empty + 4)
                                 && retyped_leaves_held(caller, untyped, tables[3])
                                 && retyped_threads_held(caller, empty, empty + 4)
+                                && placed_thread_held(caller, empty + 5)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && eager_source_held(caller, empty)
                         })

@@ -46,6 +46,7 @@ const _: () = {
     assert!(user::LINK == operation::OPERATION_LINK);
     assert!(user::PROBE == operation::OPERATION_PROBE);
     assert!(user::POWER_OFF == operation::OPERATION_POWER_OFF);
+    assert!(user::PLACE == operation::OPERATION_PLACE);
     assert!(user::PROBE_MAX == verified::capability::probe::PROBE_MAX);
     assert!(user::RETYPE_FRAME == operation::RETYPE_FRAME);
     assert!(user::RETYPE_LARGE_FRAME == operation::RETYPE_LARGE_FRAME);

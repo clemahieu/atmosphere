@@ -76,6 +76,11 @@ pub const PROBE: u64 = 17;
 /// succeeded when argument 1 is not zero and one that failed when it is zero. Refused unless the slot holds
 /// a power capability; accepted, it does not return.
 pub const POWER_OFF: u64 = 18;
+/// Places the thread in the slot on the core whose capability argument 1 names, in the caller's own
+/// table, at the priority argument 2 gives, which is at most that capability's maximum. Refused unless
+/// the thread is inactive and not placed yet and argument 1 holds a live core capability whose maximum
+/// is at least the priority. A placed thread runs on that core once started.
+pub const PLACE: u64 = 21;
 
 /// The most entries one probe reads.
 pub const PROBE_MAX: u64 = 64;
