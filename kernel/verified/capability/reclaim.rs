@@ -1544,6 +1544,7 @@ impl CapKernel {
             lemma_parents_removed(pre.list, post.list, n);
             Self::lemma_revoke_hidden(pre, post, n);
             Self::lemma_bindings_caps_frame(pre, post, n, n);
+            Self::lemma_badges_caps_frame(pre, post, n, n);
             Self::lemma_delete_holders(pre, post, n);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_delete_removes(pre, post, n);
@@ -2358,6 +2359,7 @@ impl CapKernel {
     {
         pre.lemma_empty_leaf(base);
         Self::lemma_leaf_freed_caps(pre, post, base);
+        Self::lemma_badges_same_caps(pre, post);
         Self::lemma_devices_same_caps(pre, post);
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
             &&& post.tables.is_cap(&post.list, x)
@@ -2856,6 +2858,7 @@ impl CapKernel {
         pre.lemma_empty_table(base);
         Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_node_block_caps(pre, post, base);
+        Self::lemma_badges_same_caps(pre, post);
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
             &&& post.tables.is_cap(&post.list, x)
@@ -3169,6 +3172,7 @@ impl CapKernel {
         pre.lemma_empty_space(base);
         Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_node_block_caps(pre, post, base);
+        Self::lemma_badges_same_caps(pre, post);
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Core implies {
             &&& post.tables.is_cap(&post.list, x)
@@ -3434,6 +3438,7 @@ impl CapKernel {
             lemma_parents_removed(pre.list, post.list, base);
             Self::lemma_revoke_hidden(pre, post, base);
             Self::lemma_bindings_caps_frame(pre, post, base, base);
+            Self::lemma_badges_caps_frame(pre, post, base, base);
             Self::lemma_revoke_hidden_holders(pre, post, base);
             Self::lemma_tlb_same(pre, post);
             pre.lemma_retype_covers(root, from, base, 1);
@@ -3585,6 +3590,7 @@ impl CapKernel {
             lemma_parents_removed(cut.list, post.list, base);
             Self::lemma_revoke_hidden(cut, post, base);
             Self::lemma_bindings_caps_frame(cut, post, base, base);
+            Self::lemma_badges_caps_frame(cut, post, base, base);
             Self::lemma_revoke_hidden_holders(cut, post, base);
             Self::lemma_tlb_same(cut, post);
             Self::lemma_cut_sheds(pre, cut, base);
@@ -4622,6 +4628,7 @@ impl CapKernel {
             assert(post.table_pages.maps@.dom() =~= pre.table_pages.maps@.dom());
             Self::lemma_revoke_hidden(pre, post, n);
             Self::lemma_bindings_caps_frame(pre, post, n, n);
+            Self::lemma_badges_caps_frame(pre, post, n, n);
             Self::lemma_revoke_mapping_holders(pre, post, n);
             Self::lemma_stale_noted_same(pre, mid, post, n);
             Self::lemma_tlb_same(mid, post);

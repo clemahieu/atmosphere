@@ -1293,6 +1293,7 @@ impl CapKernel {
             Self::lemma_same_tree_shrunk(pre, post);
             Self::lemma_bindings_caps_frame(pre, post, r, r);
         }
+        Self::lemma_badges_caps_frame(pre, post, r, r);
         Self::lemma_tlb_same(mid, post);
         assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
         Self::lemma_caps_frame(pre, post, r, r, c);

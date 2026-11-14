@@ -46,7 +46,8 @@ pub const BADGE_LIMIT: usize = 0x1_0000_0000_0000; // not a page size: the bound
 
 /// A derive may set this badge on a child of parent: 0, which keeps the parent's, or one that fits 48
 /// bits on a child of an endpoint's capability whose own badge is 0. A badge, once set, is in every
-/// capability derived below it, so a receiver can tell which lineage a sender holds.
+/// capability derived below it, as badges_inherited states, so a receiver can tell which lineage a
+/// sender holds.
 pub open spec fn badge_allowed(parent: Payload, badge: usize) -> bool {
     ||| badge == 0
     ||| parent.kind is Endpoint && parent.badge == 0 && badge < BADGE_LIMIT
@@ -60,6 +61,25 @@ pub open spec fn badged_child_of(parent: Payload, rights: u32, base: usize, orde
     } else {
         Payload { kind: c.kind, order: c.order, rights: c.rights, base: c.base, badge, priority: c.priority }
     }
+}
+
+/// A child of an endpoint's capability with a badge is an endpoint's capability with that badge.
+pub open spec fn badge_kept(parent: Payload, child: Payload) -> bool {
+    parent.kind is Endpoint && parent.badge != 0 ==> child.kind is Endpoint && child.badge == parent.badge
+}
+
+/// Node x keeps its parent's badge, when its parent is a capability.
+pub open spec fn badge_kept_at(list: &Tree, tables: &Tables, x: usize) -> bool {
+    list.parent@.contains_key(x) && tables.is_cap(list, list.parent@[x])
+        ==> badge_kept(tables.payload_of(list.parent@[x]), tables.payload_of(x))
+}
+
+/// Every capability keeps its parent's badge, so a badge, once set, is in every capability below the
+/// one it was set on. Opaque, as binding_parents is, so that its node quantifier does not chain into
+/// the tables in every proof that mentions a capability.
+#[verifier::opaque]
+pub open spec fn badges_inherited(list: &Tree, tables: &Tables) -> bool {
+    forall|x: usize| #[trigger] tables.is_cap(list, x) ==> badge_kept_at(list, tables, x)
 }
 
 /// A block of this order at this base is a whole block lying within the parent's.
@@ -604,6 +624,10 @@ impl CapKernel {
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
             Self::lemma_bindings_caps_frame(pre, post, child, child);
+            // The child keeps its parent's badge: badge_allowed sets one only below a parent with none.
+            Self::lemma_caps_frame(pre, post, child, child, parent);
+            assert(badge_kept_at(&post.list, &post.tables, child));
+            Self::lemma_badges_caps_frame(pre, post, child, child);
             Self::lemma_derive_holders(pre, post, parent, child, block);
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, parent, child);
@@ -907,6 +931,178 @@ impl CapKernel {
         assert forall|x: usize| x != child && #[trigger] pre.is_cap(x) implies post.payload_of(x) == pre.payload_of(x) by {
             Self::lemma_caps_frame(pre, post, child, child, x);
         }
+    }
+
+    /// A capability is listed below its parent, a live node: it is in a slot, and the list's first node
+    /// is in none.
+    pub proof fn lemma_parent_of_cap(&self, x: usize)
+        requires
+            self.wf(),
+            self.is_cap(x),
+        ensures
+            x < NODE_SPACE,
+            self.list.parent@.contains_key(x),
+            self.list.parent@[x] < NODE_SPACE,
+            self.list.nodes@[self.list.parent@[x] as int].live,
+            self.list.is_child(self.list.parent@[x], x),
+            self.list.parent@[x] != x,
+    {
+        self.lemma_slot_bound(x);
+        let s = self.list.seq@;
+        assert(has(s, x));
+        lemma_has(s, x);
+        let k = choose|k: int| 0 <= k < s.len() && s[k] == x;
+        assert(x != s[0]);
+        assert(k != 0);
+        assert(self.list.parent@.contains_key(s[k]));
+        assert(self.list.d(s[k]) == self.list.d(self.list.parent@[s[k]]) + 1);
+        self.list.lemma_parent_live(x);
+    }
+
+    /// A capability below a capability keeps its badge.
+    pub proof fn lemma_badge_inherited(&self, x: usize)
+        requires
+            self.wf(),
+            self.is_cap(x),
+        ensures
+            badge_kept_at(&self.list, &self.tables, x),
+    {
+        reveal(badges_inherited);
+        assert(self.tables.is_cap(&self.list, x));
+    }
+
+    /// The badges after a step that changed no node but n and m and renamed n to m in the parent map
+    /// at most. A capability below n is below m after, which says what n did, unless n was childless;
+    /// n and m are capabilities after only if they were or were not live, and each keeps its parent's
+    /// badge; and a step that renames renames a capability.
+    pub proof fn lemma_badges_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            forall|x: usize| x != n && x != m && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], n, m),
+            pre.is_cap(n) ==> pre.list.childless(n) || (post.is_cap(m) && post.payload_of(m) == pre.payload_of(n)),
+            pre.is_cap(m) && m != n ==> pre.list.childless(m),
+            n != m ==> pre.is_cap(n),
+            post.is_cap(n) ==> pre.is_cap(n) || !pre.list.nodes@[n as int].live,
+            post.is_cap(m) ==> pre.is_cap(m) || !pre.list.nodes@[m as int].live,
+            post.is_cap(n) ==> badge_kept_at(&post.list, &post.tables, n),
+            post.is_cap(m) ==> badge_kept_at(&post.list, &post.tables, m),
+        ensures
+            badges_inherited(&post.list, &post.tables),
+    {
+        reveal(badges_inherited);
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x)
+            implies badge_kept_at(&post.list, &post.tables, x) by {
+            assert(post.is_cap(x));
+            if x != n && x != m {
+                Self::lemma_caps_frame(pre, post, n, m, x);
+                pre.lemma_parent_of_cap(x);
+                let a = pre.list.parent@[x];
+                assert(pre.tables.is_cap(&pre.list, x));
+                assert(badge_kept_at(&pre.list, &pre.tables, x));
+                assert(post.list.parent@[x] == rename(a, n, m));
+                if a == n {
+                    if pre.is_cap(n) && pre.list.childless(n) {
+                        pre.list.lemma_childless(n, x);
+                    }
+                } else if a == m {
+                    if pre.is_cap(m) {
+                        pre.list.lemma_childless(m, x);
+                    }
+                } else {
+                    Self::lemma_caps_frame(pre, post, n, m, a);
+                }
+            }
+        }
+    }
+
+    /// The badges after a step that kept every capability's parent and what it says, and added none
+    /// but in nodes that were not live, each keeping its parent's badge.
+    pub proof fn lemma_badges_kept(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            forall|x: usize| #[trigger] post.is_cap(x) ==> (pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x))
+                || (!pre.list.nodes@[x as int].live && badge_kept_at(&post.list, &post.tables, x)),
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> post.list.parent@[x] == pre.list.parent@[x],
+        ensures
+            badges_inherited(&post.list, &post.tables),
+    {
+        reveal(badges_inherited);
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x)
+            implies badge_kept_at(&post.list, &post.tables, x) by {
+            assert(post.is_cap(x));
+            if pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x) {
+                pre.lemma_parent_of_cap(x);
+                let a = pre.list.parent@[x];
+                assert(post.list.parent@[x] == a);
+                assert(pre.tables.is_cap(&pre.list, x));
+                assert(badge_kept_at(&pre.list, &pre.tables, x));
+                if post.is_cap(a) {
+                    assert(pre.is_cap(a) && post.payload_of(a) == pre.payload_of(a));
+                }
+            }
+        }
+    }
+
+    /// The badges after a step that kept every capability, what it says and the parent map.
+    pub proof fn lemma_badges_same_caps(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
+            forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
+            post.list.parent == pre.list.parent,
+        ensures
+            badges_inherited(&post.list, &post.tables),
+    {
+        assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(post.tables.is_cap(&post.list, x));
+        }
+        Self::lemma_badges_kept(pre, post);
+    }
+
+    /// The badges after a step that adds one node that is no capability and changes no capability.
+    pub proof fn lemma_badges_node_added(pre: Self, post: Self, n: usize, c: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            !pre.list.nodes@[n as int].live,
+            !(post.list.nodes@[n as int].kind is Capability),
+            post.list.parent@ == pre.list.parent@.insert(n, c),
+        ensures
+            badges_inherited(&post.list, &post.tables),
+    {
+        assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            if x != n {
+                Self::lemma_caps_frame(pre, post, n, n, x);
+            }
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.list.parent@[x] == pre.list.parent@[x] by {
+            assert(x != n);
+        }
+        Self::lemma_badges_kept(pre, post);
+    }
+
+    /// The badges after a step that derives one child: it keeps its parent's badge, or its parent is
+    /// the list's first node, which is no capability; every other capability is as it was.
+    pub proof fn lemma_badges_derived(pre: Self, post: Self, parent: usize, child: usize)
+        requires
+            Self::caps_frame(pre, post, child, child),
+            forall|x: usize| x != child && x != child && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], child, child),
+            !pre.list.nodes@[child as int].live,
+            parent != child,
+            post.list.parent@.contains_key(child),
+            post.list.parent@[child] == parent,
+            parent == pre.list.seq@[0] || badge_kept(pre.payload_of(parent), post.payload_of(child)),
+        ensures
+            badges_inherited(&post.list, &post.tables),
+    {
+        Self::lemma_caps_frame(pre, post, child, child, parent);
+        if parent == pre.list.seq@[0] {
+            assert(first_node_outside_leaves(&pre.list, &pre.tables));
+            assert(!pre.is_cap(parent));
+        }
+        assert(badge_kept_at(&post.list, &post.tables, child));
+        Self::lemma_badges_caps_frame(pre, post, child, child);
     }
 
     /// The view of a step that adds one child, in a slot of the table at dst, under a capability held

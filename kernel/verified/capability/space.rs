@@ -16,6 +16,8 @@ use crate::array::*;
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::derive::{badge_kept, badge_kept_at, badges_inherited};
+#[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
@@ -2228,6 +2230,7 @@ impl CapKernel {
             capability_nodes_are_slots(&post.list, &post.tables),
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
+            badges_inherited(&post.list, &post.tables),
     {
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
             && post.list.nodes@[x as int].kind is Hidden
@@ -2248,6 +2251,15 @@ impl CapKernel {
             && n % PAGE_SZ != 0 && n % PAGE_SZ < NODES_PER_PAGE implies post.list.nodes@[n as int].kind is Capability by {
             pre.lemma_slot_bound(n);
         }
+        // No capability changed, and the new hidden node is none.
+        assert(!pre.list.nodes@[base as int].live);
+        assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            Self::lemma_table_page_cap(pre, post, x);
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.list.parent@[x] == pre.list.parent@[x] by {
+            assert(x != base);
+        }
+        Self::lemma_badges_kept(pre, post);
     }
 
     /// Every node the list held keeps its liveness and kind when pages are added and then node `base`,
@@ -3147,12 +3159,14 @@ impl CapKernel {
                 &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
             },
             post.table_pages == pre.table_pages,
+            pre.is_cap(parent) ==> badge_kept(pre.payload_of(parent), post.payload_of(child)),
         ensures
             hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
             parents_are_capabilities(&post.list),
             capability_nodes_are_slots(&post.list, &post.tables),
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
+            badges_inherited(&post.list, &post.tables),
             forall|x: usize| x < NODE_SPACE && x != child && (#[trigger] post.list.nodes@[x as int]).live
                 ==> pre.list.nodes@[x as int].live && pre.list.valid(x),
     {
@@ -3192,6 +3206,23 @@ impl CapKernel {
                 pre.lemma_slot_bound(n);
             }
         }
+        // The child keeps its parent's badge, or its parent is the list's first node, no capability.
+        if pre.is_cap(parent) {
+            Self::lemma_space_cap_frame(pre, post, child, parent);
+        } else {
+            assert(first_node_outside_leaves(&pre.list, &pre.tables));
+        }
+        assert(badge_kept_at(&post.list, &post.tables, child));
+        assert forall|x: usize| #[trigger] post.is_cap(x) implies (pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x))
+            || (!pre.list.nodes@[x as int].live && badge_kept_at(&post.list, &post.tables, x)) by {
+            if x != child {
+                Self::lemma_space_cap_frame(pre, post, child, x);
+            }
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.list.parent@[x] == pre.list.parent@[x] by {
+            assert(x != child);
+        }
+        Self::lemma_badges_kept(pre, post);
     }
 
     /// The space clause after a space's retype at base: the new space's node pages were not the list's,

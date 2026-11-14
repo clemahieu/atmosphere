@@ -12,6 +12,8 @@ use vstd::prelude::*;
 verus! {
 
 #[cfg(verus_keep_ghost)]
+use crate::capability::derive::badge_kept_at;
+#[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
@@ -481,6 +483,14 @@ impl CapKernel {
             Self::lemma_space_nodes_caps_frame(pre, post, i, n);
             assert(post.is_cap(n));
             Self::lemma_bindings_caps_frame(pre, post, i, n);
+            // The moved capability keeps its parent, and its parent keeps its payload.
+            pre.lemma_parent_of_cap(i);
+            pre.lemma_badge_inherited(i);
+            let q = pre.list.parent@[i];
+            assert(post.list.parent@[n] == q);
+            Self::lemma_caps_frame(pre, post, i, n, q);
+            assert(badge_kept_at(&post.list, &post.tables, n));
+            Self::lemma_badges_caps_frame(pre, post, i, n);
             Self::lemma_move_holders(pre, post, i, n);
             Self::lemma_move_mappings(pre, post, i, n);
             Self::lemma_move_devices(pre, post, i, n);

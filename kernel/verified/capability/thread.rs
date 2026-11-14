@@ -4806,6 +4806,7 @@ impl CapKernel {
             capability_nodes_are_slots(&post.list, &post.tables),
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
+            badges_inherited(&post.list, &post.tables),
             table_nodes_are_mappings(&post.list, &post.table_pages),
             space_nodes_dead(&post.list, &post.spaces),
             devices_wf(&post.list, &post.tables, &post.devices),
@@ -4831,6 +4832,7 @@ impl CapKernel {
             assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Hidden);
         }
         lemma_parents_derived(pre.list, post.list, n, t);
+        Self::lemma_badges_node_added(pre, post, t, n);
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Capability
             && x != post.list.seq@[0] implies post.tables.is_cap(&post.list, x) by {
             assert(x != t);
@@ -5434,6 +5436,7 @@ impl CapKernel {
             capability_nodes_are_slots(&post.list, &post.tables),
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
+            badges_inherited(&post.list, &post.tables),
             table_nodes_are_mappings(&post.list, &post.table_pages),
             space_nodes_dead(&post.list, &post.spaces),
             devices_wf(&post.list, &post.tables, &post.devices),
@@ -5460,6 +5463,7 @@ impl CapKernel {
             assert(pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Hidden);
         }
         lemma_parents_derived(pre.list, post.list, m, x);
+        Self::lemma_badges_node_added(pre, post, x, m);
         assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Capability
             && y != post.list.seq@[0] implies post.tables.is_cap(&post.list, y) by {
             assert(y != x);

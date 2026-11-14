@@ -535,6 +535,7 @@ impl CapKernel {
             Self::lemma_bindings_caps_frame(pre, post, child, child);
             Self::lemma_retype_holders(pre, post, child, base, order);
             lemma_parents_derived(pre.list, post.list, parent, child);
+            Self::lemma_badges_derived(pre, post, parent, child);
             Self::lemma_tlb_same(pre, post);
             assert(FRAME_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
@@ -1467,6 +1468,15 @@ impl CapKernel {
             }
             assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.payload_of(x) == pre.payload_of(x) by {
                 Self::lemma_leaf_cap(pre, post, base, x);
+            }
+            // No capability changed, and the leaf's hidden node is none.
+            assert(badges_inherited(&post.list, &post.tables)) by {
+                assert(post.list.parent@ == pre.list.parent@.insert(base, parent));
+                assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.list.parent@[x] == pre.list.parent@[x] by {
+                    pre.lemma_slot_bound(x);
+                    assert(x != base);
+                }
+                Self::lemma_badges_kept(pre, post);
             }
             assert forall|k: int| 0 <= k < 2 implies !((#[trigger] post.blocks.pages@[page + k]).object is Space) by {
                 if k == 0 {

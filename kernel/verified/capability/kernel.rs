@@ -15,6 +15,8 @@ use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::arch::tag_written;
 use crate::array::Array;
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::derive::badges_inherited;
 use crate::capability::device::*;
 use crate::capability::endpoint::*;
 #[cfg(verus_keep_ghost)]
@@ -1679,6 +1681,7 @@ impl CapKernel {
         &&& mappings_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@)
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
+        &&& badges_inherited(&self.list, &self.tables)
         &&& first_node_outside_leaves(&self.list, &self.tables)
         &&& leaf_slots_are_capabilities(&self.list, &self.tables)
         &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
@@ -2211,6 +2214,7 @@ impl CapKernel {
             reveal(binding_parents);
             reveal(placements_wf);
             reveal(device_bindings_wf);
+            reveal(badges_inherited);
             assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(self.cores@, c, t) implies false by {
                 assert(self.cores@[c].current_thread is None);
             }

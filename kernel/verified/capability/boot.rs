@@ -9,6 +9,8 @@ use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
+use crate::capability::derive::{badge_kept_at, badges_inherited};
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::console::*;
@@ -1302,6 +1304,7 @@ impl CapKernel {
             Self::lemma_add_untracked_holders(pre, post, child);
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, root, child);
+            Self::lemma_badges_derived(pre, post, root, child);
             Self::lemma_tlb_same(pre, post);
             assert(post.wf());
             Self::lemma_derive_step_adds_cap(pre, post, child);
@@ -1686,6 +1689,7 @@ impl CapKernel {
             Self::lemma_add_untracked_holders(pre, post, child);
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, root, child);
+            Self::lemma_badges_derived(pre, post, root, child);
             Self::lemma_tlb_same(pre, post);
             assert(post.wf());
             Self::lemma_derive_step_adds_cap(pre, post, child);
@@ -1926,6 +1930,7 @@ impl CapKernel {
         let base = t;
         let page = t / PAGE_SZ;
         let parent = root;
+        assert(first_node_outside_leaves(&pre.list, &pre.tables));
         let child = (leaf + 2) as usize;
         assert forall|x: usize| #[trigger] pre.list.valid(x) && x != child implies {
             &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
@@ -2626,6 +2631,15 @@ impl CapKernel {
             assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n) implies control_named(post.tables.payload_of(n)) by {
                 assert(post.is_cap(n));
                 assert(n == cap);
+            }
+        }
+        // The capability's parent is the list's first node, which is no capability.
+        assert(badges_inherited(&list, &post.tables)) by {
+            reveal(badges_inherited);
+            assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n) implies badge_kept_at(&list, &post.tables, n) by {
+                assert(post.is_cap(n));
+                assert(n == cap);
+                assert(!post.tables.owner@.contains_key(page_of(root)));
             }
         }
         // The objects.

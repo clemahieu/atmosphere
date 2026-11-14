@@ -2471,6 +2471,7 @@ impl CapKernel {
             capability_nodes_are_slots(&post.list, &post.tables),
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
+            badges_inherited(&post.list, &post.tables),
             same_leaf_nodes(&pre.list, &post.list, &pre.tables),
             same_table_nodes(&pre.list, &post.list, &pre.table_pages),
             devices_wf(&post.list, &post.tables, &post.devices),
@@ -2494,6 +2495,7 @@ impl CapKernel {
         Self::lemma_map_kinds(pre, post, t, e, f, frame, large);
         Self::lemma_map_same_nodes(pre, post, t, e, f, frame, large);
         Self::lemma_devices_same_caps(pre, post);
+        Self::lemma_badges_node_added(pre, post, node, f);
     }
 
     /// The node kinds after a map: the new node is a mapping, so every clause about hidden, capability

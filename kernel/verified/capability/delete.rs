@@ -266,6 +266,7 @@ impl CapKernel {
             Self::lemma_delete_caps_wf(pre, post, n);
             Self::lemma_hidden_frame(pre, post, n, n);
             Self::lemma_bindings_caps_frame(pre, post, n, n);
+            Self::lemma_badges_caps_frame(pre, post, n, n);
             Self::lemma_delete_holders(pre, post, n);
             let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == n
                 && post.list.seq@ == pre.list.seq@.remove(p);

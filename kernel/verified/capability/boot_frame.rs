@@ -739,6 +739,7 @@ impl CapKernel {
                 Self::lemma_boot_frame_new(mid, post, child, br);
             }
             lemma_parents_derived(mid.list, post.list, root, child);
+            Self::lemma_badges_derived(mid, post, root, child);
             Self::lemma_tlb_same(mid, post);
             assert(post.wf());
             Self::lemma_derive_step_adds_cap(mid, post, child);
