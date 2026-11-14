@@ -949,28 +949,26 @@ impl CapKernel {
 
     /// A place in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_place fails, or ok with the thread the
-    /// slot's capability names placed under the core capability at argument 1 on its core at the priority
-    /// in argument 2, as placed says, that core capability no longer deletable, every capability and every
-    /// thread's binding as they were, and the step discharging control of the thread.
+    /// slot's capability placed through the core capability at argument 1 at the priority in argument
+    /// 2, as place_done says; either way what place_kept says is kept.
     pub open spec fn spec_placed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let i = frame.slot() as usize;
         let j = frame.argument(1) as usize;
-        let n = pre.tables.node_of(root, i);
-        let m = pre.tables.node_of(root, j);
-        let t = pre.payload_of(n).base;
-        let pl = Placement { core: core_of(pre.payload_of(m).base), priority: frame.argument(2) as usize };
-        ||| !pre.allows_place(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& pre.allows_place(root, frame)
-            &&& out == status_only(STATUS_OK)
-            &&& pre.threads.records@.contains_key(t)
-            &&& pl.core < NUM_CPUS
-            &&& pre.payload_of(m).base == core_object(pl.core as int)
-            &&& Self::placed(pre, post, m, t, pl)
-            &&& !post.can_delete(root, j)
-            &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
-            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
-            &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+        let priority = frame.argument(2) as usize;
+        &&& Self::place_kept(pre, post, root)
+        &&& {
+            ||| {
+                &&& !pre.allows_place(root, frame)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& post == pre
+                &&& Self::place_answered(pre, post, root, i, j, priority, false)
+            }
+            ||| {
+                &&& pre.allows_place(root, frame)
+                &&& out == status_only(STATUS_OK)
+                &&& Self::place_answered(pre, post, root, i, j, priority, true)
+                &&& Self::place_done(pre, post, root, i, j, priority)
+            }
         }
     }
 

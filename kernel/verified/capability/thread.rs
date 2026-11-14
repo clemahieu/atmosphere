@@ -5971,6 +5971,43 @@ impl CapKernel {
         Some((m, Placement { core, priority }))
     }
 
+    /// Whether a place of the thread at index i of the table at root through the core capability at
+    /// index j at `priority` answered ok exactly when can_place holds, and left the kernel as it was
+    /// when it refused. place's ensures and spec_placed both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn place_answered(pre: Self, post: Self, root: usize, i: usize, j: usize, priority: usize, ok: bool) -> bool {
+        &&& ok == pre.can_place(root, i, j, priority)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a place by the process whose table is at root leaves as it was, whether it answered ok or
+    /// refused: which nodes are capabilities and the process each thread is bound to; and it
+    /// discharges as a local step. place's ensures and spec_placed both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn place_kept(pre: Self, post: Self, root: usize) -> bool {
+        &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+    }
+
+    /// What a place of the thread at index i of the table at root through the core capability at
+    /// index j at `priority` did when it answered ok: the thread placed on the core that capability
+    /// names at that priority, under that capability, as placed says, the core capability no longer
+    /// deletable, and the step discharging control of the thread. place's ensures and spec_placed both
+    /// call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn place_done(pre: Self, post: Self, root: usize, i: usize, j: usize, priority: usize) -> bool {
+        let n = pre.tables.node_of(root, i);
+        let m = pre.tables.node_of(root, j);
+        let t = pre.payload_of(n).base;
+        let pl = Placement { core: core_of(pre.payload_of(m).base), priority };
+        &&& pre.threads.records@.contains_key(t)
+        &&& pl.core < NUM_CPUS
+        &&& pre.payload_of(m).base == core_object(pl.core as int)
+        &&& Self::placed(pre, post, m, t, pl)
+        &&& !post.can_delete(root, j)
+        &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+    }
+
     /// Places the live, Inactive, unplaced thread named by the control capability at index i onto the
     /// core named by the core capability at index j at `priority`, deriving the thread's placement
     /// node under that core capability so revoking the core capability undoes the placement. Both
@@ -5983,23 +6020,9 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            ret == old(self).can_place(root, i, j, priority),
-            !ret ==> *final(self) == *old(self),
-            forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            discharges(old(self).view(), final(self).view(), root, Effect::Local),
-            ret ==> {
-                let n = old(self).tables.node_of(root, i);
-                let m = old(self).tables.node_of(root, j);
-                let t = old(self).payload_of(n).base;
-                let pl = Placement { core: core_of(old(self).payload_of(m).base), priority };
-                &&& old(self).threads.records@.contains_key(t)
-                &&& pl.core < NUM_CPUS
-                &&& old(self).payload_of(m).base == core_object(pl.core as int)
-                &&& Self::placed(*old(self), *final(self), m, t, pl)
-                &&& !final(self).can_delete(root, j)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
-            },
+            Self::place_answered(*old(self), *final(self), root, i, j, priority, ret),
+            Self::place_kept(*old(self), *final(self), root),
+            ret ==> Self::place_done(*old(self), *final(self), root, i, j, priority),
     {
         let ghost pre = *old(self);
         let (n, t, dead) = match self.thread_control(root, i) {
