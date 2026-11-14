@@ -228,6 +228,9 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         );
     }
 
+    // The root's thread runs under a placement below the root's capability for core 0, as any thread
+    // does: design/root-process-at-boot/.
+    assert!(kernel.place(process, ROOT_THREAD_SLOT, ROOT_CORE_SLOT, 0), "the root's thread is placed on core 0");
     // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
     let asid = kernel.load_space(0, process, Tracked::assume_new());
     // switch_space writes the register of the core it runs on, so its caller passes that core, here CPU

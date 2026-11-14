@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-//! The witness that a holder of a core can take back the time it handed on: from the state boot
-//! leaves, revoking a core capability leaves the thread placed below it Inactive and placed nowhere.
+//! The witnesses that a holder of a core can take back the time it handed on: from the state boot
+//! leaves, revoking a core capability leaves the thread placed below it Inactive and placed nowhere,
+//! and so does the root revoking its own capability for core 0 while its thread runs there.
 //! It is a module of its own, with the list lemmas it needs, so that the witness module's shared
 //! solver context, in which several witnesses verify close to the solver's budget, does not grow with
 //! it. Only Verus compiles this module, so no image contains it. See design/cpu-time-as-capability/.
@@ -613,6 +614,172 @@ impl CapKernel {
             assert(s8.threads.records@[bt].value().state is Inactive);
         }
         (placed, started, done)
+    }
+
+    /// From the state boot leaves, the root's thread placed on core 0 through the root's capability
+    /// for core 0 and entered there, as witness_root_thread_enters does it, the root revokes that
+    /// capability until the revoke is done. The revoke takes the placement, the thread is left
+    /// Running with a stop pending, and check_current on core 0 then moves it off: core 0 runs
+    /// nothing, and the thread is Inactive and placed nowhere. The use is the root taking core 0 back
+    /// from its own thread: design/root-process-at-boot/, design/cpu-time-as-capability/.
+    pub fn witness_root_revokes_its_core(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        registers: Registers,
+        saved: FrameKind,
+    ) -> (ret: CurrentStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            ret is MovedOff,
+            final(self).wf(),
+            final(self).cores@[0].current_thread is None,
+            final(self).threads.records@[t].value().state is Inactive,
+            final(self).threads.records@[t].value().placement is None,
+            !final(self).threads.records@[t].value().pending_stop,
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
+        }
+        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root);
+        let ghost s1 = *self;
+        let ghost core_cap = (leaf@ + ROOT_CORE_SLOT) as usize;
+        let ghost pn = placement_node(t);
+        let at = Position { through: None, index: ROOT_CORE_SLOT };
+        proof {
+            assert(s1.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            s1.list.lemma_seq_fits();
+            assert(index_entry(ROOT_CORE_SLOT) == 0) by (compute_only);
+            assert(s1.slot_holds(process, ROOT_CORE_SLOT, core_cap, core_payload(0, MAX_PRIORITY)));
+            assert(s1.tables.leaf(process, index_entry(ROOT_CORE_SLOT)) == leaf@);
+            assert(s1.tables.roots@.contains_key(process));
+            assert(s1.root_live(process));
+            assert(s1.cap_at(process, at) == Some(core_cap));
+            assert(s1.flush_epoch == 0);
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let mut done = false;
+        while !done
+            invariant
+                self.wf(),
+                at == (Position { through: None, index: ROOT_CORE_SLOT }),
+                s1.list.seq@.len() <= NODE_SPACE,
+                leaf@ + LEAF_BYTES <= NODE_SPACE,
+                s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT),
+                s1.tables.leaf(process, index_entry(ROOT_CORE_SLOT)) == leaf@,
+                s1.tables.node_of(process, ROOT_CORE_SLOT) == core_cap,
+                s1.list.is_child(core_cap, pn),
+                s1.processes.records@.contains_key(process),
+                !s1.processes.records@[process].value().dead,
+                s1.cores@[0].current_thread == Some(t),
+                self.tables == s1.tables,
+                self.processes.records == s1.processes.records,
+                self.cores == s1.cores,
+                self.list.parent == s1.list.parent,
+                self.list.nodes@[leaf@ as int].live,
+                self.list.nodes@[leaf@ as int].depth == 1,
+                self.list.nodes@[core_cap as int].depth == 1,
+                self.is_cap(core_cap),
+                self.flush_epoch + self.list.seq@.len() <= s1.list.seq@.len(),
+                self.threads.records@.contains_key(t),
+                self.threads.records@[t].value().state == (ThreadState::Running { core: 0 }),
+                !self.threads.records@[t].value().dying,
+                self.threads.records@[t].value().placement is None ==> self.threads.records@[t].value().pending_stop,
+                done ==> forall|x: usize| !#[trigger] self.list.is_child(core_cap, x),
+            decreases self.list.seq@.len() + if done { 0int } else { 1int },
+        {
+            let ghost pre = *self;
+            proof {
+                assert(pre.tables.has_slot(&pre.list, process, ROOT_CORE_SLOT));
+                assert(pre.cap_at(process, at) == Some(core_cap));
+                assert(pre.root_live(process));
+                assert(pre.tables.roots@.contains_key(process));
+            }
+            let step = self.revoke(process, at, Tracked(&mut steps));
+            proof {
+                let post = *self;
+                assert(!(step is Refused));
+                assert(Self::cap_revoking_at(pre, post, process, at));
+                assert(post.flush_epoch + post.list.seq@.len() <= s1.list.seq@.len());
+                assert(!(step is Exhausted));
+                assert(pre.list.wf() && post.list.wf()) by {
+                    reveal(CapKernel::wf);
+                }
+                // The leaf at depth 1 is not below the capability at depth 1, so the revoke kept it.
+                let gone = choose|gone: Seq<usize>| revoked_seq(pre.list, post.list, core_cap, gone);
+                if gone.contains(leaf@) {
+                    let i = choose|i: int| 0 <= i < gone.len() && gone[i] == leaf@;
+                    assert(below(pre.list, core_cap, gone[i]));
+                }
+                lemma_revoke_took_only(pre.list, post.list, core_cap, gone, leaf@);
+                assert(post.list.nodes@[core_cap as int].depth == 1);
+                assert(post.list.nodes@[leaf@ as int].depth == 1);
+                // The thread stays Running on core 0; once its placement goes, a stop is pending.
+                assert(Self::threads_revoked(pre, post));
+                assert(pre.threads.records@.contains_key(t));
+                assert(post.threads.records@.contains_key(t));
+                if step is Again {
+                    assert(REVOKE_BUDGET > 0);
+                }
+                if step is Done {
+                    assert(Self::cap_revoked_at(pre, post, process, at));
+                }
+            }
+            match step {
+                RevokeStep::Done => {
+                    done = true;
+                },
+                _ => {},
+            }
+        }
+        let ghost s2 = *self;
+        proof {
+            assert(s2.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            // The placement went: live, it would be listed under core_cap, which has no child left.
+            if s2.list.nodes@[pn as int].live {
+                s2.lemma_placement_node_apart(t);
+                assert(has(s2.list.seq@, pn));
+                lemma_has(s2.list.seq@, pn);
+                let k = choose|k: int| 0 <= k < s2.list.seq@.len() && s2.list.seq@[k] == pn;
+                assert(s2.list.seq@.contains(pn));
+                assert(s2.list.parent@[pn] == core_cap);
+                assert(s2.list.is_child(core_cap, pn));
+            }
+            assert(!s2.list.nodes@[pn as int].live);
+            assert(s2.threads.records@[t].value().placement is None) by {
+                reveal(CapKernel::wf);
+                reveal(placements_wf);
+                if s2.threads.records@[t].value().placement is Some {
+                    assert(s2.list.nodes@[pn as int].live);
+                }
+            }
+            assert(s2.threads.records@[t].value().pending_stop);
+            assert(s2.cores@[0].current_thread == Some(t));
+            assert(s2.must_leave(0));
+        }
+        let ret = self.check_current(0, registers, saved, Tracked(&mut steps));
+        proof {
+            assert(Self::moved_off(s2, *self, 0, registers, saved));
+        }
+        ret
     }
 }
 

@@ -187,12 +187,13 @@ impl CapKernel {
     /// The state boot's composed step leaves when it succeeds, having returned `untyped` and `frame`:
     /// what kernel_init ensures, and so what a proof about the root's first operations starts from.
     /// The free runs are well formed, so each untyped block lies in the tracked pages. The root's
-    /// first leaf is at entry 0 of its table and inside the node address space, each fixed slot of the
+    /// first leaf is at entry 0 of its table, at depth 1, so no revoke of a capability at depth 1 takes
+    /// it, and inside the node address space, each fixed slot of the
     /// root's table holds its kind, and each untyped is at depth 1, so a
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
-    /// stale, and so is every 2M and 1G region; the root's thread is its process's and inactive, so a
-    /// core may enter it; the root's process is live, as is the page of its space, and its table is the only one, so it is sealed; no flush has run, so the flush
+    /// stale, and so is every 2M and 1G region; the root's thread is its process's, inactive and placed
+    /// nowhere, so the root's capability for core 0 may place it and core 0 may then enter it; the root's process is live, as is the page of its space, and its table is the only one, so it is sealed; no flush has run, so the flush
     /// epoch is 0; no core runs a thread, and each is at generation 1 and names no space, so a load may start on any; every root entry of its table past the two boot filled is empty; the root's space
     /// maps exactly the image, and its level 4 entries outside the kernel slots that no image run
     /// reaches are empty, so a table built there is the root's own to fill; of
@@ -230,6 +231,7 @@ impl CapKernel {
         &&& self.tables.roots@.dom() == set![process]
         &&& leaf + LEAF_BYTES <= NODE_SPACE
         &&& self.tables.leaf(process, 0) == leaf
+        &&& self.list.nodes@[leaf as int].depth == 1
         &&& self.slot_holds(process, ROOT_PROCESS_SLOT, (leaf + 1) as usize, process_of(process))
         &&& self.slot_holds(process, ROOT_THREAD_SLOT, (leaf + 2) as usize, thread_of(t))
         &&& self.slot_holds(process, ROOT_CONSOLE_SLOT, (leaf + 3) as usize, console_payload())
@@ -434,6 +436,17 @@ impl CapKernel {
         }
         self.boot_root(root, process, leaf, frames, t, Tracked(root_pages));
         let ghost s1 = *self;
+        proof {
+            // The leaf is a child of the list's root, which is at depth 0.
+            assert(s1.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s1.list.is_child(root, leaf));
+            let k = choose|k: int| 0 <= k < s1.list.seq@.len() && s1.list.seq@[k] == leaf;
+            assert(k != 0);
+            assert(s1.list.d(s1.list.seq@[k]) == s1.list.d(s1.list.parent@[s1.list.seq@[k]]) + 1);
+            assert(s1.list.nodes@[leaf as int].depth == 1);
+        }
         self.boot_root_object(
             root,
             process,
@@ -685,6 +698,17 @@ impl CapKernel {
             ;
             assert(leaf + LEAF_BYTES <= NODE_SPACE);
             assert(s4.tables.leaf(process, 0) == leaf);
+            assert(s4.list.nodes@[leaf as int].depth == 1) by {
+                assert(leaf as int != leaf + ROOT_CONSOLE_SLOT && leaf as int != leaf + ROOT_POWER_SLOT);
+                assert(sc.list.nodes@[leaf as int].depth == 1);
+                assert(s2.list.nodes@[leaf as int].depth == 1);
+                assert(!(leaf + ROOT_CORE_SLOT <= leaf < leaf + ROOT_CORE_SLOT + NUM_CPUS));
+                assert(sk.list.nodes@[leaf as int].depth == 1);
+                assert(!(leaf + ROOT_UNTYPED_SLOT <= leaf < leaf + ROOT_UNTYPED_SLOT + untyped));
+                assert(s3.list.nodes@[leaf as int].depth == 1);
+                assert(s3.list.nodes@[leaf as int].live);
+                assert(s4.list.nodes@[leaf as int].depth == s3.list.nodes@[leaf as int].depth);
+            }
             // The core slots.
             assert forall|c: int| 0 <= c < NUM_CPUS implies {
                 &&& s4.slot_holds(

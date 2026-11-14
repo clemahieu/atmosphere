@@ -1573,7 +1573,7 @@ impl CapKernel {
             binding_parents(&post.list, &post.tables, &post.threads),
             placements_wf(&post.list, &post.tables, &post.threads),
             current_wf(post.cores@, post.threads.records@),
-            placed_running_wf(post.threads.boot_thread@, post.threads.records@),
+            placed_running_wf(post.threads.records@),
             queues_wf(&post.threads.queues, post.threads.records@),
     {
         reveal(thread_bound);
@@ -1712,9 +1712,9 @@ impl CapKernel {
             }
         }
         lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
-        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+        assert(placed_running_wf(post.threads.records@)) by {
             reveal(placed_running_wf);
-            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && Some(x) != post.threads.boot_thread@
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
                 implies thread_placed_running(post.threads.records@[x].value()) by {
                 assert(pre.threads.records@.contains_key(x));
                 if x != t {
@@ -1762,7 +1762,7 @@ impl CapKernel {
             binding_parents(&post.list, &post.tables, &post.threads),
             placements_wf(&post.list, &post.tables, &post.threads),
             current_wf(post.cores@, post.threads.records@),
-            placed_running_wf(post.threads.boot_thread@, post.threads.records@),
+            placed_running_wf(post.threads.records@),
             queues_wf(&post.threads.queues, post.threads.records@),
     {
         reveal(placements_wf);
@@ -1878,9 +1878,9 @@ impl CapKernel {
                 }
             }
         }
-        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+        assert(placed_running_wf(post.threads.records@)) by {
             reveal(placed_running_wf);
-            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && Some(x) != post.threads.boot_thread@
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
                 implies thread_placed_running(post.threads.records@[x].value()) by {
                 assert(pre.threads.records@.contains_key(x));
                 if x != t {

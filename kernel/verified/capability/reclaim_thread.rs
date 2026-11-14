@@ -827,13 +827,12 @@ impl CapKernel {
                 assert(pre.threads.records@.contains_key(t));
             }
         }
-        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+        assert(placed_running_wf(post.threads.records@)) by {
             reveal(placed_running_wf);
-            assert forall|t: usize| #[trigger] post.threads.records@.contains_key(t) && Some(t) != post.threads.boot_thread@
+            assert forall|t: usize| #[trigger] post.threads.records@.contains_key(t)
                 implies thread_placed_running(post.threads.records@[t].value()) by {
                 assert(t != base);
                 assert(pre.threads.records@.contains_key(t));
-                assert(Some(t) != pre.threads.boot_thread@);
             }
         }
         reveal(thread_bound);

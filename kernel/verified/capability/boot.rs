@@ -2033,7 +2033,7 @@ impl CapKernel {
         }
         Self::lemma_devices_same_caps(pre, post);
         pre.lemma_first_page_apart();
-        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+        assert(placed_running_wf(post.threads.records@)) by {
             reveal(placed_running_wf);
         }
         lemma_queues_thread_added(&pre.threads.queues, pre.threads.records@, post.threads.records@, base);
@@ -2741,7 +2741,7 @@ impl CapKernel {
                 assert(t == root || t == leaf || t == cap);
             }
         }
-        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+        assert(placed_running_wf(post.threads.records@)) by {
             reveal(placed_running_wf);
         }
         assert(placements_wf(&list, &post.tables, &post.threads)) by {

@@ -39,6 +39,7 @@ pub mod root_receives_a_device;
 pub mod root_retypes_a_freed_2m_frame;
 pub mod root_revokes_a_shared_frame;
 pub mod root_revokes_at_the_epoch_limit;
+pub mod root_revokes_its_core;
 pub mod root_revokes_more_than_a_budget;
 pub mod root_starts_placed_thread;
 pub mod root_stops_a_thread_on_another_core;

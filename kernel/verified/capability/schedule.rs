@@ -47,7 +47,7 @@ pub struct RunQueues {
 }
 
 /// The priority a thread runs and queues at: its placement's priority when placed, and `0`
-/// otherwise (only the unplaced boot thread can ever run without a placement).
+/// otherwise (only a running thread whose placement went, with a stop pending, runs without one).
 pub open spec fn thread_priority(r: ThreadRecord) -> usize {
     match r.placement {
         Some(pl) => pl.priority,

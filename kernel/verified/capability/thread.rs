@@ -295,7 +295,7 @@ pub struct Threads {
     pub records: Tracked<Map<usize, PointsTo<ThreadRecord>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
     /// The root thread boot created, which enters user mode once through `enter_boot_thread`
-    /// without a placement: design/root-process-at-boot/.
+    /// once boot has placed it on core 0: design/root-process-at-boot/.
     pub boot_thread: Ghost<Option<usize>>,
     /// Per-core priority queues over the intrusive links of Runnable threads.
     pub queues: RunQueues,
@@ -395,23 +395,22 @@ pub open spec fn thread_placed_running(r: ThreadRecord) -> bool {
     &&& (r.state is Running && !r.pending_stop) ==> r.placement is Some && r.placement->Some_0.core == r.state->Running_core
 }
 
-/// Every thread other than the boot thread that is Runnable on a core, or Running on a core with
-/// no stop pending, has a placement on that core; one whose placement went has a stop pending.
-/// See design/cpu-time-as-capability/ and design/root-process-at-boot/.
+/// Every thread that is Runnable on a core, or Running on a core with no stop pending, has a
+/// placement on that core; one whose placement went has a stop pending. The boot thread too: boot
+/// places it before core 0 enters it. See design/cpu-time-as-capability/ and
+/// design/root-process-at-boot/.
 #[verifier::opaque]
-pub open spec fn placed_running_wf(boot_thread: Option<usize>, records: Map<usize, PointsTo<ThreadRecord>>) -> bool {
-    forall|t: usize| #[trigger] records.contains_key(t) && Some(t) != boot_thread
-        ==> thread_placed_running(records[t].value())
+pub open spec fn placed_running_wf(records: Map<usize, PointsTo<ThreadRecord>>) -> bool {
+    forall|t: usize| #[trigger] records.contains_key(t) ==> thread_placed_running(records[t].value())
 }
 
-/// Each thread kept its state, its pending stop and its placement, and the boot thread stayed.
+/// Each thread kept its state, its pending stop and its placement.
 pub proof fn lemma_placed_running_same(
-    boot_thread: Option<usize>,
     a: Map<usize, PointsTo<ThreadRecord>>,
     b: Map<usize, PointsTo<ThreadRecord>>,
 )
     requires
-        placed_running_wf(boot_thread, a),
+        placed_running_wf(a),
         b.dom() == a.dom(),
         forall|t: usize| #[trigger] b.contains_key(t) ==> {
             &&& b[t].value().state == a[t].value().state
@@ -419,10 +418,10 @@ pub proof fn lemma_placed_running_same(
             &&& b[t].value().placement == a[t].value().placement
         },
     ensures
-        placed_running_wf(boot_thread, b),
+        placed_running_wf(b),
 {
     reveal(placed_running_wf);
-    assert forall|t: usize| #[trigger] b.contains_key(t) && Some(t) != boot_thread
+    assert forall|t: usize| #[trigger] b.contains_key(t)
         implies thread_placed_running(b[t].value()) by {
         assert(a.contains_key(t));
     }
@@ -2563,10 +2562,9 @@ impl CapKernel {
             }
             Self::lemma_devices_same_caps(pre, post);
             pre.lemma_first_page_apart();
-            assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+            assert(placed_running_wf(post.threads.records@)) by {
                 reveal(placed_running_wf);
                 assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
-                    && Some(x) != post.threads.boot_thread@
                     implies thread_placed_running(post.threads.records@[x].value()) by {
                     if x == base {
                         assert(post.threads.records@[base].value() == fresh_thread());
@@ -3039,8 +3037,7 @@ impl CapKernel {
             queues_wf(&post.threads.queues, post.threads.records@),
             post.cores.wf(),
             current_wf(post.cores@, post.threads.records@),
-            Some(t) == post.threads.boot_thread@
-                || thread_placed_running(post.threads.records@[t].value())
+            thread_placed_running(post.threads.records@[t].value())
                 || ({
                     let r0 = pre.threads.records@[t].value();
                     let r1 = post.threads.records@[t].value();
@@ -3091,10 +3088,9 @@ impl CapKernel {
                 assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
             }
         }
-        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+        assert(placed_running_wf(post.threads.records@)) by {
             reveal(placed_running_wf);
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
-                && Some(x) != post.threads.boot_thread@
                 implies thread_placed_running(post.threads.records@[x].value()) by {
                 assert(pre.threads.records@.contains_key(x));
                 assert(thread_placed_running(pre.threads.records@[x].value()));
@@ -3226,9 +3222,9 @@ impl CapKernel {
     }
 
     /// Core c, running nothing, makes thread t, Inactive, its current thread: boot's entry into the
-    /// root's thread, which no capability has started. Boot made the thread, so it runs on c without
-    /// a placement, design/root-process-at-boot/. Loading its frame is the caller's, and core c has t's
-    /// process's space loaded already, as for switch_in.
+    /// root's thread, which no capability has started. Boot placed the thread on c through the root's
+    /// capability for c, as any thread that runs is placed, design/root-process-at-boot/. Loading its
+    /// frame is the caller's, and core c has t's process's space loaded already, as for switch_in.
     pub fn enter_boot_thread(&mut self, c: usize, t: usize)
         requires
             old(self).wf(),
@@ -3237,6 +3233,8 @@ impl CapKernel {
             old(self).threads.boot_thread@ == Some(t),
             old(self).threads.records@.contains_key(t),
             old(self).threads.records@[t].value().state is Inactive,
+            old(self).threads.records@[t].value().placement is Some,
+            old(self).threads.records@[t].value().placement->Some_0.core == c,
             runs_in_space(old(self).cores@, old(self).threads.records@, c as int, t),
         ensures
             final(self).wf(),
@@ -3250,6 +3248,7 @@ impl CapKernel {
             final(self).threads.records@[t].value().pending_stop == old(self).threads.records@[t].value().pending_stop,
             final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying,
             final(self).threads.records@[t].value().process == old(self).threads.records@[t].value().process,
+            final(self).threads.records@[t].value().placement == old(self).threads.records@[t].value().placement,
             final(self).stop_ipis == old(self).stop_ipis,
     {
         let ghost pre = *self;
@@ -5026,7 +5025,7 @@ impl CapKernel {
             }
         }
         lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
-        lemma_placed_running_same(post.threads.boot_thread@, pre.threads.records@, post.threads.records@);
+        lemma_placed_running_same(pre.threads.records@, post.threads.records@);
         if pre.threads.records@[t].value().state is Runnable {
             lemma_runnable_is_bound(&pre.threads.queues, pre.threads.records@, t);
         }
@@ -5163,14 +5162,12 @@ impl CapKernel {
         }
     }
 
-    /// Any thread other than the boot thread that is Runnable on a core, or Running on a core with no
-    /// stop pending, has a live placement node on that core under a core capability at or above its
-    /// priority.
+    /// Any thread that is Runnable on a core, or Running on a core with no stop pending, has a live
+    /// placement node on that core under a core capability at or above its priority.
     pub proof fn lemma_running_placed(&self, t: usize)
         requires
             self.wf(),
             self.threads.records@.contains_key(t),
-            Some(t) != self.threads.boot_thread@,
             ({
                 let r = self.threads.records@[t].value();
                 r.state is Runnable || (r.state is Running && !r.pending_stop)
@@ -5356,7 +5353,7 @@ impl CapKernel {
 
     /// Thread t, unplaced, is placed on `pl.core` at `pl.priority` under core capability m: node
     /// `placement_node(t)` is a live Placement child of m, and t's record names `Some(pl)`. Nothing
-    /// else changed.
+    /// else changed, no other node's depth included.
     pub open spec fn placed(pre: Self, post: Self, m: usize, t: usize, pl: Placement) -> bool {
         let x = placement_node(t);
         let r = pre.threads.records@[t].value();
@@ -5372,6 +5369,7 @@ impl CapKernel {
         &&& forall|y: int| #![trigger post.list.nodes@[y]] 0 <= y < NODE_SPACE && y != x ==> {
             &&& post.list.nodes@[y].live == pre.list.nodes@[y].live
             &&& post.list.nodes@[y].kind == pre.list.nodes@[y].kind
+            &&& post.list.nodes@[y].depth == pre.list.nodes@[y].depth
         }
         &&& post.threads.holders == pre.threads.holders
         &&& post.threads.boot_thread == pre.threads.boot_thread
@@ -5681,10 +5679,9 @@ impl CapKernel {
                 }
             }
         }
-        assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
+        assert(placed_running_wf(post.threads.records@)) by {
             reveal(placed_running_wf);
             assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
-                && Some(u) != post.threads.boot_thread@
                 implies thread_placed_running(post.threads.records@[u].value()) by {
                 if u != t {
                     assert(pre.threads.records@.contains_key(u));

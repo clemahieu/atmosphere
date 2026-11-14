@@ -1665,7 +1665,7 @@ impl CapKernel {
         &&& process_tables_wf(&self.tables, &self.processes)
         &&& process_spaces_wf(&self.spaces, &self.processes)
         &&& current_wf(self.cores@, self.threads.records@)
-        &&& placed_running_wf(self.threads.boot_thread@, self.threads.records@)
+        &&& placed_running_wf(self.threads.records@)
         &&& queues_wf(&self.threads.queues, self.threads.records@)
         &&& bindings_wf(&self.list, &self.threads, &self.processes)
         &&& binding_parents(&self.list, &self.tables, &self.threads)

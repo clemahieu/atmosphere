@@ -24,11 +24,13 @@ The frames dom0's image and stack are loaded in are frame capabilities at consec
 
 The tables dom0's runs need in the root's space come from the root's own untyped at `ROOT_UNTYPED_SLOT`, as every mapper pays for its tables, `design/address-spaces-as-objects/` and `design/untyped-memory/`: boot retypes its order-3 blocks in address order as table pages and links them through the root's process capability, giving each 2M region a run touches its level 3, 2 and 1 tables. Before any write, boot refuses when a run's virtual pages are not all under level 4 entries past the kernel's, or when that untyped holds fewer order-3 blocks than three for each 2M region a run touches, counted run by run.
 
-Boot ends by making the root's thread core 0's current thread, which core 0 then enters in user mode, so the kernel finds the root's first invocation's caller as it finds every caller, through the core's current thread. No capability started it, so it runs without a placement, as the root's boot objects come without an untyped above them: a placement is a binding under a core capability, `design/cpu-time-as-capability/`, and those are what boot hands the root.
+Boot ends by placing the root's thread on core 0 at priority 0 through the root's capability for core 0, as the root would place it itself, and making it core 0's current thread, which core 0 then enters in user mode, so the kernel finds the root's first invocation's caller as it finds every caller, through the core's current thread. The thread's placement is a child of that capability, `design/cpu-time-as-capability/`, so every thread that runs has one, and the root revoking its capability for core 0 stops its own thread as it stops any thread placed below it.
 
 ## Reasoning
 
 Under `design/untyped-memory/` the kernel has no authority of its own to hand out later, so everything must be in some process's hands from the first instruction of user mode, and in one lineage so that revocation reaches it, `design/revoke-by-depth-first-list/`. Fixed slots are what the root's own code and its tests can rely on without an enumerate operation the ABI does not have.
+
+The root's thread is placed through the root's own capability, and not run without a placement, because the kernel's run rule then has no exception: a thread runs on a core only under a placement below a capability for that core, so whoever holds that capability can take the core back, the root included. A thread running unplaced would be the one thread no revoke could stop, and every proof about who runs where would carry it as a special case.
 
 Power is a kind of its own, not something the console allows, because the two are handed out differently: a root gives the console to whatever should be heard, and the authority to stop the machine to almost nothing. Were power-off an operation on the console, every process that may log could end the run.
 
