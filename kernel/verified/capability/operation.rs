@@ -919,18 +919,24 @@ impl CapKernel {
 
     /// A destroy in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_destroy fails, or ok with the process
-    /// the slot's capability names destroyed as process_destroyed says, or the thread it names destroyed
-    /// from some core as thread_destroyed says, every thread bound as it was.
+    /// or thread the slot's capability names destroyed from some core, as destroy_done says; either way
+    /// what destroy_kept says is kept.
     pub open spec fn spec_destroyed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        let n = pre.tables.node_of(root, frame.slot() as usize);
-        let o = pre.payload_of(n).base;
-        ||| !pre.allows_destroy(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& pre.allows_destroy(root, frame)
-            &&& out == status_only(STATUS_OK)
-            &&& pre.payload_of(n).kind is Process ==> Self::process_destroyed(pre, post, o)
-            &&& pre.payload_of(n).kind is Thread ==> exists|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o)
-            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        let i = frame.slot() as usize;
+        &&& Self::destroy_kept(pre, post)
+        &&& {
+            ||| {
+                &&& !pre.allows_destroy(root, frame)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& post == pre
+                &&& Self::destroy_answered(pre, post, root, i, false)
+            }
+            ||| {
+                &&& pre.allows_destroy(root, frame)
+                &&& out == status_only(STATUS_OK)
+                &&& Self::destroy_answered(pre, post, root, i, true)
+                &&& exists|c: usize| c < NUM_CPUS && #[trigger] Self::destroy_done(pre, post, c, root, i)
+            }
         }
     }
 
@@ -2097,11 +2103,7 @@ impl CapKernel {
             let pre = *old(self);
             let post = *self;
             if done {
-                let n = pre.tables.node_of(root, frame.slot() as usize);
-                let o = pre.payload_of(n).base;
-                if pre.payload_of(n).kind is Thread {
-                    assert(Self::thread_destroyed(pre, post, c, o));
-                }
+                assert(Self::destroy_done(pre, post, c, root, frame.slot() as usize));
             }
         }
         status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })

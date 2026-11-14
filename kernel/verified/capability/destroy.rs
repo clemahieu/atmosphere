@@ -254,6 +254,44 @@ impl CapKernel {
         &&& post.stop_ipis@ == pre.stop_ipis@ + listed_cores(pre.spaces.loaded@[p].value().list, NUM_CPUS as int)
     }
 
+    /// Whether a destroy of the capability at index i of the table at root answered ok exactly when
+    /// can_destroy holds, and left the kernel as it was when it refused. destroy's ensures and
+    /// spec_destroyed both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn destroy_answered(pre: Self, post: Self, root: usize, i: usize, ok: bool) -> bool {
+        &&& ok == pre.can_destroy(root, i)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a destroy leaves as it was, whether it answered ok or refused: the process each thread is
+    /// bound to. destroy's ensures and spec_destroyed both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn destroy_kept(pre: Self, post: Self) -> bool {
+        bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
+    /// What a destroy from core c of the capability at index i of the table at root did when it
+    /// answered ok: the process it names destroyed as process_destroyed says, with an IPI for exactly
+    /// the cores that have its space loaded, or the thread it names destroyed as thread_destroyed says;
+    /// core c's thread left to be moved off when the destroy was of its own thread or process; and the
+    /// step discharging the destroy of the capability. destroy's ensures and spec_destroyed both call
+    /// it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn destroy_done(pre: Self, post: Self, c: usize, root: usize, i: usize) -> bool {
+        let n = pre.tables.node_of(root, i);
+        let o = pre.payload_of(n).base;
+        &&& pre.destroys_own(c as int, root, i) ==> post.must_leave(c as int)
+        &&& pre.payload_of(n).kind is Process ==> {
+            &&& pre.processes.records@.contains_key(o)
+            &&& Self::process_destroyed(pre, post, o)
+            &&& forall|d: usize| #[trigger] listed_cores(pre.spaces.loaded@[o].value().list, NUM_CPUS as int).contains(d)
+                <==> d < NUM_CPUS && pre.loaded(d as int, o)
+        }
+        &&& pre.payload_of(n).kind is Thread ==> {
+            &&& pre.threads.records@.contains_key(o)
+            &&& Self::thread_destroyed(pre, post, c, o)
+        }
+        &&& discharges(pre.view(), post.view(), root, Effect::Destroy { cap: n })
+    }
+
     /// Destroys, from core c, the process or thread the control capability at index i of the table at
     /// root names. A process's record is dead, and each core that has its space loaded gets an IPI, so
     /// that core finds its current thread's process dead at its next kernel entry; its threads, table,
@@ -270,25 +308,9 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + NUM_CPUS,
             final(self).wf(),
-            ret == old(self).can_destroy(root, i),
-            !ret ==> *final(self) == *old(self),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret && old(self).destroys_own(c as int, root, i) ==> final(self).must_leave(c as int),
-            ret ==> {
-                let n = old(self).tables.node_of(root, i);
-                let o = old(self).payload_of(n).base;
-                &&& old(self).payload_of(n).kind is Process ==> {
-                    &&& old(self).processes.records@.contains_key(o)
-                    &&& Self::process_destroyed(*old(self), *final(self), o)
-                    &&& forall|d: usize| #[trigger] listed_cores(old(self).spaces.loaded@[o].value().list, NUM_CPUS as int).contains(d)
-                        <==> d < NUM_CPUS && old(self).loaded(d as int, o)
-                }
-                &&& old(self).payload_of(n).kind is Thread ==> {
-                    &&& old(self).threads.records@.contains_key(o)
-                    &&& Self::thread_destroyed(*old(self), *final(self), c, o)
-                }
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Destroy { cap: n })
-            },
+            Self::destroy_answered(*old(self), *final(self), root, i, ret),
+            Self::destroy_kept(*old(self), *final(self)),
+            ret ==> Self::destroy_done(*old(self), *final(self), c, root, i),
     {
         let ghost pre = *self;
         let (n, payload) = match self.tables.lookup(&self.list, root, i) {
