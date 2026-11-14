@@ -116,7 +116,7 @@ def ask(run, folder, now=time.time, sleep=time.sleep, timeout=TIMEOUT):
 
 
 PANE = """\
- main ~/a/scratch/grok-usage                                                       1.8K / 256K │ [Dashboard]
+ main src/scratch/grok-usage                                                       1.8K / 256K │ [Dashboard]
           ┌───────────────────────────────────────────────────────────── [✗] ─┐
           │  Context usage  Usage limit  Session info                          │
           │────────────────────────────────────────────────────────────────────│
@@ -138,6 +138,11 @@ class Tests(unittest.TestCase):
 
     def test_reads_the_weekly_limit_off_the_usage_window(self):
         self.assertEqual(reading(PANE, self.NOW), ("SuperGrok Heavy", 5.0, datetime(2026, 11, 20, 1, 6).timestamp()))
+
+    def test_the_sample_pane_names_no_home_directory(self):
+        # The pieces stay apart so this test is not itself a home-path match.
+        spelled = re.compile(chr(126) + "/" + "|" + "\\$" + "HOME" + "|" + "\\$" + "{HOME}" + "|" + "/home" + "/")
+        self.assertIsNone(spelled.search(PANE))
 
     def test_a_reset_after_new_year_is_next_years_and_one_just_passed_is_this_years(self):
         late = datetime(2026, 12, 30, 12, 0).timestamp()
