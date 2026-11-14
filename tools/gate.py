@@ -49,6 +49,7 @@ SOURCE_LICENSE_CHECK = "tools/check-spdx.py"
 HOOK_TESTS = (".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh")
 EXTERNAL_BODY_CHECK = "tools/check-external-body.py"
 THROWAWAY_CHECK = "tools/check-throwaways.py"
+INVOKED_ARMS_CHECK = "tools/check-invoked-arms.py"
 WITNESS_INVENTORY = "tools/witness-inventory.py"
 # Every way an operation succeeds that no witness reaches, one line each: path, operation and way,
 # separated by tabs.
@@ -405,6 +406,19 @@ def unwitnessed(gate):
     return f"{len(found)} of {len(rows)} lines have no witness, each a line of {UNWITNESSED}"
 
 
+def invoked_arms(gate):
+    """The check's own tests, then the check, which prints each conjunct of an operation's ensures
+    that its arm of invoked does not carry: the step fails on any line it prints, as on its exit
+    status, so a change that drops a field from an arm fails the gate
+    (design/invoked-arm-is-the-operation-postcondition/)."""
+    run_check(gate, INVOKED_ARMS_CHECK, "--test")
+    ran = gate.call([INVOKED_ARMS_CHECK], capture=True)
+    printed = ran.stdout.rstrip()
+    if ran.code != 0 or printed:
+        raise Failure(f"{INVOKED_ARMS_CHECK}: {status(ran.code)}" + "".join(f"\n  {line}" for line in printed.splitlines()))
+    return "every arm of invoked carries its operation's ensures"
+
+
 def design_index(gate):
     """design/INDEX.md is generated from the records, so a record edited without regenerating it
     would leave the index saying something the records do not."""
@@ -483,6 +497,7 @@ STEPS = (
     Step("unwitnessed", X86_64, unwitnessed),
     Step("verify aarch64", AARCH64, verify_for("--target", AARCH64)),
     Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK)),
+    Step("invoked arms", X86_64, invoked_arms),
     Step("page literals", X86_64, self_tested(PAGE_LITERALS_CHECK)),
     Step("arch sources", X86_64, self_tested(ARCH_SOURCES_CHECK)),
     Step("upstream copies", X86_64, self_tested(UPSTREAM_COPIES_CHECK)),
@@ -695,6 +710,19 @@ class Tests(unittest.TestCase):
         self.assertEqual(gate.calls, [[WITNESS_INVENTORY, "--test"], [WITNESS_INVENTORY]])
         names = [step.name for step in chosen(X86_64)]
         self.assertEqual(names.index("unwitnessed"), names.index("throwaways") + 1)
+
+    def test_the_invoked_arms_step_fails_on_a_printed_conjunct(self):
+        gate = FakeGate(self.root)
+        self.assertEqual(invoked_arms(gate), "every arm of invoked carries its operation's ensures")
+        self.assertEqual(gate.calls, [[INVOKED_ARMS_CHECK, "--test"], [INVOKED_ARMS_CHECK]])
+        dropped = "kernel/verified/capability/revoke.rs:revoke:final(self).flush_epoch >= old(self).flush_epoch\n"
+        tested = {f"{INVOKED_ARMS_CHECK} --test": (0, "")}
+        with self.assertRaisesRegex(Failure, "^tools/check-invoked-arms.py: exit status: 1\n  kernel/verified/capability/revoke.rs:revoke:final"):
+            invoked_arms(FakeGate(self.root, {**tested, INVOKED_ARMS_CHECK: (1, dropped)}))
+        # A line printed is a conjunct not carried, whatever the status says.
+        with self.assertRaisesRegex(Failure, "^tools/check-invoked-arms.py: exit status: 0\n  kernel/"):
+            invoked_arms(FakeGate(self.root, {**tested, INVOKED_ARMS_CHECK: (0, dropped)}))
+        self.assertIn("invoked arms", [step.name for step in chosen(X86_64)])
 
     def test_test_totals_add_up_each_binarys_line(self):
         output = ("running 2 tests\ntest a ... ok\nfree page ranges: rejected x\ntest result: ok. 2 passed; 0 failed; 0 ignored\n\n"

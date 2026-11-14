@@ -918,11 +918,6 @@ class Tests(unittest.TestCase):
         self.assertEqual(ops["spec_registers_written"], ["read_registers", "write_registers"])
         self.assertEqual(ops["spec_outcome"], ["read_registers", "suspend"])
 
-    def test_the_script_is_not_a_gate_step(self):
-        gate = (REPO / "tools" / "gate.py").read_text(encoding="utf-8")
-        self.assertNotIn("check-invoked-arms", gate)
-        self.assertNotIn("invoked arms", gate)
-
     def test_the_verified_sources_parse(self):
         try:
             found = findings(REPO)

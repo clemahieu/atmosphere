@@ -94,6 +94,7 @@ tools/gdb.py            # attach gdb to a tools/run.py --gdb run
 tools/check-upstream-copies.py --update   # rewrite the recorded delta of a copied upstream file
 tools/check-boot-log.py --arch ARCH LOG   # hold a dom0 boot's serial log to the gate's boot checks
 tools/check-throwaways.py --write   # after adding a root witness or changing one's parameters or requires: rewrite the throwaways the gate runs; --list says which witnesses are roots
+tools/check-invoked-arms.py   # before changing an arm of invoked or an operation's ensures: each conjunct the arm does not carry; the gate's invoked arms step
 tools/aarch64-esp.py    # build the aarch64 images and lay out the ESP the board boots
 tools/board.py          # boot dom0 on the Orange Pi under KVM and hold the run to the gate's boot checks; fails when the board is unreachable
 ```
@@ -109,7 +110,6 @@ tools/token-ledger.py   # harvest the transcripts' token counts and the plan's m
 tools/leaf-cost.py      # what a landed leaf cost, every session counted, by the model of its rounds, with the rework beside it
 tools/offering-report.py  # before ordering a route's candidates in loop.toml: per work kind and offering, the leaves taken, landed, escalated and refuted, the cost a landed leaf, and the reviews
 tools/witness-inventory.py         # before writing a witness or adding an operation: every way each tier-1 operation succeeds, with the witness that reaches it or none
-tools/check-invoked-arms.py         # before changing an arm of invoked or an operation's ensures: each conjunct the arm does not carry
 tools/check-stray-timer.py         # a kernel whose timer fires for nothing reports it once and stops, on both targets
 tools/check-boot-panic.py          # a kernel that panics at boot ends QEMU with status 1, on both targets
 tools/orangepi-stack-overflow.py   # an aarch64 kernel that overflows a stack on the board reports it once
