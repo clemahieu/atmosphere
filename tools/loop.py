@@ -56,10 +56,9 @@ left out too. A candidate that is not under `[offerings]` is an error. When noth
 session is started: the loop waits if another loop or actor is active, and stops otherwise. Without
 `[routes]`, the loop runs plain rounds on Claude with the top-level tables' flags.
 
-Pacing (`[meters.<name>]`, with `target` and, for a meter whose use is spread, `window` in hours). Each
-paced meter has a line. With a window it climbs from 0% at the window's opening, `window` hours before
-the reset, to the target at the reset; without one it stands at the target, so the meter runs until it
-nears its target. A meter at p percent at or above its line now admits none. Under it, with r its
+Pacing (`[meters.<name>]`, with `target` and `window`, the length of the meter's window in hours). Each
+paced meter has a line, which climbs from 0% at the window's opening, `window` hours before the reset,
+to the target at the reset, so every paced meter spreads its use over its window. A meter at p percent at or above its line now admits none. Under it, with r its
 fitted rate a session in flight and h the hours to its reset, it admits max(1, ceil((target - p) /
 (r * h))) sessions at once: those that, spending what is left evenly over the time left, bring it to
 its target at the reset. A meter behind its line catches up over the rest of its window, not at once,
@@ -539,7 +538,7 @@ def parse_offerings(raw):
 
 def parse_paces(raw):
     """[meters.<name>]: each meter's target, the percent its line reaches at the reset, and window, the
-    hours its line climbs over, or None for a line that stands at the target."""
+    hours its line climbs over, the length of the meter's own window."""
     if not isinstance(raw, dict):
         raise ValueError("meters: not a table")
     paces = {}
@@ -553,9 +552,9 @@ def parse_paces(raw):
         target, window = table.get("target"), table.get("window")
         if not isinstance(target, (int, float)) or isinstance(target, bool) or not 0 < target <= 100:
             raise ValueError(f"{where}.target: {target!r} is not a percent above 0 and at most 100")
-        if window is not None and (not isinstance(window, (int, float)) or isinstance(window, bool) or window <= 0):
+        if not isinstance(window, (int, float)) or isinstance(window, bool) or window <= 0:
             raise ValueError(f"{where}.window: {window!r} is not a number of hours above 0")
-        paces[name] = {"target": float(target), "window": None if window is None else float(window)}
+        paces[name] = {"target": float(target), "window": float(window)}
     return paces
 
 
@@ -891,8 +890,8 @@ def add_reading(state, meter, harness, percent, resets_at, read, sessions=None):
 def admission(held, pace, now):
     """(sessions the meter admits at once, or None for any number, percent, hours to reset, rate a
     session, line) for a meter's state `held` (None when it has no readings) under its pace from
-    [meters]. With a window the line climbs from 0% at the window's opening to the target at its reset;
-    without one, or with no reset known to place the window by, it stands at the target. `line` is where
+    [meters]. The line climbs from 0% at the window's opening to the target at its reset; with no reset
+    known to place the window by, it stands at the target. `line` is where
     it stands now. A meter at or above it admits none. One under it admits the sessions that, each
     spending the rate a session, bring it to its target at its reset: (target - percent) over the rate
     a session times the hours to reset, rounded up, one at least. So a meter behind its line catches up
@@ -908,7 +907,7 @@ def admission(held, pace, now):
         return None, percent, hours, rate, None
     target, window = pace["target"], pace["window"]
     line = target
-    if window is not None and hours is not None:
+    if hours is not None:
         line *= min(max(window - hours, 0.0) / window, 1.0)
     if percent >= line:
         return 0, percent, hours, rate, line
@@ -941,8 +940,8 @@ def fmt_admission(meter, admits, percent, hours, rate, line, pace):
 
 
 def fmt_pace(pace):
-    """A meter's pace from [meters]: its target, and the window its line climbs over when it has one."""
-    return f"target {pace['target']:g}" + ("" if pace["window"] is None else f", window {pace['window']:g} h")
+    """A meter's pace from [meters]: its target, and the window its line climbs over."""
+    return f"target {pace['target']:g}, window {pace['window']:g} h"
 
 
 def stream_meter(limit_type):
@@ -2360,7 +2359,7 @@ class Tests(unittest.TestCase):
                               'meters = ["gemini-week"]\n\n[offerings.opus]\nmodel = "opus"\nmeters = ["claude-week"]\n\n'
                               '[routes.default]\ncandidates = ["opus"]\n\n[routes.tool]\ncandidates = ["carbon", "opus"]\n\n'
                               '[routes.skeptic]\ndisabled = true\n\n[meters.claude-week]\ntarget = 95\nwindow = 168\n\n'
-                              '[meters.gemini-week]\ntarget = 95\n')
+                              '[meters.gemini-week]\ntarget = 95\nwindow = 168\n')
             shown = io.StringIO()
             self.assertEqual(list_offerings(config, shown), 0)
             lines = shown.getvalue().splitlines()
@@ -2369,7 +2368,7 @@ class Tests(unittest.TestCase):
             self.assertIn("route tool: carbon > opus", lines)
             self.assertIn("route spec: opus", lines)
             self.assertIn("route skeptic: disabled", lines)
-            self.assertEqual(lines[-2:], ["meter claude-week: target 95, window 168 h", "meter gemini-week: target 95"])
+            self.assertEqual(lines[-2:], ["meter claude-week: target 95, window 168 h", "meter gemini-week: target 95, window 168 h"])
             self.assertEqual(len(lines), 4 + len(ROUTE_KEYS))
             config.write_text('[round]\nmodel = "fable"\n')
             shown = io.StringIO()
@@ -3602,6 +3601,7 @@ class Tests(unittest.TestCase):
 
         [meters.gemini-week]
         target = 90
+        window = 168
         """)
 
     def meter(self, percent, resets_at, read=0.0, rate=None, session_rate=None):
@@ -3610,7 +3610,6 @@ class Tests(unittest.TestCase):
 
     def test_a_meter_under_its_line_admits_what_reaches_its_target_by_its_reset(self):
         week, five_hours = {"target": 95.0, "window": 168.0}, {"target": 95.0, "window": 5.0}
-        flat = {"target": 95.0, "window": None}
         hour = 3600.0
         # The week of 2026-11-14: 17% used 27.8 h before the reset, its line at 95 * 140.2 / 168 = 79.3%,
         # 0.57%/h a session. The 78 points left over 27.8 h are 2.8%/h, 4.9 sessions: 5, not the 109 that
@@ -3637,23 +3636,21 @@ class Tests(unittest.TestCase):
                          (3, 10.0, 3.0, 10.0, 38.0))
         # Half an hour out: 5 points at 2%/h a session over half an hour is 5 sessions.
         self.assertEqual(admission(self.meter(90.0, 0.5 * hour, session_rate=2.0), week, 0.0)[0], 5)
-        # With no window the line stands at the target from the window's opening: a meter just past its
-        # reset, which a week's line holds back, runs one session at a time until it nears its target.
-        self.assertEqual(admission(self.meter(2.7, 167 * hour, session_rate=3.2), week, 0.0)[0], 0)
-        self.assertEqual(admission(self.meter(2.7, 167 * hour, session_rate=3.2), flat, 0.0),
-                         (1, 2.7, 167.0, 3.2, 95.0))
-        self.assertEqual(admission(self.meter(93.0, 167 * hour, session_rate=3.2), flat, 0.0)[0], 1)
+        # Gemini's week of 2026-11-14, 3.2% used just past its reset at 3.2%/h a session: its line holds it
+        # back until the line passes 3.2%, 5.7 h into the week, then runs one at a time, under the line.
+        self.assertEqual(admission(self.meter(3.2, 167 * hour, session_rate=3.2), week, 0.0)[0], 0)
+        self.assertEqual(admission(self.meter(3.2, 162 * hour, session_rate=3.2), week, 0.0)[0], 1)
         # A window with no reset known cannot be placed, and leaves no time to spread over: its line stands
         # at the target and it admits one.
         self.assertEqual(admission(self.meter(10.0, None, session_rate=20.0), week, 0.0), (1, 10.0, None, 20.0, 95.0))
         # At or past the target nothing is admitted, whatever the rate.
         self.assertEqual(admission(self.meter(95.0, 2 * hour), week, 0.0)[0], 0)
-        self.assertEqual(admission(self.meter(96.0, 2 * hour, session_rate=1.0), flat, 0.0)[0], 0)
+        self.assertEqual(admission(self.meter(96.0, 0.5 * hour, session_rate=1.0), week, 0.0)[0], 0)
         # No fitted rate yet, or a meter that is not moving: one while under the line, none above it.
         self.assertEqual(admission(self.meter(10.0, 50 * hour), week, 0.0)[0], 1)
         self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.0), week, 0.0)[0], 1)
         self.assertEqual(admission(self.meter(80.0, 100 * hour), week, 0.0)[0], 0)
-        self.assertEqual(admission(self.meter(94.0, 2 * hour), flat, 0.0)[0], 1)
+        self.assertEqual(admission(self.meter(94.0, 0.5 * hour), week, 0.0)[0], 1)
         # A reading whose window has since reset says nothing of the new window, and a meter with no
         # readings nothing at all: any number.
         self.assertIsNone(admission(self.meter(94.0, 100.0, session_rate=5.0), week, 200.0)[0])
@@ -3679,13 +3676,14 @@ class Tests(unittest.TestCase):
         add_reading(state, "claude-week", "claude", 20.0, 50000.0, 3600.0, sessions=0)
         self.assertEqual(state["meters"]["claude-week"]["history"][-1]["sessions"], 0)
 
-    def test_meters_tables_take_a_target_and_a_window_in_hours_or_none(self):
+    def test_meters_tables_take_a_target_and_a_window_in_hours(self):
         paces = parse_dispatch(self.PACED).paces
         self.assertEqual(paces["claude-5h"], {"target": 95.0, "window": 5.0})
-        self.assertEqual(paces["gemini-week"], {"target": 90.0, "window": None})
+        self.assertEqual(paces["gemini-week"], {"target": 90.0, "window": 168.0})
         for bad in ('[meters.claude-week]\nfloor = 4\n', '[meters.claude-week]\ntarget = 0\n',
                     '[meters.claude-week]\ntarget = 101\n', '[meters.claude-week]\ntarget = true\n',
-                    '[meters.claude-week]\nwindow = 168\n', '[meters.claude-week]\ntarget = 95\nmax = 4\n',
+                    '[meters.claude-week]\nwindow = 168\n', '[meters.claude-week]\ntarget = 95\n',
+                    '[meters.claude-week]\ntarget = 95\nwindow = 168\nmax = 4\n',
                     '[meters.claude-week]\ntarget = 95\nwindow = 0\n', '[meters.claude-week]\ntarget = 95\nwindow = -5\n',
                     '[meters.claude-week]\ntarget = 95\nwindow = true\n', '[meters.claude-week]\ntarget = 95\nwindow = "7d"\n',
                     '[meters.Claude]\ntarget = 95\n', '[meters]\nclaude-week = 95\n'):
