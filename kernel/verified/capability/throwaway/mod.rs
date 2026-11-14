@@ -13,6 +13,7 @@ pub mod dead_device_space_freed;
 pub mod dead_endpoint_freed;
 pub mod dead_frame_freed;
 pub mod dead_large_frame_freed;
+pub mod dead_notification_freed;
 pub mod dead_reply_freed;
 pub mod dead_table_page_freed;
 pub mod destroyed_thread_freed;

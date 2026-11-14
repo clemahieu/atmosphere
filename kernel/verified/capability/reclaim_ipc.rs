@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-//! Retype reclaiming a dead endpoint's or reply's block. Once its references are gone nothing names
-//! it, its page is no frame and no table so no core or IOMMU can hold a translation of it, and so one
-//! retype frees its block at once, its record going with it. See design/teardown-driven-by-retype/.
+//! Retype reclaiming a dead endpoint's, notification's or reply's block. Once its references are gone
+//! nothing names it, its page is no frame and no table so no core or IOMMU can hold a translation of
+//! it, and so one retype frees its block at once, its record going with it. See
+//! design/teardown-driven-by-retype/.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -39,13 +40,13 @@ use crate::pptr::*;
 use crate::capability::thread::*;
 
 impl CapKernel {
-    /// A dead endpoint at zero references whose queue lists no thread: the block to be freed. A thread
-    /// its queue still lists keeps its record, since nothing takes a thread off a queue yet
-    /// (design/ipc-with-reply-object/).
-    pub open spec fn endpoint_is_dead(&self, page: usize) -> bool {
+    /// A dead endpoint or notification at zero references whose queue lists no thread: the block to be
+    /// freed. A thread its queue still lists keeps its record, since nothing takes a thread off a queue
+    /// yet (design/ipc-with-reply-object/).
+    pub open spec fn queue_is_dead(&self, page: usize) -> bool {
         &&& self.blocks.tracks(page as int)
         &&& self.blocks.pages@[page as int].kind is Base
-        &&& self.blocks.pages@[page as int].object is Endpoint
+        &&& queue_object(self.blocks.pages@[page as int].object)
         &&& self.blocks.pages@[page as int].dead
         &&& self.blocks.pages@[page as int].refs == 0
         &&& self.endpoints.records@[(page * PAGE_SZ) as usize].value().waiters@.len() == 0
@@ -85,15 +86,15 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
     }
 
-    /// What freeing the endpoint at `base` did to self, under the untyped at index `from` of the table
-    /// at `root`: its page is free in the block table and its record is gone, and the rest is as it
-    /// was, so the next retype of the page can succeed and what a caller knew of another block holds
-    /// after the free. The state the reach theorem reads is unchanged.
-    pub open spec fn endpoint_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
+    /// What freeing the endpoint or notification at `base` did to self, under the untyped at index
+    /// `from` of the table at `root`: its page is free in the block table and its record is gone, and
+    /// the rest is as it was, so the next retype of the page can succeed and what a caller knew of
+    /// another block holds after the free. The state the reach theorem reads is unchanged.
+    pub open spec fn queue_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / PAGE_SZ;
         &&& self.view().holds_right(root, untyped, Right::Retype)
-        &&& self.endpoint_is_dead(page)
+        &&& self.queue_is_dead(page)
         &&& self.object_block_freed(post, c, page)
         &&& post.endpoints.records@ == self.endpoints.records@.remove(base)
         &&& post.endpoints.holders == self.endpoints.holders
@@ -148,12 +149,12 @@ impl CapKernel {
         }
     }
 
-    /// Frees the block of the dead endpoint at `page`, its record's page going back.
-    fn free_endpoint(&mut self, c: usize, page: usize, Tracked(steps): Tracked<&mut Steps>)
+    /// Frees the block of the dead endpoint or notification at `page`, its record's page going back.
+    fn free_queue(&mut self, c: usize, page: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            old(self).endpoint_is_dead(page),
+            old(self).queue_is_dead(page),
         ensures
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             old(self).object_block_freed(*final(self), c, page),
@@ -276,10 +277,10 @@ impl CapKernel {
         }
     }
 
-    /// A retype naming the block of the endpoint at `base`, under the untyped at index `from` of the
-    /// table at `root`: once its references are gone, it frees the block. All of these come from user
-    /// space, and anything but a free changes nothing.
-    pub(crate) fn reclaim_endpoint(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
+    /// A retype naming the block of the endpoint or notification at `base`, under the untyped at index
+    /// `from` of the table at `root`: once its references are gone and its queue lists no thread, it
+    /// frees the block. All of these come from user space, and anything but a free changes nothing.
+    pub(crate) fn reclaim_queue(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -291,9 +292,9 @@ impl CapKernel {
             Self::mappings_shrunk(*old(self), *final(self)),
             ret is Refused || ret is Freed,
             ret is Refused ==> *final(self) == *old(self),
-            !(old(self).can_retype_under(root, from, base, 0) && old(self).endpoint_is_dead(base / PAGE_SZ)) ==> ret is Refused,
-            old(self).can_retype_under(root, from, base, 0) && old(self).endpoint_is_dead(base / PAGE_SZ) ==> ret is Freed,
-            ret is Freed ==> old(self).endpoint_freed(*final(self), c, root, from, base),
+            !(old(self).can_retype_under(root, from, base, 0) && old(self).queue_is_dead(base / PAGE_SZ)) ==> ret is Refused,
+            old(self).can_retype_under(root, from, base, 0) && old(self).queue_is_dead(base / PAGE_SZ) ==> ret is Freed,
+            ret is Freed ==> old(self).queue_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
         proof {
@@ -309,7 +310,7 @@ impl CapKernel {
         }
         let entry = *self.blocks.pages.get(page);
         let dead = match (entry.kind, entry.object) {
-            (PageKind::Base, ObjectType::Endpoint) => entry.refs == 0,
+            (PageKind::Base, ObjectType::Endpoint) | (PageKind::Base, ObjectType::Notification) => entry.refs == 0,
             _ => false,
         };
         if !dead {
@@ -332,7 +333,7 @@ impl CapKernel {
         if head != NONE {
             return ReclaimStep::Refused;
         }
-        self.free_endpoint(c, page, Tracked(steps));
+        self.free_queue(c, page, Tracked(steps));
         proof {
             let post = *self;
             Self::lemma_same_tree_shrunk(pre, post);

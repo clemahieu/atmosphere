@@ -799,10 +799,10 @@ impl CapKernel {
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))
                 || old(self).can_reclaim_large(root, from, base, 9)
                 || old(self).can_reclaim_large(root, from, base, 18)
-                || (old(self).can_retype_under(root, from, base, 0) && old(self).endpoint_is_dead(base / PAGE_SZ))
+                || (old(self).can_retype_under(root, from, base, 0) && old(self).queue_is_dead(base / PAGE_SZ))
                 || (old(self).can_retype_under(root, from, base, 0) && old(self).reply_is_dead(base / PAGE_SZ))) ==> ret is Refused,
-            old(self).can_retype_under(root, from, base, 0) && old(self).endpoint_is_dead(base / PAGE_SZ)
-                ==> ret is Freed && old(self).endpoint_freed(*final(self), c, root, from, base),
+            old(self).can_retype_under(root, from, base, 0) && old(self).queue_is_dead(base / PAGE_SZ)
+                ==> ret is Freed && old(self).queue_freed(*final(self), c, root, from, base),
             old(self).can_retype_under(root, from, base, 0) && old(self).reply_is_dead(base / PAGE_SZ)
                 ==> ret is Freed && old(self).reply_freed(*final(self), c, root, from, base),
             old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)
@@ -902,7 +902,7 @@ impl CapKernel {
                 || old(self).space_freed(*final(self), c, root, from, base)
                 || old(self).thread_freed(*final(self), c, root, from, base)
                 || old(self).process_freed(*final(self), c, root, from, base)
-                || old(self).endpoint_freed(*final(self), c, root, from, base)
+                || old(self).queue_freed(*final(self), c, root, from, base)
                 || old(self).reply_freed(*final(self), c, root, from, base),
             ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base)
                 || old(self).table_sliced(*final(self), root, from, base)
@@ -1002,9 +1002,8 @@ impl CapKernel {
                     self.free_process(c, root, from, base, Tracked(steps))
                 }
             },
-            ObjectType::Endpoint => self.reclaim_endpoint(c, root, from, base, Tracked(steps)),
+            ObjectType::Endpoint | ObjectType::Notification => self.reclaim_queue(c, root, from, base, Tracked(steps)),
             ObjectType::Reply => self.reclaim_reply(c, root, from, base, Tracked(steps)),
-            ObjectType::Notification => ReclaimStep::Refused,
             ObjectType::None => ReclaimStep::Refused,
         }
     }
