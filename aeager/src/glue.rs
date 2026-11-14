@@ -3414,7 +3414,7 @@ pub(crate) proof fn lemma_ready_table_linked(
     km.lemma_table_base(child);
     assert(child != root);
     assert(treem.record(child).space is None);
-    lemma_table_bound(child);
+    lemma_table_bound(&km.blocks, child);
     lemma_table_addr_valid(child);
     assert(((child + TABLE_NODE_PAGES * PAGE_SZ) as usize - TABLE_NODE_PAGES * PAGE_SZ) as usize == child);
 
