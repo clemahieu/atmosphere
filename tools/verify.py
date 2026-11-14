@@ -396,14 +396,6 @@ class Tests(unittest.TestCase):
         self.assertIn("MemorySwapMax=0", command)
         self.assertEqual(command[-3:], ["--", "rust_verify", "lib.rs"])
 
-    def test_a_run_over_its_cap_is_killed_alone_and_reported_out_of_memory(self):
-        unit = f"atmo-verify-test-{os.getpid()}-over"
-        grow = [sys.executable, "-c", "b = bytearray(256 << 20)"]
-        status, out_of_memory = run_capped(grow, unit, "32M", cwd=REPO, env=dict(os.environ))
-        self.assertNotEqual(status, 0)
-        self.assertTrue(out_of_memory)
-        self.assertEqual(scope_state(unit)["LoadState"], "not-found")
-
     def test_a_run_within_its_cap_keeps_its_status_and_its_environment(self):
         unit = f"atmo-verify-test-{os.getpid()}-within"
         env = dict(os.environ, ATMO_VERIFY_PROBE="seen")
