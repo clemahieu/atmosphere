@@ -42,6 +42,8 @@ pub tracked struct Caller {
     ghost entry: CapKernel,
     #[cfg(verus_keep_ghost)]
     ghost root: usize,
+    #[cfg(verus_keep_ghost)]
+    ghost history: Seq<(CapKernel, CapKernel)>,
 }
 
 impl Caller {
@@ -61,10 +63,33 @@ impl Caller {
         self.root
     }
 
+    /// The `(entry, post)` kernel-state pairs of every `step` taken through this token so far, in order.
+    pub closed spec fn history(self) -> Seq<(CapKernel, CapKernel)> {
+        self.history
+    }
+
     /// The kernel's state is one its steps keep: every step returns one.
     pub open spec fn wf(&self) -> bool {
         self.kernel().wf()
     }
+}
+
+/// No other caller stepped on the token between `pre` and `post`: `post`'s step history extends `pre`'s,
+/// `post` holds the last added step's post-state (or `pre`'s kernel when none was added), and each added
+/// step entered directly from the kernel state before it.
+pub open spec fn caller_alone(pre: Caller, post: Caller) -> bool {
+    let n = pre.history().len() as int;
+    let added = post.history().skip(n);
+    &&& post.root() == pre.root()
+    &&& n <= post.history().len()
+    &&& post.history().take(n) == pre.history()
+    &&& (if added.len() == 0 {
+        post.kernel() == pre.kernel()
+    } else {
+        post.kernel() == added.last().1
+    })
+    &&& forall|k: int| 0 <= k < added.len() ==>
+        (#[trigger] added[k]).0 == (if k == 0 { pre.kernel() } else { added[k - 1].1 })
 }
 
 /// The frame carries this operation number, this slot and these arguments 1 to 5 where the kernel
@@ -134,6 +159,7 @@ pub assume_specification[step](caller: &mut Tracked<Caller>, number: u64, slot: 
         final(caller)@.root() == old(caller)@.root(),
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
         exists|frame: Registers, c: int, mid: CapKernel|
             carries(frame, number, slot, a1, a2, a3, a4, a5)
                 && #[trigger] entered(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), frame, out, c, mid),

@@ -93,6 +93,7 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
         final(caller)@.root() == old(caller)@.root(),
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
         CapKernel::retype_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), kind, untyped as usize, base as usize, word, level as usize, out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
@@ -127,6 +128,7 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
         final(caller)@.root() == old(caller)@.root(),
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
         CapKernel::derive_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), rights, base as usize, order, out),
         !reaches_through(to) ==> (old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root())),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
@@ -160,6 +162,7 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         final(caller)@.root() == old(caller)@.root(),
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
         CapKernel::inspect_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
@@ -194,6 +197,7 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
         final(caller)@.root() == old(caller)@.root(),
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
         CapKernel::link_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, child as usize, out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
@@ -227,6 +231,7 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         final(caller)@.root() == old(caller)@.root(),
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
         CapKernel::map_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, page as usize, out),
         returned_on(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
@@ -261,6 +266,7 @@ pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (o
         final(caller)@.root() == old(caller)@.root(),
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
         CapKernel::unmap_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
