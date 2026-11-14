@@ -32,6 +32,8 @@ use crate::capability::process::PROCESS_ORDER;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::reclaim::FrameReclaimStep;
+#[cfg(verus_keep_ghost)]
+use crate::capability::refs::{block_refs, BlockRef};
 use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 #[cfg(verus_keep_ghost)]
@@ -39,7 +41,7 @@ use crate::capability::revoke::REVOKE_BUDGET;
 #[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 #[cfg(verus_keep_ghost)]
-use crate::capability::view::bound_threads;
+use crate::capability::view::{bound_threads, right_bit};
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
@@ -1073,6 +1075,51 @@ impl CapKernel {
                     ==> out == status_only(STATUS_OK) && Self::thread_retyped(pre, post, root, from, to, base, j)
             }),
     {
+    }
+
+    /// A thread retyped through dispatch can be used at once: the control capability in the slot in
+    /// argument 3 lets its registers be set and lets it be placed through any core capability that
+    /// allows the priority, and the process capability in the slot in argument 4 can take a further
+    /// thread while the process's block, which counts one reference more, can count another. A
+    /// witness that sets the registers of, places, or retypes a second thread into the same process
+    /// starts from this.
+    pub proof fn lemma_retyped_thread_usable(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Retype),
+            frame.argument(1) == RETYPE_THREAD,
+            out == status_only(STATUS_OK),
+        ensures
+            ({
+                let to = frame.argument(3) as usize;
+                let j = frame.argument(4) as usize;
+                let br = BlockRef::Small(pre.payload_of(pre.tables.node_of(root, j)).base / PAGE_SZ);
+                &&& post.can_set_registers(root, to)
+                &&& forall|k: usize, priority: usize| #[trigger] post.holds_core(root, k, priority)
+                    ==> post.can_place(root, to, k, priority)
+                &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
+                &&& block_refs(&post.blocks, br) != usize::MAX ==> post.can_hold_thread(root, j)
+            }),
+    {
+        let from = frame.slot() as usize;
+        let to = frame.argument(3) as usize;
+        let base = frame.argument(2) as usize;
+        let j = frame.argument(4) as usize;
+        Self::lemma_entry_reaches_retype_thread(pre, post, root, frame, out);
+        assert(pre.can_retype_thread(root, from, to, base, j));
+        assert(Self::thread_retyped(pre, post, root, from, to, base, j));
+        reveal(CapKernel::thread_retyped_records);
+        let child = pre.tables.node_of(root, to);
+        let n = pre.tables.node_of(root, j);
+        let p = pre.payload_of(n).base;
+        pre.lemma_process_cap(n);
+        assert(post.tables.has_slot(&post.list, root, to) && post.tables.node_of(root, to) == child);
+        assert(post.tables.has_slot(&post.list, root, j) && post.tables.node_of(root, j) == n);
+        assert(post.processes.records@[p].value().dead == pre.processes.records@[p].value().dead);
+        assert(THREAD_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+        assert(post.payload_of(child).rights & right_bit(Right::Control) != 0);
+        assert(post.can_control(root, to));
     }
 
     /// A link reaches link_at: refused with nothing changed unless can_link_at holds over the frame's

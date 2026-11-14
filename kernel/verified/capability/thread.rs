@@ -2829,10 +2829,10 @@ impl CapKernel {
     /// the table at root, with the capability at index to, bound to the process whose capability is at
     /// index j: the retype was allowed; the thread capability is the untyped's child in that slot, the
     /// binding at base the process capability's child, and these the two entries the parent map gains;
-    /// the thread is bound to the process; the tables' roots, the table pages and the spaces are as they
-    /// were, every other node and capability as retype_keeps and typed_nodes say; the block table
-    /// changed in the thread's free block and the process's page alone; and the step discharges the
-    /// retype's effect.
+    /// the thread is bound to the process, its record and every other as thread_retyped_records says; the
+    /// tables' roots, the table pages and the spaces are as they were, every other node and capability
+    /// as retype_keeps and typed_nodes say; the block table changed in the thread's free block and the
+    /// process's page alone, whose count is one more; and the step discharges the retype's effect.
     pub open spec fn thread_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, j: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
@@ -2840,6 +2840,7 @@ impl CapKernel {
         let p = pre.payload_of(n).base;
         let page = (base / PAGE_SZ) as int;
         &&& pre.can_retype_thread(root, from, to, base, j)
+        &&& Self::thread_retyped_records(pre, post, base, p)
         &&& pre.view().holds_right(root, parent, Right::Retype)
         &&& post.view().holds(root, child)
         &&& post.is_cap(child)
@@ -2858,6 +2859,23 @@ impl CapKernel {
         &&& forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) && i != p / PAGE_SZ
             ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i]
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
+    }
+
+    /// What a thread's retype did to the thread records and the count of the process at p: the record
+    /// at base is a fresh Inactive thread's, unplaced and not dying, bound to p; every other record is
+    /// as it was; and p's block counts one reference more. Opaque outside retype_thread and the lemmas
+    /// that read it, so that every proof whose context holds dispatch's ensures does not carry its
+    /// quantifier.
+    #[verifier::opaque]
+    pub open spec fn thread_retyped_records(pre: Self, post: Self, base: usize, p: usize) -> bool {
+        &&& post.threads.records@.contains_key(base)
+        &&& post.threads.records@[base].value() == ThreadRecord { process: Some(p), ..fresh_thread() }
+        &&& forall|x: usize| #[trigger] pre.threads.records@.contains_key(x) ==> {
+            &&& x != base
+            &&& post.threads.records@.contains_key(x)
+            &&& post.threads.records@[x] == pre.threads.records@[x]
+        }
+        &&& block_refs(&post.blocks, BlockRef::Small(p / PAGE_SZ)) == block_refs(&pre.blocks, BlockRef::Small(p / PAGE_SZ)) + 1
     }
 
     /// Retypes the free order-1 block at `base` as a thread in the process whose capability is at
@@ -2906,21 +2924,7 @@ impl CapKernel {
                 &&& forall|i: int| old(self).blocks.tracks(i) && !(page <= i < page + 2) && i != p / PAGE_SZ
                     ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
                 &&& final(self).threads.records@.contains_key(base)
-                &&& final(self).threads.records@[base].value() == ThreadRecord {
-                    state: ThreadState::Inactive,
-                    frame: zero_registers(),
-                    saved: FrameKind::Full,
-                    save: Ghost(FrameSave::Fresh),
-                    pending_stop: false,
-                    dying: false,
-                    process: Some(p),
-                    placement: None,
-                    run_prev: NONE,
-                    run_next: NONE,
-                    queued: NONE,
-                    wait_prev: NONE,
-                    wait_next: NONE,
-                }
+                &&& final(self).threads.records@[base].value() == ThreadRecord { process: Some(p), ..fresh_thread() }
                 &&& final(self).list.is_child(n, base)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent).insert(base, n)
                 &&& final(self).list.nodes@[base as int].live
@@ -3018,6 +3022,7 @@ impl CapKernel {
             Self::lemma_bound_nodes(pre.list, mid.list, post.list, child, base);
             assert(post.tables.roots == pre.tables.roots);
             assert(post.table_pages == pre.table_pages);
+            reveal(CapKernel::thread_retyped_records);
         }
         true
     }
