@@ -574,12 +574,22 @@ impl CapKernel {
     /// returned: refused with nothing changed, exactly when can_link_at fails over the arguments, or ok
     /// with the table page at the base in argument 4,
     /// under the untyped in argument 3, linked into the entry the address in argument 1 and the level in
-    /// argument 2 name in the space of the capability in the slot.
+    /// argument 2 name in the space of the capability in the slot; either way the cores, the flush epoch
+    /// and every thread's binding are as link_kept says.
     pub open spec fn spec_linked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| !pre.allows_link(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& out == status_only(STATUS_OK)
-            &&& Self::table_linked(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize)
+        let slot = frame.slot() as usize;
+        let va = frame.argument(1);
+        let level = frame.argument(2);
+        let from = frame.argument(3) as usize;
+        let child = frame.argument(4) as usize;
+        &&& Self::link_kept(pre, post)
+        &&& {
+            ||| out == status_only(STATUS_REFUSED) && Self::link_answered(pre, post, root, slot, va, level, from, child, false)
+            ||| {
+                &&& out == status_only(STATUS_OK)
+                &&& Self::link_answered(pre, post, root, slot, va, level, from, child, true)
+                &&& Self::table_linked(pre, post, root, slot, va, level, from, child)
+            }
         }
     }
 

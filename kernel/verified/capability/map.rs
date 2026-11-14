@@ -1250,6 +1250,24 @@ impl CapKernel {
         }
     }
 
+    /// Whether a link of the table page at child, under the untyped at index from, into the entry the
+    /// address va and the level name in the space of the capability at index slot of the table at root,
+    /// answered ok exactly when can_link_at holds, and left the kernel as it was when it refused.
+    /// link_at's ensures and spec_linked both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn link_answered(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize, ok: bool) -> bool {
+        &&& ok == pre.can_link_at(root, slot, va, level, from, child)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a link leaves as it was, whether it answered ok or refused: the cores, the flush epoch and
+    /// the process each thread is bound to. link_at's ensures and spec_linked both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn link_kept(pre: Self, post: Self) -> bool {
+        &&& post.cores == pre.cores
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
     /// Links the unlinked table page at `child` into the entry the address `va` and the level `level`
     /// name in the space of the capability at index `slot` of the table at `root`, on the authority of the
     /// untyped at index `from` over the page's block. All of these come from user space, and a refusal
@@ -1262,12 +1280,9 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            final(self).cores == old(self).cores,
-            final(self).flush_epoch == old(self).flush_epoch,
-            ret == old(self).can_link_at(root, slot, va, level, from, child),
-            !ret ==> *final(self) == *old(self),
+            Self::link_answered(*old(self), *final(self), root, slot, va, level, from, child, ret),
             ret ==> Self::table_linked(*old(self), *final(self), root, slot, va, level, from, child),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            Self::link_kept(*old(self), *final(self)),
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
