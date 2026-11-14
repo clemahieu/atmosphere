@@ -239,7 +239,7 @@ proof fn lemma_large_retyped_slot(pre: CapKernel, post: CapKernel, root: usize, 
 }
 
 /// The tables the runs need are never fewer than none.
-proof fn lemma_tables_bound_nonneg(runs: Seq<ImageRun>)
+pub(crate) proof fn lemma_tables_bound_nonneg(runs: Seq<ImageRun>)
     ensures
         0 <= image_tables_bound(runs),
     decreases runs.len(),
@@ -259,7 +259,7 @@ proof fn lemma_tables_bound_nonneg(runs: Seq<ImageRun>)
 
 /// Page k of the order-3 block at b is its k-th page, in the 2M and 1G regions its first page is in,
 /// and at an even k starts an order-1 block; the next order-3 block starts 8 pages on.
-proof fn lemma_block_page(b: usize, k: int)
+pub(crate) proof fn lemma_block_page(b: usize, k: int)
     requires
         b % PROCESS_BYTES == 0,
         0 <= k < 8,

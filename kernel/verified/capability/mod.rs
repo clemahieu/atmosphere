@@ -11,6 +11,8 @@ pub mod boot_memory;
 pub mod boot_space;
 pub mod boot_table;
 pub mod console;
+#[cfg(verus_keep_ghost)]
+pub mod core_witness;
 pub mod cpu;
 pub mod decompose;
 pub mod delete;
