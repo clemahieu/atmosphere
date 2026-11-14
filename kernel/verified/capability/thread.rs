@@ -4036,12 +4036,53 @@ impl CapKernel {
         &&& post.stop_ipis == pre.stop_ipis
     }
 
+    /// What a suspend from core c of the thread the control capability at index i names did, from pre
+    /// to post, answering ret: core c alone may have changed its current thread, and every thread's
+    /// binding is as it was. Refused, with nothing changed, exactly when can_suspend fails. Again
+    /// exactly when the thread is Running on a core other than c: the thread's stop is pending, that
+    /// core is sent a stop IPI and every core is as it was. Suspended otherwise: the thread is Inactive
+    /// with no stop pending, every other record as it was, no stop IPI sent, and a core whose current
+    /// thread it was, which is c, runs nothing. Each answer but a refusal discharges control of the
+    /// thread. The predicate suspend's ensures and the arm of invoked both call:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn suspend_answered(pre: Self, post: Self, c: usize, root: usize, i: usize, ret: SuspendStep) -> bool {
+        let n = pre.tables.node_of(root, i);
+        let t = pre.payload_of(n).base;
+        let r = pre.threads.records@[t].value();
+        &&& Self::writes_only_own_current(pre, post, c as int)
+        &&& ret is Refused == !pre.can_suspend(root, i)
+        &&& ret is Again == pre.stops_elsewhere(c, root, i)
+        &&& ret is Refused ==> post == pre
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& ret is Suspended ==> {
+            &&& pre.threads.records@.contains_key(t)
+            &&& Self::record_written(pre, post, t, ThreadRecord { state: ThreadState::Inactive, pending_stop: false, ..r })
+            &&& post.stop_ipis == pre.stop_ipis
+            &&& post.cores@.len() == pre.cores@.len()
+            &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
+            &&& post.cores@[c as int] == if pre.cores@[c as int].current_thread == Some(t) {
+                CoreState { current_thread: None, ..pre.cores@[c as int] }
+            } else {
+                pre.cores@[c as int]
+            }
+            &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+        }
+        &&& ret is Again ==> {
+            &&& pre.threads.records@.contains_key(t)
+            &&& Self::record_written(pre, post, t, ThreadRecord { pending_stop: true, ..r })
+            &&& post.stop_ipis@ == pre.stop_ipis@.push(r.state->Running_core)
+            &&& post.cores == pre.cores
+            &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+        }
+    }
+
     /// Suspends, from core c, the thread the control capability at index i names. An Inactive or
     /// Runnable thread, or c's current thread, which leaves c running nothing, is Inactive after, with
     /// no stop pending; its saved frame is the one it left user mode with. A thread Running on another
     /// core gets a pending stop and that core an IPI, and the caller suspends again to see it Inactive:
     /// only that core writes its current thread, design/one-lock-bounded-steps/. The index comes from
-    /// user space, so it can be refused, and a refusal changes nothing.
+    /// user space, so it can be refused, and a refusal changes nothing. What it did is
+    /// suspend_answered.
     pub fn suspend(&mut self, c: usize, root: usize, i: usize) -> (ret: SuspendStep)
         requires
             old(self).wf(),
@@ -4050,37 +4091,7 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            Self::writes_only_own_current(*old(self), *final(self), c as int),
-            ret is Refused == !old(self).can_suspend(root, i),
-            ret is Again == old(self).stops_elsewhere(c, root, i),
-            ret is Refused ==> *final(self) == *old(self),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret is Suspended ==> {
-                let n = old(self).tables.node_of(root, i);
-                let t = old(self).payload_of(n).base;
-                let r = old(self).threads.records@[t].value();
-                &&& old(self).threads.records@.contains_key(t)
-                &&& Self::record_written(*old(self), *final(self), t, ThreadRecord { state: ThreadState::Inactive, pending_stop: false, ..r })
-                &&& final(self).stop_ipis == old(self).stop_ipis
-                &&& final(self).cores@.len() == old(self).cores@.len()
-                &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d]
-                &&& final(self).cores@[c as int] == if old(self).cores@[c as int].current_thread == Some(t) {
-                    CoreState { current_thread: None, ..old(self).cores@[c as int] }
-                } else {
-                    old(self).cores@[c as int]
-                }
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
-            },
-            ret is Again ==> {
-                let n = old(self).tables.node_of(root, i);
-                let t = old(self).payload_of(n).base;
-                let r = old(self).threads.records@[t].value();
-                &&& old(self).threads.records@.contains_key(t)
-                &&& Self::record_written(*old(self), *final(self), t, ThreadRecord { pending_stop: true, ..r })
-                &&& final(self).stop_ipis@ == old(self).stop_ipis@.push(r.state->Running_core)
-                &&& final(self).cores == old(self).cores
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
-            },
+            Self::suspend_answered(*old(self), *final(self), c, root, i, ret),
     {
         let ghost pre = *self;
         let (_, t, dead) = match self.thread_control(root, i) {

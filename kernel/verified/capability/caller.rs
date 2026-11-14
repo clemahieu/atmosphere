@@ -369,6 +369,34 @@ impl CapKernel {
         }
     }
 
+    /// What a suspend of the thread at index i in the table at root returns, as its caller can rely on
+    /// it: refused exactly when can_suspend fails there, ok whenever it holds and the thread is not
+    /// Running, again only for a Running thread, whose stop is then pending on its core; either way
+    /// every table's view and the block table as they were.
+    pub open spec fn suspend_contract(pre: Self, post: Self, root: usize, i: usize, out: Outcome) -> bool {
+        let state = pre.threads.records@[pre.payload_of(pre.tables.node_of(root, i)).base].value().state;
+        &&& out == status_only(STATUS_REFUSED) || out == status_only(STATUS_OK) || out == status_only(STATUS_AGAIN)
+        &&& out == status_only(STATUS_REFUSED) <==> !pre.can_suspend(root, i)
+        &&& pre.can_suspend(root, i) && !(state is Running) ==> out == status_only(STATUS_OK)
+        &&& out == status_only(STATUS_AGAIN) ==> state is Running
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& post.blocks == pre.blocks
+    }
+
+    /// Suspend's specification implies its contract.
+    pub proof fn lemma_suspend_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::spec_suspended(pre, post, root, frame, out),
+        ensures
+            Self::suspend_contract(pre, post, root, frame.slot() as usize, out),
+    {
+        let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::suspended_from(pre, post, c, root, frame, out);
+        assert(Self::suspended_from(pre, post, c, root, frame, out));
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
+    }
+
     /// A step that leaves the root entries as they were and changes no node's liveness but n's and m's,
     /// slots', leaves every table's slots as they were.
     pub proof fn lemma_slots_stay(pre: Self, post: Self, n: usize, m: usize, t: usize, j: usize)

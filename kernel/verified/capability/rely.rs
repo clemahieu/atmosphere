@@ -874,6 +874,7 @@ impl CapKernel {
             Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Start) => Self::lemma_started_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Suspend) => Self::lemma_suspended_keeps_rely(pre, post, root, frame, out, root),
             _ => {},
         }
     }
@@ -1347,6 +1348,7 @@ impl CapKernel {
             Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
             Some(Operation::Start) => Self::lemma_started_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Suspend) => Self::lemma_suspended_keeps_rely(pre, post, root, frame, out, root),
             _ => {},
         }
     }
@@ -2293,6 +2295,34 @@ impl CapKernel {
         let core = pre.threads.records@[t].value().placement->Some_0.core;
         Self::lemma_start_keeps_rely(pre, post, t, core, root);
         Self::lemma_start_keeps_record(pre, post, t, core, root);
+    }
+
+    /// A suspend, by any caller and from any core: refused with nothing changed, or with the suspended
+    /// thread's record written, a stop IPI recorded or the caller's core's current thread cleared, and
+    /// nothing a table, a process record, a space or a block count holds.
+    pub proof fn lemma_suspended_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            Self::spec_suspended(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+            Self::record_kept(pre, post, root),
+    {
+        let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::suspended_from(pre, post, c, caller, frame, out);
+        let t = pre.payload_of(pre.tables.node_of(caller, frame.slot() as usize)).base;
+        let r = pre.threads.records@[t].value();
+        if out == status_only(STATUS_OK) {
+            let w = ThreadRecord { state: ThreadState::Inactive, pending_stop: false, ..r };
+            Self::lemma_suspend_keeps_rely(pre, post, t, w, root);
+            Self::lemma_suspend_keeps_record(pre, post, t, w, root);
+        } else if out == status_only(STATUS_AGAIN) {
+            let w = ThreadRecord { pending_stop: true, ..r };
+            Self::lemma_suspend_keeps_rely(pre, post, t, w, root);
+            Self::lemma_suspend_keeps_record(pre, post, t, w, root);
+        } else {
+            Self::lemma_suspend_keeps_rely(pre, post, t, r, root);
+            Self::lemma_suspend_keeps_record(pre, post, t, r, root);
+        }
     }
 
     /// destroy of a thread, by any caller and from any core.

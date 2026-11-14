@@ -148,6 +148,7 @@ pub const OPERATION_PROBE: u64 = 17;
 pub const OPERATION_POWER_OFF: u64 = 18;
 pub const OPERATION_PLACE: u64 = 21;
 pub const OPERATION_START: u64 = 22;
+pub const OPERATION_SUSPEND: u64 = 23;
 
 /// Retype's kind in argument 1 for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
@@ -220,6 +221,7 @@ pub enum Operation {
     PowerOff,
     Place,
     Start,
+    Suspend,
 }
 
 impl Operation {
@@ -245,6 +247,7 @@ impl Operation {
             Operation::PowerOff => OPERATION_POWER_OFF,
             Operation::Place => OPERATION_PLACE,
             Operation::Start => OPERATION_START,
+            Operation::Suspend => OPERATION_SUSPEND,
         }
     }
 }
@@ -290,6 +293,7 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_POWER_OFF => Some(Operation::PowerOff),
         OPERATION_PLACE => Some(Operation::Place),
         OPERATION_START => Some(Operation::Start),
+        OPERATION_SUSPEND => Some(Operation::Suspend),
         _ => None,
     };
     proof {
@@ -957,6 +961,31 @@ impl CapKernel {
         }
     }
 
+    /// Whether the suspend in frame is allowed: can_suspend of the thread at the index the slot names in
+    /// the caller's own table.
+    pub open spec fn allows_suspend(&self, root: usize, frame: Registers) -> bool {
+        self.can_suspend(root, frame.slot() as usize)
+    }
+
+    /// A suspend in frame from core c by a thread of the process whose table is at root, from pre to
+    /// post with out returned: the status of the suspend's answer, refused, ok for Suspended or again,
+    /// with what suspend_answered says of that answer.
+    pub open spec fn suspended_from(pre: Self, post: Self, c: usize, root: usize, frame: Registers, out: Outcome) -> bool {
+        let i = frame.slot() as usize;
+        ||| out == status_only(STATUS_REFUSED) && Self::suspend_answered(pre, post, c, root, i, SuspendStep::Refused)
+        ||| out == status_only(STATUS_OK) && Self::suspend_answered(pre, post, c, root, i, SuspendStep::Suspended)
+        ||| out == status_only(STATUS_AGAIN) && Self::suspend_answered(pre, post, c, root, i, SuspendStep::Again)
+    }
+
+    /// A suspend in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned, from the core the caller runs on: invoked does not name the core, and dispatched says
+    /// which it is. Refused with nothing changed exactly when allows_suspend fails; again only for a
+    /// thread Running on a core other than the caller's, whose stop is then pending; ok otherwise, with
+    /// the thread Inactive and the caller's core running nothing when it was the thread it ran.
+    pub open spec fn spec_suspended(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        exists|c: usize| c < NUM_CPUS && #[trigger] Self::suspended_from(pre, post, c, root, frame, out)
+    }
+
     /// Whether the invocation in frame by a thread of the process whose table is at root is allowed: for
     /// an operation that can change the kernel, its allows_ predicate over the frame's decoded
     /// arguments; for every other operation, which leaves the kernel unchanged, that spec_outcome is not
@@ -975,6 +1004,7 @@ impl CapKernel {
             Some(Operation::Destroy) => self.allows_destroy(root, frame),
             Some(Operation::Place) => self.allows_place(root, frame),
             Some(Operation::Start) => self.allows_start(root, frame),
+            Some(Operation::Suspend) => self.allows_suspend(root, frame),
             _ => self.spec_outcome(root, frame) != status_only(STATUS_REFUSED),
         }
     }
@@ -982,7 +1012,7 @@ impl CapKernel {
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
     /// post with out returned, with each table position decoded from its word: a retype's effect for retype, a derive's for derive, a move's for move, a
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
-    /// unmap, a probe's for probe, a destroy's for destroy, a place's for place, a start's for start, and for every other operation the kernel unchanged with spec_outcome
+    /// unmap, a probe's for probe, a destroy's for destroy, a place's for place, a start's for start, a suspend's for suspend, and for every other operation the kernel unchanged with spec_outcome
     /// returned. Each is refused with nothing changed exactly when allows fails, as
     /// lemma_refused_exactly says.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
@@ -999,6 +1029,7 @@ impl CapKernel {
             Some(Operation::Destroy) => Self::spec_destroyed(pre, post, root, frame, out),
             Some(Operation::Place) => Self::spec_placed(pre, post, root, frame, out),
             Some(Operation::Start) => Self::spec_started(pre, post, root, frame, out),
+            Some(Operation::Suspend) => Self::spec_suspended(pre, post, root, frame, out),
             _ => post == pre && out == pre.spec_outcome(root, frame),
         }
     }
@@ -1432,6 +1463,35 @@ impl CapKernel {
     {
     }
 
+    /// A suspend reaches suspend: refused with nothing changed unless the slot holds a live thread with
+    /// control that is Inactive, Runnable or Running; again only for a thread Running, with its stop
+    /// pending and a stop IPI recorded for its core; ok otherwise, with the thread Inactive and no stop
+    /// pending, which a thread that is not Running always reaches. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_suspend(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Suspend),
+        ensures
+            ({
+                let i = frame.slot() as usize;
+                let t = pre.payload_of(pre.tables.node_of(root, i)).base;
+                let r = pre.threads.records@[t].value();
+                &&& out == status_only(STATUS_REFUSED) || out == status_only(STATUS_OK) || out == status_only(STATUS_AGAIN)
+                &&& !pre.can_suspend(root, i) <==> out == status_only(STATUS_REFUSED)
+                &&& !pre.can_suspend(root, i) ==> post == pre
+                &&& pre.can_suspend(root, i) && !(r.state is Running) ==> out == status_only(STATUS_OK)
+                &&& out == status_only(STATUS_OK) ==> Self::record_written(pre, post, t, ThreadRecord { state: ThreadState::Inactive, pending_stop: false, ..r })
+                    && post.stop_ipis == pre.stop_ipis
+                &&& out == status_only(STATUS_AGAIN) ==> r.state is Running
+                    && Self::record_written(pre, post, t, ThreadRecord { pending_stop: true, ..r })
+                    && post.stop_ipis@ == pre.stop_ipis@.push(r.state->Running_core)
+                    && post.cores == pre.cores
+            }),
+    {
+        let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::suspended_from(pre, post, c, root, frame, out);
+        assert(Self::suspended_from(pre, post, c, root, frame, out));
+    }
+
     /// An unmap reaches unmap_at: refused with nothing changed unless the caller may unmap the entry the
     /// address in argument 1 and the level in argument 2 name, in the space of the capability in the
     /// slot; ok otherwise, with that entry unmapped as page_unmapped says and its bits in the results.
@@ -1633,6 +1693,8 @@ impl CapKernel {
             &&& Self::invoked(pre, post, root, frame, ret->0)
             &&& spec_operation(frame.operation_number()) == Some(Operation::Destroy) && ret->0 == status_only(STATUS_OK)
                 && pre.destroys_own(c, root, frame.slot() as usize) ==> post.must_leave(c)
+            &&& spec_operation(frame.operation_number()) == Some(Operation::Suspend)
+                ==> Self::suspended_from(pre, post, c as usize, root, frame, ret->0)
         })
     }
 
@@ -1722,6 +1784,7 @@ impl CapKernel {
             Some(Operation::Destroy) => Some(self.invoke_destroy(c, root, frame, Tracked(steps))),
             Some(Operation::Place) => Some(self.invoke_place(root, frame)),
             Some(Operation::Start) => Some(self.invoke_start(root, frame)),
+            Some(Operation::Suspend) => Some(self.invoke_suspend(c, root, frame)),
             Some(Operation::Print) => Some(status_only_outcome(
                 if self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(steps)) {
                     STATUS_OK
@@ -2030,6 +2093,26 @@ impl CapKernel {
     {
         let done = self.start(root, frame.slot() as usize);
         status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The suspend in frame, by core c's current thread, of the process whose table is at root.
+    fn invoke_suspend(&mut self, c: usize, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores@[c as int].space == old(self).cores@[c as int].space,
+            Self::suspended_from(*old(self), *final(self), c, root, frame, ret),
+    {
+        let step = self.suspend(c, root, frame.slot() as usize);
+        status_only_outcome(match step {
+            SuspendStep::Refused => STATUS_REFUSED,
+            SuspendStep::Suspended => STATUS_OK,
+            SuspendStep::Again => STATUS_AGAIN,
+        })
     }
 
     /// The revoke in frame, by a thread of the process whose table is at root.
