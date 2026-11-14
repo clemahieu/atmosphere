@@ -140,14 +140,15 @@ impl CapKernel {
         Some(payload.kind)
     }
 
-    /// ret names a capability exactly when the position holds one. inspect's ensures and spec_outcome
-    /// both call it: design/invoked-arm-is-the-operation-postcondition/.
+    /// ret names a capability exactly when the position holds one. inspect's ensures and
+    /// spec_outcome_carried both call it: design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn inspect_found(&self, root: usize, at: Position, ret: Option<Payload>) -> bool {
         ret is Some == self.cap_at(root, at) is Some
     }
 
     /// When ret names a capability, it is that capability's payload, and the caller commands it.
-    /// inspect's ensures and spec_outcome both call it: design/invoked-arm-is-the-operation-postcondition/.
+    /// inspect's ensures and spec_outcome_carried both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn inspect_reads(&self, root: usize, at: Position, ret: Option<Payload>) -> bool {
         ret is Some ==> {
             &&& ret->0 == self.payload_of(self.cap_at(root, at)->0)

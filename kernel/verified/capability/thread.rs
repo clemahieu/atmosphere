@@ -3707,15 +3707,15 @@ impl CapKernel {
     }
 
     /// ret names the saved frame exactly when index i of the table at root holds a control capability
-    /// for an Inactive thread that is not dead. read_registers's ensures and spec_outcome both call
-    /// it: design/invoked-arm-is-the-operation-postcondition/.
+    /// for an Inactive thread that is not dead. read_registers's ensures and spec_outcome_carried both
+    /// call it: design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn read_registers_answered(&self, root: usize, i: usize, ret: Option<Registers>) -> bool {
         ret is Some == self.can_set_registers(root, i)
     }
 
     /// When ret names a frame, it is the saved frame of the thread the control capability at index i
     /// names, and the step discharges control of that thread. read_registers's ensures and
-    /// spec_outcome both call it: design/invoked-arm-is-the-operation-postcondition/.
+    /// spec_outcome_carried both call it: design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn read_registers_done(&self, root: usize, i: usize, ret: Option<Registers>) -> bool {
         ret is Some ==> {
             let n = self.tables.node_of(root, i);

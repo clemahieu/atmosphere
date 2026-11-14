@@ -14,9 +14,9 @@ operations are the pub fn methods of impl CapKernel that the invoke_* function n
 on self. Those calls are read from the invoke_* body and not followed further, and the invoke_*
 ensures is not read. A pub fn the bodies of several invoke_* functions in dispatch call is an
 operation only of those among them that call no other pub fn; when every one of them calls another
-as well, it is an operation of each. The last arm of invoked is post == pre with spec_outcome; its operations are
-the pub fn methods the remaining arms of dispatch call on self (print, power_off and inspect). An
-operation dispatch does not call is not read.
+as well, it is an operation of each. The last arm of invoked calls spec_outcome_carried; its
+operations are the pub fn methods the remaining arms of dispatch call on self. An operation
+dispatch does not call is not read.
 
 An ensures is split on top-level &&& and on the commas between its clauses, which Verus conjoins
 the same way, after comments and string literals are blanked. A conjunct that mentions the ghost

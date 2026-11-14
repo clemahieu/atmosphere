@@ -537,48 +537,176 @@ impl CapKernel {
     /// operation not wired yet;
     /// and unknown for a number no operation has. Print's words are arguments 1 to 5 and power-off's
     /// word is argument 1, as design/syscall-abi-in-registers/ places them; neither decides the status.
-    /// Print, power-off, inspect and read registers call here the predicates their ensures call, as
-    /// design/invoked-arm-is-the-operation-postcondition/ requires. The kernel is unchanged, so the
-    /// discharge is this kernel with itself; inspect's payload is the one the position holds, and the
-    /// frame read registers names is the saved frame when can_set_registers holds.
+    /// The predicates those operations ensure are conjuncts of spec_outcome_carried, which is the arm:
+    /// a binding here would not be part of the outcome, so the arm's value would not depend on it.
     pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
         match spec_operation(frame.operation_number()) {
             Some(Operation::Print) => {
                 let slot = frame.slot() as usize;
-                let _discharged = discharges(self.view(), self.view(), root, Effect::Local);
                 status_only(if self.holds_console(root, slot) { STATUS_OK } else { STATUS_REFUSED })
             },
             Some(Operation::PowerOff) => {
                 let slot = frame.slot() as usize;
-                let _discharged = discharges(self.view(), self.view(), root, Effect::Local);
                 status_only(if self.holds_power(root, slot) { STATUS_OK } else { STATUS_REFUSED })
             },
             Some(Operation::Inspect) => match spec_position(frame.slot()) {
+                Some(at) => self.spec_inspect_at(root, at),
+                None => status_only(STATUS_REFUSED),
+            },
+            Some(Operation::ReadRegisters) => self.spec_read_registers(root, frame),
+            Some(_) => status_only(STATUS_REFUSED),
+            None => status_only(STATUS_UNKNOWN),
+        }
+    }
+
+    /// The last arm of invoked. The kernel is unchanged and the outcome is spec_outcome, and print,
+    /// power-off, inspect and read registers call here the predicates their ensures call, as conjuncts,
+    /// so the arm's value depends on each of them.
+    /// design/invoked-arm-is-the-operation-postcondition/. The discharge of an unchanged kernel is this
+    /// kernel with itself; inspect's payload is the one the position holds, and the frame read registers
+    /// names is the saved frame when can_set_registers holds.
+    pub open spec fn spec_outcome_carried(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        &&& post == pre
+        &&& out == pre.spec_outcome(root, frame)
+        &&& match spec_operation(frame.operation_number()) {
+            Some(Operation::Print) => {
+                let slot = frame.slot() as usize;
+                &&& discharges(pre.view(), pre.view(), root, Effect::Local)
+                &&& pre.holds_console(root, slot) == (out == status_only(STATUS_OK))
+            },
+            Some(Operation::PowerOff) => {
+                let slot = frame.slot() as usize;
+                &&& discharges(pre.view(), pre.view(), root, Effect::Local)
+                &&& pre.holds_power(root, slot) == (out == status_only(STATUS_OK))
+            },
+            Some(Operation::Inspect) => match spec_position(frame.slot()) {
                 Some(at) => {
-                    let ret = match self.cap_at(root, at) {
-                        Some(n) => Some(self.payload_of(n)),
+                    let ret = match pre.cap_at(root, at) {
+                        Some(n) => Some(pre.payload_of(n)),
                         None => None,
                     };
-                    let _found = self.inspect_found(root, at, ret);
-                    let _reads = self.inspect_reads(root, at, ret);
-                    let _discharged = discharges(self.view(), self.view(), root, Effect::Local);
-                    self.spec_inspect_at(root, at)
+                    &&& pre.inspect_found(root, at, ret)
+                    &&& pre.inspect_reads(root, at, ret)
+                    &&& discharges(pre.view(), pre.view(), root, Effect::Local)
                 },
-                None => status_only(STATUS_REFUSED),
+                None => true,
             },
             Some(Operation::ReadRegisters) => {
                 let i = frame.slot() as usize;
+                let saved = if pre.can_set_registers(root, i) {
+                    Some(pre.threads.records@[pre.thread_named(root, i)].value().frame)
+                } else {
+                    None
+                };
+                &&& pre.read_registers_answered(root, i, saved)
+                &&& pre.read_registers_done(root, i, saved)
+            },
+            _ => true,
+        }
+    }
+
+    /// The payload spec_outcome_carried names for a position is the one the position holds, the caller
+    /// commands it, and an unchanged kernel discharges a local step. Both are properties of this kernel.
+    proof fn lemma_inspect_carried(&self, root: usize, at: Position)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+        ensures
+            ({
+                let ret = match self.cap_at(root, at) {
+                    Some(n) => Some(self.payload_of(n)),
+                    None => None,
+                };
+                &&& self.inspect_found(root, at, ret)
+                &&& self.inspect_reads(root, at, ret)
+                &&& discharges(self.view(), self.view(), root, Effect::Local)
+            }),
+    {
+        self.lemma_no_op_discharges(root);
+        match self.cap_at(root, at) {
+            Some(n) => {
+                assert(self.table_at(root, at.through) is Some);
+                let table = self.table_at(root, at.through)->0;
+                assert(self.tables.has_slot(&self.list, table, at.index));
+                assert(self.is_cap(n));
+                assert(n == self.tables.node_of(table, at.index));
+                self.lemma_slot(table, at.index);
+                self.lemma_commands(root, at.through, n);
+            },
+            None => {},
+        }
+    }
+
+    /// The frame spec_outcome_carried names is the saved frame exactly when the slot holds control of an
+    /// Inactive thread that is not dead, and reading it discharges control of that thread. Both are
+    /// properties of this kernel.
+    proof fn lemma_read_registers_carried(&self, root: usize, i: usize)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+        ensures
+            ({
                 let saved = if self.can_set_registers(root, i) {
                     Some(self.threads.records@[self.thread_named(root, i)].value().frame)
                 } else {
                     None
                 };
-                let _answered = self.read_registers_answered(root, i, saved);
-                let _done = self.read_registers_done(root, i, saved);
-                self.spec_read_registers(root, frame)
+                &&& self.read_registers_answered(root, i, saved)
+                &&& self.read_registers_done(root, i, saved)
+            }),
+    {
+        if self.can_set_registers(root, i) {
+            let n = self.tables.node_of(root, i);
+            let t = self.thread_named(root, i);
+            self.lemma_slot(root, i);
+            self.lemma_thread_cap(n);
+            let s = self.view();
+            assert(s.holds(root, n));
+            assert(s.names.contains_key(n));
+            assert(s.names[n] == t);
+            assert(s.rights.contains((n, Right::Control)));
+            assert(s.holds_right(root, n, Right::Control));
+            assert(discharges(s, s, root, Effect::Control { cap: n, thread: t }));
+        }
+    }
+
+    /// spec_outcome_carried holds whenever the kernel is unchanged and the outcome is spec_outcome, for a
+    /// well-formed kernel whose table at root exists. The predicates are properties of that kernel: an
+    /// unchanged step discharges locally, inspect's payload is the one the position holds, and the frame
+    /// read registers names is the saved frame when can_set_registers holds.
+    proof fn lemma_spec_outcome_carried(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            post == pre,
+            out == pre.spec_outcome(root, frame),
+        ensures
+            Self::spec_outcome_carried(pre, post, root, frame, out),
+    {
+        pre.lemma_no_op_discharges(root);
+        match spec_operation(frame.operation_number()) {
+            Some(Operation::Print) => {
+                let slot = frame.slot() as usize;
+                assert(out == status_only(if pre.holds_console(root, slot) { STATUS_OK } else { STATUS_REFUSED }));
+                assert(pre.holds_console(root, slot) == (out == status_only(STATUS_OK)));
             },
-            Some(_) => status_only(STATUS_REFUSED),
-            None => status_only(STATUS_UNKNOWN),
+            Some(Operation::PowerOff) => {
+                let slot = frame.slot() as usize;
+                assert(out == status_only(if pre.holds_power(root, slot) { STATUS_OK } else { STATUS_REFUSED }));
+                assert(pre.holds_power(root, slot) == (out == status_only(STATUS_OK)));
+            },
+            Some(Operation::Inspect) => {
+                match spec_position(frame.slot()) {
+                    Some(at) => {
+                        pre.lemma_inspect_carried(root, at);
+                    },
+                    None => {},
+                }
+            },
+            Some(Operation::ReadRegisters) => {
+                pre.lemma_read_registers_carried(root, frame.slot() as usize);
+            },
+            _ => {},
         }
     }
 
@@ -1264,10 +1392,10 @@ impl CapKernel {
     /// post with out returned, with each table position decoded from its word: a retype's effect for retype, a derive's for derive, a move's for move, a
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
     /// unmap, a probe's for probe, a destroy's for destroy, a write registers' for write registers, a
-    /// place's for place, a start's for start, a suspend's for suspend, and for every other operation the
-    /// kernel unchanged with spec_outcome
-    /// returned. Each is refused with nothing changed exactly when allows fails, as
-    /// lemma_refused_exactly says.
+    /// place's for place, a start's for start, a suspend's for suspend, and for every other operation
+    /// spec_outcome_carried: the kernel unchanged, spec_outcome returned, and the predicates print,
+    /// power-off, inspect and read registers ensure. Each is refused with nothing changed exactly when
+    /// allows fails, as lemma_refused_exactly says.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         match spec_operation(frame.operation_number()) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
@@ -1284,7 +1412,7 @@ impl CapKernel {
             Some(Operation::Place) => Self::spec_placed(pre, post, root, frame, out),
             Some(Operation::Start) => Self::spec_started(pre, post, root, frame, out),
             Some(Operation::Suspend) => Self::spec_suspended(pre, post, root, frame, out),
-            _ => post == pre && out == pre.spec_outcome(root, frame),
+            _ => Self::spec_outcome_carried(pre, post, root, frame, out),
         }
     }
 
@@ -1766,6 +1894,30 @@ impl CapKernel {
     {
     }
 
+    /// invoked's read-registers arm carries read_registers_answered and read_registers_done for the saved
+    /// frame, the predicates read_registers ensures, so a caller that has invoked is told that the read
+    /// discharges control of the thread whose frame it returned.
+    pub proof fn lemma_carried_read_registers_done(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::ReadRegisters),
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+        ensures
+            ({
+                let i = frame.slot() as usize;
+                let saved = if pre.can_set_registers(root, i) {
+                    Some(pre.threads.records@[pre.thread_named(root, i)].value().frame)
+                } else {
+                    None
+                };
+                &&& pre.read_registers_answered(root, i, saved)
+                &&& pre.read_registers_done(root, i, saved)
+            }),
+    {
+    }
+
     /// A write registers reaches write_registers: refused with nothing changed unless argument 1 is a
     /// multiple of four within the frame, the slot holds a control capability for an Inactive thread
     /// that is not dead, and the frame with the window written returns to a user address; ok otherwise,
@@ -1849,6 +2001,29 @@ impl CapKernel {
                 &&& !(at is Some && pre.cap_at(root, at->0) is Some) ==> out == status_only(STATUS_REFUSED)
                 &&& at is Some && pre.cap_at(root, at->0) is Some
                     ==> out.status == STATUS_OK && out == inspected(pre.payload_of(pre.cap_at(root, at->0)->0))
+            }),
+    {
+    }
+
+    /// invoked's inspect arm carries inspect_reads for the payload the position holds, the predicate
+    /// inspect ensures, so a caller that has invoked is told that the caller commands the capability
+    /// whose payload inspect returned.
+    pub proof fn lemma_carried_inspect_reads(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Inspect),
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            spec_position(frame.slot()) is Some,
+        ensures
+            ({
+                let at = spec_position(frame.slot())->0;
+                let ret = match pre.cap_at(root, at) {
+                    Some(n) => Some(pre.payload_of(n)),
+                    None => None,
+                };
+                pre.inspect_reads(root, at, ret)
             }),
     {
     }
@@ -2097,30 +2272,81 @@ impl CapKernel {
             Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(steps))),
             Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(steps))),
             Some(Operation::Destroy) => Some(self.invoke_destroy(c, root, frame, Tracked(steps))),
-            Some(Operation::ReadRegisters) => Some(self.invoke_read_registers(root, frame)),
+            Some(Operation::ReadRegisters) => {
+                let out = self.invoke_read_registers(root, frame);
+                proof {
+                    assert(*self == *old(self));
+                    assert(out == old(self).spec_outcome(root, frame));
+                    Self::lemma_spec_outcome_carried(*old(self), *self, root, frame, out);
+                }
+                Some(out)
+            },
             Some(Operation::WriteRegisters) => Some(self.invoke_write_registers(root, frame)),
             Some(Operation::Place) => Some(self.invoke_place(root, frame)),
             Some(Operation::Start) => Some(self.invoke_start(root, frame)),
             Some(Operation::Suspend) => Some(self.invoke_suspend(c, root, frame)),
-            Some(Operation::Print) => Some(status_only_outcome(
-                if self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(steps)) {
-                    STATUS_OK
-                } else {
-                    STATUS_REFUSED
-                },
-            )),
-            Some(Operation::PowerOff) => Some(status_only_outcome(
-                if self.power_off(root, frame.slot() as usize, Tracked(steps)) { STATUS_OK } else { STATUS_REFUSED },
-            )),
-            Some(Operation::Inspect) => Some(match position(frame.slot()) {
-                Some(at) => match self.inspect(root, at, Tracked(steps)) {
-                    Some(payload) => inspect_outcome(payload),
+            Some(Operation::Print) => {
+                let ok = self.print(
+                    root,
+                    frame.slot() as usize,
+                    frame.argument(1),
+                    frame.argument(2),
+                    frame.argument(3),
+                    frame.argument(4),
+                    frame.argument(5),
+                    Tracked(steps),
+                );
+                let out = status_only_outcome(if ok { STATUS_OK } else { STATUS_REFUSED });
+                proof {
+                    assert(*self == *old(self));
+                    assert(out == old(self).spec_outcome(root, frame));
+                    Self::lemma_spec_outcome_carried(*old(self), *self, root, frame, out);
+                }
+                Some(out)
+            },
+            Some(Operation::PowerOff) => {
+                let ok = self.power_off(root, frame.slot() as usize, Tracked(steps));
+                let out = status_only_outcome(if ok { STATUS_OK } else { STATUS_REFUSED });
+                proof {
+                    assert(*self == *old(self));
+                    assert(out == old(self).spec_outcome(root, frame));
+                    Self::lemma_spec_outcome_carried(*old(self), *self, root, frame, out);
+                }
+                Some(out)
+            },
+            Some(Operation::Inspect) => {
+                let out = match position(frame.slot()) {
+                    Some(at) => match self.inspect(root, at, Tracked(steps)) {
+                        Some(payload) => inspect_outcome(payload),
+                        None => status_only_outcome(STATUS_REFUSED),
+                    },
                     None => status_only_outcome(STATUS_REFUSED),
-                },
-                None => status_only_outcome(STATUS_REFUSED),
-            }),
-            Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
-            None => Some(status_only_outcome(STATUS_UNKNOWN)),
+                };
+                proof {
+                    assert(*self == *old(self));
+                    assert(out == old(self).spec_outcome(root, frame));
+                    Self::lemma_spec_outcome_carried(*old(self), *self, root, frame, out);
+                }
+                Some(out)
+            },
+            Some(_) => {
+                let out = status_only_outcome(STATUS_REFUSED);
+                proof {
+                    assert(*self == *old(self));
+                    assert(out == old(self).spec_outcome(root, frame));
+                    Self::lemma_spec_outcome_carried(*old(self), *self, root, frame, out);
+                }
+                Some(out)
+            },
+            None => {
+                let out = status_only_outcome(STATUS_UNKNOWN);
+                proof {
+                    assert(*self == *old(self));
+                    assert(out == old(self).spec_outcome(root, frame));
+                    Self::lemma_spec_outcome_carried(*old(self), *self, root, frame, out);
+                }
+                Some(out)
+            },
         }
     }
 
