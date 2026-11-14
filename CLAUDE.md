@@ -109,6 +109,7 @@ tools/token-ledger.py   # harvest the transcripts' token counts and the plan's m
 tools/leaf-cost.py      # what a landed leaf cost, every session counted, by the model of its rounds, with the rework beside it
 tools/offering-report.py  # before ordering a route's candidates in loop.toml: per work kind and offering, the leaves taken, landed, escalated and refuted, the cost a landed leaf, and the reviews
 tools/witness-inventory.py         # before writing a witness or adding an operation: every way each tier-1 operation succeeds, with the witness that reaches it or none
+tools/check-invoked-arms.py         # before changing an arm of invoked or an operation's ensures: each conjunct the arm does not carry
 tools/check-stray-timer.py         # a kernel whose timer fires for nothing reports it once and stops, on both targets
 tools/check-boot-panic.py          # a kernel that panics at boot ends QEMU with status 1, on both targets
 tools/orangepi-stack-overflow.py   # an aarch64 kernel that overflows a stack on the board reports it once
