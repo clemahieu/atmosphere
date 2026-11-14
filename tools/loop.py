@@ -59,15 +59,16 @@ session is started: the loop waits if another loop or actor is active, and stops
 Pacing (`[meters.<name>]`, with `target` and, for a meter whose use is spread, `window` in hours). Each
 paced meter has a line. With a window it climbs from 0% at the window's opening, `window` hours before
 the reset, to the target at the reset; without one it stands at the target, so the meter runs until it
-nears its target. A meter at p percent, with r its fitted rate a session in flight and L the
-PACE_LOOKAHEAD of an hour, admits floor((line(now + L) - p) / (r * L)) sessions at once: those
-sessions' spend over the next hour keeps the meter under where its line will be. A meter behind its
-line catches up on every free worker and one ahead of it waits, so a climbing line spreads the meter's
-use over its window as a duty cycle that reaches the target at the reset; `[pool] jobs` is the only
-ceiling. A meter at or past its target admits none; one with no rate yet, or none above zero, admits one
-session while under its line; one with no readings, or a window that has reset since the last reading,
-admits any number; a window with no reset known cannot be placed, and its line stands at the target; a
-meter no table names is not paced. r is the meter's fitted rate over the mean number of the loops'
+nears its target. A meter at p percent at or above its line now admits none. Under it, with r its
+fitted rate a session in flight and h the hours to its reset, it admits max(1, ceil((target - p) /
+(r * h))) sessions at once: those that, spending what is left evenly over the time left, bring it to
+its target at the reset. A meter behind its line catches up over the rest of its window, not at once,
+and one whose sessions cost more than the time left affords runs while under its line and waits above
+it, so a climbing line spreads the meter's use over its window as a duty cycle; `[pool] jobs` is the
+only ceiling. One with no rate yet, or none above zero, admits one session while under its line; one
+with no readings, or a window that has reset since the last reading, admits any number; a window with
+no reset known cannot be placed, and its line stands at the target and it admits one; a meter no table
+names is not paced. r is the meter's fitted rate over the mean number of the loops'
 sessions in flight on it at the readings it was fitted over, a mean under one counting as one, so use
 from outside the loops is charged to the sessions. The pool recomputes every paced meter's admission
 each tick and logs each change with p, the hours to reset, the line and r; each worker recomputes it
@@ -178,6 +179,7 @@ import fcntl
 import importlib.util
 import io
 import json
+import math
 import multiprocessing
 import os
 import re
@@ -225,7 +227,6 @@ MAX_HISTORY = 500
 MIN_RATE_SPAN = 60
 RESET_JITTER = 300
 PACE_WAIT = 60
-PACE_LOOKAHEAD = 3600
 CONFIG = ROOT / "loop.toml"
 SCRATCH = ROOT / "scratch"
 RULES = ROOT / "CLAUDE.md"
@@ -892,22 +893,28 @@ def admission(held, pace, now):
     session, line) for a meter's state `held` (None when it has no readings) under its pace from
     [meters]. With a window the line climbs from 0% at the window's opening to the target at its reset;
     without one, or with no reset known to place the window by, it stands at the target. `line` is where
-    it stands PACE_LOOKAHEAD from now: n sessions are admitted while percent plus what n sessions spend
-    over the lookahead stays under it, so a meter behind its line catches up and one ahead waits, and
-    one at or past its target admits none. With no rate a session, or none above zero, one while under
-    the line; with no readings, or a window that has reset since the reading, any number."""
+    it stands now. A meter at or above it admits none. One under it admits the sessions that, each
+    spending the rate a session, bring it to its target at its reset: (target - percent) over the rate
+    a session times the hours to reset, rounded up, one at least. So a meter behind its line catches up
+    evenly over the time left rather than at once, and one whose sessions cost more than the time left
+    affords runs while under its line and waits above it, a duty cycle. With no rate a session, none
+    above zero, or no reset known, one while under the line; with no readings, or a window that has
+    reset since the reading, any number."""
     if held is None:
         return None, None, None, None, None
     percent, resets_at, rate = held["percent"], held.get("resets_at"), held.get("session_rate")
     hours = None if resets_at is None else (resets_at - now) / 3600
     if hours is not None and hours <= 0:
         return None, percent, hours, rate, None
-    ahead, line, window = PACE_LOOKAHEAD / 3600, pace["target"], pace["window"]
+    target, window = pace["target"], pace["window"]
+    line = target
     if window is not None and hours is not None:
-        line *= min(max(window - hours + ahead, 0.0) / window, 1.0)
-    if rate is None or rate <= 0:
-        return int(percent < line), percent, hours, rate, line
-    return max(int((line - percent) / (rate * ahead)), 0), percent, hours, rate, line
+        line *= min(max(window - hours, 0.0) / window, 1.0)
+    if percent >= line:
+        return 0, percent, hours, rate, line
+    if rate is None or rate <= 0 or hours is None:
+        return 1, percent, hours, rate, line
+    return max(math.ceil((target - percent) / (rate * hours)), 1), percent, hours, rate, line
 
 
 def in_flight(folder, alive=loop_alive):
@@ -3601,35 +3608,44 @@ class Tests(unittest.TestCase):
         return {"harness": "claude", "percent": percent, "resets_at": resets_at, "read": read, "rate": rate,
                 "session_rate": session_rate, "history": []}
 
-    def test_a_meter_admits_what_keeps_it_under_its_line_over_the_next_hour(self):
+    def test_a_meter_under_its_line_admits_what_reaches_its_target_by_its_reset(self):
         week, five_hours = {"target": 95.0, "window": 168.0}, {"target": 95.0, "window": 5.0}
         flat = {"target": 95.0, "window": None}
         hour = 3600.0
-        # A week 50 h from its reset is 118 h in; an hour on, its line stands at 95 * 119 / 168 = 67.3%.
-        line = 95 * 119 / 168
-        # Behind the line at 10%: 57.3 points of room, 20%/h a session: 2 sessions; at 5%/h, 11.
-        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=20.0), week, 0.0),
-                         (2, 10.0, 50.0, 20.0, line))
-        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=5.0), week, 0.0)[0], 11)
-        # A meter whose sessions cost a fraction of what a continuous run to the reset allows still runs
-        # while behind its line: 1.6% used an hour into the week, 3.3%/h a session, waits; 10 h in, runs one.
+        # The week of 2026-11-14: 17% used 27.8 h before the reset, its line at 95 * 140.2 / 168 = 79.3%,
+        # 0.57%/h a session. The 78 points left over 27.8 h are 2.8%/h, 4.9 sessions: 5, not the 109 that
+        # would reach the line within the hour.
+        admits, percent, hours, rate, line = admission(self.meter(17.0, 27.8 * hour, session_rate=0.57), week, 0.0)
+        self.assertEqual((admits, percent, rate), (5, 17.0, 0.57))
+        self.assertAlmostEqual(hours, 27.8)
+        self.assertAlmostEqual(line, 95 * 140.2 / 168)
+        # 50 h from the reset the line stands at 95 * 118 / 168 = 66.7%. At 10%, 85 points over 50 h at
+        # 20%/h a session is a fraction of one: one; at 0.5%/h, 3.4: 4.
+        admits, percent, hours, rate, line = admission(self.meter(10.0, 50 * hour, session_rate=20.0), week, 0.0)
+        self.assertEqual((admits, percent, hours, rate), (1, 10.0, 50.0, 20.0))
+        self.assertAlmostEqual(line, 95 * 118 / 168)
+        self.assertEqual(admission(self.meter(10.0, 50 * hour, session_rate=0.5), week, 0.0)[0], 4)
+        # A meter whose sessions cost a fraction of what the time left affords runs while under its line and
+        # waits above it, a duty cycle: 1.6% used an hour into the week waits; 10 h in, runs one.
         self.assertEqual(admission(self.meter(1.6, 167 * hour, session_rate=3.3), week, 0.0)[0], 0)
         self.assertEqual(admission(self.meter(1.6, 158 * hour, session_rate=3.3), week, 0.0)[0], 1)
-        # Ahead of the line: 80% used, 100 h out (line 39%): none.
+        # Ahead of the line: 80% used, 100 h out (line 38.5%): none.
         self.assertEqual(admission(self.meter(80.0, 100 * hour, session_rate=0.5), week, 0.0)[0], 0)
-        # A five-hour meter's line runs over five hours: 3 h out, its line an hour on is 57%.
+        # A five-hour meter's line runs over five hours: 3 h out it stands at 38%; 85 points over 3 h at
+        # 10%/h a session is 2.8: 3.
         self.assertEqual(admission(self.meter(10.0, 3 * hour, session_rate=10.0), five_hours, 0.0),
-                         (4, 10.0, 3.0, 10.0, 57.0))
-        # Within the last hour the line is the target itself.
-        self.assertEqual(admission(self.meter(90.0, 0.5 * hour, session_rate=2.0), week, 0.0)[0], 2)
+                         (3, 10.0, 3.0, 10.0, 38.0))
+        # Half an hour out: 5 points at 2%/h a session over half an hour is 5 sessions.
+        self.assertEqual(admission(self.meter(90.0, 0.5 * hour, session_rate=2.0), week, 0.0)[0], 5)
         # With no window the line stands at the target from the window's opening: a meter just past its
-        # reset, which a week's line holds back, runs what keeps it under the target over the next hour.
+        # reset, which a week's line holds back, runs one session at a time until it nears its target.
         self.assertEqual(admission(self.meter(2.7, 167 * hour, session_rate=3.2), week, 0.0)[0], 0)
         self.assertEqual(admission(self.meter(2.7, 167 * hour, session_rate=3.2), flat, 0.0),
-                         (28, 2.7, 167.0, 3.2, 95.0))
-        self.assertEqual(admission(self.meter(93.0, 167 * hour, session_rate=3.2), flat, 0.0)[0], 0)
-        # A window with no reset known cannot be placed: its line stands at the target.
-        self.assertEqual(admission(self.meter(10.0, None, session_rate=20.0), week, 0.0), (4, 10.0, None, 20.0, 95.0))
+                         (1, 2.7, 167.0, 3.2, 95.0))
+        self.assertEqual(admission(self.meter(93.0, 167 * hour, session_rate=3.2), flat, 0.0)[0], 1)
+        # A window with no reset known cannot be placed, and leaves no time to spread over: its line stands
+        # at the target and it admits one.
+        self.assertEqual(admission(self.meter(10.0, None, session_rate=20.0), week, 0.0), (1, 10.0, None, 20.0, 95.0))
         # At or past the target nothing is admitted, whatever the rate.
         self.assertEqual(admission(self.meter(95.0, 2 * hour), week, 0.0)[0], 0)
         self.assertEqual(admission(self.meter(96.0, 2 * hour, session_rate=1.0), flat, 0.0)[0], 0)
@@ -3706,20 +3722,21 @@ class Tests(unittest.TestCase):
                 spec, waits = loop.choose("tool")
                 return spec.name if spec else [(s.name, paced) for s, _, paced in waits]
 
-            # Week behind its line (10% against 67.3%, 40%/h a session: 1 admitted), five-hour fine: opus
-            # takes the leaf.
+            # Week behind its line (10% against 66.7% 50 h out, 40%/h a session: 1 admitted), five-hour
+            # fine: opus takes the leaf.
             readings((10.0, 40.0, 51 * hour), (10.0, 1.0, 5 * hour))
             in_flight()
             self.assertEqual(choice(), "opus")
             # One session already draws on the week, which admits one: the leaf goes to the next candidate.
             in_flight("sonnet")
             self.assertEqual(choice(), "carbon")
-            # The week has room, the five-hour window is ahead of its line (90% against 38%): it binds.
+            # The week has room, the five-hour window is ahead of its line (90% against 19%): it binds.
             readings((10.0, 5.0, 51 * hour), (90.0, 2.0, 5 * hour))
             in_flight("sonnet")
             self.assertEqual(choice(), "carbon")
-            # The week admits two and the five-hour window three: opus again, with one in flight on each.
-            readings((10.0, 25.0, 51 * hour), (10.0, 9.0, 5 * hour))
+            # The week admits two (85 points over 50 h at 1%/h a session) and the five-hour window three (85
+            # over 4 h at 9%/h): opus again, with one in flight on each.
+            readings((10.0, 1.0, 51 * hour), (10.0, 9.0, 5 * hour))
             in_flight("opus")
             self.assertEqual(choice(), "opus")
             # Every candidate held: Gemini's week at its target admits none; the leaf waits and is not claimed.
@@ -3738,7 +3755,7 @@ class Tests(unittest.TestCase):
                 def flush(self):
                     pass
             check(config=folder / "loop.toml", out=Lines(), loop=loop)
-            self.assertIn("meter claude-week: 10.0% used, 50.0 h to reset, line 67.3%, 25.00%/h a session: admits 2 (target 95, window 168 h), "
+            self.assertIn("meter claude-week: 10.0% used, 50.0 h to reset, line 66.7%, 1.00%/h a session: admits 2 (target 95, window 168 h), "
                           "2 in flight", "".join(shown))
             self.assertIn("opus paced on claude-week (admits 2, 2 in flight); carbon paced on gemini-week (admits 0, 0 in flight)", "".join(shown))
 
@@ -3799,7 +3816,7 @@ class Tests(unittest.TestCase):
             pool.tune()
             pool.pace()
             self.assertEqual(len(lines()), 3)
-            self.assertIn("claude-week: 10.0% used, 50.0 h to reset, line 67.3%, 1.00%/h a session: admits 57 (target 95, window 168 h)",
+            self.assertIn("claude-week: 10.0% used, 50.0 h to reset, line 66.7%, 1.00%/h a session: admits 2 (target 95, window 168 h)",
                           lines()[0])
             self.assertIn("claude-5h: no readings: admits any (target 95, window 5 h)", "\n".join(lines()))
             # Unchanged admission is not logged again, though the hours to reset moved.
@@ -3810,11 +3827,11 @@ class Tests(unittest.TestCase):
             set_meter(94.5, 1.0, 51 * hour)
             pool.pace()
             self.assertEqual(len(lines()), 4)
-            self.assertIn("claude-week: 94.5% used, 49.5 h to reset, line 67.6%, 1.00%/h a session: admits 0 (target 95, window 168 h)", lines()[-1])
+            self.assertIn("claude-week: 94.5% used, 49.5 h to reset, line 67.0%, 1.00%/h a session: admits 0 (target 95, window 168 h)", lines()[-1])
             # step() is a tick, and recomputes it.
             set_meter(10.0, 1.0, 51 * hour)
             pool.step()
-            self.assertIn("admits 57", lines()[-1])
+            self.assertIn("admits 2", lines()[-1])
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
