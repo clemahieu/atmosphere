@@ -7,6 +7,7 @@ pub mod boot_space_switch;
 pub mod built_process_sealed;
 pub mod check_current_kept;
 pub mod check_current_moved_off;
+pub mod core_selects_placed_thread;
 pub mod dead_device_space_freed;
 pub mod dead_frame_freed;
 pub mod dead_large_frame_freed;

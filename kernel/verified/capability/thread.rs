@@ -22,6 +22,7 @@ use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::schedule::*;
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
@@ -161,6 +162,33 @@ pub struct ThreadRecord {
     /// The core and priority it runs at once started: node 1 of its node page is then a placement
     /// node under a capability to that core, design/cpu-time-as-capability/.
     pub placement: Option<Placement>,
+    /// Intrusive links in its core and priority's Runnable queue, or `NONE` when outside it.
+    pub run_prev: usize,
+    pub run_next: usize,
+}
+
+/// Records `a` and `b` agree on every field except the intrusive run-queue links `run_prev` and
+/// `run_next`.
+pub open spec fn same_thread_but_links(a: ThreadRecord, b: ThreadRecord) -> bool {
+    &&& a.state == b.state
+    &&& a.frame == b.frame
+    &&& a.saved == b.saved
+    &&& a.save == b.save
+    &&& a.pending_stop == b.pending_stop
+    &&& a.dying == b.dying
+    &&& a.process == b.process
+    &&& a.placement == b.placement
+}
+
+/// Permissions `a` and `b` hold initialized `ThreadRecord`s at the same address that agree on
+/// every field except `run_prev` and `run_next`.
+pub open spec fn same_record_perm_but_links(
+    a: PointsTo<ThreadRecord>,
+    b: PointsTo<ThreadRecord>,
+) -> bool {
+    &&& a.addr() == b.addr()
+    &&& a.is_init() == b.is_init()
+    &&& same_thread_but_links(a.value(), b.value())
 }
 
 /// Marker `saved` and `frame` match the save `save` that produced them. Opaque so the thread
@@ -233,6 +261,8 @@ pub open spec fn fresh_thread() -> ThreadRecord {
         dying: false,
         process: None,
         placement: None,
+        run_prev: NONE,
+        run_next: NONE,
     }
 }
 
@@ -249,6 +279,8 @@ pub fn new_thread_record() -> (ret: ThreadRecord)
         dying: false,
         process: None,
         placement: None,
+        run_prev: NONE,
+        run_next: NONE,
     }
 }
 
@@ -257,23 +289,32 @@ pub open spec fn thread_of(base: usize) -> Payload {
     Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base, badge: 0, priority: 0 }
 }
 
-/// Each thread's record by its block's address, and the capabilities holding its block.
+/// Each thread's record by its block's address, the capabilities holding its block, and the
+/// per-core priority queues of Runnable threads.
 pub struct Threads {
     pub records: Tracked<Map<usize, PointsTo<ThreadRecord>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
     /// The root thread boot created, which enters user mode once through `enter_boot_thread`
     /// without a placement: design/root-process-at-boot/.
     pub boot_thread: Ghost<Option<usize>>,
+    /// Per-core priority queues over the intrusive links of Runnable threads.
+    pub queues: RunQueues,
 }
 
 impl Threads {
-    pub fn new() -> (ret: Self)
+    pub fn init(&mut self, Tracked(steps): Tracked<&mut Steps>)
         ensures
-            ret.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty(),
-            ret.holders@ == IMap::<usize, Set<usize>>::empty(),
-            ret.boot_thread@ is None,
+            final(steps).count <= old(steps).count + INIT_QUEUES_STEPS,
+            final(self).records@ == Map::<usize, PointsTo<ThreadRecord>>::empty(),
+            final(self).holders@ == IMap::<usize, Set<usize>>::empty(),
+            final(self).boot_thread@ is None,
+            final(self).queues.all_empty(),
+            queues_wf(&final(self).queues, final(self).records@),
     {
-        Threads { records: Tracked(Map::tracked_empty()), holders: Ghost(IMap::empty()), boot_thread: Ghost(None) }
+        self.records = Tracked(Map::tracked_empty());
+        self.holders = Ghost(IMap::empty());
+        self.boot_thread = Ghost(None);
+        self.queues.init(Tracked(steps));
     }
 }
 
@@ -784,7 +825,8 @@ pub proof fn lemma_bindings_unbound(
             &&& list_b.nodes@[x as int].kind == list_a.nodes@[x as int].kind
         },
         tb.records@.dom() == ta.records@.dom(),
-        forall|x: usize| x != t && #[trigger] tb.records@.contains_key(x) ==> tb.records@[x] == ta.records@[x],
+        forall|x: usize| x != t && #[trigger] tb.records@.contains_key(x)
+            ==> same_record_perm_but_links(ta.records@[x], tb.records@[x]),
         tb.records@[t].value().process is None,
         pb.records == pa.records,
         pb.bound@ == pa.bound@.insert(p, pa.bound@[p].remove(t)),
@@ -797,6 +839,8 @@ pub proof fn lemma_bindings_unbound(
         assert(n != t);
         assert(list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding);
         assert(ta.records@.contains_key(n));
+        assert(tb.records@.contains_key(n));
+        assert(same_record_perm_but_links(ta.records@[n], tb.records@[n]));
     }
     assert forall|x: usize| #[trigger] tb.records@.contains_key(x) && tb.records@[x].value().process is Some implies {
         let q = tb.records@[x].value().process->Some_0;
@@ -808,7 +852,7 @@ pub proof fn lemma_bindings_unbound(
     } by {
         assert(x != t);
         assert(ta.records@.contains_key(x));
-        assert(tb.records@[x] == ta.records@[x]);
+        assert(same_record_perm_but_links(ta.records@[x], tb.records@[x]));
         let q = ta.records@[x].value().process->Some_0;
         assert(pa.bound@[q].contains(x));
         assert(list_b.nodes@[x as int].live == list_a.nodes@[x as int].live);
@@ -818,7 +862,8 @@ pub proof fn lemma_bindings_unbound(
         assert(pa.bound@[q].contains(x));
         assert(ta.records@.contains_key(x));
         assert(x != t);
-        assert(tb.records@[x] == ta.records@[x]);
+        assert(tb.records@.contains_key(x));
+        assert(same_record_perm_but_links(ta.records@[x], tb.records@[x]));
     }
 }
 
@@ -888,13 +933,15 @@ pub proof fn lemma_bindings_bound(
     }
 }
 
-/// The threads after a step that rewrote one thread's record in place.
+/// The threads after a step that rewrote one thread's record in place, and at most run-queue links
+/// of other threads.
 pub proof fn lemma_threads_record_written(list: &Tree, tables: &Tables, a: &Threads, b: &Threads, blocks: &BlockTable, t: usize)
     requires
         threads_wf(list, tables, a, blocks),
         b.holders == a.holders,
         b.records@.dom() == a.records@.dom(),
-        forall|x: usize| x != t && #[trigger] b.records@.contains_key(x) ==> b.records@[x] == a.records@[x],
+        forall|x: usize| x != t && #[trigger] b.records@.contains_key(x)
+            ==> same_record_perm_but_links(a.records@[x], b.records@[x]),
         a.records@.contains_key(t) ==> {
             &&& b.records@[t].addr() == a.records@[t].addr()
             &&& b.records@[t].is_init()
@@ -906,6 +953,9 @@ pub proof fn lemma_threads_record_written(list: &Tree, tables: &Tables, a: &Thre
     assert forall|x: usize| #[trigger] b.records@.contains_key(x) implies thread_wf(list, b, blocks, x) by {
         assert(a.records@.contains_key(x));
         assert(thread_wf(list, a, blocks, x));
+        if x != t {
+            assert(same_record_perm_but_links(a.records@[x], b.records@[x]));
+        }
     }
     assert forall|x: usize| blocks.tracks(x as int) && #[trigger] thread_block(blocks, x) implies b.records@.contains_key((x * PAGE_SZ) as usize) by {
         assert(a.records@.contains_key((x * PAGE_SZ) as usize));
@@ -942,6 +992,8 @@ pub open spec fn unbound_record(r: ThreadRecord) -> ThreadRecord {
         dying: r.dying,
         process: None,
         placement: r.placement,
+        run_prev: NONE,
+        run_next: NONE,
     }
 }
 
@@ -961,6 +1013,8 @@ pub open spec fn unplaced_record(r: ThreadRecord) -> ThreadRecord {
         dying: r.dying,
         process: r.process,
         placement: None,
+        run_prev: NONE,
+        run_next: NONE,
     }
 }
 
@@ -1586,12 +1640,13 @@ impl CapKernel {
         &&& post.processes.bound@ == pre.processes.bound@.insert(p, pre.processes.bound@[p].remove(t))
         &&& post.threads.holders == pre.threads.holders
         &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& queues_wf(&post.threads.queues, post.threads.records@)
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
-            ==> post.threads.records@[x] == pre.threads.records@[x]
+            ==> same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x])
         &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
         &&& post.threads.records@[t].is_init()
-        &&& post.threads.records@[t].value() == unbound_record(r)
+        &&& same_thread_but_links(post.threads.records@[t].value(), unbound_record(r))
         &&& post.stop_ipis@ == match r.state {
             ThreadState::Running { core } => pre.stop_ipis@.push(core),
             _ => pre.stop_ipis@,
@@ -1643,31 +1698,64 @@ impl CapKernel {
                 0
             },
         };
-        let (state, running) = match record.state {
-            ThreadState::Running { core } => {
-                self.stop_ipis = Ghost(pre.stop_ipis@.push(core));
-                (ThreadState::Running { core }, true)
+        match record.state {
+            ThreadState::Runnable { core } => {
+                let prio = match record.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                self.dequeue_and_write(
+                    core,
+                    prio,
+                    t,
+                    ThreadRecord {
+                        state: ThreadState::Inactive,
+                        pending_stop: false,
+                        process: None,
+                        ..record
+                    },
+                );
             },
-            ThreadState::Dead => (ThreadState::Dead, false),
-            _ => (ThreadState::Inactive, false),
-        };
-        let tracked mut perm;
-        proof {
-            perm = self.threads.records.borrow_mut().tracked_remove(t);
-        }
-        ptr.write(Tracked(&mut perm), ThreadRecord {
-            state,
-            frame: record.frame,
-            saved: record.saved,
-            save: record.save,
-            pending_stop: running,
-            dying: record.dying,
-            process: None,
-            placement: record.placement,
-        });
-        proof {
-            self.threads.records.borrow_mut().tracked_insert(t, perm);
-            assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+            _ => {
+                let (state, running) = match record.state {
+                    ThreadState::Running { core } => {
+                        self.stop_ipis = Ghost(pre.stop_ipis@.push(core));
+                        (ThreadState::Running { core }, true)
+                    },
+                    ThreadState::Dead => (ThreadState::Dead, false),
+                    _ => (ThreadState::Inactive, false),
+                };
+                let tracked mut perm;
+                proof {
+                    perm = self.threads.records.borrow_mut().tracked_remove(t);
+                }
+                ptr.write(Tracked(&mut perm), ThreadRecord {
+                    state,
+                    frame: record.frame,
+                    saved: record.saved,
+                    save: record.save,
+                    pending_stop: running,
+                    dying: record.dying,
+                    process: None,
+                    placement: record.placement,
+                    run_prev: NONE,
+                    run_next: NONE,
+                });
+                proof {
+                    self.threads.records.borrow_mut().tracked_insert(t, perm);
+                    assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+                    lemma_queues_unrunnable_written(
+                        &pre.threads.queues,
+                        pre.threads.records@,
+                        self.threads.records@,
+                        t,
+                    );
+                    assert forall|x: usize| x != t && #[trigger] self.threads.records@.contains_key(x)
+                        implies same_record_perm_but_links(pre.threads.records@[x], self.threads.records@[x]) by {
+                        assert(self.threads.records@[x] == pre.threads.records@[x]);
+                    }
+                }
+            },
         }
         drop_block_ref(&mut self.blocks, BlockRef::Small(p / PAGE_SZ));
         self.processes.bound = Ghost(pre.processes.bound@.insert(p, pre.processes.bound@[p].remove(t)));
@@ -1683,12 +1771,13 @@ impl CapKernel {
         &&& r.placement is Some
         &&& post.threads.holders == pre.threads.holders
         &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& queues_wf(&post.threads.queues, post.threads.records@)
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|y: usize| y != t && #[trigger] post.threads.records@.contains_key(y)
-            ==> post.threads.records@[y] == pre.threads.records@[y]
+            ==> same_record_perm_but_links(pre.threads.records@[y], post.threads.records@[y])
         &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
         &&& post.threads.records@[t].is_init()
-        &&& post.threads.records@[t].value() == unplaced_record(r)
+        &&& same_thread_but_links(post.threads.records@[t].value(), unplaced_record(r))
         &&& post.stop_ipis@ == match r.state {
             ThreadState::Running { core } => pre.stop_ipis@.push(core),
             _ => pre.stop_ipis@,
@@ -1737,31 +1826,64 @@ impl CapKernel {
         let t = x - 1;
         let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
         let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
-        let (state, running) = match record.state {
-            ThreadState::Running { core } => {
-                self.stop_ipis = Ghost(pre.stop_ipis@.push(core));
-                (ThreadState::Running { core }, true)
+        match record.state {
+            ThreadState::Runnable { core } => {
+                let prio = match record.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                self.dequeue_and_write(
+                    core,
+                    prio,
+                    t,
+                    ThreadRecord {
+                        state: ThreadState::Inactive,
+                        pending_stop: false,
+                        placement: None,
+                        ..record
+                    },
+                );
             },
-            ThreadState::Dead => (ThreadState::Dead, false),
-            _ => (ThreadState::Inactive, false),
-        };
-        let tracked mut perm;
-        proof {
-            perm = self.threads.records.borrow_mut().tracked_remove(t);
-        }
-        ptr.write(Tracked(&mut perm), ThreadRecord {
-            state,
-            frame: record.frame,
-            saved: record.saved,
-            save: record.save,
-            pending_stop: running,
-            dying: record.dying,
-            process: record.process,
-            placement: None,
-        });
-        proof {
-            self.threads.records.borrow_mut().tracked_insert(t, perm);
-            assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+            _ => {
+                let (state, running) = match record.state {
+                    ThreadState::Running { core } => {
+                        self.stop_ipis = Ghost(pre.stop_ipis@.push(core));
+                        (ThreadState::Running { core }, true)
+                    },
+                    ThreadState::Dead => (ThreadState::Dead, false),
+                    _ => (ThreadState::Inactive, false),
+                };
+                let tracked mut perm;
+                proof {
+                    perm = self.threads.records.borrow_mut().tracked_remove(t);
+                }
+                ptr.write(Tracked(&mut perm), ThreadRecord {
+                    state,
+                    frame: record.frame,
+                    saved: record.saved,
+                    save: record.save,
+                    pending_stop: running,
+                    dying: record.dying,
+                    process: record.process,
+                    placement: None,
+                    run_prev: NONE,
+                    run_next: NONE,
+                });
+                proof {
+                    self.threads.records.borrow_mut().tracked_insert(t, perm);
+                    assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+                    lemma_queues_unrunnable_written(
+                        &pre.threads.queues,
+                        pre.threads.records@,
+                        self.threads.records@,
+                        t,
+                    );
+                    assert forall|y: usize| y != t && #[trigger] self.threads.records@.contains_key(y)
+                        implies same_record_perm_but_links(pre.threads.records@[y], self.threads.records@[y]) by {
+                        assert(self.threads.records@[y] == pre.threads.records@[y]);
+                    }
+                }
+            },
         }
     }
 
@@ -2212,6 +2334,7 @@ impl CapKernel {
             ret ==> base as int + THREAD_BYTES <= NODE_SPACE as int,
             ret ==> final(self).processes == old(self).processes,
             ret ==> final(self).threads.boot_thread == old(self).threads.boot_thread,
+            ret ==> final(self).threads.queues == old(self).threads.queues,
             ret ==> final(self).tables.roots == old(self).tables.roots,
             ret ==> forall|x: usize| x != base ==> #[trigger] thread_process(&final(self).threads, x) == thread_process(&old(self).threads, x),
             ret ==> forall|x: usize| #[trigger] old(self).is_cap(x) ==> {
@@ -2387,6 +2510,7 @@ impl CapKernel {
                 }
             }
             assert(post.threads.records@ == pre.threads.records@.insert(base, post.threads.records@[base]));
+            lemma_queues_thread_added(&pre.threads.queues, pre.threads.records@, post.threads.records@, base);
             assert(post.cores == pre.cores);
             assert(current_wf(post.cores@, post.threads.records@)) by {
                 reveal(current_wf);
@@ -2666,6 +2790,7 @@ impl CapKernel {
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
             final(self).threads.boot_thread == old(self).threads.boot_thread,
+            final(self).threads.queues == old(self).threads.queues,
             !ret ==> *final(self) == *old(self),
             !ret ==> bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret == old(self).can_retype_thread(root, from, to, base, j),
@@ -2694,6 +2819,8 @@ impl CapKernel {
                     dying: false,
                     process: Some(p),
                     placement: None,
+                    run_prev: NONE,
+                    run_next: NONE,
                 }
                 &&& final(self).list.is_child(n, base)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent).insert(base, n)
@@ -2867,7 +2994,7 @@ impl CapKernel {
         &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
-            ==> post.threads.records@[x] == pre.threads.records@[x]
+            ==> same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x])
         &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
         &&& post.threads.records@[t].is_init()
         &&& post.threads.records@[t].value().process == pre.threads.records@[t].value().process
@@ -2888,6 +3015,7 @@ impl CapKernel {
             pre.threads.records@.contains_key(t),
             Self::switch_frame(pre, post, c, t),
             frame_save_wf(post.threads.records@[t].value()),
+            queues_wf(&post.threads.queues, post.threads.records@),
             post.cores.wf(),
             current_wf(post.cores@, post.threads.records@),
             Some(t) == post.threads.boot_thread@
@@ -2923,6 +3051,9 @@ impl CapKernel {
         assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
             implies thread_wf(&post.list, &post.threads, &post.blocks, x) by {
             assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, x));
+            if x != t {
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+            }
         }
         assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] thread_block(&post.blocks, b)
             implies post.threads.records@.contains_key((b * PAGE_SZ) as usize) by {
@@ -2933,7 +3064,12 @@ impl CapKernel {
             &&& post.threads.records@.contains_key(x)
             &&& post.threads.records@[x].value().process == pre.threads.records@[x].value().process
             &&& post.threads.records@[x].value().placement == pre.threads.records@[x].value().placement
-        } by {}
+        } by {
+            assert(post.threads.records@.contains_key(x));
+            if x != t {
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+            }
+        }
         assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
             reveal(placed_running_wf);
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
@@ -2941,6 +3077,9 @@ impl CapKernel {
                 implies thread_placed_running(post.threads.records@[x].value()) by {
                 assert(pre.threads.records@.contains_key(x));
                 assert(thread_placed_running(pre.threads.records@[x].value()));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
         }
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
@@ -2976,6 +3115,112 @@ impl CapKernel {
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
             Self::switch_frame(*old(self), *final(self), c as int, t),
+            dequeued_from(
+                &old(self).threads.queues,
+                &final(self).threads.queues,
+                c as int,
+                thread_priority(old(self).threads.records@[t].value()) as int,
+                t,
+            ),
+            final(self).cores@[c as int].current_thread == Some(t),
+            final(self).threads.records@[t].value().state == (ThreadState::Running { core: c }),
+            final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame,
+            final(self).threads.records@[t].value().saved == old(self).threads.records@[t].value().saved,
+            final(self).threads.records@[t].value().save == old(self).threads.records@[t].value().save,
+            final(self).threads.records@[t].value().pending_stop == old(self).threads.records@[t].value().pending_stop,
+            final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying,
+            final(self).threads.records@[t].value().process == old(self).threads.records@[t].value().process,
+            final(self).stop_ipis == old(self).stop_ipis,
+    {
+        let ghost pre = *self;
+        proof {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        let prio = match record.placement {
+            Some(pl) => pl.priority,
+            None => 0,
+        };
+        self.dequeue_and_write(
+            c,
+            prio,
+            t,
+            ThreadRecord {
+                state: ThreadState::Running { core: c },
+                ..record
+            },
+        );
+        let state = *self.cores.get(c);
+        self.cores.set(c, CoreState {
+            current_thread: Some(t),
+            acked_epoch: state.acked_epoch,
+            generation: state.generation,
+            next_pcid: state.next_pcid,
+            space: state.space,
+        });
+        proof {
+            reveal(current_wf);
+            let post = *self;
+            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
+            } by {
+                if d != c {
+                    assert(post.cores@[d] == pre.cores@[d]);
+                    assert(runs(pre.cores@, d, x));
+                    assert(post.threads.records@.contains_key(x));
+                    if x == t {
+                        assert(pre.threads.records@[t].value().state == (ThreadState::Running { core: d as usize }));
+                    } else {
+                        assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                    }
+                }
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                    let e = pre.threads.records@[x].value().state->Running_core;
+                    assert(pre.threads.records@.contains_key(x));
+                    assert(e != c) by {
+                        assert(pre.cores@[c as int].current_thread is None);
+                    }
+                    assert(post.cores@[e as int] == pre.cores@[e as int]);
+                }
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
+                implies post.threads.records@[x].value().state is Running by {
+                assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
+            }
+            Self::lemma_switch_wf(pre, post, c as int, t);
+        }
+    }
+
+    /// Core c, running nothing, makes thread t, Inactive, its current thread: boot's entry into the
+    /// root's thread, which no capability has started. Boot made the thread, so it runs on c without
+    /// a placement, design/root-process-at-boot/. Loading its frame is the caller's, and core c has t's
+    /// process's space loaded already, as for switch_in.
+    pub fn enter_boot_thread(&mut self, c: usize, t: usize)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).cores@[c as int].current_thread is None,
+            old(self).threads.boot_thread@ == Some(t),
+            old(self).threads.records@.contains_key(t),
+            old(self).threads.records@[t].value().state is Inactive,
+            runs_in_space(old(self).cores@, old(self).threads.records@, c as int, t),
+        ensures
+            final(self).wf(),
+            Self::switch_frame(*old(self), *final(self), c as int, t),
+            final(self).threads.queues == old(self).threads.queues,
             final(self).cores@[c as int].current_thread == Some(t),
             final(self).threads.records@[t].value().state == (ThreadState::Running { core: c }),
             final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame,
@@ -2998,11 +3243,11 @@ impl CapKernel {
             next_pcid: state.next_pcid,
             space: state.space,
         });
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
         let tracked mut perm;
         proof {
             perm = self.threads.records.borrow_mut().tracked_remove(t);
         }
-        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
         let record = ptr.read(Tracked(&perm));
         ptr.write(Tracked(&mut perm), ThreadRecord {
             state: ThreadState::Running { core: c },
@@ -3013,12 +3258,24 @@ impl CapKernel {
             dying: record.dying,
             process: record.process,
             placement: record.placement,
+            run_prev: record.run_prev,
+            run_next: record.run_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
             reveal(current_wf);
             let post = *self;
             assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            lemma_queues_unrunnable_written(
+                &pre.threads.queues,
+                pre.threads.records@,
+                post.threads.records@,
+                t,
+            );
+            assert forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+                implies same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]) by {
+                assert(post.threads.records@[x] == pre.threads.records@[x]);
+            }
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
@@ -3027,9 +3284,7 @@ impl CapKernel {
                 if d != c {
                     assert(post.cores@[d] == pre.cores@[d]);
                     assert(runs(pre.cores@, d, x));
-                    if x == t {
-                        assert(pre.threads.records@[t].value().state == (ThreadState::Running { core: d as usize }));
-                    }
+                    assert(x != t);
                 }
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
@@ -3054,81 +3309,6 @@ impl CapKernel {
         }
     }
 
-    /// Core c, running nothing, makes thread t, Inactive, its current thread: boot's entry into the
-    /// root's thread, which no capability has started. Boot made the thread, so it runs on c without
-    /// a placement, design/root-process-at-boot/. Loading its frame is the caller's, and core c has t's
-    /// process's space loaded already, as for switch_in.
-    pub fn enter_boot_thread(&mut self, c: usize, t: usize)
-        requires
-            old(self).wf(),
-            c < NUM_CPUS,
-            old(self).cores@[c as int].current_thread is None,
-            old(self).threads.boot_thread@ == Some(t),
-            old(self).threads.records@.contains_key(t),
-            old(self).threads.records@[t].value().state is Inactive,
-            runs_in_space(old(self).cores@, old(self).threads.records@, c as int, t),
-        ensures
-            final(self).wf(),
-            Self::switch_frame(*old(self), *final(self), c as int, t),
-            final(self).cores@[c as int].current_thread == Some(t),
-            final(self).threads.records@[t].value().state == (ThreadState::Running { core: c }),
-            final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame,
-            final(self).threads.records@[t].value().saved == old(self).threads.records@[t].value().saved,
-            final(self).threads.records@[t].value().save == old(self).threads.records@[t].value().save,
-            final(self).threads.records@[t].value().pending_stop == old(self).threads.records@[t].value().pending_stop,
-            final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying,
-            final(self).threads.records@[t].value().process == old(self).threads.records@[t].value().process,
-            final(self).stop_ipis == old(self).stop_ipis,
-    {
-        let ghost pre = *self;
-        proof {
-            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
-        }
-        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
-        let tracked mut perm;
-        proof {
-            perm = self.threads.records.borrow_mut().tracked_remove(t);
-        }
-        let record = ptr.read(Tracked(&perm));
-        ptr.write(Tracked(&mut perm), ThreadRecord {
-            state: ThreadState::Runnable { core: c },
-            frame: record.frame,
-            saved: record.saved,
-            save: record.save,
-            pending_stop: record.pending_stop,
-            dying: record.dying,
-            process: record.process,
-            placement: record.placement,
-        });
-        proof {
-            self.threads.records.borrow_mut().tracked_insert(t, perm);
-            reveal(current_wf);
-            let post = *self;
-            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
-            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
-                &&& post.threads.records@.contains_key(x)
-                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
-            } by {
-                assert(runs(pre.cores@, d, x));
-                assert(x != t);
-            }
-            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
-                let e = post.threads.records@[x].value().state->Running_core;
-                &&& e < NUM_CPUS
-                &&& post.cores@[e as int].current_thread == Some(x)
-            } by {
-                assert(x != t);
-                assert(pre.threads.records@.contains_key(x));
-            }
-            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
-                implies post.threads.records@[x].value().state is Running by {
-                assert(pre.threads.records@.contains_key(x));
-            }
-            Self::lemma_switch_wf(pre, post, c as int, t);
-        }
-        self.switch_in(c, t);
-    }
-
     /// Core c saves its current thread's frame with marker `saved` (full on an interrupt or
     /// exception, partial copy at a system call) and leaves it Runnable on c, running nothing until
     /// it switches in again. A thread that must leave is moved off instead, by check_current.
@@ -3141,6 +3321,7 @@ impl CapKernel {
         ensures
             ({
                 let t = old(self).cores@[c as int].current_thread->Some_0;
+                let prio = thread_priority(old(self).threads.records@[t].value());
                 &&& Self::step_ok(*old(self), *final(self), c as int)
                 &&& Self::switch_frame(*old(self), *final(self), c as int, t)
                 &&& old(self).threads.records@.contains_key(t)
@@ -3152,6 +3333,8 @@ impl CapKernel {
                 &&& final(self).threads.records@[t].value().save@ == entry_frame_save(frame, saved)
                 &&& !final(self).threads.records@[t].value().pending_stop
                 &&& final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying
+                &&& queued_at_back(&old(self).threads.queues, &final(self).threads.queues, c as int, prio as int, t)
+                &&& at_back_of_priority(&final(self).threads.queues, final(self).threads.records@, c as int, prio, t)
                 &&& final(self).stop_ipis == old(self).stop_ipis
             }),
     {
@@ -3163,10 +3346,30 @@ impl CapKernel {
         };
         proof {
             reveal(current_wf);
+            reveal(placements_wf);
+            reveal(frame_save_matches);
             assert(runs(pre.cores@, c as int, t));
             assert(pre.threads.records@.contains_key(t));
             assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
         }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        let prio = match record.placement {
+            Some(pl) => pl.priority,
+            None => 0,
+        };
+        self.enqueue_and_write(
+            c,
+            prio,
+            t,
+            ThreadRecord {
+                state: ThreadState::Runnable { core: c },
+                frame: save_frame_of(frame, saved),
+                saved,
+                save: Ghost(entry_frame_save(frame, saved)),
+                ..record
+            },
+        );
         self.cores.set(c, CoreState {
             current_thread: None,
             acked_epoch: state.acked_epoch,
@@ -3174,28 +3377,9 @@ impl CapKernel {
             next_pcid: state.next_pcid,
             space: state.space,
         });
-        let tracked mut perm;
         proof {
-            perm = self.threads.records.borrow_mut().tracked_remove(t);
-        }
-        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
-        let record = ptr.read(Tracked(&perm));
-        ptr.write(Tracked(&mut perm), ThreadRecord {
-            state: ThreadState::Runnable { core: c },
-            frame: save_frame_of(frame, saved),
-            saved,
-            save: Ghost(entry_frame_save(frame, saved)),
-            pending_stop: record.pending_stop,
-            dying: record.dying,
-            process: record.process,
-            placement: record.placement,
-        });
-        proof {
-            self.threads.records.borrow_mut().tracked_insert(t, perm);
             reveal(current_wf);
-            reveal(frame_save_matches);
             let post = *self;
-            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
@@ -3206,6 +3390,8 @@ impl CapKernel {
                 assert(runs(pre.cores@, d, x));
                 assert(runs(pre.cores@, c as int, t));
                 assert(x != t);
+                assert(post.threads.records@.contains_key(x));
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
                 let e = post.threads.records@[x].value().state->Running_core;
@@ -3213,6 +3399,7 @@ impl CapKernel {
                 &&& post.cores@[e as int].current_thread == Some(x)
             } by {
                 assert(x != t);
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
                 let e = pre.threads.records@[x].value().state->Running_core;
                 assert(pre.threads.records@.contains_key(x));
                 assert(pre.cores@[e as int].current_thread == Some(x));
@@ -3222,6 +3409,9 @@ impl CapKernel {
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
                 implies post.threads.records@[x].value().state is Running by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
             Self::lemma_switch_wf(pre, post, c as int, t);
         }
@@ -3274,6 +3464,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.threads.holders == pre.threads.holders
         &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& post.threads.queues == pre.threads.queues
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
             ==> post.threads.records@[x] == pre.threads.records@[x]
@@ -3288,6 +3479,8 @@ impl CapKernel {
             dying: pre.threads.records@[t].value().dying,
             process: pre.threads.records@[t].value().process,
             placement: pre.threads.records@[t].value().placement,
+            run_prev: pre.threads.records@[t].value().run_prev,
+            run_next: pre.threads.records@[t].value().run_next,
         }
     }
 
@@ -3427,6 +3620,8 @@ impl CapKernel {
             dying: record.dying,
             process: record.process,
             placement: record.placement,
+            run_prev: record.run_prev,
+            run_next: record.run_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -3434,6 +3629,16 @@ impl CapKernel {
             let post = *self;
             assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
             assert(Self::frame_written(pre, post, t, frame));
+            lemma_queues_unrunnable_written(
+                &pre.threads.queues,
+                pre.threads.records@,
+                post.threads.records@,
+                t,
+            );
+            assert forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+                implies same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]) by {
+                assert(post.threads.records@[x] == pre.threads.records@[x]);
+            }
             lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
             Self::lemma_switch_wf(pre, post, 0, t);
             let (a, b) = (pre.view(), post.view());
@@ -3502,9 +3707,12 @@ impl CapKernel {
             ret ==> {
                 let n = old(self).tables.node_of(root, i);
                 let t = old(self).payload_of(n).base;
-                let core = old(self).threads.records@[t].value().placement->Some_0.core;
+                let pl = old(self).threads.records@[t].value().placement->Some_0;
+                let core = pl.core;
                 &&& old(self).threads.records@.contains_key(t)
                 &&& Self::state_written(*old(self), *final(self), t, ThreadState::Runnable { core })
+                &&& queued_at_back(&old(self).threads.queues, &final(self).threads.queues, core as int, pl.priority as int, t)
+                &&& at_back_of_priority(&final(self).threads.queues, final(self).threads.records@, core as int, pl.priority, t)
                 &&& final(self).cores == old(self).cores
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
             },
@@ -3527,35 +3735,35 @@ impl CapKernel {
             Some(_) => {},
             None => { return false; },
         }
-        let core = match record.placement {
-            Some(pl) => pl.core,
+        let (core, prio) = match record.placement {
+            Some(pl) => (pl.core, pl.priority),
             None => { return false; },
         };
-        let tracked mut perm;
         proof {
-            perm = self.threads.records.borrow_mut().tracked_remove(t);
+            reveal(placements_wf);
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
         }
-        ptr.write(Tracked(&mut perm), ThreadRecord {
-            state: ThreadState::Runnable { core },
-            frame: record.frame,
-            saved: record.saved,
-            save: record.save,
-            pending_stop: record.pending_stop,
-            dying: record.dying,
-            process: record.process,
-            placement: record.placement,
-        });
+        self.enqueue_and_write(
+            core,
+            prio,
+            t,
+            ThreadRecord {
+                state: ThreadState::Runnable { core },
+                ..record
+            },
+        );
         proof {
-            self.threads.records.borrow_mut().tracked_insert(t, perm);
             reveal(current_wf);
             let post = *self;
-            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
             } by {
                 assert(runs(pre.cores@, d, x));
                 assert(x != t);
+                assert(post.threads.records@.contains_key(x));
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
                 let e = post.threads.records@[x].value().state->Running_core;
@@ -3564,20 +3772,31 @@ impl CapKernel {
             } by {
                 assert(x != t);
                 assert(pre.threads.records@.contains_key(x));
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
                 implies post.threads.records@[x].value().state is Running by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
             Self::lemma_switch_wf(pre, post, 0, t);
+            assert forall|o: ObjectId| #[trigger] saved_registers(&post.threads).contains_key(o)
+                implies saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o] by {
+                if o != t {
+                    assert(post.threads.records@.contains_key(o));
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             assert(post.view() == pre.view());
         }
         true
     }
 
-    /// The step wrote thread t's record as r, left every other record as it was, and every object but
-    /// the cores and the stop IPIs.
+    /// The step wrote thread t's record as r (up to run-queue links), left every other record as it was
+    /// (up to run-queue links), and every object but the cores and the stop IPIs.
     pub open spec fn record_written(pre: Self, post: Self, t: usize, r: ThreadRecord) -> bool {
         &&& post.list == pre.list
         &&& post.tables == pre.tables
@@ -3599,10 +3818,10 @@ impl CapKernel {
         &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
-            ==> post.threads.records@[x] == pre.threads.records@[x]
+            ==> same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x])
         &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
         &&& post.threads.records@[t].is_init()
-        &&& post.threads.records@[t].value() == r
+        &&& same_thread_but_links(post.threads.records@[t].value(), r)
     }
 
     /// The step set thread t's state and nothing else of its record or of any other record, and left
@@ -3675,6 +3894,14 @@ impl CapKernel {
                 if core != c {
                     self.stop_elsewhere(t, core);
                     proof {
+                        let post = *self;
+                        assert forall|o: ObjectId| #[trigger] saved_registers(&post.threads).contains_key(o)
+                            implies saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o] by {
+                            if o != t {
+                                assert(post.threads.records@.contains_key(o));
+                                assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                            }
+                        }
                         assert(saved_registers(&self.threads) =~= saved_registers(&pre.threads));
                         assert(self.view() == pre.view());
                     }
@@ -3692,35 +3919,69 @@ impl CapKernel {
                 }
             }
         }
-        if current {
-            let state = *self.cores.get(c);
-            self.cores.set(c, CoreState {
-                current_thread: None,
-                acked_epoch: state.acked_epoch,
-                generation: state.generation,
-                next_pcid: state.next_pcid,
-                space: state.space,
-            });
+        match record.state {
+            ThreadState::Runnable { core } => {
+                let prio = match record.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                self.dequeue_and_write(
+                    core,
+                    prio,
+                    t,
+                    ThreadRecord {
+                        state: ThreadState::Inactive,
+                        pending_stop: false,
+                        ..record
+                    },
+                );
+            },
+            _ => {
+                if current {
+                    let state = *self.cores.get(c);
+                    self.cores.set(c, CoreState {
+                        current_thread: None,
+                        acked_epoch: state.acked_epoch,
+                        generation: state.generation,
+                        next_pcid: state.next_pcid,
+                        space: state.space,
+                    });
+                }
+                let tracked mut perm;
+                proof {
+                    perm = self.threads.records.borrow_mut().tracked_remove(t);
+                }
+                ptr.write(Tracked(&mut perm), ThreadRecord {
+                    state: ThreadState::Inactive,
+                    frame: record.frame,
+                    saved: record.saved,
+                    save: record.save,
+                    pending_stop: false,
+                    dying: record.dying,
+                    process: record.process,
+                    placement: record.placement,
+                    run_prev: NONE,
+                    run_next: NONE,
+                });
+                proof {
+                    self.threads.records.borrow_mut().tracked_insert(t, perm);
+                    assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+                    lemma_queues_unrunnable_written(
+                        &pre.threads.queues,
+                        pre.threads.records@,
+                        self.threads.records@,
+                        t,
+                    );
+                    assert forall|x: usize| x != t && #[trigger] self.threads.records@.contains_key(x)
+                        implies same_record_perm_but_links(pre.threads.records@[x], self.threads.records@[x]) by {
+                        assert(self.threads.records@[x] == pre.threads.records@[x]);
+                    }
+                }
+            },
         }
-        let tracked mut perm;
         proof {
-            perm = self.threads.records.borrow_mut().tracked_remove(t);
-        }
-        ptr.write(Tracked(&mut perm), ThreadRecord {
-            state: ThreadState::Inactive,
-            frame: record.frame,
-            saved: record.saved,
-            save: record.save,
-            pending_stop: false,
-            dying: record.dying,
-            process: record.process,
-            placement: record.placement,
-        });
-        proof {
-            self.threads.records.borrow_mut().tracked_insert(t, perm);
             reveal(current_wf);
             let post = *self;
-            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
@@ -3729,6 +3990,8 @@ impl CapKernel {
                 assert(post.cores@[d] == pre.cores@[d]);
                 assert(runs(pre.cores@, d, x));
                 assert(x != t);
+                assert(post.threads.records@.contains_key(x));
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
                 let e = post.threads.records@[x].value().state->Running_core;
@@ -3736,6 +3999,7 @@ impl CapKernel {
                 &&& post.cores@[e as int].current_thread == Some(x)
             } by {
                 assert(x != t);
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
                 let e = pre.threads.records@[x].value().state->Running_core;
                 assert(pre.threads.records@.contains_key(x));
                 assert(pre.cores@[e as int].current_thread == Some(x));
@@ -3747,8 +4011,16 @@ impl CapKernel {
                 implies post.threads.records@[x].value().state is Running by {
                 assert(x != t);
                 assert(pre.threads.records@.contains_key(x));
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
             }
             Self::lemma_switch_wf(pre, post, c as int, t);
+            assert forall|o: ObjectId| #[trigger] saved_registers(&post.threads).contains_key(o)
+                implies saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o] by {
+                if o != t {
+                    assert(post.threads.records@.contains_key(o));
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             assert(post.view() == pre.view());
         }
@@ -3787,6 +4059,8 @@ impl CapKernel {
             dying: record.dying,
             process: record.process,
             placement: record.placement,
+            run_prev: record.run_prev,
+            run_next: record.run_next,
         });
         self.stop_ipis = Ghost(pre.stop_ipis@.push(d));
         proof {
@@ -3794,6 +4068,16 @@ impl CapKernel {
             reveal(current_wf);
             let post = *self;
             assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            lemma_queues_unrunnable_written(
+                &pre.threads.queues,
+                pre.threads.records@,
+                post.threads.records@,
+                t,
+            );
+            assert forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+                implies same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]) by {
+                assert(post.threads.records@[x] == pre.threads.records@[x]);
+            }
             assert forall|e: int, x: usize| 0 <= e < NUM_CPUS && #[trigger] runs(post.cores@, e, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: e as usize })
@@ -3850,39 +4134,79 @@ impl CapKernel {
         }
         let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
         let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
-        let (state, stop) = match record.state {
-            ThreadState::Running { core } => {
-                if core != c {
-                    self.stop_ipis = Ghost(pre.stop_ipis@.push(core));
-                }
-                (record.state, true)
+        match record.state {
+            ThreadState::Runnable { core } => {
+                let prio = match record.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                self.dequeue_and_write(
+                    core,
+                    prio,
+                    t,
+                    ThreadRecord {
+                        state: ThreadState::Dead,
+                        pending_stop: false,
+                        dying: false,
+                        ..record
+                    },
+                );
             },
-            _ => (ThreadState::Dead, false),
-        };
-        let tracked mut perm;
-        proof {
-            perm = self.threads.records.borrow_mut().tracked_remove(t);
+            _ => {
+                let (state, stop) = match record.state {
+                    ThreadState::Running { core } => {
+                        if core != c {
+                            self.stop_ipis = Ghost(pre.stop_ipis@.push(core));
+                        }
+                        (record.state, true)
+                    },
+                    _ => (ThreadState::Dead, false),
+                };
+                let tracked mut perm;
+                proof {
+                    perm = self.threads.records.borrow_mut().tracked_remove(t);
+                }
+                ptr.write(Tracked(&mut perm), ThreadRecord {
+                    state,
+                    frame: record.frame,
+                    saved: record.saved,
+                    save: record.save,
+                    pending_stop: stop,
+                    dying: stop,
+                    process: record.process,
+                    placement: record.placement,
+                    run_prev: NONE,
+                    run_next: NONE,
+                });
+                proof {
+                    self.threads.records.borrow_mut().tracked_insert(t, perm);
+                    assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+                    lemma_queues_unrunnable_written(
+                        &pre.threads.queues,
+                        pre.threads.records@,
+                        self.threads.records@,
+                        t,
+                    );
+                    assert forall|x: usize| x != t && #[trigger] self.threads.records@.contains_key(x)
+                        implies same_record_perm_but_links(pre.threads.records@[x], self.threads.records@[x]) by {
+                        assert(self.threads.records@[x] == pre.threads.records@[x]);
+                    }
+                }
+            },
         }
-        ptr.write(Tracked(&mut perm), ThreadRecord {
-            state,
-            frame: record.frame,
-            saved: record.saved,
-            save: record.save,
-            pending_stop: stop,
-            dying: stop,
-            process: record.process,
-            placement: record.placement,
-        });
         proof {
-            self.threads.records.borrow_mut().tracked_insert(t, perm);
             reveal(current_wf);
             let post = *self;
-            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
             assert forall|e: int, x: usize| 0 <= e < NUM_CPUS && #[trigger] runs(post.cores@, e, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: e as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, e, x)
             } by {
                 assert(runs(pre.cores@, e, x));
+                assert(post.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
                 let e = post.threads.records@[x].value().state->Running_core;
@@ -3890,10 +4214,16 @@ impl CapKernel {
                 &&& post.cores@[e as int].current_thread == Some(x)
             } by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
                 implies post.threads.records@[x].value().state is Running by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
             Self::lemma_switch_wf(pre, post, c as int, t);
         }
@@ -4082,6 +4412,8 @@ impl CapKernel {
             dying: false,
             process: record.process,
             placement: record.placement,
+            run_prev: NONE,
+            run_next: NONE,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4089,6 +4421,16 @@ impl CapKernel {
             reveal(frame_save_matches);
             let post = *self;
             assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            lemma_queues_unrunnable_written(
+                &pre.threads.queues,
+                pre.threads.records@,
+                post.threads.records@,
+                t,
+            );
+            assert forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+                implies same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]) by {
+                assert(post.threads.records@[x] == pre.threads.records@[x]);
+            }
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
@@ -4240,6 +4582,7 @@ impl CapKernel {
         &&& post.processes.bound@ == pre.processes.bound@.insert(p, pre.processes.bound@[p].insert(t))
         &&& post.threads.holders == pre.threads.holders
         &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& post.threads.queues == pre.threads.queues
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
             ==> post.threads.records@[x] == pre.threads.records@[x]
@@ -4254,6 +4597,8 @@ impl CapKernel {
             dying: r.dying,
             process: Some(p),
             placement: r.placement,
+            run_prev: r.run_prev,
+            run_next: r.run_next,
         }
         &&& post.holders == pre.holders
         &&& post.tables == pre.tables
@@ -4519,6 +4864,15 @@ impl CapKernel {
         }
         lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         lemma_placed_running_same(post.threads.boot_thread@, pre.threads.records@, post.threads.records@);
+        if pre.threads.records@[t].value().state is Runnable {
+            lemma_runnable_is_bound(&pre.threads.queues, pre.threads.records@, t);
+        }
+        lemma_queues_unrunnable_written(
+            &pre.threads.queues,
+            pre.threads.records@,
+            post.threads.records@,
+            t,
+        );
         Self::lemma_tlb_same(pre, post);
         assert(process_tables_wf(&post.tables, &post.processes));
         assert(post.frames_wf());
@@ -4630,6 +4984,8 @@ impl CapKernel {
             dying: record.dying,
             process: Some(p),
             placement: record.placement,
+            run_prev: record.run_prev,
+            run_next: record.run_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4856,6 +5212,7 @@ impl CapKernel {
         }
         &&& post.threads.holders == pre.threads.holders
         &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& post.threads.queues == pre.threads.queues
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& forall|y: usize| y != t && #[trigger] post.threads.records@.contains_key(y)
             ==> post.threads.records@[y] == pre.threads.records@[y]
@@ -5171,6 +5528,12 @@ impl CapKernel {
                 }
             }
         }
+        lemma_queues_unrunnable_written(
+            &pre.threads.queues,
+            pre.threads.records@,
+            post.threads.records@,
+            t,
+        );
         Self::lemma_tlb_same(pre, post);
         assert(process_tables_wf(&post.tables, &post.processes));
         assert(post.frames_wf());
@@ -5298,6 +5661,8 @@ impl CapKernel {
             dying: record.dying,
             process: record.process,
             placement: Some(pl),
+            run_prev: record.run_prev,
+            run_next: record.run_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);

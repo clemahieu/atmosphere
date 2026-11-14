@@ -118,6 +118,7 @@ impl CapKernel {
         }
         &&& post.threads.records == pre.threads.records
         &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& post.threads.queues == pre.threads.queues
         &&& post.threads.holders@ == moved_thread_holders(pre.threads.holders@, i, n)
         &&& post.processes.records == pre.processes.records
         &&& post.processes.spare == pre.processes.spare

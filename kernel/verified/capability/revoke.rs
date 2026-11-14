@@ -20,6 +20,8 @@ use crate::capability::position::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::schedule::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 use crate::capability::refs::*;
 use crate::capability::table::*;
@@ -167,14 +169,17 @@ impl CapKernel {
                 )
                 &&& final(self).holders == old(self).holders
                 &&& final(self).threads.boot_thread == old(self).threads.boot_thread
+                &&& final(self).threads.queues == old(self).threads.queues
                 &&& final(self).threads.holders@ == old(self).threads.holders@.insert(t, old(self).threads.holders@[t].remove(n))
             },
             !(old(self).is_cap(n) && old(self).payload_of(n).kind is Thread)
                 && !(old(self).list.nodes@[n as int].kind is Binding)
                 && !(old(self).list.nodes@[n as int].kind is Placement)
                 ==> final(self).threads == old(self).threads,
-            !(old(self).list.nodes@[n as int].kind is Binding) && !(old(self).list.nodes@[n as int].kind is Placement)
-                ==> final(self).threads.records == old(self).threads.records,
+            !(old(self).list.nodes@[n as int].kind is Binding) && !(old(self).list.nodes@[n as int].kind is Placement) ==> {
+                &&& final(self).threads.records == old(self).threads.records
+                &&& final(self).threads.queues == old(self).threads.queues
+            },
             old(self).list.nodes@[n as int].kind is Binding ==> Self::unbound(*old(self), *final(self), n),
             old(self).list.nodes@[n as int].kind is Placement ==> Self::unplaced(*old(self), *final(self), n),
             old(self).is_cap(n) && old(self).payload_of(n).kind is Process ==> {
@@ -641,6 +646,7 @@ impl CapKernel {
                     && (!(mid.list.nodes@[r as int].kind is Binding) && !(mid.list.nodes@[r as int].kind is Placement) ==> {
                         &&& self.threads.records == mid.threads.records
                         &&& self.threads.boot_thread == mid.threads.boot_thread
+                        &&& self.threads.queues == mid.threads.queues
                     })
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
@@ -733,6 +739,7 @@ impl CapKernel {
                 && (!(old(self).list.nodes@[r as int].kind is Binding) && !(old(self).list.nodes@[r as int].kind is Placement) ==> {
                     &&& final(self).threads.records == old(self).threads.records
                     &&& final(self).threads.boot_thread == old(self).threads.boot_thread
+                    &&& final(self).threads.queues == old(self).threads.queues
                 })
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r))
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), r))
@@ -781,6 +788,21 @@ impl CapKernel {
             }
             assert(mid.flush_epoch <= pre.flush_epoch + 1);
             assert(Self::records_shrunk(pre, mid));
+            assert forall|o: ObjectId| #[trigger] saved_registers(&mid.threads).contains_key(o)
+                implies saved_registers(&mid.threads)[o] == saved_registers(&cut.threads)[o] by {
+                if cut.list.nodes@[r as int].kind is Binding {
+                    if o != r {
+                        assert(mid.threads.records@.contains_key(o));
+                        assert(same_record_perm_but_links(cut.threads.records@[o], mid.threads.records@[o]));
+                    }
+                } else if cut.list.nodes@[r as int].kind is Placement {
+                    let t0 = page_of(r);
+                    if o != t0 {
+                        assert(mid.threads.records@.contains_key(o));
+                        assert(same_record_perm_but_links(cut.threads.records@[o], mid.threads.records@[o]));
+                    }
+                }
+            }
             assert(saved_registers(&mid.threads) =~= saved_registers(&cut.threads));
             Self::lemma_revoke_step_wf(cut, mid, *self, root, c, r);
             Self::lemma_revoke_step_links(pre, cut, mid, *self, r);
@@ -822,6 +844,7 @@ impl CapKernel {
                 assert(cut.threads == pre.threads);
                 assert(self.threads.records == pre.threads.records);
                 assert(self.threads.boot_thread == pre.threads.boot_thread);
+                assert(self.threads.queues == pre.threads.queues);
             }
             // Each part of the step bumps the epoch or keeps it, and a word it writes is at the new epoch,
             // so a page above an acknowledgement no later than the step's first epoch stays above it.
@@ -1038,14 +1061,17 @@ impl CapKernel {
                 )
                 &&& mid.holders == pre.holders
                 &&& mid.threads.boot_thread == pre.threads.boot_thread
+                &&& mid.threads.queues == pre.threads.queues
                 &&& mid.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].remove(r))
             },
             !(pre.is_cap(r) && pre.payload_of(r).kind is Thread)
                 && !(pre.list.nodes@[r as int].kind is Binding)
                 && !(pre.list.nodes@[r as int].kind is Placement)
                 ==> mid.threads == pre.threads,
-            !(pre.list.nodes@[r as int].kind is Binding) && !(pre.list.nodes@[r as int].kind is Placement)
-                ==> mid.threads.records == pre.threads.records,
+            !(pre.list.nodes@[r as int].kind is Binding) && !(pre.list.nodes@[r as int].kind is Placement) ==> {
+                &&& mid.threads.records == pre.threads.records
+                &&& mid.threads.queues == pre.threads.queues
+            },
             pre.list.nodes@[r as int].kind is Binding ==> Self::unbound(pre, mid, r),
             pre.list.nodes@[r as int].kind is Placement ==> Self::unplaced(pre, mid, r),
             pre.is_cap(r) && pre.payload_of(r).kind is Process ==> {
@@ -1164,6 +1190,21 @@ impl CapKernel {
                 }
             }
         }
+        assert forall|o: ObjectId| #[trigger] saved_registers(&post.threads).contains_key(o)
+            implies saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o] by {
+            if pre.list.nodes@[r as int].kind is Binding {
+                if o != r {
+                    assert(post.threads.records@.contains_key(o));
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            } else if pre.list.nodes@[r as int].kind is Placement {
+                let t0 = page_of(r);
+                if o != t0 {
+                    assert(post.threads.records@.contains_key(o));
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
+        }
         assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
         Self::lemma_revoke_step(pre, post, root, c, r);
         Self::lemma_delete_caps_wf(pre, post, r);
@@ -1223,12 +1264,20 @@ impl CapKernel {
             }
         }
         if pre.list.nodes@[r as int].kind is Binding {
-            assert forall|x: usize| x != r implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {}
+            assert forall|x: usize| x != r implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
+                if post.threads.records@.contains_key(x) {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
+            }
             Self::lemma_bound_threads_remove(pre, post, r);
         } else {
             assert forall|x: usize| #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
-                if pre.list.nodes@[r as int].kind is Placement && x == page_of(r) {
-                    assert(post.threads.records@[x].value().process == pre.threads.records@[x].value().process);
+                if pre.list.nodes@[r as int].kind is Placement {
+                    if x == page_of(r) {
+                        assert(post.threads.records@[x].value().process == pre.threads.records@[x].value().process);
+                    } else if post.threads.records@.contains_key(x) {
+                        assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                    }
                 }
             }
             Self::lemma_bound_threads_same(pre, post);
@@ -1296,11 +1345,13 @@ impl CapKernel {
                 mid.lemma_thread_node_apart(r);
                 assert(t + 1 != r as int);
                 if t == r {
-                    assert(mrec == crate::capability::thread::unbound_record(mrec)
-                        || post.threads.records@[t].value() == crate::capability::thread::unbound_record(mrec));
+                    assert(same_thread_but_links(post.threads.records@[t].value(), crate::capability::thread::unbound_record(mrec)));
                     if place_mid {
                         assert(Self::stopped_state(mrec) == Self::stopped_state(before));
                     }
+                } else {
+                    assert(post.threads.records@.contains_key(t));
+                    assert(same_record_perm_but_links(mid.threads.records@[t], post.threads.records@[t]));
                 }
             } else if mid.list.nodes@[r as int].kind is Placement {
                 reveal(placements_wf);
@@ -1308,11 +1359,14 @@ impl CapKernel {
                 assert(r == placement_node(t0));
                 assert(t != r);
                 if t == t0 {
+                    assert(same_thread_but_links(post.threads.records@[t].value(), crate::capability::thread::unplaced_record(mrec)));
                     if bind_mid {
                         assert(Self::stopped_state(mrec) == Self::stopped_state(before));
                     }
                 } else {
                     assert(t + 1 != r as int);
+                    assert(post.threads.records@.contains_key(t));
+                    assert(same_record_perm_but_links(mid.threads.records@[t], post.threads.records@[t]));
                 }
             } else {
                 assert(t != r || !(pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding && mid.list.nodes@[t as int].live));
@@ -1520,9 +1574,16 @@ impl CapKernel {
             placements_wf(&post.list, &post.tables, &post.threads),
             current_wf(post.cores@, post.threads.records@),
             placed_running_wf(post.threads.boot_thread@, post.threads.records@),
+            queues_wf(&post.threads.queues, post.threads.records@),
     {
         reveal(thread_bound);
         let t = n;
+        assert forall|x: usize| x != n && #[trigger] pre.threads.records@.contains_key(x)
+            implies post.threads.records@.contains_key(x)
+                && post.threads.records@[x].value().process == pre.threads.records@[x].value().process by {
+            assert(post.threads.records@.contains_key(x));
+            assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+        }
         Self::lemma_binding_parents_caps_frame(pre, post, n, n);
         pre.lemma_bound_process(t);
         let p = pre.threads.records@[t].value().process->Some_0;
@@ -1603,6 +1664,10 @@ impl CapKernel {
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: c as usize })
             } by {
                 assert(runs(pre.cores@, c, x));
+                assert(post.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
                 let e = post.threads.records@[x].value().state->Running_core;
@@ -1610,11 +1675,17 @@ impl CapKernel {
                 &&& post.cores@[e as int].current_thread == Some(x)
             } by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
                 assert(post.threads.records@[x].value().state == pre.threads.records@[x].value().state);
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
                 implies post.threads.records@[x].value().state is Running by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
         }
         assert forall|x: usize| x < NODE_SPACE implies
@@ -1631,12 +1702,24 @@ impl CapKernel {
         } by {
             assert(x != n);
         }
+        assert forall|x: usize| #[trigger] pre.threads.records@.contains_key(x) implies {
+            &&& post.threads.records@.contains_key(x)
+            &&& post.threads.records@[x].value().placement == pre.threads.records@[x].value().placement
+        } by {
+            assert(post.threads.records@.contains_key(x));
+            if x != t {
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+            }
+        }
         lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
             reveal(placed_running_wf);
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && Some(x) != post.threads.boot_thread@
                 implies thread_placed_running(post.threads.records@[x].value()) by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
         }
     }
@@ -1680,6 +1763,7 @@ impl CapKernel {
             placements_wf(&post.list, &post.tables, &post.threads),
             current_wf(post.cores@, post.threads.records@),
             placed_running_wf(post.threads.boot_thread@, post.threads.records@),
+            queues_wf(&post.threads.queues, post.threads.records@),
     {
         reveal(placements_wf);
         let t = page_of(n);
@@ -1707,6 +1791,15 @@ impl CapKernel {
         lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
         lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
         Self::lemma_delete_mappings(pre, post, n);
+        assert forall|x: usize| #[trigger] pre.threads.records@.contains_key(x) implies {
+            &&& post.threads.records@.contains_key(x)
+            &&& post.threads.records@[x].value().process == pre.threads.records@[x].value().process
+        } by {
+            assert(post.threads.records@.contains_key(x));
+            if x != t {
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+            }
+        }
         Self::lemma_binding_parents_caps_frame(pre, post, n, n);
         assert forall|x: usize| x < NODE_SPACE implies
             ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
@@ -1730,7 +1823,8 @@ impl CapKernel {
             let u = page_of(x);
             assert(x == placement_node(u));
             assert(u != t);
-            assert(post.threads.records@[u] == pre.threads.records@[u]);
+            assert(post.threads.records@.contains_key(u));
+            assert(same_record_perm_but_links(pre.threads.records@[u], post.threads.records@[u]));
             let m = pre.list.parent@[x];
             assert(m != n);
             Self::lemma_caps_frame(pre, post, n, n, m);
@@ -1748,7 +1842,7 @@ impl CapKernel {
             } by {
             assert(u != t);
             assert(pre.threads.records@.contains_key(u));
-            assert(post.threads.records@[u] == pre.threads.records@[u]);
+            assert(same_record_perm_but_links(pre.threads.records@[u], post.threads.records@[u]));
             let x = placement_node(u);
             assert(x != n);
             assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Placement);
@@ -1760,6 +1854,10 @@ impl CapKernel {
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: c as usize })
             } by {
                 assert(runs(pre.cores@, c, x));
+                assert(post.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
                 let e = post.threads.records@[x].value().state->Running_core;
@@ -1767,11 +1865,17 @@ impl CapKernel {
                 &&& post.cores@[e as int].current_thread == Some(x)
             } by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
                 assert(post.threads.records@[x].value().state == pre.threads.records@[x].value().state);
             }
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
                 implies post.threads.records@[x].value().state is Running by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
         }
         assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
@@ -1779,6 +1883,9 @@ impl CapKernel {
             assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && Some(x) != post.threads.boot_thread@
                 implies thread_placed_running(post.threads.records@[x].value()) by {
                 assert(pre.threads.records@.contains_key(x));
+                if x != t {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
             }
         }
     }

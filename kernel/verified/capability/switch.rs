@@ -18,6 +18,8 @@ use crate::capability::mapping::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::schedule::*;
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
@@ -129,7 +131,7 @@ impl CapKernel {
             final(self).threads.boot_thread == old(self).threads.boot_thread,
             forall|x: usize| #[trigger] final(self).threads.records@.contains_key(x)
                 && old(self).cores@[c as int].current_thread != Some(x) && next != Some(x)
-                ==> final(self).threads.records@[x] == old(self).threads.records@[x],
+                ==> same_record_perm_but_links(old(self).threads.records@[x], final(self).threads.records@[x]),
             // What a process sees changes only in the leaving thread's saved registers, which its own
             // user-mode execution wrote: design/theorem-over-reach/.
             match old(self).cores@[c as int].current_thread {
@@ -138,6 +140,7 @@ impl CapKernel {
             },
             match old(self).cores@[c as int].current_thread {
                 Some(o) => {
+                    let prio = thread_priority(old(self).threads.records@[o].value());
                     &&& final(self).threads.records@[o].value().state == (ThreadState::Runnable { core: c })
                     &&& final(self).threads.records@[o].value().frame == saved_frame(frame, saved)
                     &&& final(self).threads.records@[o].value().saved == saved
@@ -145,6 +148,8 @@ impl CapKernel {
                     &&& final(self).threads.records@[o].value().process == old(self).threads.records@[o].value().process
                     &&& final(self).threads.records@[o].value().placement == old(self).threads.records@[o].value().placement
                     &&& final(self).threads.records@[o].value().dying == old(self).threads.records@[o].value().dying
+                    &&& at_back_of_priority(&final(self).threads.queues, final(self).threads.records@, c as int, prio, o)
+                    &&& (next is None ==> queued_at_back(&old(self).threads.queues, &final(self).threads.queues, c as int, prio as int, o))
                 },
                 None => true,
             },
@@ -202,6 +207,11 @@ impl CapKernel {
         let ghost s1 = *self;
         proof {
             if let Some(o) = leaving {
+                assert forall|x: ObjectId| x != o && #[trigger] saved_registers(&s1.threads).contains_key(x)
+                    implies saved_registers(&s1.threads)[x] == saved_registers(&s0.threads)[x] by {
+                    assert(s1.threads.records@.contains_key(x));
+                    assert(same_record_perm_but_links(s0.threads.records@[x], s1.threads.records@[x]));
+                }
                 assert(saved_registers(&s1.threads) =~= saved_registers(&s0.threads).insert(o, saved_frame(frame, saved)));
             }
             assert(s1.cores@[c as int].current_thread is None);
@@ -213,8 +223,11 @@ impl CapKernel {
             if let Some(t) = next {
                 if let Some(o) = leaving {
                     assert(t != o);
+                    assert(s1.threads.records@.contains_key(t));
+                    assert(same_record_perm_but_links(s0.threads.records@[t], s1.threads.records@[t]));
+                } else {
+                    assert(same_record_perm_but_links(s0.threads.records@[t], s1.threads.records@[t]));
                 }
-                assert(s1.threads.records@[t] == s0.threads.records@[t]);
             }
         }
         match next {
@@ -226,6 +239,14 @@ impl CapKernel {
                         assert(s1.loaded(d, r) == s0.loaded(d, r));
                     }
                     assert(s5.threads == s1.threads);
+                    assert forall|x: usize| #[trigger] s5.threads.records@.contains_key(x)
+                        && leaving != Some(x)
+                        implies same_record_perm_but_links(s0.threads.records@[x], s5.threads.records@[x]) by {
+                        if let Some(o) = leaving {
+                            assert(s1.threads.records@.contains_key(x));
+                            assert(same_record_perm_but_links(s0.threads.records@[x], s1.threads.records@[x]));
+                        }
+                    }
                 }
             },
             Some(t) => {
@@ -278,6 +299,44 @@ impl CapKernel {
                         assert(s2.loaded(d, r) == s1.loaded(d, r));
                         assert(s3.loaded(d, r) == s2.loaded(d, r));
                         assert(s4.loaded(d, r) == s3.loaded(d, r));
+                    }
+                    if let Some(o) = leaving {
+                        assert(t != o);
+                        assert(s5.threads.records@.contains_key(o));
+                        assert(same_record_perm_but_links(s4.threads.records@[o], s5.threads.records@[o]));
+                        let p_o = thread_priority(s0.threads.records@[o].value());
+                        let p_t = thread_priority(s4.threads.records@[t].value());
+                        lemma_runnable_is_bound(&s1.threads.queues, s1.threads.records@, o);
+                        lemma_runnable_is_bound(&s4.threads.queues, s4.threads.records@, t);
+                        lemma_tail_kept_after_other_dequeued(
+                            &s1.threads.queues,
+                            &s5.threads.queues,
+                            c as int,
+                            p_o as int,
+                            p_t as int,
+                            o,
+                            t,
+                        );
+                        lemma_tail_is_behind_all(&s5.threads.queues, s5.threads.records@, c as int, p_o, o);
+                    }
+                    assert forall|x: usize| #[trigger] s5.threads.records@.contains_key(x)
+                        && leaving != Some(x) && next != Some(x)
+                        implies same_record_perm_but_links(s0.threads.records@[x], s5.threads.records@[x]) by {
+                        assert(x != t);
+                        assert(s4.threads.records@.contains_key(x));
+                        assert(same_record_perm_but_links(s4.threads.records@[x], s5.threads.records@[x]));
+                        if let Some(o) = leaving {
+                            assert(x != o);
+                            assert(s1.threads.records@.contains_key(x));
+                            assert(same_record_perm_but_links(s0.threads.records@[x], s1.threads.records@[x]));
+                        }
+                    }
+                    assert forall|x: ObjectId| #[trigger] saved_registers(&s5.threads).contains_key(x)
+                        implies saved_registers(&s5.threads)[x] == saved_registers(&s1.threads)[x] by {
+                        if x != t {
+                            assert(s5.threads.records@.contains_key(x));
+                            assert(same_record_perm_but_links(s4.threads.records@[x], s5.threads.records@[x]));
+                        }
                     }
                     assert(saved_registers(&s5.threads) =~= saved_registers(&s1.threads));
                 }

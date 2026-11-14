@@ -70,6 +70,7 @@ use crate::capability::reclaim_thread::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::revoke::*;
+use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
@@ -2742,7 +2743,7 @@ impl CapKernel {
             assert(ok3 is Slice);
             assert(r2.thread_unbound(r3, process, ROOT_UNTYPED_SLOT, bt));
             assert(Self::unbound(r2, r3, bt));
-            assert(r3.threads.records@[bt].value() == unbound_record(r2.threads.records@[bt].value()));
+            assert(same_thread_but_links(r3.threads.records@[bt].value(), unbound_record(r2.threads.records@[bt].value())));
             assert(r3.threads.records@[bt].value().process is None);
             assert forall|k: int| 0 <= k < NODES_PER_PAGE implies !(#[trigger] r3.list.nodes@[bt + k]).live by {
                 if k != 0 {
@@ -11673,6 +11674,9 @@ impl CapKernel {
                 &&& !final(self).threads.records@[thread].value().dying
                 &&& final(self).list.is_child(core_cap, placement_node(thread))
                 &&& final(self).list.nodes@[placement_node(thread) as int].kind is Placement
+                &&& final(self).threads.queues.queue(0, 0) == seq![thread]
+                &&& forall|c: int, p: int| 0 <= c < NUM_CPUS && 0 <= p < NUM_PRIORITIES && (c != 0 || p != 0)
+                    ==> (#[trigger] final(self).threads.queues.queue(c, p)) == Seq::<usize>::empty()
             }),
     {
         self.witness_place_and_start(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, 0)
@@ -11730,6 +11734,9 @@ impl CapKernel {
                 &&& final(self).root_live(process)
                 &&& final(self).can_control(process, WITNESS_THREAD_SLOT)
                 &&& final(self).payload_of(final(self).tables.node_of(process, WITNESS_THREAD_SLOT)).base == thread
+                &&& final(self).threads.queues.queue(core as int, 0) == seq![thread]
+                &&& forall|c: int, p: int| 0 <= c < NUM_CPUS && 0 <= p < NUM_PRIORITIES && (c != core || p != 0)
+                    ==> (#[trigger] final(self).threads.queues.queue(c, p)) == Seq::<usize>::empty()
             }),
     {
         hide(CapKernel::wf);
@@ -11974,6 +11981,18 @@ impl CapKernel {
             assert(started);
             assert(bt == base + 10 * PAGE_SZ);
             assert(Self::state_written(s4, s5, bt, ThreadState::Runnable { core }));
+            assert(s1.threads == s0.threads);
+            assert(s2.threads == s1.threads);
+            assert(s3.threads.queues == s2.threads.queues);
+            assert(s4.threads.queues == s3.threads.queues);
+            assert(s4.threads.queues.all_empty());
+            assert(s4.threads.queues.queue(core as int, 0) == Seq::<usize>::empty());
+            assert(Seq::<usize>::empty().push(bt) =~= seq![bt]);
+            assert(s5.threads.queues.queue(core as int, 0) == seq![bt]);
+            assert forall|c: int, p: int| 0 <= c < NUM_CPUS && 0 <= p < NUM_PRIORITIES && (c != core || p != 0)
+                implies (#[trigger] s5.threads.queues.queue(c, p)) == Seq::<usize>::empty() by {
+                assert(s4.threads.queues.queue(c, p) == Seq::<usize>::empty());
+            }
             assert(witness_alive(s5, process));
             assert(witness_alive(s5, base));
             assert(s5.tables == s4.tables);
@@ -12038,11 +12057,11 @@ impl CapKernel {
         proof {
             let s2 = *self;
             assert(step is Suspended);
-            assert(s2.threads.records@[thread].value() == ThreadRecord {
+            assert(same_thread_but_links(s2.threads.records@[thread].value(), ThreadRecord {
                 state: ThreadState::Inactive,
                 pending_stop: false,
                 ..s1.threads.records@[thread].value()
-            });
+            }));
             assert(s2.cores@[0] == s1.cores@[0]);
         }
         step
@@ -12148,6 +12167,97 @@ impl CapKernel {
             assert(!s3.threads.records@[thread].value().dying);
         }
         (stopped, moved)
+    }
+
+    /// From the state boot leaves, a thread the root builds, places on core 0 at priority 0 and starts,
+    /// as witness_root_starts_placed_thread starts it, is the thread core 0 selects, and switch_thread
+    /// makes it current on core 0. See design/cpu-time-as-capability/.
+    #[verifier::spinoff_prover]
+    pub fn witness_core_selects_placed_thread(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+        kernel_root: usize,
+        registers: Registers,
+        saved: FrameKind,
+    ) -> (ret: (bool, bool, Option<usize>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret.0,
+            ret.1,
+            ret.2 is Some,
+            ret.2 == Some((base + 10 * PAGE_SZ) as usize),
+            final(self).wf(),
+            final(self).cores@[0].current_thread == Some((base + 10 * PAGE_SZ) as usize),
+            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().state == (ThreadState::Running { core: 0 }),
+            final(self).cores@[0].space == Some(base),
+            final(self).spaces.registers@[0].root() == base + SPACE_ROOT_PAGE * PAGE_SZ,
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let (placed, started) = self.witness_root_starts_placed_thread(
+            root,
+            process,
+            leaf,
+            frames,
+            t,
+            free,
+            image,
+            untyped,
+            frame,
+            present,
+            Ghost(kernel_root),
+            base,
+        );
+        let ghost s1 = *self;
+        proof {
+            assert(s1.cores@.len() == NUM_CPUS) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s1.cores == s0.cores);
+        }
+        let selected = self.select_thread(0);
+        proof {
+            let thread = (base + 10 * PAGE_SZ) as usize;
+            assert(s1.threads.queues.queue(0, 0) == seq![thread]);
+            assert(s1.threads.queues.queue(0, 0).len() == 1);
+            assert(selected is Some);
+            let u = selected->Some_0;
+            let pu = thread_priority(s1.threads.records@[u].value());
+            if pu != 0 {
+                assert(s1.threads.queues.queue(0, pu as int) == Seq::<usize>::empty());
+            }
+            assert(pu == 0);
+            assert(u == thread);
+            assert(selected == Some(thread));
+            assert(s1.spaces.roots@.contains_key(base)
+                && s1.spaces.records@[base].value().kind is Process
+                && s1.processes.records@.contains_key(base)
+                && !s1.processes.records@[base].value().dead) by {
+                reveal(CapKernel::wf);
+                assert(witness_alive(s1, base));
+                assert(process_spaces_wf(&s1.spaces, &s1.processes));
+            }
+            assert(s1.cores@[0].current_thread is None);
+            assert(s1.cores@[0].generation == 1);
+            assert(s1.spaces.kernel_root@ == kernel_root);
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.switch_thread(0, registers, saved, selected, kernel_root, Tracked(&mut steps));
+        (placed, started, selected)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

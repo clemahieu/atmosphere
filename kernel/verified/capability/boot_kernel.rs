@@ -266,6 +266,7 @@ impl CapKernel {
             )
         }
         &&& self.threads.boot_thread@ == Some(t)
+        &&& self.threads.queues.all_empty()
         &&& self.threads.records@.contains_key(t)
         &&& self.threads.records@[t].value().process == Some(process)
         &&& self.threads.records@[t].value().state is Inactive

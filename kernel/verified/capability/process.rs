@@ -1205,6 +1205,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,
+            final(self).threads == old(self).threads,
             ret == old(self).can_retype_block(root, from, to, base, PROCESS_ORDER),
             !ret ==> *final(self) == *old(self),
             ret ==> {

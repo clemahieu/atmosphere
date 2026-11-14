@@ -42,6 +42,7 @@ pub mod reclaim_thread;
 pub mod refs;
 pub mod retype;
 pub mod revoke;
+pub mod schedule;
 pub mod space;
 pub mod steps;
 pub mod switch;

@@ -31,6 +31,8 @@ use crate::capability::reach::{CORE_OBJECTS, MAX_PRIORITY};
 use crate::capability::reach::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
@@ -120,6 +122,7 @@ impl CapKernel {
         &&& self.processes.bound@ == IMap::<usize, Set<usize>>::empty()
         &&& self.threads.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty()
         &&& self.threads.holders@ == IMap::<usize, Set<usize>>::empty()
+        &&& self.threads.queues.all_empty()
         &&& self.mappings@ == IMap::<usize, MappingRecord>::empty()
         &&& self.holders@ == IMap::<BlockRef, Set<usize>>::empty()
         &&& self.zeroing.blocks@ == Map::<usize, usize>::empty()
@@ -456,6 +459,7 @@ impl CapKernel {
             final(self).list.is_child(root, (leaf + 2) as usize),
             final(self).list.nodes@[leaf + 2].depth == 1,
             final(self).threads.boot_thread@ == Some(t),
+            final(self).threads.queues == old(self).threads.queues,
             final(self).threads.records@.contains_key(t),
             final(self).threads.records@[t].value() == (ThreadRecord {
                 state: crate::capability::thread::ThreadState::Inactive,
@@ -466,6 +470,8 @@ impl CapKernel {
                 dying: false,
                 process: Some(process),
                 placement: None,
+                run_prev: NONE,
+                run_next: NONE,
             }),
             final(self).list.is_child((leaf + 1) as usize, t),
             final(self).list.nodes@[t as int].kind is Binding,
@@ -641,6 +647,8 @@ impl CapKernel {
                 dying: false,
                 process: Some(process),
                 placement: None,
+                run_prev: NONE,
+                run_next: NONE,
             }));
             assert(thread_process(&post.threads, t) == Some(process));
             assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
@@ -909,6 +917,8 @@ impl CapKernel {
             forall|x: int| 0 <= x < NODE_SPACE && #[trigger] final(self).list.nodes@[x].live
                 && final(self).list.nodes@[x].kind is Hidden ==> x == leaf || x == frames,
             final(self).threads.boot_thread@ == Some(t),
+            final(self).threads.queues == old(self).threads.queues,
+            final(self).threads.queues.all_empty(),
             final(self).threads.records@.contains_key(t),
             final(self).threads.records@[t].value() == (ThreadRecord {
                 state: crate::capability::thread::ThreadState::Inactive,
@@ -919,6 +929,8 @@ impl CapKernel {
                 dying: false,
                 process: Some(process),
                 placement: None,
+                run_prev: NONE,
+                run_next: NONE,
             }),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
                 <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))),
@@ -1872,6 +1884,7 @@ impl CapKernel {
             post.threads.records@[t].is_init(),
             post.threads.records@[t].value() == fresh_thread(),
             post.threads.holders@ == pre.threads.holders@.insert(t, set![(leaf + 2) as usize]),
+            post.threads.queues == pre.threads.queues,
             // Everything else is as it was.
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
@@ -2023,6 +2036,7 @@ impl CapKernel {
         assert(placed_running_wf(post.threads.boot_thread@, post.threads.records@)) by {
             reveal(placed_running_wf);
         }
+        lemma_queues_thread_added(&pre.threads.queues, pre.threads.records@, post.threads.records@, base);
         lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
         Self::lemma_binding_parents_same_caps(pre, post);

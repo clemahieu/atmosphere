@@ -43,6 +43,7 @@ use crate::capability::reclaim_thread::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::revoke::*;
+use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;

@@ -28,6 +28,8 @@ use crate::capability::reclaim::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::schedule::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
@@ -333,8 +335,19 @@ impl CapKernel {
             Self::lemma_device_bindings_caps_frame(pre, post, t, t);
             Self::lemma_same_tree_shrunk(pre, post);
             Self::lemma_tlb_same(mid, post);
-            assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {}
+            assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
+                if post.threads.records@.contains_key(x) {
+                    assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                }
+            }
             Self::lemma_bound_threads_remove(pre, post, t);
+            assert forall|o: ObjectId| #[trigger] saved_registers(&post.threads).contains_key(o)
+                implies saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o] by {
+                if o != t {
+                    assert(post.threads.records@.contains_key(o));
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             Self::lemma_binding_view_same(pre, post, t);
             assert(!pre.is_cap(t));
@@ -731,6 +744,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads.records@ == pre.threads.records@.remove(base),
             post.threads.holders == pre.threads.holders,
+            post.threads.queues == pre.threads.queues,
             post.threads.boot_thread@ == (if pre.threads.boot_thread@ == Some(base) { None } else { pre.threads.boot_thread@ }),
             post.processes == pre.processes,
             post.stop_ipis == pre.stop_ipis,
@@ -741,6 +755,15 @@ impl CapKernel {
             bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
     {
         pre.lemma_spent_thread(base);
+        if pre.threads.records@[base].value().state is Runnable {
+            lemma_runnable_is_bound(&pre.threads.queues, pre.threads.records@, base);
+        }
+        lemma_queues_unrunnable_removed(
+            &pre.threads.queues,
+            pre.threads.records@,
+            post.threads.records@,
+            base,
+        );
         assert(post.tables.wf(&post.list)) by {
             reveal(Tables::leaves_wf);
             assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies post.tables.leaf_wf(&post.list, l) by {

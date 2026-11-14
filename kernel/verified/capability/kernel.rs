@@ -25,6 +25,8 @@ use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::Tables;
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::schedule::*;
 use crate::capability::thread::*;
 use crate::capability::zero::*;
 use crate::define::*;
@@ -1655,6 +1657,7 @@ impl CapKernel {
         &&& process_spaces_wf(&self.spaces, &self.processes)
         &&& current_wf(self.cores@, self.threads.records@)
         &&& placed_running_wf(self.threads.boot_thread@, self.threads.records@)
+        &&& queues_wf(&self.threads.queues, self.threads.records@)
         &&& bindings_wf(&self.list, &self.threads, &self.processes)
         &&& binding_parents(&self.list, &self.tables, &self.threads)
         &&& placements_wf(&self.list, &self.tables, &self.threads)
@@ -2125,7 +2128,7 @@ impl CapKernel {
         self.zeroing.init(Tracked(&mut steps));
         self.holders = Ghost(IMap::empty());
         self.devices = Devices::new(root);
-        self.threads = Threads::new();
+        self.threads.init(Tracked(&mut steps));
         self.processes = Processes::new();
         self.blocks.pages.init();
         self.blocks.regions_2m.init();
