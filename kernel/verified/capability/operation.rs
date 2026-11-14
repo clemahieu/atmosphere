@@ -112,7 +112,8 @@ pub const DISPATCH_STEPS: usize = CHECK_CURRENT_STEPS + INVOKE_REVOKE_STEPS;
 /// one counter it is held to. See design/one-lock-bounded-steps/.
 pub const ENTRY_STEPS: usize = DISPATCH_STEPS + ACKNOWLEDGE_STEPS;
 
-/// Every operation dispatch runs stays within revoke's bound, so dispatch stays within its own.
+/// Every operation dispatch runs stays within revoke's bound, so dispatch stays within its own; the
+/// flush IPI's entry and the selection's, tick, stay within B.
 pub proof fn lemma_revoke_bounds_the_operations()
     ensures
         INVOKE_RETYPE_STEPS <= INVOKE_REVOKE_STEPS,
@@ -128,6 +129,7 @@ pub proof fn lemma_revoke_bounds_the_operations()
         crate::capability::power::POWER_OFF_STEPS <= INVOKE_REVOKE_STEPS,
         crate::capability::inspect::INSPECT_STEPS <= INVOKE_REVOKE_STEPS,
         ACKNOWLEDGE_STEPS <= ENTRY_STEPS,
+        crate::capability::switch::TICK_STEPS <= ENTRY_STEPS,
 {
 }
 

@@ -36,7 +36,9 @@ use crate::pptr::*;
 /// switch_thread's bound in the step counter: one load_space.
 pub const SWITCH_THREAD_STEPS: usize = LOAD_SPACE_STEPS;
 
-/// tick's bound in the step counter: check_current, then at most one switch_thread.
+/// tick's bound in the step counter: check_current, then at most one switch_thread. tick is the
+/// selection's entry, so this bounds one hold of the kernel's lock by the timer's tick or the
+/// reschedule IPI, and it is within B, ENTRY_STEPS: design/one-lock-bounded-steps/.
 pub const TICK_STEPS: usize = CHECK_CURRENT_STEPS + SWITCH_THREAD_STEPS;
 
 /// What a tick on core c did. Each variant is a way the tick succeeds:
@@ -48,7 +50,8 @@ pub enum TickStep {
     /// than c's current thread, or c's address-space ids have run out of generations.
     Kept,
     /// The thread selected cannot run, its process dead or itself marked to die, and is taken off its
-    /// queue; core c keeps what it runs, and the next tick selects again.
+    /// queue; core c keeps what it runs, and the glue enters the selection again, in a hold of the
+    /// kernel's lock of its own, so one entry drops at most one thread.
     Dropped,
 }
 
@@ -164,6 +167,9 @@ impl CapKernel {
     /// core from a current thread of no higher priority, which saves its full frame with the marker
     /// Full and waits behind its equals, so equal priorities take turns; ticked says each case. The
     /// tick takes nothing from user space, so it is never refused. design/cpu-time-as-capability/.
+    /// tick is the selection's entry: the glue runs it once per hold of the kernel's lock, and it makes
+    /// its one counter in steps, whatever the caller passed, and holds it to TICK_STEPS, within
+    /// ENTRY_STEPS. design/one-lock-bounded-steps/.
     pub fn tick(&mut self, c: usize, frame: Registers, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: TickStep)
         requires
             old(self).wf(),
@@ -173,7 +179,7 @@ impl CapKernel {
             mem_valid(kernel_root),
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
-            final(steps).count <= old(steps).count + TICK_STEPS,
+            final(steps).count <= TICK_STEPS,
             final(self).current_live(c as int),
             !old(self).must_leave(c as int) ==> Self::ticked(*old(self), *final(self), c as int, frame, ret),
             old(self).must_leave(c as int) ==> exists|mid: Self|
@@ -182,6 +188,11 @@ impl CapKernel {
                 && mid.wf()
                 && Self::ticked(mid, *final(self), c as int, frame, ret),
     {
+        // The one counter of this entry, on a path that holds the kernel's lock, made here whatever the
+        // caller passed: design/one-lock-bounded-steps/.
+        proof {
+            *steps = Steps::fresh();
+        }
         let ghost pre = *self;
         let checked = self.check_current(c, frame, FrameKind::Full, Tracked(&mut *steps));
         let ghost mid = *self;

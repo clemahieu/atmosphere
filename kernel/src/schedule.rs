@@ -61,20 +61,6 @@ pub fn send(targets: u64) {
     }
 }
 
-/// Runs the selection on this core, `core`, whose interrupted frame is `frame`: ticks until the tick
-/// does not drop a thread that may not run, and returns whether it switched. The kernel's root is the
-/// loader's table, the one boot gave CapKernel.
-fn select(kernel: &mut CapKernel, core: usize, frame: Registers) -> bool {
-    let kernel_root = boot::get_boot_info().pml4 as usize;
-    loop {
-        match kernel.tick(core, frame, kernel_root, Tracked::assume_new()) {
-            TickStep::Switched => return true,
-            TickStep::Kept => return false,
-            TickStep::Dropped => {},
-        }
-    }
-}
-
 /// Arms this core's tick: its timer's interrupt, `machine::SLICE_TICKS` from now, runs the selection,
 /// and its handler arms the next. On CPU 0 as it enters dom0, on another core in the selection that
 /// first gives it a thread, and again in each tick's handler, always with the core's interrupts masked.
@@ -92,22 +78,34 @@ pub fn ticking() -> bool {
 }
 
 /// The reschedule IPI's handler and the tick's, on the core that took it, after the interrupt ended: the selection,
-/// with the interrupted `frame`, which `from_user` says was a thread's. A thread the tick switched to
-/// resumes with its frame, and so does a thread current when the interrupt came from the core's wait;
-/// a core whose thread left it waits.
+/// with the interrupted `frame`, which `from_user` says was a thread's. Each pass holds the kernel's lock
+/// for one entry: the thread the interrupt interrupted, if any, is charged the cycles since this core's
+/// last entry (design/cpu-time-as-capability/), and `tick` selects once, under the counter it makes and
+/// holds to its bound (design/one-lock-bounded-steps/). A tick that drops a thread that may not run
+/// lets go of the lock, so other cores take it between drops, and the next pass selects again. A thread
+/// the tick switched to resumes with its frame, and so does a thread current when the interrupt came
+/// from the core's wait; a core whose thread left it waits. The kernel's root is the loader's table,
+/// the one boot gave CapKernel.
 pub fn handle_selection(frame: &Registers, from_user: bool) -> Resume {
     let core = cpu::get_cpu_id();
-    let (switched, current, flushes) = {
-        let mut guard = CAP_KERNEL.lock();
-        let kernel = guard.as_deref_mut().expect("a reschedule IPI or a tick before the capability kernel was built");
-        let epoch = kernel.flush_epoch;
-        // The thread the IPI or the tick interrupted, if any, is charged the cycles since this core's
-        // last entry, before the selection, which may switch it out: design/cpu-time-as-capability/.
-        kernel.charge(core, crate::arch::cycles());
-        let switched = select(kernel, core, *frame);
-        (switched, kernel.current_frame(core), crate::flush::owed(kernel, epoch))
+    let kernel_root = boot::get_boot_info().pml4 as usize;
+    let (switched, current) = loop {
+        let (step, current, flushes) = {
+            let mut guard = CAP_KERNEL.lock();
+            let kernel = guard.as_deref_mut().expect("a reschedule IPI or a tick before the capability kernel was built");
+            let epoch = kernel.flush_epoch;
+            kernel.charge(core, crate::arch::cycles());
+            // The entry makes its own step counter in the one passed here.
+            let step = kernel.tick(core, *frame, kernel_root, Tracked::assume_new());
+            (step, kernel.current_frame(core), crate::flush::owed(kernel, epoch))
+        };
+        crate::flush::send(flushes);
+        match step {
+            TickStep::Switched => break (true, current),
+            TickStep::Kept => break (false, current),
+            TickStep::Dropped => {},
+        }
     };
-    crate::flush::send(flushes);
     if current.is_some() && !ticking() {
         arm_tick();
     }
