@@ -516,6 +516,7 @@ impl CapKernel {
             if let Some(s) = space {
                 assert(pre.spaces.roots@.contains_key(s));
                 assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+                lemma_table_bound(&pre.blocks, s);
                 lemma_space_root_valid(s);
             }
         }
@@ -1403,7 +1404,7 @@ impl CapKernel {
 pub proof fn lemma_mapping_node_place(t: usize, e: usize)
     requires
         t % TABLE_PAGE_BYTES == 0,
-        t / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
+        t < IDENTITY_SPAN,
         e < ENTRIES,
     ensures
         (e + 1) / (NODES_PER_PAGE as int) < TABLE_NODE_PAGES,
@@ -1415,6 +1416,7 @@ pub proof fn lemma_mapping_node_place(t: usize, e: usize)
     let k = ((e + 1) / (NODES_PER_PAGE as int)) as usize;
     let s = (e + 1) % (NODES_PER_PAGE as int);
     lemma_table_page_aligned(t);
+    lemma_table_in_span(t);
     let q = t / PAGE_SZ;
     assert(k < TABLE_NODE_PAGES);
     assert(s < NODES_PER_PAGE);
@@ -2301,7 +2303,7 @@ impl CapKernel {
         let q = (t / PAGE_SZ) as int;
         self.blocks.lemma_base(q);
         assert(order_pages(3) == 8);
-        lemma_table_bound(t);
+        lemma_table_bound(&self.blocks, t);
         assert forall|k: int| 0 < k < 8 implies (#[trigger] self.blocks.pages@[t / PAGE_SZ + k]).kind is Member
             && self.blocks.pages@[t / PAGE_SZ + k].base == t / PAGE_SZ by {
             self.blocks.lemma_member_of(q, q + k);
@@ -2587,7 +2589,7 @@ impl CapKernel {
 pub proof fn lemma_table_node_place(t: usize, k: usize, i: usize)
     requires
         t % TABLE_PAGE_BYTES == 0,
-        t / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
+        t < IDENTITY_SPAN,
         k < TABLE_NODE_PAGES,
         i < NODES_PER_PAGE,
     ensures
@@ -2601,23 +2603,26 @@ pub proof fn lemma_table_node_place(t: usize, k: usize, i: usize)
     lemma_table_page_aligned(t);
     lemma_table_node_page(t, k);
     let q = t / PAGE_SZ;
-    lemma_table_bound(t);
+    lemma_table_in_span(t);
     let n = table_node(t, k, i);
     assert(n == PAGE_SZ * (q + k) + i);
     lemma_fundamental_div_mod_converse(n as int, (PAGE_SZ as int), q + k, i as int);
     assert(page_of(n) == n - i);
 }
 
-/// A space's root lies within memory: the space's block is TABLE_PAGE_BYTES aligned and starts on a
-/// tracked page, so its root page, SPACE_ROOT_PAGE pages in, has no bit outside MEM_MASK.
+/// A space's root lies within memory: the space's block is TABLE_PAGE_BYTES aligned and starts below the
+/// identity-mapped span, so its root page, SPACE_ROOT_PAGE pages in, has no bit outside MEM_MASK.
 pub proof fn lemma_space_root_valid(s: usize)
     requires
         s % TABLE_PAGE_BYTES == 0,
-        s / PAGE_SZ < NUM_PAGES,
+        s < IDENTITY_SPAN,
     ensures
         mem_valid((s + SPACE_ROOT_PAGE * PAGE_SZ) as usize),
 {
-    assert(s / PAGE_SZ < NUM_PAGES && s % TABLE_PAGE_BYTES == 0 ==> ((s + SPACE_ROOT_PAGE * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
+    lemma_table_in_span(s);
+    lemma_table_page_aligned(s);
+    assert(s <= NODE_SPACE - TABLE_PAGE_BYTES);
+    assert(s % PAGE_SZ == 0 && s <= NODE_SPACE - TABLE_PAGE_BYTES ==> ((s + SPACE_ROOT_PAGE * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
 }
 

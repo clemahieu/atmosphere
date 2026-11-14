@@ -190,7 +190,7 @@ fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&
     requires
         old(list).wf(),
         base % TABLE_PAGE_BYTES == 0,
-        base / PAGE_SZ + 8 <= NUM_PAGES,
+        base < IDENTITY_SPAN,
         forall|k: usize| k < TABLE_NODE_PAGES ==> old(list).pages@.dom().contains(#[trigger] table_node_page(base, k)),
         forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
             ==> !old(list).nodes@[table_node(base, k, i) as int].live,
@@ -220,7 +220,7 @@ fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&
             base % PAGE_SZ == 0,
             base as int == PAGE_SZ * page,
             page == base / PAGE_SZ,
-            page + 8 <= NUM_PAGES,
+            base < IDENTITY_SPAN,
             list.wf(),
             list.seq == pre.seq,
             list.parent == pre.parent,
@@ -2909,6 +2909,7 @@ impl CapKernel {
         let page = base / PAGE_SZ;
         proof {
             pre.lemma_empty_table(base);
+            lemma_table_bound(&pre.blocks, base);
             crate::layouts::lemma_table_block_layouts();
             assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies pre.list.pages@[p].addr() == p by {
                 lemma_list_page(&pre.list, p);
@@ -3222,6 +3223,7 @@ impl CapKernel {
         let page = base / PAGE_SZ;
         proof {
             pre.lemma_empty_space(base);
+            lemma_table_bound(&pre.blocks, base);
             crate::layouts::lemma_space_block_layouts();
             assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies pre.list.pages@[p].addr() == p by {
                 lemma_list_page(&pre.list, p);
@@ -3840,7 +3842,7 @@ impl CapKernel {
         assert(tree.maps.contains_key(c));
         assert(tree.record(c).parent == Some(TableParent { table: t, entry: e }));
         assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, c));
-        lemma_table_bound(c);
+        lemma_table_bound(&self.blocks, c);
         assert(tree.entry(t, e).addr == table_addr(c));
     }
 
@@ -4732,7 +4734,7 @@ impl CapKernel {
             base < NODE_SPACE,
     {
         assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
-        lemma_table_bound(base);
+        lemma_table_bound(&self.blocks, base);
     }
 
     /// Unlinks up to a budget of the mappings of the dead table page at `base`, under the untyped at index

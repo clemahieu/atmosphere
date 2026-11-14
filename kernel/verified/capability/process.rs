@@ -1308,6 +1308,8 @@ impl CapKernel {
             },
             ret ==> Self::process_retyped(*old(self), *final(self), root, from, to, base),
     {
+        // try_type proves the block counts; this body only carries them.
+        hide(BlockTable::counts_wf);
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, PROCESS_ORDER) {
             Some(found) => found,

@@ -304,15 +304,25 @@ pub proof fn lemma_sum_aligned(x: int, y: int)
     lemma_mod_multiples_basic(x / (PAGES_PER_2M as int) + y / (PAGES_PER_2M as int), (PAGES_PER_2M as int));
 }
 
-/// A page below NUM_PAGES has an address with no bit outside MEM_MASK.
+/// A page within the identity-mapped span has an address with no bit outside MEM_MASK.
 pub proof fn lemma_frame_addr_valid(frame: usize)
     requires
-        frame < NUM_PAGES,
+        (frame + 1) * PAGE_SZ <= IDENTITY_SPAN,
     ensures
-        frame * PAGE_SZ < NUM_PAGES * PAGE_SZ,
+        frame * PAGE_SZ < IDENTITY_SPAN,
         mem_valid((frame * PAGE_SZ) as usize),
 {
-    assert(frame < NUM_PAGES ==> ((frame * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
+    lemma_span_within_48_bits();
+    assert(1usize << 48 == NODE_SPACE) by (compute_only);
+    assert(NODE_SPACE == PAGE_SZ * (NODE_SPACE / PAGE_SZ)) by (compute_only);
+    assert(frame * PAGE_SZ < IDENTITY_SPAN) by (nonlinear_arith)
+        requires
+            (frame + 1) * PAGE_SZ <= IDENTITY_SPAN;
+    assert(frame < NODE_SPACE / PAGE_SZ) by (nonlinear_arith)
+        requires
+            frame * PAGE_SZ < NODE_SPACE,
+            NODE_SPACE == PAGE_SZ * (NODE_SPACE / PAGE_SZ);
+    assert(frame < NODE_SPACE / PAGE_SZ ==> ((frame * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
 }
 
@@ -322,8 +332,8 @@ pub proof fn lemma_mapping_node_injective(t: usize, e: usize, u: usize, d: usize
     requires
         t % TABLE_PAGE_BYTES == 0,
         u % TABLE_PAGE_BYTES == 0,
-        t / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
-        u / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
+        t < IDENTITY_SPAN,
+        u < IDENTITY_SPAN,
         e < ENTRIES,
         d < ENTRIES,
         mapping_node(t, e) == mapping_node(u, d),
@@ -1735,6 +1745,7 @@ impl CapKernel {
             pre.list.lemma_seq_fits();
             pre.lemma_slot_bound(f);
             pre.lemma_table_page_room(t);
+            lemma_table_bound(&pre.blocks, t);
             assert(Self::table_page_perms(self.table_pages, t));
         }
         self.list.derive(f, node, NodeKind::Mapping);
@@ -1793,7 +1804,7 @@ impl CapKernel {
 
     /// The permissions a table page's table and record are written through.
     pub open spec fn table_page_perms(pages: TablePages, t: usize) -> bool {
-        &&& t / PAGE_SZ < NUM_PAGES
+        &&& t < IDENTITY_SPAN
         &&& pages.maps@.contains_key(t)
         &&& pages.maps@[t].addr() == t + TABLE_NODE_PAGES * PAGE_SZ
         &&& pages.maps@[t].is_init()
@@ -1809,6 +1820,7 @@ impl CapKernel {
         requires
             Self::table_page_perms(old(self).table_pages, t),
             e < ENTRIES,
+            old(self).blocks.span_wf(),
             old(self).blocks.tracks(frame as int),
         ensures
             Self::entry_set(old(self).table_pages, final(self).table_pages, t, e, frame_map_entry(frame, rights, large)),
@@ -1833,7 +1845,7 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         proof {
-            lemma_table_bound(t);
+            self.blocks.lemma_tracked_in_span(frame as int);
             lemma_frame_addr_valid(frame);
             assert(right_bit(Right::Write) == 2);
             assert(right_bit(Right::Execute) == 4);

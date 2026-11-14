@@ -942,7 +942,7 @@ impl CapKernel {
                 let q = q->0;
                 assert(a.maps.contains_key(r));
                 assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, r));
-                lemma_table_bound(r);
+                lemma_table_bound(&pre.blocks, r);
                 assert(a.names_child(q.table, q.entry));
                 assert(a.entry(q.table, q.entry).addr == table_addr(r));
                 assert(step(a, q.table, q.entry) == Some(r));
@@ -1006,7 +1006,7 @@ impl CapKernel {
         assert(a.record(c).parent is Some);
         assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, c));
         assert(self.list.nodes@[c as int].live);
-        lemma_table_bound(c);
+        lemma_table_bound(&self.blocks, c);
         assert(c < NODE_SPACE);
         assert(post.list.nodes@[c as int].live);
     }

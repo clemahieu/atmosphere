@@ -9,6 +9,8 @@ use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
+use crate::capability::block::BlockTable;
 use crate::capability::block::{ObjectType, PageKind};
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
@@ -964,38 +966,49 @@ pub open spec fn child_at(tree: TableTree, t: usize, e: usize) -> usize {
 /// paging-structure cache, and the pages the walks through the entry naming it find, from a TLB. The tables
 /// below t keep their space, so their pages stay said until they are cut in turn.
 pub open spec fn cut_pages(tree: TableTree, t: usize) -> Set<usize> {
-    Set::<usize>::range(0, NUM_PAGES).filter(|g: usize| g == t / PAGE_SZ || cut_walk_finds(tree, t, g))
+    Set::<usize>::range(0, (IDENTITY_SPAN / PAGE_SZ) as usize).filter(|g: usize| g == t / PAGE_SZ || cut_walk_finds(tree, t, g))
 }
 
 pub proof fn lemma_cut_pages(tree: TableTree, t: usize, g: usize)
     ensures
-        cut_pages(tree, t).contains(g) <==> g < NUM_PAGES && (g == t / PAGE_SZ || cut_walk_finds(tree, t, g)),
+        cut_pages(tree, t).contains(g) <==> g < IDENTITY_SPAN / PAGE_SZ && (g == t / PAGE_SZ || cut_walk_finds(tree, t, g)),
 {
     broadcast use vstd::set::lemma_set_filter;
-    vstd::set_lib::range_set_properties::<usize>(0, NUM_PAGES);
+    vstd::set_lib::range_set_properties::<usize>(0, (IDENTITY_SPAN / PAGE_SZ) as usize);
 }
 
-/// An address whose page is below NUM_PAGES is below NUM_PAGES * PAGE_SZ.
-pub proof fn lemma_table_bound(t: usize)
+/// A table page's address, on a page the blocks track, lies within the identity-mapped span, and so does
+/// its block when the address is a table page's.
+pub proof fn lemma_table_bound(blocks: &BlockTable, t: usize)
     requires
-        t / PAGE_SZ < NUM_PAGES,
+        blocks.span_wf(),
+        blocks.tracks_addr(t),
     ensures
-        t < NUM_PAGES * PAGE_SZ,
+        t < IDENTITY_SPAN,
+        t % TABLE_PAGE_BYTES == 0 ==> t + TABLE_PAGE_BYTES <= IDENTITY_SPAN,
+        IDENTITY_SPAN <= NODE_SPACE,
 {
-    lemma_fundamental_div_mod(t as int, (PAGE_SZ as int));
+    blocks.lemma_addr_in_span(t);
+    assert(1usize << 48 == NODE_SPACE) by (compute_only);
+    if t % TABLE_PAGE_BYTES == 0 {
+        lemma_table_in_span(t);
+    }
 }
 
-/// A table page's table lies within memory: its address, page aligned and below NUM_PAGES * PAGE_SZ, plus five pages,
-/// has no bit outside MEM_MASK.
+/// A table page's table lies within memory: its address, a table page's below the identity-mapped span,
+/// plus five pages, has no bit outside MEM_MASK.
 pub proof fn lemma_table_addr_valid(t: usize)
     requires
-        t % PAGE_SZ == 0,
-        t < NUM_PAGES * PAGE_SZ,
+        t % TABLE_PAGE_BYTES == 0,
+        t < IDENTITY_SPAN,
     ensures
         t + TABLE_NODE_PAGES * PAGE_SZ < NODE_SPACE,
         mem_valid((t + TABLE_NODE_PAGES * PAGE_SZ) as usize),
 {
-    assert(t % PAGE_SZ == 0 && t < NUM_PAGES * PAGE_SZ ==> ((t + TABLE_NODE_PAGES * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
+    lemma_table_in_span(t);
+    lemma_table_page_aligned(t);
+    assert(t <= NODE_SPACE - TABLE_PAGE_BYTES);
+    assert(t % PAGE_SZ == 0 && t <= NODE_SPACE - TABLE_PAGE_BYTES ==> ((t + TABLE_NODE_PAGES * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
 }
 
@@ -1417,6 +1430,7 @@ impl CapKernel {
             old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * PAGE_SZ,
             old(self).table_pages.records@[child].is_init(),
             old(self).blocks.tracks_addr(child),
+            old(self).blocks.span_wf(),
         ensures
             final(self).table_pages.maps == old(self).table_pages.maps,
             final(self).table_pages.spare == old(self).table_pages.spare,
@@ -1449,7 +1463,7 @@ impl CapKernel {
             }),
     {
         proof {
-            lemma_table_bound(child);
+            lemma_table_bound(&self.blocks, child);
         }
         let ptr = PPtr::<TableRecord>::from_usize(child + TABLE_RECORD_PAGE * PAGE_SZ);
         let tracked mut record = self.table_pages.records.borrow_mut().tracked_remove(child);
@@ -1497,8 +1511,8 @@ impl CapKernel {
         proof {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, parent));
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
-            lemma_table_bound(parent);
-            lemma_table_bound(child);
+            lemma_table_bound(&pre.blocks, parent);
+            lemma_table_bound(&pre.blocks, child);
             lemma_table_page_aligned(child);
             lemma_table_addr_valid(child);
         }
@@ -1589,8 +1603,8 @@ impl CapKernel {
         proof {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, parent));
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
-            lemma_table_bound(parent);
-            lemma_table_bound(child);
+            lemma_table_bound(&pre.blocks, parent);
+            lemma_table_bound(&pre.blocks, child);
             lemma_table_page_aligned(child);
             lemma_table_addr_valid(child);
         }
@@ -1746,7 +1760,7 @@ impl CapKernel {
             assert(pre.table_pages.maps@[child].value()[i].is_empty());
         }
         assert(child != parent);
-        lemma_table_bound(child);
+        lemma_table_bound(&pre.blocks, child);
         assert forall|r: usize| #[trigger] space_mapping(b, r) == space_mapping(a, r) by {
             lemma_mapping_linked(a, b, parent, entry, child, s, r);
         }
@@ -2611,6 +2625,7 @@ impl CapKernel {
             old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * PAGE_SZ,
             old(self).table_pages.records@[child].is_init(),
             old(self).blocks.tracks_addr(child),
+            old(self).blocks.span_wf(),
         ensures
             final(self).frames == old(self).frames,
             final(self).table_pages.maps == old(self).table_pages.maps,
@@ -2644,7 +2659,7 @@ impl CapKernel {
             }),
     {
         proof {
-            lemma_table_bound(child);
+            lemma_table_bound(&self.blocks, child);
         }
         let ptr = PPtr::<TableRecord>::from_usize(child + TABLE_RECORD_PAGE * PAGE_SZ);
         let tracked mut perm = self.table_pages.records.borrow_mut().tracked_remove(child);
@@ -2750,7 +2765,7 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         assert forall|c: usize| #[trigger] a.maps.contains_key(c) implies c + TABLE_NODE_PAGES * PAGE_SZ <= usize::MAX by {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, c));
-            lemma_table_bound(c);
+            lemma_table_bound(&pre.blocks, c);
         }
         lemma_links_detached(a, b, parent, entry, child);
         lemma_frame_entries_detached(a, b, parent, entry, child);
@@ -2783,8 +2798,8 @@ impl CapKernel {
         proof {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, parent));
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
-            lemma_table_bound(parent);
-            lemma_table_bound(child);
+            lemma_table_bound(&pre.blocks, parent);
+            lemma_table_bound(&pre.blocks, child);
         }
         let level = PPtr::<TableRecord>::from_usize(parent + TABLE_RECORD_PAGE * PAGE_SZ)
             .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(parent)))
@@ -2833,8 +2848,8 @@ impl CapKernel {
         proof {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, parent));
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
-            lemma_table_bound(parent);
-            lemma_table_bound(child);
+            lemma_table_bound(&pre.blocks, parent);
+            lemma_table_bound(&pre.blocks, child);
         }
         let root = PPtr::<SpaceRecord>::from_usize(parent + SPACE_RECORD_PAGE * PAGE_SZ)
             .borrow(Tracked(self.spaces.records.borrow().tracked_borrow(parent)))

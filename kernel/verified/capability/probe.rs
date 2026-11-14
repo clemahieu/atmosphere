@@ -466,7 +466,7 @@ impl CapKernel {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
             assert(tree.record(t).level == 1);
             assert(pre.table_pages.maps@[t].value().level@ == 1);
-            lemma_table_bound(t);
+            lemma_table_bound(&pre.blocks, t);
             assert(pre.can_probe(root, slot, va, count));
         }
         let ghost m0 = pre.table_pages.maps@[t];

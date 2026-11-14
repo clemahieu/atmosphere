@@ -615,7 +615,7 @@ fn add_node_pages(
         old(list).wf(),
         base % TABLE_PAGE_BYTES == 0,
         base + TABLE_PAGE_BYTES <= NODE_SPACE,
-        base / PAGE_SZ + 8 <= NUM_PAGES,
+        base < IDENTITY_SPAN,
         p0.addr() == base,
         p1.addr() == base + PAGE_SZ,
         p2.addr() == base + 2 * PAGE_SZ,
@@ -810,6 +810,36 @@ pub proof fn lemma_table_page_aligned(t: usize)
     lemma_mod_multiples_basic(q, 8);
 }
 
+/// A table page's block below the identity-mapped span ends within it, and so below 2^48: the span is a
+/// whole number of 1G regions, so of blocks.
+pub proof fn lemma_table_in_span(t: usize)
+    requires
+        t % TABLE_PAGE_BYTES == 0,
+        t < IDENTITY_SPAN,
+    ensures
+        t + TABLE_PAGE_BYTES <= IDENTITY_SPAN,
+        IDENTITY_SPAN <= NODE_SPACE,
+{
+    lemma_span_within_48_bits();
+    assert(1usize << 48 == NODE_SPACE) by (compute_only);
+    assert(SIZE_1G == TABLE_PAGE_BYTES * (SIZE_1G / TABLE_PAGE_BYTES)) by (compute_only);
+    let m = SIZE_1G as int / TABLE_PAGE_BYTES as int;
+    lemma_fundamental_div_mod(IDENTITY_SPAN as int, SIZE_1G as int);
+    lemma_fundamental_div_mod(t as int, TABLE_PAGE_BYTES as int);
+    let n = IDENTITY_SPAN as int / SIZE_1G as int * m;
+    let q = t as int / TABLE_PAGE_BYTES as int;
+    assert(IDENTITY_SPAN == TABLE_PAGE_BYTES * n) by (nonlinear_arith)
+        requires
+            IDENTITY_SPAN == SIZE_1G * (IDENTITY_SPAN as int / SIZE_1G as int),
+            SIZE_1G == TABLE_PAGE_BYTES * m,
+            n == IDENTITY_SPAN as int / SIZE_1G as int * m;
+    assert(t + TABLE_PAGE_BYTES <= IDENTITY_SPAN) by (nonlinear_arith)
+        requires
+            t == TABLE_PAGE_BYTES * q,
+            IDENTITY_SPAN == TABLE_PAGE_BYTES * n,
+            t < IDENTITY_SPAN;
+}
+
 /// Two distinct table pages lie on distinct pages.
 pub proof fn lemma_table_pages_distinct(t: usize, u: usize)
     requires
@@ -827,13 +857,15 @@ pub proof fn lemma_table_pages_distinct(t: usize, u: usize)
 pub proof fn lemma_table_node_page(t: usize, k: usize)
     requires
         t % TABLE_PAGE_BYTES == 0,
-        t / PAGE_SZ + k < NUM_PAGES,
+        t < IDENTITY_SPAN,
+        k < 8,
     ensures
         table_node_page(t, k) == t + k * PAGE_SZ,
         table_node_page(t, k) % PAGE_SZ == 0,
         table_node_page(t, k) / PAGE_SZ == t / PAGE_SZ + k,
 {
     lemma_table_page_aligned(t);
+    lemma_table_in_span(t);
     let p = t as int / PAGE_SZ as int;
     assert((t + k * PAGE_SZ) as int == PAGE_SZ * (p + k));
     lemma_mod_multiples_basic(p + k, PAGE_SZ as int);
@@ -847,12 +879,12 @@ pub proof fn lemma_node_pages_disjoint(t: usize, u: usize, k: usize)
         t % TABLE_PAGE_BYTES == 0,
         u % TABLE_PAGE_BYTES == 0,
         t != u,
-        t / PAGE_SZ < NUM_PAGES,
+        t < IDENTITY_SPAN,
         k < TABLE_NODE_PAGES,
     ensures
         !(u <= table_node_page(t, k) < u + TABLE_NODE_PAGES * PAGE_SZ),
 {
-    lemma_table_bound(t);
+    lemma_table_in_span(t);
     assert(table_node_page(t, k) == t + k * PAGE_SZ);
     lemma_fundamental_div_mod(t as int, TABLE_PAGE_BYTES as int);
     lemma_fundamental_div_mod(u as int, TABLE_PAGE_BYTES as int);

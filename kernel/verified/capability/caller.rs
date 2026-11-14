@@ -609,7 +609,7 @@ impl CapKernel {
             assert forall|i: usize| i < ENTRIES implies #[trigger] a.entry(child, i).is_empty() by {
                 assert(pre.table_pages.maps@[child].value()[i].is_empty());
             }
-            lemma_table_bound(child);
+            lemma_table_bound(&pre.blocks, child);
             assert forall|r: usize| #[trigger] space_mapping(b, r) == space_mapping(a, r) by {
                 lemma_mapping_linked(a, b, place.table, place.entry, child, s, r);
             }

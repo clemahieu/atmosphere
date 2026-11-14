@@ -193,6 +193,25 @@ impl BlockTable {
         lemma_pages_in_span(i + 1, self.spec_page_count() as int);
     }
 
+    /// An address in a tracked page is below the identity-mapped span, so the bounds of what lies on a
+    /// tracked page come from the span and not from the page count.
+    pub proof fn lemma_addr_in_span(&self, a: usize)
+        requires
+            self.span_wf(),
+            self.tracks_addr(a),
+        ensures
+            a < IDENTITY_SPAN,
+            IDENTITY_SPAN <= 1usize << 48,
+    {
+        let i = a as int / PAGE_SZ as int;
+        self.lemma_tracked_in_span(i);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(a as int, PAGE_SZ as int);
+        assert(a < (i + 1) * PAGE_SZ) by (nonlinear_arith)
+            requires
+                a == PAGE_SZ * i + a % PAGE_SZ,
+                a % PAGE_SZ < PAGE_SZ;
+    }
+
     /// The 2M and the 1G regions each tile the tracked pages: the page count is a whole number of
     /// either.
     pub proof fn lemma_regions_tile(&self)
