@@ -492,15 +492,28 @@ impl CapKernel {
 
     /// A write registers in frame by a thread of the process whose table is at root, from pre to post
     /// with out returned: refused with nothing changed, exactly when allows_write_registers fails, or ok
-    /// with the saved frame of the thread the slot names written as frame_written says, from
+    /// with the saved frame of the thread the slot names written as write_registers_done says, from
     /// written_input: the window from argument 1 holds arguments 2 to 5, every other word what the frame
-    /// held, and then the user-return rule applies to the whole frame.
+    /// held, and then the user-return rule applies to the whole frame. Either way what
+    /// write_registers_kept says is kept, and once the window index is allowed the answer is
+    /// write_registers's, as write_registers_answered says.
     pub open spec fn spec_registers_written(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| !pre.allows_write_registers(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& pre.allows_write_registers(root, frame)
-            &&& out == status_only(STATUS_OK)
-            &&& Self::frame_written(pre, post, pre.thread_named(root, frame.slot() as usize), pre.written_input(root, frame))
+        let i = frame.slot() as usize;
+        let input = pre.written_input(root, frame);
+        &&& Self::write_registers_kept(pre, post)
+        &&& {
+            ||| {
+                &&& !pre.allows_write_registers(root, frame)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& post == pre
+                &&& window_index(frame.argument(1)) ==> Self::write_registers_answered(pre, post, root, i, input, false)
+            }
+            ||| {
+                &&& pre.allows_write_registers(root, frame)
+                &&& out == status_only(STATUS_OK)
+                &&& Self::write_registers_answered(pre, post, root, i, input, true)
+                &&& Self::write_registers_done(pre, post, root, i, input)
+            }
         }
     }
 

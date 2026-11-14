@@ -3723,6 +3723,34 @@ impl CapKernel {
         }
     }
 
+    /// Whether a write of `frame` to the registers of the thread at index i of the table at root
+    /// answered ok exactly when can_set_registers holds and the frame returns to a user address, and
+    /// left the kernel as it was when it refused. write_registers's ensures and spec_registers_written
+    /// both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn write_registers_answered(pre: Self, post: Self, root: usize, i: usize, frame: Registers, ok: bool) -> bool {
+        &&& ok == (pre.can_set_registers(root, i) && user_rip(frame.spec_pc()))
+        &&& !ok ==> post == pre
+    }
+
+    /// What a write of registers leaves as it was, whether it answered ok or refused: the process each
+    /// thread is bound to. write_registers's ensures and spec_registers_written both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn write_registers_kept(pre: Self, post: Self) -> bool {
+        bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
+    /// What a write of `frame` to the registers of the thread at index i of the table at root did when
+    /// it answered ok: that thread's saved frame written from `frame` as frame_written says, and the
+    /// step discharging control of the thread. write_registers's ensures and spec_registers_written
+    /// both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn write_registers_done(pre: Self, post: Self, root: usize, i: usize, frame: Registers) -> bool {
+        let n = pre.tables.node_of(root, i);
+        let t = pre.payload_of(n).base;
+        &&& pre.threads.records@.contains_key(t)
+        &&& Self::frame_written(pre, post, t, frame)
+        &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+    }
+
     /// Writes the saved frame of the Inactive thread named at index i, through its control capability,
     /// as user_frame makes it. The index and the frame come from user space, so either can be refused,
     /// and a refusal changes nothing.
@@ -3733,16 +3761,9 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            ret == (old(self).can_set_registers(root, i) && user_rip(frame.pc())),
-            !ret ==> *final(self) == *old(self),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret ==> {
-                let n = old(self).tables.node_of(root, i);
-                let t = old(self).payload_of(n).base;
-                &&& old(self).threads.records@.contains_key(t)
-                &&& Self::frame_written(*old(self), *final(self), t, frame)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
-            },
+            Self::write_registers_answered(*old(self), *final(self), root, i, frame, ret),
+            Self::write_registers_kept(*old(self), *final(self)),
+            ret ==> Self::write_registers_done(*old(self), *final(self), root, i, frame),
     {
         let ghost pre = *self;
         if !is_user_rip(frame.pc()) {
