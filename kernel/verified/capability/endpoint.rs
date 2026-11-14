@@ -163,7 +163,9 @@ pub open spec fn endpoint_wf(endpoints: &Endpoints, blocks: &BlockTable, e: usiz
 }
 
 /// Each endpoint and notification is well formed, an endpoint's or a notification's block is one of
-/// these, and the capabilities of kind Endpoint or Notification are exactly the holders.
+/// these, the capabilities of kind Endpoint or Notification are exactly the holders, and each names a
+/// block typed as its kind's object: an endpoint capability an endpoint, a notification capability a
+/// notification, so a signal or a wait never reaches an endpoint's queue.
 pub open spec fn endpoints_wf(list: &Tree, tables: &Tables, endpoints: &Endpoints, blocks: &BlockTable) -> bool {
     &&& forall|e: usize| #[trigger] endpoints.records@.contains_key(e) ==> endpoint_wf(endpoints, blocks, e)
     &&& forall|b: usize| blocks.tracks(b as int) && #[trigger] endpoint_block(blocks, b)
@@ -172,6 +174,7 @@ pub open spec fn endpoints_wf(list: &Tree, tables: &Tables, endpoints: &Endpoint
         &&& endpoints.records@.contains_key(tables.payload_of(n).base)
         &&& endpoints.holders@[tables.payload_of(n).base].contains(n)
         &&& tables.payload_of(n).order == 0
+        &&& blocks.pages@[(tables.payload_of(n).base / PAGE_SZ) as int].object == queue_object_of(tables.payload_of(n).kind)
     }
     &&& forall|e: usize, n: usize| endpoints.records@.contains_key(e) && #[trigger] endpoints.holders@[e].contains(n) ==> {
         &&& tables.is_cap(list, n)
@@ -523,6 +526,17 @@ pub proof fn lemma_endpoints_small_typed(
         }
         assert(b.pages@[x] == a.pages@[x]);
     }
+    assert forall|n: usize| #[trigger] tables_b.is_cap(list_b, n) && queue_kind(tables_b.payload_of(n).kind) implies
+        b.pages@[(tables_b.payload_of(n).base / PAGE_SZ) as int].object == queue_object_of(tables_b.payload_of(n).kind) by {
+        assert(tables_a.is_cap(list_a, n));
+        let e = tables_a.payload_of(n).base;
+        assert(endpoint_wf(endpoints, a, e));
+        let x = (e / PAGE_SZ) as int;
+        if base <= x < base + size {
+            assert(a.pages@[base + (x - base)].kind is Free);
+        }
+        assert(b.pages@[x] == a.pages@[x]);
+    }
     assert forall|x: usize| b.tracks(x as int) && #[trigger] endpoint_block(b, x) implies endpoints.records@.contains_key((x * PAGE_SZ) as usize) by {
         if base <= x < base + size {
             assert(!queue_object(b.pages@[base + (x - base)].object));
@@ -678,6 +692,7 @@ impl CapKernel {
             self.blocks.tracks_addr(self.payload_of(n).base),
             self.payload_of(n).order == 0,
             queue_object(self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object),
+            self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object == queue_object_of(self.payload_of(n).kind),
             block_typed(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)),
             block_refs(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)) > 0,
             block_ref(&self.blocks, self.payload_of(n).base / PAGE_SZ) == BlockRef::Small(self.payload_of(n).base / PAGE_SZ),
@@ -704,6 +719,7 @@ impl CapKernel {
             post.payload_of(n).base == e,
             post.payload_of(n).order == 0,
             pre.endpoints.records@.contains_key(e),
+            pre.blocks.pages@[(e / PAGE_SZ) as int].object == queue_object_of(post.payload_of(n).kind),
             block_refs(&pre.blocks, BlockRef::Small(e / PAGE_SZ)) < usize::MAX,
             blocks_refs_changed(
                 &pre.blocks,
@@ -936,6 +952,7 @@ impl CapKernel {
             forall|i: int| pre.blocks.tracks(i) && i != page ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             post.blocks.pages@[page as int].kind is Base,
             queue_object(post.blocks.pages@[page as int].object),
+            post.blocks.pages@[page as int].object == queue_object_of(post.payload_of(child).kind),
             post.blocks.pages@[page as int].order == 0,
             post.blocks.pages@[page as int].refs == 1,
             !post.blocks.pages@[page as int].dead,
@@ -1003,6 +1020,16 @@ impl CapKernel {
                 assert(ea.records@.contains_key(e));
                 assert(e != base);
                 assert(eb.holders@[e] == ea.holders@[e]);
+            }
+        }
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && queue_kind(post.tables.payload_of(n).kind) implies
+            b.pages@[(post.tables.payload_of(n).base / PAGE_SZ) as int].object == queue_object_of(post.tables.payload_of(n).kind) by {
+            if n != child {
+                assert(pre.tables.is_cap(&pre.list, n));
+                let e = pre.tables.payload_of(n).base;
+                assert(endpoint_wf(ea, a, e));
+                lemma_endpoint_pages_distinct(e, base);
+                assert(b.pages@[(e / PAGE_SZ) as int] == a.pages@[(e / PAGE_SZ) as int]);
             }
         }
         assert forall|e: usize, n: usize| eb.records@.contains_key(e) && #[trigger] eb.holders@[e].contains(n) implies {
