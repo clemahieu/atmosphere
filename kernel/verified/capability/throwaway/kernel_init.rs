@@ -64,16 +64,23 @@ impl CapKernel {
         registers: Tracked<Map<int, crate::arch::BaseRegister>>,
         tlb: Tracked<crate::arch::TlbModel>,
         iotlb: Tracked<crate::arch::IotlbModel>,
+        carve: usize,
+        carve_perm: Tracked<vstd::raw_ptr::PointsToRaw>,
+        exposed: Tracked<vstd::raw_ptr::IsExposed>,
     )
         requires
             forall|i: usize| 2 <= i <= 17 ==> #[trigger] holds(pages@, i),
             boot_registers(registers@, PAGE_SZ),
             boot_tlb(tlb@),
             boot_iotlb(iotlb@),
+            carve % PAGE_SZ == 0,
+            carve + spec_metadata_layout(NUM_PAGES).bytes <= usize::MAX,
+            carve_perm@.is_range(carve as int, spec_metadata_layout(NUM_PAGES).bytes as int),
+            carve_perm@.provenance() == exposed@@,
         ensures
             false,
     {
-        self.witness_kernel_init(pages, registers, tlb, iotlb);
+        self.witness_kernel_init(pages, registers, tlb, iotlb, carve, carve_perm, exposed);
     }
 }
 

@@ -14,6 +14,7 @@ use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 #[cfg(verus_keep_ghost)]
 use crate::arch::tag_written;
 use crate::array::Array;
+use crate::column::Column;
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::derive::badges_inherited;
@@ -35,6 +36,9 @@ use crate::capability::thread::*;
 use crate::capability::zero::*;
 use crate::define::*;
 use crate::pptr::PointsTo;
+use vstd::raw_ptr::{IsExposed, PointsToRaw};
+#[cfg(verus_keep_ghost)]
+use vstd::layout::{size_of, align_of};
 
 /// One core's view under the lock.
 #[derive(Clone, Copy)]
@@ -974,11 +978,37 @@ impl IommuState {
 /// When each page's, 2M region's and 1G region's last unmap was, zero if it has none: unmap bumps the
 /// epoch first, so a real one is never zero. A block's stale epoch is the word at its level. An unmap
 /// writes all three for its page, so a free reads one word however large its block. These outlive a
-/// block's typing, so retype cannot lose them.
+/// block's typing, so retype cannot lose them. The three are columns of the page metadata boot carves,
+/// placed by metadata_layout, as long as the block table's page and region counts:
+/// design/page-metadata-sized-from-the-memory-map/.
 pub struct StaleEpochs {
-    pub pages: Array<usize, NUM_PAGES>,
-    pub two: Array<usize, NUM_2M>,
-    pub one: Array<usize, NUM_1G>,
+    pub pages: Column<usize>,
+    pub two: Column<usize>,
+    pub one: Column<usize>,
+}
+
+/// Any address that is a multiple of a word's size is aligned for a word.
+proof fn lemma_word_aligned(x: int)
+    requires
+        0 <= x,
+        x % size_of::<usize>() as int == 0,
+    ensures
+        x % align_of::<usize>() as int == 0,
+{
+    broadcast use vstd::layout::group_align_properties;
+    let a = align_of::<usize>() as int;
+    assert(a > 0);
+    assert(8int % a == 0);
+    let k = 8int / a;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(8int, a);
+    assert(a * k == 8);
+    assert(k > 0) by (nonlinear_arith)
+        requires
+            a > 0,
+            a * k == 8;
+    vstd::arithmetic::div_mod::lemma_mod_mod(x, a, k);
+    assert(x % (a * k) == 0);
+    assert(0int % a == 0);
 }
 
 impl StaleEpochs {
@@ -986,6 +1016,55 @@ impl StaleEpochs {
         &&& self.pages.wf()
         &&& self.two.wf()
         &&& self.one.wf()
+        &&& self.pages@.len() == NUM_PAGES
+        &&& self.two@.len() == NUM_2M
+        &&& self.one@.len() == NUM_1G
+    }
+
+    /// Every word zero, no unmap yet, in the carve at `carve` that `raw` grants, as metadata_layout
+    /// places the three columns in it for the block table's page count. Each column's permission is
+    /// split from `raw` and each word written, so what the carve held before is not what this relies on.
+    pub fn new(carve: usize, Tracked(raw): Tracked<PointsToRaw>, Tracked(exposed): Tracked<IsExposed>) -> (ret: Self)
+        requires
+            carve % PAGE_SZ == 0,
+            carve + spec_metadata_layout(NUM_PAGES).bytes <= usize::MAX,
+            raw.is_range(carve as int, spec_metadata_layout(NUM_PAGES).bytes as int),
+            raw.provenance() == exposed@,
+        ensures
+            ret.wf(),
+            forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] ret.pages@[j] == 0,
+            forall|r: int| 0 <= r < NUM_2M ==> #[trigger] ret.two@[r] == 0,
+            forall|r: int| 0 <= r < NUM_1G ==> #[trigger] ret.one@[r] == 0,
+    {
+        proof {
+            assert(NUM_PAGES * PAGE_SZ <= IDENTITY_SPAN) by (compute_only);
+        }
+        let l = metadata_layout(NUM_PAGES);
+        let ghost c = carve as int;
+        proof {
+            assert(NUM_PAGES / PAGES_PER_2M == NUM_2M) by (compute_only);
+            assert(NUM_PAGES / PAGES_PER_1G == NUM_1G) by (compute_only);
+            assert(l.stale_2m == NUM_PAGES * 8);
+            assert(l.stale_1g == l.stale_2m + NUM_2M * 8);
+            assert(l.bytes == l.stale_1g + NUM_1G * 8);
+            assert(c % 8 == 0);
+            lemma_word_aligned(c);
+            lemma_word_aligned(c + l.stale_2m);
+            lemma_word_aligned(c + l.stale_1g);
+        }
+        let tracked (first, rest) = raw.split(Set::range(c, c + l.stale_2m));
+        proof {
+            assert(rest.dom() =~= Set::range(c + l.stale_2m, c + l.bytes));
+        }
+        let tracked (second, third) = rest.split(Set::range(c + l.stale_2m, c + l.stale_1g));
+        proof {
+            assert(third.dom() =~= Set::range(c + l.stale_1g, c + l.bytes));
+        }
+        StaleEpochs {
+            pages: Column::new(carve + l.stale_pages, NUM_PAGES, 0, Tracked(first), Tracked(exposed)),
+            two: Column::new(carve + l.stale_2m, NUM_2M, 0, Tracked(second), Tracked(exposed)),
+            one: Column::new(carve + l.stale_1g, NUM_1G, 0, Tracked(third), Tracked(exposed)),
+        }
     }
 
     /// No page's last unmap is later than this epoch.
@@ -1012,54 +1091,6 @@ impl StaleEpochs {
         match level {
             Large::Two => self.two@[r as int],
             Large::One => self.one@[r as int],
-        }
-    }
-
-    /// Every word zero: no unmap yet.
-    pub fn zero(&mut self)
-        requires
-            old(self).wf(),
-        ensures
-            final(self).wf(),
-            forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] final(self).pages@[j] == 0,
-            forall|r: int| 0 <= r < final(self).two@.len() ==> #[trigger] final(self).two@[r] == 0,
-            forall|r: int| 0 <= r < final(self).one@.len() ==> #[trigger] final(self).one@[r] == 0,
-    {
-        let mut i = 0;
-        while i != NUM_PAGES
-            invariant
-                0 <= i <= NUM_PAGES,
-                self.wf(),
-                forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j] == 0,
-            decreases NUM_PAGES - i,
-        {
-            self.pages.set(i, 0);
-            i = i + 1;
-        }
-        let mut i = 0;
-        while i != NUM_2M
-            invariant
-                0 <= i <= NUM_2M,
-                self.wf(),
-                forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] self.pages@[j] == 0,
-                forall|r: int| 0 <= r < i ==> #[trigger] self.two@[r] == 0,
-            decreases NUM_2M - i,
-        {
-            self.two.set(i, 0);
-            i = i + 1;
-        }
-        let mut i = 0;
-        while i != NUM_1G
-            invariant
-                0 <= i <= NUM_1G,
-                self.wf(),
-                forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] self.pages@[j] == 0,
-                forall|r: int| 0 <= r < NUM_2M ==> #[trigger] self.two@[r] == 0,
-                forall|r: int| 0 <= r < i ==> #[trigger] self.one@[r] == 0,
-            decreases NUM_1G - i,
-        {
-            self.one.set(i, 0);
-            i = i + 1;
         }
     }
 
@@ -2139,8 +2170,9 @@ impl CapKernel {
     /// Reserved with no unmap recorded, and the IOMMUs boot found present with their command buffers.
     /// `registers` are the cores' base registers as boot left them, each naming `kernel_root` under
     /// KERNEL_TAG, `tlb` is the cores' TLB model as boot makes it, each core's sets empty, and `iotlb` the
-    /// IOMMUs', each IOMMU's set empty. In place,
-    /// since the block table is too large to move by value.
+    /// IOMMUs', each IOMMU's set empty. The page metadata's columns are placed in the carve at `carve`,
+    /// which `carve_perm` grants, as metadata_layout lays them out for the block table's page count. In
+    /// place, since the block table is too large to move by value.
     pub(crate) fn init(
         &mut self,
         root: usize,
@@ -2152,8 +2184,15 @@ impl CapKernel {
         Tracked(registers): Tracked<Map<int, BaseRegister>>,
         Tracked(tlb): Tracked<TlbModel>,
         Tracked(iotlb): Tracked<IotlbModel>,
+        carve: usize,
+        Tracked(carve_perm): Tracked<PointsToRaw>,
+        Tracked(exposed): Tracked<IsExposed>,
     )
         requires
+            carve % PAGE_SZ == 0,
+            carve + spec_metadata_layout(old(self).blocks.page_count()).bytes <= usize::MAX,
+            carve_perm.is_range(carve as int, spec_metadata_layout(old(self).blocks.page_count()).bytes as int),
+            carve_perm.provenance() == exposed@,
             boot_registers(registers, kernel_root),
             boot_tlb(tlb),
             boot_iotlb(iotlb),
@@ -2215,10 +2254,7 @@ impl CapKernel {
         self.blocks.init(Tracked(&mut steps));
         self.cores.init();
         init_cores(&mut self.cores);
-        self.stale_epoch.pages.init();
-        self.stale_epoch.two.init();
-        self.stale_epoch.one.init();
-        self.stale_epoch.zero();
+        self.stale_epoch = StaleEpochs::new(carve, Tracked(carve_perm), Tracked(exposed));
         self.iommus.acked.init();
         self.iommus.zero();
         self.iommus.tlb = Tracked(iotlb);
@@ -2235,14 +2271,27 @@ impl CapKernel {
         self.mapped = Ghost(Set::empty());
         proof {
             reveal(ids_wf);
-            reveal(registers_wf);
+            assert(registers_wf(self.spaces.registers@, self.cores@, self.spaces.loaded@, self.spaces.kernel_root@)) by {
+                reveal(registers_wf);
+                assert forall|c: int| 0 <= c < NUM_CPUS implies {
+                    &&& #[trigger] self.spaces.registers@.contains_key(c)
+                    &&& register_names(self.spaces.registers@[c], self.cores@[c].space, self.spaces.loaded@, c, self.spaces.kernel_root@)
+                } by {
+                    assert(registers.contains_key(c));
+                    assert(self.cores@[c].space is None);
+                }
+            }
             reveal(devices_wf);
             reveal(current_wf);
             reveal(placed_running_wf);
             reveal(binding_parents);
             reveal(placements_wf);
-            reveal(device_bindings_wf);
             reveal(badges_inherited);
+            // Revealed for this fact alone: its node and record quantifiers feed each other, and the
+            // device table's pairwise one multiplies what they produce.
+            assert(device_bindings_wf(&self.list, &self.tables, self.spaces.bound@, &self.devices)) by {
+                reveal(device_bindings_wf);
+            }
             lemma_waits_empty();
             assert(self.endpoints.records@ == Map::<usize, PointsTo<QueueRecord>>::empty());
             assert(self.threads.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty());

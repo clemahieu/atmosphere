@@ -14,6 +14,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
+use vstd::raw_ptr::{IsExposed, PointsToRaw};
 use crate::array::Array;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
@@ -312,7 +313,10 @@ impl CapKernel {
     /// the first leaf holds, or the image does not fit the second leaf or the first untyped block's
     /// tables. On success the state is the one `booted` describes, with `kernel_root`, a page the base
     /// register can name, which kernel/src checks with its alignment, as the root a core naming no
-    /// space may be pointed back at. See design/root-process-at-boot/.
+    /// space may be pointed back at. `carve_perm` covers the page metadata's columns, the bytes
+    /// metadata_layout gives for the block table's page count from `carve`, the region kernel/src
+    /// carved from memory no block or other permission holds: design/page-metadata-sized-from-the-memory-map/.
+    /// See design/root-process-at-boot/.
     #[verifier::spinoff_prover]
     pub fn kernel_init(
         &mut self,
@@ -332,8 +336,15 @@ impl CapKernel {
         Tracked(registers): Tracked<Map<int, BaseRegister>>,
         Tracked(tlb): Tracked<TlbModel>,
         Tracked(iotlb): Tracked<IotlbModel>,
+        carve: usize,
+        Tracked(carve_perm): Tracked<PointsToRaw>,
+        Tracked(exposed): Tracked<IsExposed>,
     ) -> (ret: Option<(usize, usize)>)
         requires
+            carve % PAGE_SZ == 0,
+            carve + spec_metadata_layout(old(self).blocks.page_count()).bytes <= usize::MAX,
+            carve_perm.is_range(carve as int, spec_metadata_layout(old(self).blocks.page_count()).bytes as int),
+            carve_perm.provenance() == exposed@,
             boot_registers(registers, kernel_root),
             kernel_root % PAGE_SZ == 0,
             mem_valid(kernel_root),
@@ -397,7 +408,7 @@ impl CapKernel {
             ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame, iommus_present@, kernel_root),
     {
         hide(CapKernel::wf);
-        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb), Tracked(iotlb));
+        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb), Tracked(iotlb), carve, Tracked(carve_perm), Tracked(exposed));
         let ghost s0 = *self;
         let ghost len = free@.len() as int;
         let tracked mut pages = pages;

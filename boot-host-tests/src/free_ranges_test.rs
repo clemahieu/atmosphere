@@ -9,7 +9,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use astd::boot::{PhysicalMemoryType, PhysicalRange};
 use free_ranges::{
-    free_page_ranges, ByteRange, PageRun, IDENTITY_SPAN, MAX_PAGE_ADDRESS, NODE_SPACE, PAGE_SLOTS,
+    carve, free_page_ranges, ByteRange, PageRun, IDENTITY_SPAN, MAX_PAGE_ADDRESS, NODE_SPACE,
+    PAGE_SLOTS,
 };
 
 use PhysicalMemoryType::{Available, Domain, Kernel, PageTable, Reserved};
@@ -281,4 +282,56 @@ fn free_page_runs_that_do_not_fit_are_rejected() {
     println!("free page ranges: rejected {message}");
     assert!(message.contains("0x2000"), "{message}");
     assert!(message.contains("free ranges do not fit"), "{message}");
+}
+
+#[test]
+fn carve_takes_the_lowest_available_range_that_holds_it() {
+    // Listed out of order: a lower range too small, a lower range of another kind, and two that hold
+    // it, of which the lower is taken.
+    let ranges = [
+        memory(0x40_0000, 0x10_0000, Available),
+        memory(0x1000, 0x2000, Available),
+        memory(0x10_0000, 0x10_0000, Reserved),
+        memory(0x20_0000, 0x10_0000, Available),
+    ];
+    let got = carve(&ranges, 0x3000, &[]);
+    println!("page metadata carve: lowest range: {got:x?}");
+    assert_eq!(got, Some(0x20_0000));
+}
+
+#[test]
+fn carve_is_whole_pages() {
+    // A byte count that is not a page multiple takes the pages it touches: three pages do not fit a
+    // range of two.
+    let ranges = [
+        memory(0x1000, 0x2000, Available),
+        memory(0x8000, 0x3000, Available),
+    ];
+    let got = carve(&ranges, 0x2001, &[]);
+    println!("page metadata carve: whole pages: {got:x?}");
+    assert_eq!(got, Some(0x8000));
+}
+
+#[test]
+fn carve_stays_clear_of_the_ranges_it_is_given() {
+    // The kernel image at the range's start, then a reservation the next candidate would cross, which
+    // ends inside a page: the carve starts on the page after it.
+    let ranges = [memory(0x10_0000, 0x10_0000, Available)];
+    let clear = [range(0x10_0000, 0x2000), range(0x10_3000, 0x1800), range(0, 0)];
+    let got = carve(&ranges, 0x2000, &clear);
+    println!("page metadata carve: clear of the image and dom0: {got:x?}");
+    assert_eq!(got, Some(0x10_5000));
+}
+
+#[test]
+fn carve_stops_at_the_tracked_pages() {
+    // A range that crosses the tracked end holds only its tracked pages, and one past it holds none.
+    let ranges = [
+        memory(MAX_PAGE_ADDRESS - 0x2000, 0x10_0000, Available),
+        memory(MAX_PAGE_ADDRESS + 0x10_0000, 0x10_0000, Available),
+    ];
+    let got = carve(&ranges, 0x3000, &[]);
+    println!("page metadata carve: past the tracked pages: {got:x?}");
+    assert_eq!(got, None);
+    assert_eq!(carve(&ranges, 0x2000, &[]), Some(MAX_PAGE_ADDRESS - 0x2000));
 }

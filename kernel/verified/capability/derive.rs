@@ -504,6 +504,7 @@ impl CapKernel {
     /// Derives the capability at index `from` of the table at `src` into the empty index `to` of the
     /// table at `dst`: a derive when they are one table, a placement's step when not. A refusal changes
     /// nothing.
+    #[verifier::spinoff_prover]
     fn derive_between(&mut self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8, badge: usize) -> (ret: bool)
         requires
             old(self).wf(),

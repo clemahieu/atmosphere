@@ -1194,7 +1194,8 @@ impl CapKernel {
     /// From no prior state of `self`, boot's one verified step builds the capability kernel and its
     /// root process from the pages and models the trust boundary hands over: one page initialised as
     /// the list's synthetic root, the root's process, its two leaves and its thread, one free run and
-    /// the cores' and IOMMUs' boot register and TLB models, with `kernel_root` outside every block.
+    /// the cores' and IOMMUs' boot register and TLB models, with `kernel_root` outside every block, and
+    /// the page metadata's carve at `carve`.
     #[verifier::spinoff_prover]
     pub fn witness_kernel_init(
         &mut self,
@@ -1202,12 +1203,19 @@ impl CapKernel {
         registers: Tracked<Map<int, crate::arch::BaseRegister>>,
         tlb: Tracked<crate::arch::TlbModel>,
         iotlb: Tracked<crate::arch::IotlbModel>,
+        carve: usize,
+        carve_perm: Tracked<vstd::raw_ptr::PointsToRaw>,
+        exposed: Tracked<vstd::raw_ptr::IsExposed>,
     ) -> (ret: Option<(usize, usize)>)
         requires
             forall|i: usize| 2 <= i <= 17 ==> #[trigger] holds(pages@, i),
             boot_registers(registers@, PAGE_SZ),
             boot_tlb(tlb@),
             boot_iotlb(iotlb@),
+            carve % PAGE_SZ == 0,
+            carve + spec_metadata_layout(NUM_PAGES).bytes <= usize::MAX,
+            carve_perm@.is_range(carve as int, spec_metadata_layout(NUM_PAGES).bytes as int),
+            carve_perm@.provenance() == exposed@@,
         ensures
             ret is Some,
             final(self).wf(),
@@ -1307,6 +1315,9 @@ impl CapKernel {
             registers,
             tlb,
             iotlb,
+            carve,
+            carve_perm,
+            exposed,
         );
         proof {
             assert(free@.drop_last() =~= Seq::<(usize, usize)>::empty());

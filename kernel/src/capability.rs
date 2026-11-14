@@ -23,10 +23,11 @@ use verified::capability::operation::{Outcome, OPERATION_POWER_OFF, STATUS_OK};
 use verified::capability::space::SPACE_ROOT_PAGE;
 use verified::capability::table::{CapKind, MAX_ORDER};
 use verified::arch::{Registers, MEM_MASK};
-use verified::define::{KERNEL_MEM_END_L4INDEX, NUM_CPUS, NUM_IOMMUS};
+use verified::capability::block::metadata_layout;
+use verified::define::{KERNEL_MEM_END_L4INDEX, NUM_CPUS, NUM_IOMMUS, NUM_PAGES};
 use vstd::prelude::Tracked;
 
-use crate::boot::free_ranges::{free_page_ranges, ByteRange, PageRun, PAGE_SLOTS};
+use crate::boot::free_ranges::{carve, free_page_ranges, ByteRange, PageRun, PAGE_SLOTS};
 use crate::boot::mapped_runs::mapped_runs;
 use crate::lock::Locked;
 
@@ -131,29 +132,42 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let reserved = ByteRange { base: dom0.reserved_start as u64, size: dom0.reserved_size as u64 };
     let runs = &dom0.runs[..mapped_runs(&dom0.runs, reserved.base, reserved.size)];
 
-    // Set aside: the stretch for the boot objects and the kernel, then each 2M region of dom0's runs.
-    let mut aside = [ByteRange { base: 0, size: 0 }; 1 + MAPPED_RUNS];
+    // Set aside: the stretch for the boot objects and the kernel, the page metadata's carve, then each
+    // 2M region of dom0's runs.
+    let mut aside = [ByteRange { base: 0, size: 0 }; 2 + MAPPED_RUNS];
     for (k, run) in runs.iter().enumerate() {
         let first = run.phys / REGION_BYTES * REGION_BYTES;
         let end = (run.phys + run.pages * PAGE_BYTES).div_ceil(REGION_BYTES) * REGION_BYTES;
-        aside[1 + k] = ByteRange { base: first, size: end - first };
+        aside[2 + k] = ByteRange { base: first, size: end - first };
     }
     let image_start = &raw const __ehdr_start as u64;
     let kernel_image = ByteRange { base: image_start, size: &raw const _end as u64 - image_start };
+    let memory = &boot_info.memory[..];
+
+    // The page metadata goes in the first Available range that holds it clear of the kernel's image,
+    // dom0's reservation and dom0's regions, found from the map alone, and is set aside as the stretch
+    // is, so no block or untyped covers it. design/page-metadata-sized-from-the-memory-map/.
+    let layout = metadata_layout(NUM_PAGES);
+    let carve_bytes = layout.bytes as u64;
+    let mut clear = [ByteRange { base: 0, size: 0 }; 2 + MAPPED_RUNS];
+    clear[0] = kernel_image;
+    clear[1] = reserved;
+    clear[2..2 + runs.len()].copy_from_slice(&aside[2..2 + runs.len()]);
+    let carve = carve(memory, carve_bytes, &clear[..2 + runs.len()]).expect("no available range holds the page metadata");
+    aside[1] = ByteRange { base: carve, size: carve_bytes.div_ceil(PAGE_BYTES) * PAGE_BYTES };
 
     // Only CPU 0 runs, and it runs this once.
     let scratch = unsafe { &mut *&raw mut SCRATCH };
 
-    // The map is folded twice: the runs around dom0's regions say where the stretch goes, and the
-    // runs around the stretch as well are what is left to hand out.
-    let memory = &boot_info.memory[..];
-    let regions = &aside[1..1 + runs.len()];
+    // The map is folded twice: the runs around the carve and dom0's regions say where the stretch
+    // goes, and the runs around the stretch as well are what is left to hand out.
+    let regions = &aside[1..2 + runs.len()];
     let run_count = free_page_ranges(memory, &mut scratch.seen, regions, kernel_image, Some(reserved), &mut scratch.runs);
     let stretch_pages = BOOT_OBJECT_PAGES + size_of::<CapKernel>().div_ceil(PAGE_BYTES as usize) as u64;
     let stretch = aligned_stretch(&scratch.runs[..run_count], stretch_pages, BOOT_OBJECT_PAGES)
         .expect("no free stretch for the capability kernel");
     aside[0] = ByteRange { base: stretch, size: stretch_pages * PAGE_BYTES };
-    let aside = &aside[..1 + runs.len()];
+    let aside = &aside[..2 + runs.len()];
     log::info!("capability kernel at {:#x}, {} pages with the root's boot objects", stretch, stretch_pages);
 
     let run_count = free_page_ranges(memory, &mut scratch.seen, aside, kernel_image, Some(reserved), &mut scratch.runs);
@@ -175,15 +189,19 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let process = page(PROCESS_PAGE);
     let kernel = unsafe { &mut *(page(BOOT_OBJECT_PAGES) as *mut CapKernel) };
 
+    // The carve is free memory no one else holds; the verified init writes every column's value.
+    unsafe { core::ptr::write_bytes(carve as *mut u8, 0, carve_bytes as usize) };
+    log::info!("page metadata: {} pages, {} bytes", NUM_PAGES, carve_bytes);
+
     // kernel_init takes the loader's root as a page the base register can name, the one a core naming
     // no space is pointed back at.
     assert!(boot_info.pml4 as u64 % PAGE_BYTES == 0, "the loader's root table is not a page");
     assert!(boot_info.pml4 as u64 & !MEM_MASK == 0, "the loader's root table is above what the base register names");
-    // kernel_init hands its page to no block: the memory map keeps it out of the free runs and the
-    // stretch, and no 2M region of dom0's image may hold it.
+    // kernel_init hands its page to no block: the memory map keeps it out of the free runs, the
+    // stretch and the carve, and no 2M region of dom0's image may hold it.
     let pml4 = boot_info.pml4 as u64;
     assert!(
-        aside[1..].iter().all(|region| pml4 < region.base || region.base + region.size <= pml4),
+        aside[2..].iter().all(|region| pml4 < region.base || region.base + region.size <= pml4),
         "the loader's root table lies in a 2M region of dom0's image"
     );
     let mut kernel_entries = Array::<usize, KERNEL_MEM_END_L4INDEX>::new(0);
@@ -213,6 +231,11 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         Tracked::assume_new(),
         // Nothing is unmapped yet, so each IOMMU's IOTLB model is empty, and this is the one place that
         // model is made: design/flush-without-waiting/.
+        Tracked::assume_new(),
+        // The carve's bytes, which only the columns placed in it touch, and the provenance of the
+        // identity map they are read through: design/page-metadata-sized-from-the-memory-map/.
+        carve as usize,
+        Tracked::assume_new(),
         Tracked::assume_new(),
     );
     let (untyped, frames) = held.expect("the capability kernel refused the boot memory or dom0's runs");

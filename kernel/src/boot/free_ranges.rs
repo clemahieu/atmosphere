@@ -87,6 +87,31 @@ pub fn free_page_ranges(
     }
 }
 
+/// Where boot carves the page metadata: the lowest address, on a page, at which the whole pages
+/// holding `bytes` lie inside one Available range, below the tracked pages' end and clear of every
+/// range in `clear`, or none when no range holds them. It reads only the map, since the carve is
+/// placed before any per-page fold of it. design/page-metadata-sized-from-the-memory-map/.
+pub fn carve(ranges: &[PhysicalRange], bytes: u64, clear: &[ByteRange]) -> Option<u64> {
+    let size = bytes.div_ceil(PAGE_BYTES) * PAGE_BYTES;
+    ranges
+        .iter()
+        .filter(|range| range.kind == PhysicalMemoryType::Available)
+        .filter_map(|range| {
+            let end = range.base.saturating_add(range.bytes).min(MAX_PAGE_ADDRESS) / PAGE_BYTES * PAGE_BYTES;
+            let mut base = range.base.next_multiple_of(PAGE_BYTES);
+            // Each move passes the end of a range the candidate overlaps, and the candidate only
+            // grows, so it overlaps each range at most once.
+            while let Some(blocking) = clear
+                .iter()
+                .find(|c| c.size != 0 && c.base < base.saturating_add(size) && base < c.end())
+            {
+                base = blocking.end().next_multiple_of(PAGE_BYTES);
+            }
+            (base.saturating_add(size) <= end).then_some(base)
+        })
+        .min()
+}
+
 /// The page numbers of `[base, end)` that the kernel tracks, with the range's edges moved out to
 /// pages.
 fn tracked(base: u64, end: u64) -> core::ops::Range<usize> {

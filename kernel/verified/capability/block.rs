@@ -13,6 +13,8 @@
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::set_lib::*;
+#[cfg(verus_keep_ghost)]
+use vstd::layout::size_of;
 
 verus! {
 
@@ -124,6 +126,68 @@ pub proof fn lemma_whole_regions(n: int)
     ;
     vstd::arithmetic::div_mod::lemma_div_multiples_vanish(g * ENTRIES as int, PAGES_PER_2M as int);
     vstd::arithmetic::div_mod::lemma_div_multiples_vanish(g, PAGES_PER_1G as int);
+}
+
+/// Where each column of the page metadata lies in the region boot carves, as byte offsets from the
+/// region's base, and how many bytes the columns take, which is what boot carves. Each column starts
+/// where the one before it ends; every column is of `usize`, so each starts at a multiple of its
+/// element's size, which is a multiple of its alignment. design/page-metadata-sized-from-the-memory-map/.
+#[derive(Clone, Copy)]
+pub struct MetadataLayout {
+    /// The stale epochs: one per tracked page, then one per 2M region, then one per 1G region.
+    pub stale_pages: usize,
+    pub stale_2m: usize,
+    pub stale_1g: usize,
+    pub bytes: usize,
+}
+
+/// The layout of the page metadata for `pages` tracked pages.
+pub open spec fn spec_metadata_layout(pages: usize) -> MetadataLayout {
+    let w = size_of::<usize>() as int;
+    let stale_2m = pages * w;
+    let stale_1g = stale_2m + (pages / PAGES_PER_2M) as int * w;
+    MetadataLayout {
+        stale_pages: 0,
+        stale_2m: stale_2m as usize,
+        stale_1g: stale_1g as usize,
+        bytes: (stale_1g + (pages / PAGES_PER_1G) as int * w) as usize,
+    }
+}
+
+/// The layout of the page metadata for `pages` tracked pages, from the page count, `size_of` and
+/// nothing else. Boot calls it to size the carve and the kernel's init to place the columns in it, so
+/// there is one layout. It ends within the identity-mapped span, as the tracked pages do.
+pub fn metadata_layout(pages: usize) -> (l: MetadataLayout)
+    requires
+        pages * PAGE_SZ <= IDENTITY_SPAN,
+    ensures
+        l == spec_metadata_layout(pages),
+        l.stale_pages == 0,
+        l.stale_2m == pages * size_of::<usize>(),
+        l.stale_1g == l.stale_2m + (pages / PAGES_PER_2M) * size_of::<usize>(),
+        l.bytes == l.stale_1g + (pages / PAGES_PER_1G) * size_of::<usize>(),
+        l.bytes <= IDENTITY_SPAN,
+{
+    let w = core::mem::size_of::<usize>();
+    proof {
+        lemma_span_within_48_bits();
+        assert(pages / PAGES_PER_2M <= pages && pages / PAGES_PER_1G <= pages) by {
+            vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(pages as int, 1, PAGES_PER_2M as int);
+            vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(pages as int, 1, PAGES_PER_1G as int);
+            vstd::arithmetic::div_mod::lemma_div_basics(pages as int);
+        }
+        // Three word columns are at most three words a page, and a page is far larger than that.
+        assert(PAGE_SZ >= 24) by (compute_only);
+        assert(3 * pages * w <= pages * PAGE_SZ) by (nonlinear_arith)
+            requires
+                w == 8,
+                PAGE_SZ >= 24,
+                0 <= pages;
+    }
+    let stale_2m = pages * w;
+    let stale_1g = stale_2m + pages / PAGES_PER_2M * w;
+    let bytes = stale_1g + pages / PAGES_PER_1G * w;
+    MetadataLayout { stale_pages: 0, stale_2m, stale_1g, bytes }
 }
 
 /// A page below n regions of p pages each is in one of them.
