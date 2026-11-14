@@ -470,14 +470,16 @@ impl CapKernel {
         Self::lemma_views_kept_keeps_slots(pre, post, root);
     }
 
-    /// A retype, by a caller other than root, keeps slots_kept of root: the frame kinds add a frame
-    /// capability to the caller's table alone, which names no process and no thread, every other kind
-    /// leaves every table's view as it was, and no kind binds a thread it did not bind or rebinds one.
+    /// A retype, by a caller other than root, keeps slots_kept of root, a process's table: the frame
+    /// kinds add a frame capability to the caller's table alone, which names no process and no thread,
+    /// the process kind a process capability naming a table that was no root, every other kind leaves
+    /// every table's view as it was, and no kind binds a thread it did not bind or rebinds one.
     pub proof fn lemma_retype_keeps_slots(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_retyped(pre, post, caller, frame, out),
             caller != root,
+            pre.tables.roots@.contains_key(root),
         ensures
             Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
@@ -613,13 +615,15 @@ impl CapKernel {
         &&& reaches_through(frame.argument(1))
     }
 
-    /// A retype, by any caller, keeps every process sealed: the frame kinds add a frame capability,
-    /// which names no process and no thread, every other kind adds no slot, and no kind binds a thread
-    /// it did not bind or rebinds one.
+    /// A retype, by any caller, keeps sealed the caller's own process and every process whose table
+    /// is a root: the frame kinds add a frame capability, which names no process and no thread, the
+    /// process kind a process capability to the caller's table naming a table that was no root, every
+    /// other kind adds no slot, and no kind binds a thread it did not bind or rebinds one.
     pub proof fn lemma_retype_keeps_sealed(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_retyped(pre, post, caller, frame, out),
+            caller == root || pre.tables.roots@.contains_key(root),
         ensures
             pre.sealed(root) ==> post.sealed(root),
     {
@@ -659,6 +663,8 @@ impl CapKernel {
             }
         } else if kind == RETYPE_TABLE_PAGE {
             assert(after == bound);
+        } else if kind == RETYPE_PROCESS {
+            assert(after == bound);
         } else if kind == RETYPE_FREE {
             if out == status_only(STATUS_OK) {
                 let c = choose|c: usize| c < crate::define::NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, caller, from, base, frame.argument(4) as usize);
@@ -685,6 +691,9 @@ impl CapKernel {
                 let v = post.table_view(t)[j];
                 if added && t == caller && j == to {
                     assert(v.kind is Frame);
+                } else if kind == RETYPE_PROCESS && out == status_only(STATUS_OK) && t == caller && j == to {
+                    assert(v == process_view(base, parent));
+                    assert(base != root);
                 } else {
                     assert(pre.table_view(t).contains_key(j) && v == pre.table_view(t)[j]);
                     assert(!pre.names_process(pre.table_view(t)[j], root));
@@ -2040,12 +2049,14 @@ impl CapKernel {
         Self::lemma_probe_keeps_count(pre, post, caller, frame, out, root);
     }
 
-    /// A retype, by a caller other than root: root's own retype of a frame adds a slot to its table.
+    /// A retype, by a caller other than root, a process's table: root's own retype of a frame adds a
+    /// slot to its table.
     pub proof fn lemma_retype_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
             pre.wf(),
             Self::spec_retyped(pre, post, caller, frame, out),
             caller != root,
+            pre.tables.roots@.contains_key(root),
         ensures
             Self::rely(pre, post, root),
             Self::root_kept(pre, post, root),

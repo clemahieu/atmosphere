@@ -1197,6 +1197,42 @@ impl CapKernel {
         assert(b.names[child] == base);
     }
 
+    /// What a retype of the order-3 block at base as a process did, under the untyped at index from of
+    /// the table at root, with the capability at index to: the retype was allowed, the process
+    /// capability is the untyped's child in that slot, the one entry the parent map gains and the only
+    /// node whose kind, liveness or capability changed; base was no table root and no space before and
+    /// is both after, a table root that holds no leaf and a space that maps nothing, every other root
+    /// entry and every other space's mapping as they were; the process's record is live; the block
+    /// table changed in the block alone; and the step discharges the retype's effect.
+    pub open spec fn process_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        let page = (base / PAGE_SZ) as int;
+        &&& pre.can_retype_block(root, from, to, base, PROCESS_ORDER)
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& post.view().holds(root, child)
+        &&& post.is_cap(child)
+        &&& post.payload_of(child) == process_of(base)
+        &&& post.list.is_child(parent, child)
+        &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
+        &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& Self::caps_frame(pre, post, child, child)
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& !pre.tables.roots@.contains_key(base)
+        &&& post.tables.roots@.dom() == pre.tables.roots@.dom().insert(base)
+        &&& forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] post.tables.leaf(base, r) == NO_LEAF
+        &&& Self::retype_keeps(pre, post, child, page, 3, None)
+        &&& pre.blocks.kept_but_run(post.blocks, page, 3)
+        &&& !pre.spaces.roots@.contains_key(base)
+        &&& post.spaces.roots@.dom() == pre.spaces.roots@.dom().insert(base)
+        &&& space_mapping(tree_of(&post.table_pages, &post.spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty()
+        &&& forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
+            space_mapping(tree_of(&post.table_pages, &post.spaces), r) == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
+        &&& post.processes.records@.contains_key(base)
+        &&& !post.processes.records@[base].value().dead
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
+    }
+
     /// Retypes the free order-3 block at `base` as a process, under the untyped at index `from` of the
     /// table at `root`, with its capability at the empty index `to`: an empty capability table whose
     /// root is the block's first page, a record that says it is live, and an address space holding the
@@ -1270,6 +1306,7 @@ impl CapKernel {
                 &&& Self::retype_keeps(*old(self), *final(self), child, page, 3, None)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
             },
+            ret ==> Self::process_retyped(*old(self), *final(self), root, from, to, base),
     {
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, PROCESS_ORDER) {
@@ -1503,6 +1540,16 @@ impl CapKernel {
                 assert(rooted.leaf(base, r) == NO_LEAF);
             }
             Self::lemma_order3_keeps(pre, post, mid, root, to, page as int);
+            assert(!pre.tables.roots@.contains_key(base));
+            assert(post.tables.roots@.dom() == pre.tables.roots@.dom().insert(base));
+            assert forall|x: usize| #![trigger post.tables.payload_of(x)]
+                x != child && x % PAGE_SZ < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(x))
+                implies post.tables.payload_of(x) == pre.tables.payload_of(x) by {
+                assert(rooted.payload_of(x) == pre.tables.payload_of(x));
+            }
+            assert(Self::caps_frame(pre, post, child, child));
+            assert(pre.blocks.kept_but_run(post.blocks, page as int, 3));
+            assert(post.spaces.roots@.dom() == pre.spaces.roots@.dom().insert(base));
         }
         true
     }

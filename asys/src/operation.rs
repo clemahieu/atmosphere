@@ -98,6 +98,11 @@ pub const RETYPE_LEAF: u64 = 3;
 /// still hold a translation to it and ok once the block is free, after which a retype can type it again.
 pub const RETYPE_FREE: u64 = 4;
 
+/// Retype's kind in argument 1 for a process: the free order-3 block at the base in argument 2 as a
+/// process, with an empty table, a live record and a space holding only the kernel's entries, and its
+/// capability, with control, in the empty slot in argument 3.
+pub const RETYPE_PROCESS: u64 = 5;
+
 /// The kind numbers inspect returns in result 1.
 pub const KIND_UNTYPED: u64 = 0;
 pub const KIND_FRAME: u64 = 1;

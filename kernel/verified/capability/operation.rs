@@ -26,6 +26,8 @@ use crate::capability::mapping::space_mapping;
 use crate::capability::position::*;
 use crate::capability::probe::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::process::PROCESS_ORDER;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::reclaim::FrameReclaimStep;
 use crate::capability::retype::RetypeStep;
@@ -56,7 +58,7 @@ pub const STATUS_UNKNOWN: u64 = 2;
 /// it stopped. See design/one-lock-bounded-steps/.
 pub const STATUS_AGAIN: u64 = 3;
 
-/// invoke_retype's bound in the step counter: a table page's retype, the largest of the five kinds.
+/// invoke_retype's bound in the step counter: a table page's retype, the largest of the six kinds.
 /// See design/one-lock-bounded-steps/.
 pub const INVOKE_RETYPE_STEPS: usize = crate::capability::space::RETYPE_TABLE_PAGE_STEPS;
 
@@ -143,12 +145,16 @@ pub const RETYPE_LARGE_FRAME: u64 = 1;
 pub const RETYPE_TABLE_PAGE: u64 = 2;
 
 /// Retype's kind in argument 1 for a table leaf, at the base in argument 2, in the root entry the
-/// position word in argument 3 names. Every other kind is refused until it is wired.
+/// position word in argument 3 names.
 pub const RETYPE_LEAF: u64 = 3;
 
 /// Retype's kind in argument 1 that frees the dead frame at the base in argument 2, of the order in
 /// argument 4, 0, 9 or 18, under the untyped in the slot: the frame part of reclaim.
 pub const RETYPE_FREE: u64 = 4;
+
+/// Retype's kind in argument 1 for a process, of the order-3 block at the base in argument 2, with its
+/// capability in the slot in argument 3. Every other kind is refused until it is wired.
+pub const RETYPE_PROCESS: u64 = 5;
 
 /// What an invocation returns to its thread: the status word and results 1 to 4, which
 /// Registers::write_outcome puts at their positions in the frame.
@@ -360,8 +366,10 @@ impl CapKernel {
     /// the kind in argument 1: a 4K frame by can_retype_frame, a 2M frame by can_retype_large, a table
     /// page by can_retype_table_page and a leaf by can_retype_leaf, over the untyped in the slot, the
     /// base in argument 2, the slot in argument 3, the level in argument 4 and the position word in
-    /// argument 3 as each kind reads them; and the free kind by can_free_frame, over the untyped in the
-    /// slot, the base in argument 2 and the order in argument 4. Every other kind is refused.
+    /// argument 3 as each kind reads them; the free kind by can_free_frame, over the untyped in the
+    /// slot, the base in argument 2 and the order in argument 4; and a process by can_retype_block of
+    /// its order-3 block, over the untyped in the slot, the slot in argument 3 and the base in argument
+    /// 2. Every other kind is refused.
     pub open spec fn allows_retype(&self, root: usize, frame: Registers) -> bool {
         let from = frame.slot() as usize;
         let base = frame.argument(2) as usize;
@@ -371,6 +379,7 @@ impl CapKernel {
         ||| frame.argument(1) == RETYPE_TABLE_PAGE && self.can_retype_table_page(root, from, base, frame.argument(4) as usize)
         ||| frame.argument(1) == RETYPE_LEAF && at is Some && self.can_retype_leaf(root, from, at->0, base)
         ||| frame.argument(1) == RETYPE_FREE && self.can_free_frame(root, from, base, frame.argument(4) as usize)
+        ||| frame.argument(1) == RETYPE_PROCESS && self.can_retype_block(root, from, frame.argument(3) as usize, base, PROCESS_ORDER)
     }
 
     /// The free kind may run on the frame of the order at base, under the untyped at index from of the
@@ -413,7 +422,9 @@ impl CapKernel {
     /// argument 3 names, the block table changed in the leaf's two pages alone; or, for the free kind,
     /// again with nothing changed while a core has not acknowledged the frame's staleness, and ok with
     /// the frame of the order in argument 4 at the base in argument 2 freed by reclaim once every core
-    /// has. Every arm but the table page's leaves every space's tables as they were.
+    /// has; or, for the process kind, ok with a process at the base in argument 2 under the untyped in
+    /// the slot, its capability in the slot in argument 3, as process_retyped says. Every arm but the
+    /// table page's and the process's leaves every space's tables as they were.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| !pre.allows_retype(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
@@ -462,6 +473,11 @@ impl CapKernel {
             &&& exists|c: usize| c < NUM_CPUS
                 && #[trigger] pre.frame_freed_of(post, c, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize)
             &&& Self::same_tree(pre, post)
+        }
+        ||| {
+            &&& frame.argument(1) == RETYPE_PROCESS
+            &&& out == status_only(STATUS_OK)
+            &&& Self::process_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize)
         }
     }
 
@@ -949,6 +965,27 @@ impl CapKernel {
                 &&& !pre.can_retype_table_page(root, from, base, level) ==> out == status_only(STATUS_REFUSED) && post == pre
                 &&& pre.can_retype_table_page(root, from, base, level)
                     ==> out == status_only(STATUS_OK) && Self::table_page_retyped(pre, post, root, from, base, level)
+            }),
+    {
+    }
+
+    /// A retype of the process kind reaches retype_process: refused with nothing changed unless
+    /// can_retype_block holds of the order-3 block at the base in argument 2, under the untyped in the
+    /// slot, into the slot in argument 3, and ok with a process there, as process_retyped says, when it
+    /// does. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_retype_process(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Retype),
+            frame.argument(1) == RETYPE_PROCESS,
+        ensures
+            ({
+                let from = frame.slot() as usize;
+                let to = frame.argument(3) as usize;
+                let base = frame.argument(2) as usize;
+                &&& !pre.can_retype_block(root, from, to, base, PROCESS_ORDER) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_retype_block(root, from, to, base, PROCESS_ORDER)
+                    ==> out == status_only(STATUS_OK) && Self::process_retyped(pre, post, root, from, to, base)
             }),
     {
     }
@@ -1470,6 +1507,12 @@ impl CapKernel {
                     FrameReclaimStep::Again => STATUS_AGAIN,
                     FrameReclaimStep::Refused => STATUS_REFUSED,
                 }
+            } else {
+                STATUS_REFUSED
+            }
+        } else if frame.argument(1) == RETYPE_PROCESS {
+            if self.retype_process(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, Tracked(steps)) {
+                STATUS_OK
             } else {
                 STATUS_REFUSED
             }

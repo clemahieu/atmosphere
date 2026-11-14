@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page and of a table leaf and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf and of a process and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -52,7 +52,10 @@
 //! retypes a third 4K frame, which it never maps; retype's free kind is refused while the capability
 //! names the frame, and once the capability is deleted a retype of the page is refused, the free kind
 //! frees the dead frame, a second free is refused, and the page is retyped again, which inspect finds
-//! and dom0 prints. It
+//! and dom0 prints. It retypes a child process from an order-3 block, after a retype at a base not
+//! aligned to the block, of a table page's block and into the occupied console slot is refused; inspect
+//! finds a process with control in the slot, an inspect through it is refused, its table having no
+//! leaf, and a second retype of the block is refused, which dom0 prints. It
 //! retypes a table leaf into root entry 2 of its own table, the first boot leaves empty, after a retype into the occupied entry 1, into entry 512, past the root's, by
 //! a word naming no position and of a block that is not free is refused, and a second leaf into entry 3
 //! through its own process capability, after entry 2 named through it is refused; inspect refuses each
@@ -782,6 +785,50 @@ fn freed_frame_retyped(caller: &mut Tracked<Caller>, untyped: u64, slot: u64) ->
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, FREED_HELD) } == operation::STATUS_OK
 }
 
+/// How far below the top of the table check's untyped the block dom0 retypes as a child process is: the
+/// order-3 block below OTHER_FRAME_BELOW_TOP's, where nothing else retypes.
+const PROCESS_BELOW_TOP: u64 = 8 * 8 * 4096;
+
+/// The order of a process's block.
+const PROCESS_ORDER: u64 = 3;
+
+/// The control right, the one right a process capability carries.
+const RIGHT_CONTROL: u64 = 128;
+
+/// What dom0 prints through the console once it retyped a child process and inspected it, which the
+/// gate looks for.
+const PROCESS_HELD: [u64; 5] = operation::print_words(b"dom0 process retyped\n");
+
+/// Whether dom0 retypes a child process from `untyped`, the table check's, of the order-3 block
+/// PROCESS_BELOW_TOP below its top, into the empty slot `slot`: a retype at a base inside the block but
+/// not aligned to it, of the table page's block at `table`, which is not free, and into the occupied
+/// console slot is refused; the retype is accepted, inspect finds a process with control at that base in
+/// `slot`, an inspect through it is refused, since the child's table has no leaf yet, and a second retype
+/// of the block, no longer free, is refused. dom0 prints that it held.
+fn retyped_process_held(caller: &mut Tracked<Caller>, untyped: u64, table: u64, slot: u64) -> bool {
+    let base = match inspect(caller, untyped) {
+        Ok(block) => block.base + (4096 << block.order) - PROCESS_BELOW_TOP,
+        Err(_) => return false,
+    };
+    let retype_process = |caller: &mut Tracked<Caller>, base: u64, slot: u64| {
+        retype(caller, untyped, operation::RETYPE_PROCESS, base, slot, 0).status
+    };
+    retype_process(caller, base + 4096, slot) == operation::STATUS_REFUSED
+        && retype_process(caller, table, slot) == operation::STATUS_REFUSED
+        && retype_process(caller, base, operation::ROOT_CONSOLE_SLOT) == operation::STATUS_REFUSED
+        && retype_process(caller, base, slot) == operation::STATUS_OK
+        && matches!(
+            inspect(caller, slot),
+            Ok(process) if process.kind == operation::KIND_PROCESS
+                && process.base == base
+                && process.order == PROCESS_ORDER
+                && process.rights == RIGHT_CONTROL
+        )
+        && inspect(caller, operation::through(slot, 1)) == Err(operation::STATUS_REFUSED)
+        && retype_process(caller, base, slot + 1) == operation::STATUS_REFUSED
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, PROCESS_HELD) } == operation::STATUS_OK
+}
+
 /// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
 /// into the empty slot `destination`, repeating while retype returns again, and prints how many again
 /// returns that took: a retype at a base not aligned to 2M is refused, the retype returns again at least
@@ -1284,6 +1331,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && unmapped_bits_held(caller, empty + 1)
                                 && remapped_other_frame_held(caller, untyped, empty + 2)
                                 && freed_frame_retyped(caller, untyped, empty + 3)
+                                && retyped_process_held(caller, untyped, tables[0], empty + 4)
                                 && retyped_leaves_held(caller, untyped, tables[3])
                                 && eager_source_held(caller, empty)
                         })
