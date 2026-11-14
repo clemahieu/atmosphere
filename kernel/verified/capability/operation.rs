@@ -683,36 +683,41 @@ impl CapKernel {
     }
 
     /// A derive in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, exactly when allows_derive fails, or ok with a child of the capability at the position the
-    /// slot's word names, in the caller's own table, put at the position the word in argument 1 names,
-    /// with the rights in argument 2, the block of the order in argument 4 at the base in argument 3 and
-    /// the badge in argument 5, or the parent's when it is 0,
-    /// the one entry the parent map gains and the only node whose kind, liveness or capability changed,
-    /// the block the parent lies in holding one more reference when the parent is a frame, a space, a
-    /// thread, a process, an endpoint or a notification and the block table as it was otherwise,
-    /// no root entry changed, every thread bound as it was, and every space's tables as they were.
-    /// Rights wider than 32 bits and an order wider than 8 are refused, since no capability holds them,
-    /// and so is a source word naming another process's table: derive takes its parent from the
-    /// caller's own.
+    /// returned: refused with nothing changed, exactly when allows_derive fails, or ok with a child of
+    /// the capability at the position the slot's word names, in the caller's own table, put at the
+    /// position the word in argument 1 names, with the rights in argument 2, the block of the order in
+    /// argument 4 at the base in argument 3 and the badge in argument 5, or the parent's when it is 0,
+    /// as derive_step, cap_derived_at, derive_counted, derive_linked and derive_untracked say; either
+    /// way what derive_kept and same_tree say is as it was. Rights wider than 32 bits and an order wider
+    /// than 8 are refused, since no capability holds them, and so is a source word naming another
+    /// process's table: derive takes its parent from the caller's own.
     pub open spec fn spec_derived(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
+        let rights = frame.argument(2) as u32;
+        let base = frame.argument(3) as usize;
+        let order = frame.argument(4) as u8;
+        let badge = frame.argument(5) as usize;
+        let parent = pre.tables.node_of(root, from->0.index);
         let child = pre.tables.node_of(pre.table_at(root, to->0.through)->0, to->0.index);
-        ||| !pre.allows_derive(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& out == status_only(STATUS_OK)
-            &&& frame.argument(2) <= u32::MAX as u64
-            &&& frame.argument(4) <= u8::MAX as u64
-            &&& from is Some
-            &&& from->0.through is None
-            &&& to is Some
-            &&& Self::cap_derived_at(pre, post, root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8, frame.argument(5) as usize)
-            &&& Self::derive_counted(pre, post, pre.tables.node_of(root, from->0.index))
-            &&& post.list.parent@ == pre.list.parent@.insert(child, pre.tables.node_of(root, from->0.index))
-            &&& post.tables.roots == pre.tables.roots
-            &&& Self::caps_frame(pre, post, child, child)
-            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
-            &&& Self::same_tree(pre, post)
+        &&& Self::derive_kept(pre, post)
+        &&& Self::same_tree(pre, post)
+        &&& {
+            ||| !pre.allows_derive(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
+            ||| {
+                &&& out == status_only(STATUS_OK)
+                &&& frame.argument(2) <= u32::MAX as u64
+                &&& frame.argument(4) <= u8::MAX as u64
+                &&& from is Some
+                &&& from->0.through is None
+                &&& to is Some
+                &&& Self::derive_answered(pre, post, root, from->0.index, to->0, rights, base, order, badge, true)
+                &&& Self::derive_step(pre, post, child)
+                &&& Self::cap_derived_at(pre, post, root, from->0.index, to->0, rights, base, order, badge)
+                &&& Self::derive_counted(pre, post, parent)
+                &&& Self::derive_linked(pre, post, child, parent)
+                &&& Self::derive_untracked(pre, post, parent)
+            }
         }
     }
 

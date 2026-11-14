@@ -395,6 +395,55 @@ impl CapKernel {
         }
     }
 
+    /// Whether a derive of the capability at index from of the table at root into the position to, with
+    /// the rights, base, order and badge given, answered ok exactly when can_derive_at holds, and left
+    /// the kernel as it was when it refused. derive's ensures and spec_derived both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn derive_answered(pre: Self, post: Self, root: usize, from: usize, to: Position, rights: u32, base: usize, order: u8, badge: usize, ok: bool) -> bool {
+        &&& ok == pre.can_derive_at(root, from, to, rights, base, order, badge)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a derive leaves as it was, whether it answered ok or refused: the cores, both epochs, the
+    /// IOMMUs, the loaded spaces, the kernel's root, the tables' roots, the process each thread is bound
+    /// to, the endpoints' records and the threads' records and queues. derive's ensures and
+    /// spec_derived both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn derive_kept(pre: Self, post: Self) -> bool {
+        &&& post.cores == pre.cores
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.iommus == pre.iommus
+        &&& post.spaces.loaded == pre.spaces.loaded
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
+        &&& post.tables.roots == pre.tables.roots
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        &&& post.endpoints.records == pre.endpoints.records
+        &&& post.threads.records == pre.threads.records
+        &&& post.threads.queues == pre.threads.queues
+    }
+
+    /// Where a derive put node child in the derivation tree: under node parent, its one new entry in
+    /// the parent map, with the first node of the order as it was. derive's ensures and spec_derived
+    /// both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn derive_linked(pre: Self, post: Self, child: usize, parent: usize) -> bool {
+        &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
+        &&& post.list.seq@[0] == pre.list.seq@[0]
+    }
+
+    /// What a derive from the capability at node parent leaves as it was when the parent holds no
+    /// block: the block table, the holders, the spaces' holders, the threads and the processes.
+    /// derive's ensures and spec_derived both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn derive_untracked(pre: Self, post: Self, parent: usize) -> bool {
+        !tracked_kind(pre.payload_of(parent).kind) ==> {
+            &&& post.blocks == pre.blocks
+            &&& post.holders == pre.holders
+            &&& post.spaces.holders == pre.spaces.holders
+            &&& post.threads == pre.threads
+            &&& post.processes == pre.processes
+        }
+    }
+
     /// Derives the capability at index `from` of the caller's table, at `root`, into the empty position
     /// `to`: an index of the caller's table, or of the table of a process the caller controls, which
     /// must not be dead. The index, the position, rights, base, order and badge come from user space,
@@ -406,35 +455,19 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            final(self).cores == old(self).cores,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).iommus == old(self).iommus,
-            final(self).spaces.loaded == old(self).spaces.loaded,
-            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
-            final(self).tables.roots == old(self).tables.roots,
-            ret ==> Self::derive_step(*old(self), *final(self), old(self).tables.node_of(old(self).table_at(root, to.through)->0, to.index)),
-            ret && !tracked_kind(old(self).payload_of(old(self).tables.node_of(root, from)).kind) ==> {
-                &&& final(self).blocks == old(self).blocks
-                &&& final(self).holders == old(self).holders
-                &&& final(self).spaces.holders == old(self).spaces.holders
-                &&& final(self).threads == old(self).threads
-                &&& final(self).processes == old(self).processes
-            },
+            Self::derive_answered(*old(self), *final(self), root, from, to, rights, base, order, badge, ret),
+            Self::derive_kept(*old(self), *final(self)),
             Self::same_tree(*old(self), *final(self)),
-            !ret ==> *final(self) == *old(self),
+            ret ==> Self::derive_step(*old(self), *final(self), old(self).tables.node_of(old(self).table_at(root, to.through)->0, to.index)),
             ret ==> Self::cap_derived_at(*old(self), *final(self), root, from, to, rights, base, order, badge),
             ret ==> Self::derive_counted(*old(self), *final(self), old(self).tables.node_of(root, from)),
-            ret ==> final(self).list.parent@ == old(self).list.parent@.insert(
+            ret ==> Self::derive_linked(
+                *old(self),
+                *final(self),
                 old(self).tables.node_of(old(self).table_at(root, to.through)->0, to.index),
                 old(self).tables.node_of(root, from),
             ),
-            ret ==> final(self).list.seq@[0] == old(self).list.seq@[0],
-            ret == old(self).can_derive_at(root, from, to, rights, base, order, badge),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            final(self).endpoints.records == old(self).endpoints.records,
-            final(self).threads.records == old(self).threads.records,
-            final(self).threads.queues == old(self).threads.queues,
+            ret ==> Self::derive_untracked(*old(self), *final(self), old(self).tables.node_of(root, from)),
     {
         let ghost pre = *old(self);
         let dst = match self.find_table(root, to.through) {
