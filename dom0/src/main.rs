@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy, place, start and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy, place, start, suspend and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -95,7 +95,7 @@
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
 //! `svc #1` returns unknown and prints nothing.
 //!
-//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, place, start, link and map through acall's wrappers,
+//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, place, start, suspend, link and map through acall's wrappers,
 //! whose ensures are the kernel's proven contracts, so the code those proofs speak of is the code that
 //! boots. dom0 is not verified: the caller token it threads through them erases in its build, and
 //! nothing here checks the wrappers' requires.
@@ -110,7 +110,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 
-use acall::capability::{delete, destroy, move_cap, place, revoke, start};
+use acall::capability::{delete, destroy, move_cap, place, revoke, start, suspend};
 use acall::memory::{derive, link, map, retype};
 use acall::step::Caller;
 use asys::operation;
@@ -963,6 +963,33 @@ fn started_thread_held(caller: &mut Tracked<Caller>) -> bool {
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, STARTED_HELD) } == operation::STATUS_OK
 }
 
+/// What dom0 prints once it suspended the thread it started and started it again, which the gate
+/// looks for.
+const SUSPENDED_HELD: [u64; 5] = operation::print_words(b"dom0 thread suspended\n");
+
+/// Whether dom0 suspends the thread the start check started, Runnable on core 0 behind dom0, using the
+/// empty slot `copy` for a derived thread capability and freeing it again. A suspend of the console
+/// slot, which holds no thread, is refused, and so is one through a copy of the thread's capability
+/// derived without control. The suspend is accepted, the thread being Runnable, and a second accepted
+/// too, the thread being Inactive. A start of the thread is accepted again, so it is Runnable as before,
+/// and dom0 prints that it held. dom0 suspends no thread it runs on: a suspend of the caller's own
+/// thread leaves its core with nothing to run.
+fn suspended_thread_held(caller: &mut Tracked<Caller>, copy: u64) -> bool {
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 1;
+    let Ok(held) = inspect(caller, thread) else {
+        return false;
+    };
+    held.kind == operation::KIND_THREAD
+        && suspend(caller, operation::ROOT_CONSOLE_SLOT).status == operation::STATUS_REFUSED
+        && derive(caller, thread, copy, 0, held.base, held.order).status == operation::STATUS_OK
+        && suspend(caller, copy).status == operation::STATUS_REFUSED
+        && delete(caller, copy).status == operation::STATUS_OK
+        && suspend(caller, thread).status == operation::STATUS_OK
+        && suspend(caller, thread).status == operation::STATUS_OK
+        && start(caller, thread).status == operation::STATUS_OK
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, SUSPENDED_HELD) } == operation::STATUS_OK
+}
+
 /// How far below the top of the gigabyte untyped the child's table leaf starts: the order-1 block below the
 /// thread check's, above the eager source's block, where nothing else retypes.
 const CHILD_LEAF_BELOW_TOP: u64 = THREADS_BELOW_TOP + LEAF_BYTES;
@@ -1519,6 +1546,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && retyped_threads_held(caller, empty, empty + 4)
                                 && placed_thread_held(caller, empty + 5)
                                 && started_thread_held(caller)
+                                && suspended_thread_held(caller, empty + 5)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && eager_source_held(caller, empty)
                         })

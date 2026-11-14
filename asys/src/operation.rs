@@ -85,6 +85,11 @@ pub const PLACE: u64 = 21;
 /// threads of that priority there. Refused unless the thread is inactive, bound to a live process and
 /// placed.
 pub const START: u64 = 22;
+/// Suspends the thread in the slot: one that is inactive, runnable or running on the caller's core is
+/// inactive after, and may be started again; one running on another core is stopped there, with the
+/// outcome STATUS_AGAIN until it is. Refused unless the slot holds a thread with control that is not
+/// blocked or dead.
+pub const SUSPEND: u64 = 23;
 
 /// The most entries one probe reads.
 pub const PROBE_MAX: u64 = 64;
