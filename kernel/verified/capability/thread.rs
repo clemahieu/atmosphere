@@ -59,7 +59,7 @@ pub const TYPE_THREAD_STEPS: usize = 2 * SMALL_PAGES_MAX + NODES_PER_PAGE;
 /// retype_thread's bound in the step counter: one type_thread.
 pub const RETYPE_THREAD_STEPS: usize = TYPE_THREAD_STEPS;
 
-/// check_current's bound in the step counter: none, since it loads two records and runs no loop.
+/// check_current's bound in the step counter: none, since it loads three records and runs no loop.
 pub const CHECK_CURRENT_STEPS: usize = 0;
 
 /// The page of a thread's block that holds its record and its XSAVE area. Page 0 is its node page.
@@ -4784,8 +4784,51 @@ impl CapKernel {
         &&& saves_own_frame(pre.view(), post.view(), t)
     }
 
-    /// Core c's check of its current thread on kernel entry and before returning to user mode: one load
-    /// of the thread's record and one of its process's. A thread that must leave is moved off: core c
+    /// Whether core c's current thread must leave it: one load of the thread's record and one of its
+    /// process's. check_current moves such a thread off at c's next entry, and the glue sends c the
+    /// reschedule IPI after an entry that left c's thread so, a destroy of it or of its process or a
+    /// suspend of it while it runs there, so c makes that entry without waiting for its tick.
+    pub fn current_must_leave(&self, c: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            c < NUM_CPUS,
+        ensures
+            ret == self.must_leave(c as int),
+    {
+        let t = match self.cores.get(c).current_thread {
+            Some(t) => t,
+            None => { return false; },
+        };
+        proof {
+            reveal(current_wf);
+            assert(runs(self.cores@, c as int, t));
+            assert(self.threads.records@.contains_key(t));
+            assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+        }
+        let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+            Tracked(self.threads.records.borrow().tracked_borrow(t)),
+        );
+        if record.pending_stop || record.dying {
+            true
+        } else {
+            match record.process {
+                None => true,
+                Some(p) => {
+                    proof {
+                        assert(self.processes.records@.contains_key(p));
+                        assert(process_wf(&self.processes, &self.blocks, p));
+                    }
+                    PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * PAGE_SZ).borrow(
+                        Tracked(self.processes.records.borrow().tracked_borrow(p)),
+                    ).dead
+                },
+            }
+        }
+    }
+
+    /// Core c's check of its current thread on kernel entry and before returning to user mode:
+    /// current_must_leave, then one more load of the thread's record when it must leave. A thread that
+    /// must leave is moved off: core c
     /// saves its frame with marker `saved` (full on an interrupt or exception, partial copy at a
     /// system call), makes it Inactive, or Dead when it was destroyed while Running, with no stop
     /// pending, and runs nothing. So a thread that destroys itself or its own process does not return
@@ -4817,27 +4860,11 @@ impl CapKernel {
             assert(pre.threads.records@.contains_key(t));
             assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
         }
-        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
-        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
-        let leave = if record.pending_stop || record.dying {
-            true
-        } else {
-            match record.process {
-                None => true,
-                Some(p) => {
-                    proof {
-                        assert(pre.processes.records@.contains_key(p));
-                        assert(process_wf(&pre.processes, &pre.blocks, p));
-                    }
-                    PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * PAGE_SZ).borrow(
-                        Tracked(self.processes.records.borrow().tracked_borrow(p)),
-                    ).dead
-                },
-            }
-        };
-        if !leave {
+        if !self.current_must_leave(c) {
             return CurrentStep::Kept;
         }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
         self.cores.set(c, CoreState {
             current_thread: None,
             acked_epoch: state.acked_epoch,

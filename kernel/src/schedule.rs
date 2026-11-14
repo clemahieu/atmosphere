@@ -5,9 +5,9 @@
 //! its core runs records a reschedule IPI for that core in ghost state, `selection_due` reads the same
 //! condition, and `tick` selects, switching the thread, its frame and its space in one operation, and
 //! handing the core to a thread of its current thread's priority, so equals take turns. The glue here
-//! sends the IPIs `selection_due` names once the kernel's lock is released, arms each core's timer for
-//! a slice, runs `tick` in the IPI's handler and in the timer's, and returns with the frame
-//! `current_frame` gives. A core whose thread left it waits for the next interrupt.
+//! sends the IPIs `selection_due` and `current_must_leave` name once the kernel's lock is released,
+//! arms each core's timer for a slice, runs `tick` in the IPI's handler and in the timer's, and returns
+//! with the frame `current_frame` gives. A core whose thread left it waits for the next interrupt.
 //! design/cpu-time-as-capability/.
 
 use verified::arch::Registers;
@@ -32,13 +32,16 @@ pub enum Resume {
     Idle,
 }
 
-/// The online cores whose selection is due, as the mask of cores to send the reschedule IPI. Called
-/// under the kernel's lock after an entry.
+/// The online cores whose selection is due, or whose current thread must leave, as the mask of cores
+/// to send the reschedule IPI. Called under the kernel's lock after an entry. A destroy, of a thread
+/// or of its process, or a suspend leaves the thread to be moved off by its own core at that core's
+/// next entry, which the verified operation records as an IPI in ghost state; the IPI is that entry,
+/// so the thread stops at once and not at the core's next tick.
 pub fn due(kernel: &CapKernel) -> u64 {
     let online = cpu::online();
     let mut targets = 0;
     for d in 0..NUM_CPUS {
-        if online >> d & 1 == 1 && kernel.selection_due(d) {
+        if online >> d & 1 == 1 && (kernel.selection_due(d) || kernel.current_must_leave(d)) {
             targets |= 1 << d;
         }
     }
