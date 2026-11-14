@@ -567,6 +567,73 @@ impl CapKernel {
             ==> pre.mappings@.contains_key(n) && post.mappings@[n] == pre.mappings@[n]
     }
 
+    /// What every revoke leaves as it was: the cores, which IOMMUs are present and what they have
+    /// acknowledged, and every process's record. revoke's ensures and spec_revoked both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn revoke_preserved(pre: Self, post: Self) -> bool {
+        &&& post.cores == pre.cores
+        &&& post.iommus.acked == pre.iommus.acked
+        &&& post.iommus.present == pre.iommus.present
+        &&& post.processes.records == pre.processes.records
+    }
+
+    /// What revoke returned for the capability at a position, in revoke's own result. Refused is the
+    /// index naming no capability, and then nothing changed; an epoch already at its limit changes
+    /// nothing either. Exhausted, which the entry also reports as refused, is that limit reached with
+    /// the run unfinished. Again took exactly REVOKE_BUDGET nodes and left some of the run; Done is the
+    /// run empty. A step that was not refused took a prefix of the run, raised the flush epoch by no
+    /// more than the nodes it took, and left every page of a mapping it took stale past the epoch it
+    /// began at. revoke's ensures and spec_revoked both call it, the arm once per result:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn revoke_answered(pre: Self, post: Self, root: usize, at: Position, ret: RevokeStep) -> bool {
+        &&& ret is Refused == pre.cap_at(root, at) is None
+        &&& ret is Refused ==> post == pre
+        &&& pre.flush_epoch == usize::MAX ==> post == pre
+        &&& ret is Exhausted ==> post.flush_epoch == usize::MAX
+        &&& !(ret is Refused) ==> (ret is Done == post.list.childless(pre.cap_at(root, at)->0))
+        &&& !(ret is Refused) ==> post.flush_epoch <= pre.flush_epoch
+            + (pre.list.seq@.len() - post.list.seq@.len())
+        &&& ret is Again ==> pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET
+        &&& !(ret is Refused) ==> exists|gone: Seq<usize>|
+            #[trigger] revoked_seq(pre.list, post.list, pre.cap_at(root, at)->0, gone)
+        &&& !(ret is Refused) ==> forall|n: usize, g: usize|
+            pre.mappings@.contains_key(n) && !post.mappings@.contains_key(n)
+            && #[trigger] record_pages(pre.mappings@[n]).contains(g)
+            ==> post.stale_epoch.above(pre.flush_epoch as int, g)
+    }
+
+    /// The facts a return of revoke already has are revoke_answered. Unfolding that predicate in the
+    /// loop's query exceeds the solver's limit, so each return calls this instead.
+    pub proof fn lemma_revoke_answered(
+        pre: Self,
+        post: Self,
+        root: usize,
+        at: Position,
+        ret: RevokeStep,
+        gone: Seq<usize>,
+    )
+        requires
+            ret is Refused == pre.cap_at(root, at) is None,
+            ret is Refused ==> post == pre,
+            pre.flush_epoch == usize::MAX ==> post == pre,
+            ret is Exhausted ==> post.flush_epoch == usize::MAX,
+            !(ret is Refused) ==> ret is Done == post.list.childless(pre.cap_at(root, at)->0),
+            !(ret is Refused) ==> post.flush_epoch <= pre.flush_epoch
+                + (pre.list.seq@.len() - post.list.seq@.len()),
+            ret is Again ==> pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET,
+            !(ret is Refused) ==> revoked_seq(pre.list, post.list, pre.cap_at(root, at)->0, gone),
+            !(ret is Refused) ==> forall|n: usize, g: usize|
+                pre.mappings@.contains_key(n) && !post.mappings@.contains_key(n)
+                && #[trigger] record_pages(pre.mappings@[n]).contains(g)
+                ==> post.stale_epoch.above(pre.flush_epoch as int, g),
+        ensures
+            Self::revoke_answered(pre, post, root, at, ret),
+    {
+        if !(ret is Refused) {
+            assert(revoked_seq(pre.list, post.list, pre.cap_at(root, at)->0, gone));
+        }
+    }
+
     /// Revokes the capability at a position, an index of the caller's table, at root, or of the table
     /// of a process the caller controls, live or dead, for at most REVOKE_BUDGET steps. The position
     /// comes from user space, so it can be refused. The capability's own slot can leave its table
@@ -583,29 +650,13 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + REVOKE_STEPS,
             final(self).wf(),
-            final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
-            ret is Refused == old(self).cap_at(root, at) is None,
-            ret is Refused ==> *final(self) == *old(self),
-            old(self).flush_epoch == usize::MAX ==> *final(self) == *old(self),
-            ret is Exhausted ==> final(self).flush_epoch == usize::MAX,
-            !(ret is Refused) ==> Self::cap_revoking_at(*old(self), *final(self), root, at),
-            !(ret is Refused) ==> (ret is Done == final(self).list.childless(old(self).cap_at(root, at)->0)),
-            ret is Done ==> Self::cap_revoked_at(*old(self), *final(self), root, at),
             Self::records_shrunk(*old(self), *final(self)),
             Self::blocks_revoked(*old(self), *final(self)),
-            !(ret is Refused) ==> final(self).flush_epoch <= old(self).flush_epoch
-                + (old(self).list.seq@.len() - final(self).list.seq@.len()),
-            ret is Again ==> old(self).list.seq@.len() - final(self).list.seq@.len() == REVOKE_BUDGET,
-            !(ret is Refused) ==> exists|gone: Seq<usize>|
-                #[trigger] revoked_seq(old(self).list, final(self).list, old(self).cap_at(root, at)->0, gone),
-            !(ret is Refused) ==> forall|n: usize, g: usize|
-                old(self).mappings@.contains_key(n) && !final(self).mappings@.contains_key(n)
-                && #[trigger] record_pages(old(self).mappings@[n]).contains(g)
-                ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g),
-            final(self).iommus.acked == old(self).iommus.acked,
-            final(self).iommus.present == old(self).iommus.present,
-            final(self).processes.records == old(self).processes.records,
+            Self::revoke_preserved(*old(self), *final(self)),
+            Self::revoke_answered(*old(self), *final(self), root, at, ret),
+            !(ret is Refused) ==> Self::cap_revoking_at(*old(self), *final(self), root, at),
+            ret is Done ==> Self::cap_revoked_at(*old(self), *final(self), root, at),
     {
         let ghost pre = *old(self);
         proof {
@@ -613,7 +664,12 @@ impl CapKernel {
         }
         let c = match self.find_cap(root, at) {
             Some(found) => found.0,
-            None => { return RevokeStep::Refused; },
+            None => {
+                proof {
+                    Self::lemma_revoke_answered(pre, *self, root, at, RevokeStep::Refused, Seq::empty());
+                }
+                return RevokeStep::Refused;
+            },
         };
         let ghost holder = pre.tables.owner@[page_of(c)].0;
         proof {
@@ -676,6 +732,7 @@ impl CapKernel {
                 proof {
                     assert(self.view() == mid.view());
                     lemma_walks_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&self.table_pages, &self.spaces), self.list);
+                    Self::lemma_revoke_answered(pre, *self, root, at, RevokeStep::Done, gone);
                 }
                 return RevokeStep::Done;
             }
@@ -746,10 +803,19 @@ impl CapKernel {
             lemma_walks_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&self.table_pages, &self.spaces), self.list);
         }
         if self.list.is_childless(c) {
+            proof {
+                Self::lemma_revoke_answered(pre, *self, root, at, RevokeStep::Done, gone);
+            }
             RevokeStep::Done
         } else if self.flush_epoch == usize::MAX {
+            proof {
+                Self::lemma_revoke_answered(pre, *self, root, at, RevokeStep::Exhausted, gone);
+            }
             RevokeStep::Exhausted
         } else {
+            proof {
+                Self::lemma_revoke_answered(pre, *self, root, at, RevokeStep::Again, gone);
+            }
             RevokeStep::Again
         }
     }

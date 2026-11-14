@@ -778,32 +778,49 @@ impl CapKernel {
     /// its limit, which a revoke reaches only from an epoch within REVOKE_BUDGET of it, raised by no more
     /// than the nodes it took of the run of the capability at the position the slot's word names; again
     /// with exactly REVOKE_BUDGET nodes of that run taken and some of it left; or ok with the run empty.
-    /// Whatever steps it took raised no block's count. See design/revoke-by-depth-first-list/.
+    /// Whatever steps it took raised no block's count. Every arm calls the predicates revoke's ensures
+    /// calls: revoke_preserved, mappings_shrunk, records_shrunk and blocks_revoked, and revoke_answered
+    /// with the step, Refused and Exhausted both where the status is refused. See
+    /// design/revoke-by-depth-first-list/ and design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
-        ||| !pre.allows_revoke(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& out == status_only(STATUS_REFUSED)
-            &&& at is Some
-            &&& pre.flush_epoch + REVOKE_BUDGET >= usize::MAX
-            &&& post.flush_epoch == usize::MAX
-            &&& pre.flush_epoch + (pre.list.seq@.len() - post.list.seq@.len()) >= usize::MAX
-            &&& Self::cap_revoking_at(pre, post, root, at->0)
-            &&& Self::counts_lowered(pre, post)
-        }
-        ||| {
-            &&& out == status_only(STATUS_AGAIN)
-            &&& at is Some
-            &&& !post.list.childless(pre.cap_at(root, at->0)->0)
-            &&& pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET
-            &&& Self::cap_revoking_at(pre, post, root, at->0)
-            &&& Self::counts_lowered(pre, post)
-        }
-        ||| {
-            &&& out == status_only(STATUS_OK)
-            &&& at is Some
-            &&& Self::cap_revoked_at(pre, post, root, at->0)
-            &&& Self::counts_lowered(pre, post)
+        &&& Self::revoke_preserved(pre, post)
+        &&& Self::mappings_shrunk(pre, post)
+        &&& Self::records_shrunk(pre, post)
+        &&& Self::blocks_revoked(pre, post)
+        &&& {
+            ||| {
+                &&& !pre.allows_revoke(root, frame)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& post == pre
+                &&& at is Some ==> Self::revoke_answered(pre, post, root, at->0, RevokeStep::Refused)
+            }
+            ||| {
+                &&& out == status_only(STATUS_REFUSED)
+                &&& at is Some
+                &&& Self::revoke_answered(pre, post, root, at->0, RevokeStep::Exhausted)
+                &&& pre.flush_epoch + REVOKE_BUDGET >= usize::MAX
+                &&& post.flush_epoch == usize::MAX
+                &&& pre.flush_epoch + (pre.list.seq@.len() - post.list.seq@.len()) >= usize::MAX
+                &&& Self::cap_revoking_at(pre, post, root, at->0)
+                &&& Self::counts_lowered(pre, post)
+            }
+            ||| {
+                &&& out == status_only(STATUS_AGAIN)
+                &&& at is Some
+                &&& Self::revoke_answered(pre, post, root, at->0, RevokeStep::Again)
+                &&& !post.list.childless(pre.cap_at(root, at->0)->0)
+                &&& pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET
+                &&& Self::cap_revoking_at(pre, post, root, at->0)
+                &&& Self::counts_lowered(pre, post)
+            }
+            ||| {
+                &&& out == status_only(STATUS_OK)
+                &&& at is Some
+                &&& Self::revoke_answered(pre, post, root, at->0, RevokeStep::Done)
+                &&& Self::cap_revoked_at(pre, post, root, at->0)
+                &&& Self::counts_lowered(pre, post)
+            }
         }
     }
 
@@ -2133,7 +2150,17 @@ impl CapKernel {
                 RevokeStep::Again => STATUS_AGAIN,
                 RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
             },
-            None => STATUS_REFUSED,
+            None => {
+                // The slot word names no position, so revoke is not called. The arm still carries what
+                // an unchanged kernel satisfies of revoke's ensures, and blocks_revoked is opaque.
+                proof {
+                    Self::lemma_blocks_revoked_none(*old(self), *self);
+                    assert(Self::mappings_shrunk(*old(self), *self));
+                    assert(Self::records_shrunk(*old(self), *self));
+                    assert(Self::revoke_preserved(*old(self), *self));
+                }
+                STATUS_REFUSED
+            },
         };
         proof {
             if spec_position(frame.slot()) is Some {
