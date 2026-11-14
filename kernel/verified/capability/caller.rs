@@ -1390,7 +1390,8 @@ impl CapKernel {
     /// again, with every table's view and the block table as they were, or ok, with every table's view
     /// as it was. A process: ok, with the caller's slot the word names now holding the process
     /// capability, the untyped's child, and every other slot of every table as it was. A thread: the
-    /// same with the thread capability, and no frame capability's block or count changed.
+    /// same with the thread capability, the thread bound to the process whose capability is at index
+    /// level and every other binding as it was, and no frame capability's block or count changed.
     pub open spec fn retype_contract(pre: Self, post: Self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize, out: Outcome) -> bool {
         let allowed = pre.retype_allowed(root, kind, from, base, word, level);
         let to = word as usize;
@@ -1479,6 +1480,7 @@ impl CapKernel {
                 &&& out == status_only(STATUS_OK)
                 &&& post.table_view(root) == pre.table_view(root).insert(to, thread_view(base, parent))
                 &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& Self::retype_thread_contract_fields(pre, post, root, base, level)
                 &&& Self::frame_blocks_kept(pre, post)
             }
         }
@@ -1614,6 +1616,15 @@ impl CapKernel {
                 && !pre.list.nodes@[pre.tables.node_of(r, i) as int].live
                     ==> !post.list.nodes@[pre.tables.node_of(r, i) as int].live
         }
+    }
+
+    /// The binding `retype_contract` states on `RETYPE_THREAD`: the thread at base is bound to the
+    /// process whose capability is at index j of the table at root, and every other binding is as it
+    /// was. Kept opaque outside `lemma_retype_contract` and caller proofs that reveal it.
+    #[verifier::opaque]
+    pub open spec fn retype_thread_contract_fields(pre: Self, post: Self, root: usize, base: usize, j: usize) -> bool {
+        bound_threads(&post.list, &post.tables)
+            == bound_threads(&pre.list, &pre.tables).insert(base, pre.payload_of(pre.tables.node_of(root, j)).base)
     }
 
     /// Additional preservation facts of `retype_contract` on `RETYPE_TABLE_PAGE`, kept opaque outside
@@ -2002,6 +2013,7 @@ impl CapKernel {
             assert(post.slot_view(root, to) == v);
             Self::lemma_slot_added_thread(pre, post, root, to, v, base);
             pre.lemma_process_cap(n);
+            reveal(CapKernel::retype_thread_contract_fields);
             Self::lemma_thread_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, (pre.payload_of(n).base / PAGE_SZ) as int);
         } else if kind == RETYPE_FREE {
             if out == status_only(STATUS_OK) {

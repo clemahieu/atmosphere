@@ -41,6 +41,17 @@ proof fn lemma_returned_retype_table_fields(pre: CapKernel, mid: CapKernel, post
     reveal(CapKernel::retype_table_contract_fields);
 }
 
+/// The same of the binding retype's contract states for a thread.
+proof fn lemma_returned_retype_thread_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize, base: usize, j: usize)
+    requires
+        CapKernel::only_core_changed(mid, post, c),
+    ensures
+        CapKernel::retype_thread_contract_fields(pre, mid, root, base, j)
+            ==> CapKernel::retype_thread_contract_fields(pre, post, root, base, j),
+{
+    reveal(CapKernel::retype_thread_contract_fields);
+}
+
 /// The same of the additional facts of inspect's contract.
 proof fn lemma_returned_inspect_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int)
     requires
@@ -113,6 +124,7 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
         CapKernel::lemma_retype_contract(entry, mid, pre.root(), frame, out);
         lemma_returned_retype_frame_fields(entry, mid, caller@.kernel(), c, pre.root(), untyped as usize, base as usize, word as usize);
         lemma_returned_retype_table_fields(entry, mid, caller@.kernel(), c, base as usize);
+        lemma_returned_retype_thread_fields(entry, mid, caller@.kernel(), c, pre.root(), base as usize, level as usize);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
     }
