@@ -59,10 +59,9 @@ pub fn handle_ipi() {
         state.acked[core] = epoch;
     }
     if let Some(kernel) = CAP_KERNEL.lock().as_deref_mut() {
-        if kernel.cores.get(core).acked_epoch < kernel.flush_epoch {
-            // The handler runs on `core`, which acknowledge requires of its caller.
-            kernel.acknowledge(core, Tracked::assume_new());
-        }
+        // The handler runs on `core`, which the entry requires of its caller. The entry makes its own
+        // step counter in the one passed here.
+        kernel.enter_flush(core, Tracked::assume_new());
     }
 }
 

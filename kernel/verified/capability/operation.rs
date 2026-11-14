@@ -86,6 +86,33 @@ pub const INVOKE_UNMAP_STEPS: usize = crate::capability::unmap::UNMAP_AT_STEPS;
 /// invoke_probe's bound in the step counter: one probe_at's, an entry each.
 pub const INVOKE_PROBE_STEPS: usize = PROBE_MAX as usize;
 
+/// dispatch's bound in the step counter: the check of its current thread, then the largest of the
+/// operations it runs, which is revoke's. See design/one-lock-bounded-steps/.
+pub const DISPATCH_STEPS: usize = CHECK_CURRENT_STEPS + INVOKE_REVOKE_STEPS;
+
+/// B, the bound of one entry that holds the kernel's lock: dispatch's, then the acknowledgement of a
+/// flush. The flush IPI's entry, CapKernel::enter_flush, stays within it. Each such entry makes the
+/// one counter it is held to. See design/one-lock-bounded-steps/.
+pub const ENTRY_STEPS: usize = DISPATCH_STEPS + ACKNOWLEDGE_STEPS;
+
+/// Every operation dispatch runs stays within revoke's bound, so dispatch stays within its own.
+pub proof fn lemma_revoke_bounds_the_operations()
+    ensures
+        INVOKE_RETYPE_STEPS <= INVOKE_REVOKE_STEPS,
+        INVOKE_DERIVE_STEPS <= INVOKE_REVOKE_STEPS,
+        INVOKE_MOVE_STEPS <= INVOKE_REVOKE_STEPS,
+        INVOKE_DELETE_STEPS <= INVOKE_REVOKE_STEPS,
+        INVOKE_LINK_STEPS <= INVOKE_REVOKE_STEPS,
+        INVOKE_MAP_STEPS <= INVOKE_REVOKE_STEPS,
+        INVOKE_UNMAP_STEPS <= INVOKE_REVOKE_STEPS,
+        INVOKE_PROBE_STEPS <= INVOKE_REVOKE_STEPS,
+        crate::capability::console::PRINT_BYTES <= INVOKE_REVOKE_STEPS,
+        crate::capability::power::POWER_OFF_STEPS <= INVOKE_REVOKE_STEPS,
+        crate::capability::inspect::INSPECT_STEPS <= INVOKE_REVOKE_STEPS,
+        ACKNOWLEDGE_STEPS <= ENTRY_STEPS,
+{
+}
+
 pub const OPERATION_RETYPE: u64 = 1;
 pub const OPERATION_DERIVE: u64 = 2;
 pub const OPERATION_MOVE: u64 = 3;
@@ -1234,16 +1261,18 @@ impl CapKernel {
     /// runs no thread after the check, so nothing returns to user mode, and then the step is the
     /// check's alone: the thread moved off with its partial frame copy, or nothing when core c ran
     /// none. Otherwise what returns to the thread, with the operation's effect on the kernel.
-    pub fn dispatch(&mut self, c: usize, frame: Registers) -> (ret: Option<Outcome>)
+    pub fn dispatch(&mut self, c: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Outcome>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(steps).count <= old(steps).count + DISPATCH_STEPS,
             Self::dispatched(*old(self), *final(self), c as int, frame, ret),
     {
-        // The one counter of this entry, on a path that holds the kernel's lock: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        match self.check_current(c, frame, FrameKind::Partial, Tracked(&mut steps)) {
+        proof {
+            lemma_revoke_bounds_the_operations();
+        }
+        match self.check_current(c, frame, FrameKind::Partial, Tracked(steps)) {
             CurrentStep::MovedOff => { return None; },
             CurrentStep::Kept => {},
         }
@@ -1270,27 +1299,27 @@ impl CapKernel {
             assert(self.cores@[c as int].space == Some(root));
         }
         match operation(frame.operation_number()) {
-            Some(Operation::Retype) => Some(self.invoke_retype(c, root, frame, Tracked(&mut steps))),
-            Some(Operation::Derive) => Some(self.invoke_derive(root, frame, Tracked(&mut steps))),
-            Some(Operation::Move) => Some(self.invoke_move(root, frame, Tracked(&mut steps))),
-            Some(Operation::Delete) => Some(self.invoke_delete(root, frame, Tracked(&mut steps))),
-            Some(Operation::Revoke) => Some(self.invoke_revoke(root, frame, Tracked(&mut steps))),
-            Some(Operation::Link) => Some(self.invoke_link(root, frame, Tracked(&mut steps))),
-            Some(Operation::Map) => Some(self.invoke_map(root, frame, Tracked(&mut steps))),
-            Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(&mut steps))),
-            Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(&mut steps))),
+            Some(Operation::Retype) => Some(self.invoke_retype(c, root, frame, Tracked(steps))),
+            Some(Operation::Derive) => Some(self.invoke_derive(root, frame, Tracked(steps))),
+            Some(Operation::Move) => Some(self.invoke_move(root, frame, Tracked(steps))),
+            Some(Operation::Delete) => Some(self.invoke_delete(root, frame, Tracked(steps))),
+            Some(Operation::Revoke) => Some(self.invoke_revoke(root, frame, Tracked(steps))),
+            Some(Operation::Link) => Some(self.invoke_link(root, frame, Tracked(steps))),
+            Some(Operation::Map) => Some(self.invoke_map(root, frame, Tracked(steps))),
+            Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(steps))),
+            Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(steps))),
             Some(Operation::Print) => Some(status_only_outcome(
-                if self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(&mut steps)) {
+                if self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(steps)) {
                     STATUS_OK
                 } else {
                     STATUS_REFUSED
                 },
             )),
             Some(Operation::PowerOff) => Some(status_only_outcome(
-                if self.power_off(root, frame.slot() as usize, Tracked(&mut steps)) { STATUS_OK } else { STATUS_REFUSED },
+                if self.power_off(root, frame.slot() as usize, Tracked(steps)) { STATUS_OK } else { STATUS_REFUSED },
             )),
             Some(Operation::Inspect) => Some(match position(frame.slot()) {
-                Some(at) => match self.inspect(root, at, Tracked(&mut steps)) {
+                Some(at) => match self.inspect(root, at, Tracked(steps)) {
                     Some(payload) => inspect_outcome(payload),
                     None => status_only_outcome(STATUS_REFUSED),
                 },
@@ -1304,24 +1333,29 @@ impl CapKernel {
     /// Core c's entry for the invocation in frame: dispatch, then, when core c is behind the flush
     /// epoch, its acknowledgement, which flushes it. So the core returns to whatever it runs next
     /// holding no translation of a page that is not mapped, whichever core's unmap left it behind, and
-    /// a map that follows on it sees only what the tables say. design/flush-without-waiting/.
-    pub fn enter(&mut self, c: usize, frame: Registers) -> (ret: Option<Outcome>)
+    /// a map that follows on it sees only what the tables say. design/flush-without-waiting/. The
+    /// entry makes its one counter in steps, whatever the caller passed, and holds it to ENTRY_STEPS.
+    pub fn enter(&mut self, c: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Outcome>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(steps).count <= ENTRY_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             exists|mid: Self| #[trigger] Self::dispatched(*old(self), mid, c as int, frame, ret)
                 && Self::only_core_changed(mid, *final(self), c as int),
             final(self).acked(c as int) == final(self).flush_epoch,
             forall|e: TlbEntry| #[trigger] final(self).tlb@[c as int].contains(e) ==> final(self).mapped@.contains(e.page),
     {
-        let ret = self.dispatch(c, frame);
+        // The one counter of this entry, on a path that holds the kernel's lock, made here whatever the
+        // caller passed: design/one-lock-bounded-steps/.
+        proof {
+            *steps = Steps::fresh();
+        }
+        let ret = self.dispatch(c, frame, Tracked(steps));
         let ghost mid = *self;
         if self.cores.get(c).acked_epoch < self.flush_epoch {
-            // The counter here is the acknowledgement's own, which takes no step of the bound.
-            let tracked mut steps = Steps::fresh();
-            self.acknowledge(c, Tracked(&mut steps));
+            self.acknowledge(c, Tracked(steps));
         }
         proof {
             let post = *self;
@@ -1336,6 +1370,33 @@ impl CapKernel {
             }
         }
         ret
+    }
+
+    /// Core c's entry for the flush IPI: when core c is behind the flush epoch, its acknowledgement,
+    /// which flushes it, and nothing otherwise. The entry makes its one counter in steps, whatever the
+    /// caller passed, and holds it to ENTRY_STEPS. design/flush-without-waiting/.
+    pub fn enter_flush(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+        ensures
+            final(steps).count <= ENTRY_STEPS,
+            Self::step_ok(*old(self), *final(self), c as int),
+            Self::only_core_changed(*old(self), *final(self), c as int),
+            final(self).acked(c as int) == final(self).flush_epoch,
+            old(self).acked(c as int) == old(self).flush_epoch ==> *final(self) == *old(self),
+    {
+        // The one counter of this entry, on a path that holds the kernel's lock, made here whatever the
+        // caller passed: design/one-lock-bounded-steps/.
+        proof {
+            *steps = Steps::fresh();
+            lemma_revoke_bounds_the_operations();
+        }
+        if self.cores.get(c).acked_epoch < self.flush_epoch {
+            self.acknowledge(c, Tracked(steps));
+        } else {
+            self.no_op(c);
+        }
     }
 
     /// The retype in frame, by a thread of the process whose table is at root.

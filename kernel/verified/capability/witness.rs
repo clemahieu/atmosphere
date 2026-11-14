@@ -1634,7 +1634,7 @@ impl CapKernel {
             assert(s4.threads == s3.threads);
             assert(!s4.threads.records@[t].value().dying);
         }
-        let out = self.dispatch(0, registers);
+        let out = self.dispatch(0, registers, Tracked(&mut steps));
         proof {
             self.lemma_thread_saved_frame(t);
             reveal(CapKernel::wf);
@@ -1698,7 +1698,7 @@ impl CapKernel {
             assert(!s3.processes.records@[process].value().dead);
             assert(!s3.must_leave(0));
         }
-        self.dispatch(0, registers)
+        self.dispatch(0, registers, Tracked(&mut steps))
     }
 
     /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
@@ -1729,17 +1729,10 @@ impl CapKernel {
             final(self).acked(0) == final(self).flush_epoch,
     {
         hide(CapKernel::wf);
+        hide(CapKernel::booted);
         let ghost s0 = *self;
         proof {
-            reveal(CapKernel::wf);
-            reveal(current_wf);
-            assert(s0.cores@[0].space is None);
-            assert(s0.cores@[0].generation == 1);
-            assert(s0.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&s0.spaces, &s0.processes));
-            assert(s0.spaces.roots@.contains_key(process));
-            assert(s0.spaces.records@[process].value().kind is Process);
-            assert(!s0.threads.records@[t].value().pending_stop);
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -1761,7 +1754,37 @@ impl CapKernel {
             assert(!s3.processes.records@[process].value().dead);
             assert(!s3.must_leave(0));
         }
-        self.enter(0, registers)
+        self.enter(0, registers, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, core 0 takes the flush IPI's entry: it has acknowledged the
+    /// current epoch after it, and the entry's count is within ENTRY_STEPS.
+    pub fn witness_core_takes_a_flush(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+    )
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            final(self).wf(),
+            final(self).acked(0) == final(self).flush_epoch,
+    {
+        proof {
+            lemma_booted_entry(*self, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
+        }
+        // The entry makes its own counter in this one: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.enter_flush(0, Tracked(&mut steps));
     }
 
     /// From the state boot leaves, with a second process built at `base` as

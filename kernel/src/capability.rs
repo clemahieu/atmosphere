@@ -44,7 +44,7 @@ pub fn dispatch(frame: Registers) -> Outcome {
         let kernel = guard.as_deref_mut().expect("an invocation before the capability kernel was built");
         let epoch = kernel.flush_epoch;
         let returned = kernel
-            .enter(core, frame)
+            .enter(core, frame, Tracked::assume_new())
             .expect("no operation is wired that moves the calling thread off its core");
         (returned, crate::flush::owed(kernel, epoch))
     };
