@@ -121,14 +121,19 @@ def at_line_start(text, i):
     return text[line:i].strip() == ""
 
 
-def opens_expression(text, i):
-    """Whether the `{` at i continues an expression, as `=> {`, `==> {` or `= {` do, rather than
-    opening the function body. A body sits after the signature or the ensures, so nothing assigns
-    or implies it."""
+def opens_expression(text, i, headed):
+    """Whether the `{` at i continues an expression, as `=> {`, `==> {`, `= {` and `else {` do, or
+    the block of an `if` or `match` whose header is open (`headed`), rather than opening the
+    function body. A body sits after the signature or the ensures, so nothing assigns, implies or
+    heads it."""
+    if headed:
+        return True
     j = i - 1
     while j >= 0 and text[j] in " \t\n":
         j -= 1
     if j >= 0 and text[j] == "=":
+        return True
+    if j >= 3 and text[j - 3:j + 1] == "else" and word_at(text, j - 3) == "else":
         return True
     return j >= 1 and text[j] == ">" and text[j - 1] == "="
 
@@ -189,14 +194,17 @@ def parse_after_name(text, i, name):
     mode = None
     buf = i
     parts = []
+    headed = False
     while i < len(text):
         char = text[i]
         if char in "([{":
-            if char == "{" and depth == 0 and not opens_expression(text, i):
-                if mode == "ensures":
-                    parts.append(text[buf:i])
-                body_end = match_delim(text, i, "{}")
-                return "".join(parts), text[i:body_end + 1], body_end + 1
+            if char == "{" and depth == 0:
+                if not opens_expression(text, i, headed):
+                    if mode == "ensures":
+                        parts.append(text[buf:i])
+                    body_end = match_delim(text, i, "{}")
+                    return "".join(parts), text[i:body_end + 1], body_end + 1
+                headed = False
             depth += 1
             i += 1
             continue
@@ -208,6 +216,10 @@ def parse_after_name(text, i, name):
             if mode == "ensures":
                 parts.append(text[buf:i])
             return "".join(parts), "", i + 1
+        if depth == 0 and word_at(text, i) in ("if", "match"):
+            headed = True
+            i += 2
+            continue
         if depth == 0 and at_line_start(text, i):
             word = word_at(text, i)
             if word in CLAUSES:
@@ -746,6 +758,29 @@ class Tests(unittest.TestCase):
             [
                 "op.rs:retype_frame:final(self).flush_epoch == old(self).flush_epoch",
                 "op.rs:retype_frame:ret is Some ==> { &&& Self::inside(old(self)) }",
+            ],
+        )
+
+    def test_a_conjunct_after_a_top_level_if_block_is_read(self):
+        source = CARRIED.replace(
+            "            ret == old(self).can_retype_frame(root),\n",
+            "            ret ==> if old(self).acknowledged(root) {\n"
+            "                Self::frame_retyped(old(self), final(self), root)\n"
+            "            } else if old(self).pending(root) {\n"
+            "                Self::kept(old(self), final(self))\n"
+            "            } else {\n"
+            "                Self::kept(old(self), final(self))\n"
+            "            },\n"
+            "            ret == old(self).can_retype_frame(root),\n"
+            "            final(self).flush_epoch == old(self).flush_epoch,\n",
+        )
+        self.assertEqual(
+            self.lines(source),
+            [
+                "op.rs:retype_frame:ret ==> if old(self).acknowledged(root) { "
+                "Self::frame_retyped(old(self), final(self), root) } else if old(self).pending(root) "
+                "{ Self::kept(old(self), final(self)) } else { Self::kept(old(self), final(self)) }",
+                "op.rs:retype_frame:final(self).flush_epoch == old(self).flush_epoch",
             ],
         )
 
