@@ -159,6 +159,7 @@ fn inspect(caller: &mut Tracked<Caller>, slot: u64) -> Result<operation::Capabil
             base: out.result_2,
             order: out.result_3,
             rights: out.result_4,
+            consumed: out.result_5,
         }),
         refused => Err(refused),
     }

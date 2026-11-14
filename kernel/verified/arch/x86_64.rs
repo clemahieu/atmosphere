@@ -1193,7 +1193,7 @@ impl Registers {
     }
 
     /// Writes what an invocation returns over the frame it entered with: the status word and results
-    /// 1 to 4, each at its position. Argument 5 returns no result, so its register keeps what the
+    /// 1 to 5, each at its position. Argument 5 returns no result, so its register keeps what the
     /// frame held.
     pub fn write_outcome(&mut self, out: Outcome)
         ensures
@@ -1202,6 +1202,7 @@ impl Registers {
             final(self).spec_result(2) == out.result_2,
             final(self).spec_result(3) == out.result_3,
             final(self).spec_result(4) == out.result_4,
+            final(self).spec_result(5) == out.result_5,
             final(self).spec_argument(5) == old(self).spec_argument(5),
     {
         self.rax = out.status;
@@ -1209,6 +1210,7 @@ impl Registers {
         self.rsi = out.result_2;
         self.rdx = out.result_3;
         self.r8 = out.result_4;
+        self.r9 = out.result_5;
     }
 }
 

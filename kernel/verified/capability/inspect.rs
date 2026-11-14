@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Inspect a capability the caller holds, or one a process it controls holds: its kind, base, order
-//! and rights come back in the result words, and nothing the kernel holds changes. A process learns
+//! and rights come back in the result words, with a thread's consumed cycles beside them for a thread
+//! capability, and nothing the kernel holds changes. A process learns
 //! what boot handed it, what its own retypes and derives made, and what a process it supervises holds,
 //! this way, design/syscall-abi-in-registers/ and design/process-holds-capabilities/.
 use vstd::prelude::*;
@@ -74,23 +75,26 @@ pub fn kind_number(kind: CapKind) -> (ret: u64)
     }
 }
 
-/// What inspect returns in the frame for a capability that says payload: ok, with its kind in result 1,
-/// base in result 2, order in result 3 and rights in result 4.
-pub open spec fn inspected(payload: Payload) -> Outcome {
+/// What inspect returns in the frame for a capability that says payload, whose thread has consumed
+/// `consumed` cycles: ok, with its kind in result 1, base in result 2, order in result 3, rights in
+/// result 4 and the consumed cycles in result 5.
+pub open spec fn inspected(payload: Payload, consumed: u64) -> Outcome {
     Outcome {
         status: STATUS_OK,
         result_1: spec_kind_number(payload.kind),
         result_2: payload.base as u64,
         result_3: payload.order as u64,
         result_4: payload.rights as u64,
+        result_5: consumed,
     }
 }
 
-/// The outcome of an inspect of a capability that says payload: ok, with its kind in result 1, base in
-/// result 2, order in result 3 and rights in result 4.
-pub fn inspect_outcome(payload: Payload) -> (ret: Outcome)
+/// The outcome of an inspect of a capability that says payload, whose thread has consumed `consumed`
+/// cycles: ok, with its kind in result 1, base in result 2, order in result 3, rights in result 4 and
+/// the consumed cycles in result 5.
+pub fn inspect_outcome(payload: Payload, consumed: u64) -> (ret: Outcome)
     ensures
-        ret == inspected(payload),
+        ret == inspected(payload, consumed),
 {
     Outcome {
         status: STATUS_OK,
@@ -98,6 +102,7 @@ pub fn inspect_outcome(payload: Payload) -> (ret: Outcome)
         result_2: payload.base as u64,
         result_3: payload.order as u64,
         result_4: payload.rights as u64,
+        result_5: consumed,
     }
 }
 
@@ -142,25 +147,37 @@ impl CapKernel {
 
     /// ret names a capability exactly when the position holds one. inspect's ensures and
     /// spec_outcome_carried both call it: design/invoked-arm-is-the-operation-postcondition/.
-    pub open spec fn inspect_found(&self, root: usize, at: Position, ret: Option<Payload>) -> bool {
+    pub open spec fn inspect_found(&self, root: usize, at: Position, ret: Option<(Payload, u64)>) -> bool {
         ret is Some == self.cap_at(root, at) is Some
     }
 
-    /// When ret names a capability, it is that capability's payload, and the caller commands it.
-    /// inspect's ensures and spec_outcome_carried both call it:
+    /// The cycles the thread a capability that says payload names has run, which inspect returns in
+    /// result 5: that thread's consumed time for a thread capability, and 0 for every other kind.
+    /// design/cpu-time-as-capability/.
+    pub open spec fn consumed_named(&self, payload: Payload) -> u64 {
+        if payload.kind is Thread {
+            self.threads.records@[payload.base].value().consumed
+        } else {
+            0
+        }
+    }
+
+    /// When ret names a capability, it is that capability's payload with the cycles consumed_named
+    /// gives, and the caller commands it. inspect's ensures and spec_outcome_carried both call it:
     /// design/invoked-arm-is-the-operation-postcondition/.
-    pub open spec fn inspect_reads(&self, root: usize, at: Position, ret: Option<Payload>) -> bool {
+    pub open spec fn inspect_reads(&self, root: usize, at: Position, ret: Option<(Payload, u64)>) -> bool {
         ret is Some ==> {
-            &&& ret->0 == self.payload_of(self.cap_at(root, at)->0)
+            &&& (ret->0).0 == self.payload_of(self.cap_at(root, at)->0)
+            &&& (ret->0).1 == self.consumed_named((ret->0).0)
             &&& self.view().commands(root, self.cap_at(root, at)->0)
         }
     }
 
-    /// What inspect returns in the frame for a position: the payload of the capability there, and refused
-    /// when the position names none.
+    /// What inspect returns in the frame for a position: the payload of the capability there, with the
+    /// consumed cycles of the thread it names, and refused when the position names none.
     pub open spec fn spec_inspect_at(&self, root: usize, at: Position) -> Outcome {
         match self.cap_at(root, at) {
-            Some(n) => inspected(self.payload_of(n)),
+            Some(n) => inspected(self.payload_of(n), self.consumed_named(self.payload_of(n))),
             None => status_only(STATUS_REFUSED),
         }
     }
@@ -169,8 +186,10 @@ impl CapKernel {
     /// of a process the caller controls, live or dead. The position comes from user space, so it can
     /// name no capability, and then inspect returns None. Commanding the capability is the whole
     /// authority, holding it or controlling the process that does: inspect asks for no right of the
-    /// capability itself. Either way the kernel is unchanged.
-    pub fn inspect(&self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Payload>)
+    /// capability itself. Beside the payload it returns the cycles consumed_named gives: a thread's
+    /// consumed time for a thread capability, 0 for every other kind. Either way the kernel is
+    /// unchanged.
+    pub fn inspect(&self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<(Payload, u64)>)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
@@ -184,10 +203,20 @@ impl CapKernel {
         proof {
             self.lemma_no_op_discharges(root);
         }
-        match self.find_cap(root, at) {
-            Some(found) => Some(found.1),
-            None => None,
-        }
+        let (n, payload) = match self.find_cap(root, at) {
+            Some(found) => found,
+            None => { return None; },
+        };
+        let consumed = match payload.kind {
+            CapKind::Thread => {
+                proof {
+                    self.lemma_thread_cap(n);
+                }
+                self.thread_consumed(payload.base)
+            },
+            _ => 0,
+        };
+        Some((payload, consumed))
     }
 }
 

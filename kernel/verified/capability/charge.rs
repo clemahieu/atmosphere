@@ -70,8 +70,7 @@ impl CapKernel {
         }
     }
 
-    /// The consumed time of thread t. Only the witness reads it yet, and no image is built with it.
-    #[cfg(verus_keep_ghost)]
+    /// The consumed time of thread t, which inspect returns for a capability to t.
     pub(crate) fn thread_consumed(&self, t: usize) -> (ret: u64)
         requires
             self.wf(),

@@ -182,7 +182,7 @@ pub const RETYPE_PROCESS: u64 = 5;
 /// argument 4. Every other kind is refused until it is wired.
 pub const RETYPE_THREAD: u64 = 6;
 
-/// What an invocation returns to its thread: the status word and results 1 to 4, which
+/// What an invocation returns to its thread: the status word and results 1 to 5, which
 /// Registers::write_outcome puts at their positions in the frame.
 #[derive(Clone, Copy)]
 pub struct Outcome {
@@ -191,11 +191,12 @@ pub struct Outcome {
     pub result_2: u64,
     pub result_3: u64,
     pub result_4: u64,
+    pub result_5: u64,
 }
 
 /// The outcome of an operation that returns a status and no result words.
 pub open spec fn status_only(status: u64) -> Outcome {
-    Outcome { status, result_1: 0, result_2: 0, result_3: 0, result_4: 0 }
+    Outcome { status, result_1: 0, result_2: 0, result_3: 0, result_4: 0, result_5: 0 }
 }
 
 /// The outcome of an operation that returns a status and no result words.
@@ -203,7 +204,7 @@ pub fn status_only_outcome(status: u64) -> (ret: Outcome)
     ensures
         ret == status_only(status),
 {
-    Outcome { status, result_1: 0, result_2: 0, result_3: 0, result_4: 0 }
+    Outcome { status, result_1: 0, result_2: 0, result_3: 0, result_4: 0, result_5: 0 }
 }
 
 /// What a process asks of the capability named in the slot.
@@ -343,6 +344,7 @@ pub fn probe_outcome(r: Probed) -> (ret: Outcome)
         result_2: r.dirty,
         result_3: if r.accessed_maintained { 1 } else { 0 },
         result_4: if r.dirty_maintained { 1 } else { 0 },
+        result_5: 0,
     }
 }
 
@@ -375,6 +377,7 @@ pub fn unmap_outcome(r: Unmapped) -> (ret: Outcome)
         result_2: if r.dirty { 1 } else { 0 },
         result_3: if r.accessed_maintained { 1 } else { 0 },
         result_4: if r.dirty_maintained { 1 } else { 0 },
+        result_5: 0,
     }
 }
 
@@ -404,6 +407,7 @@ pub open spec fn window_read(words: Seq<u64>, index: int) -> Outcome {
         result_2: window_word(words, index, 1),
         result_3: window_word(words, index, 2),
         result_4: window_word(words, index, 3),
+        result_5: 0,
     }
 }
 
@@ -434,6 +438,7 @@ fn read_window(r: &Registers, index: usize) -> (ret: Outcome)
         result_2: window_word_of(r, index, 1),
         result_3: window_word_of(r, index, 2),
         result_4: window_word_of(r, index, 3),
+        result_5: 0,
     }
 }
 
@@ -584,7 +589,7 @@ impl CapKernel {
             Some(Operation::Inspect) => match spec_position(frame.slot()) {
                 Some(at) => {
                     let ret = match pre.cap_at(root, at) {
-                        Some(n) => Some(pre.payload_of(n)),
+                        Some(n) => Some((pre.payload_of(n), pre.consumed_named(pre.payload_of(n)))),
                         None => None,
                     };
                     &&& pre.inspect_found(root, at, ret)
@@ -616,7 +621,7 @@ impl CapKernel {
         ensures
             ({
                 let ret = match self.cap_at(root, at) {
-                    Some(n) => Some(self.payload_of(n)),
+                    Some(n) => Some((self.payload_of(n), self.consumed_named(self.payload_of(n)))),
                     None => None,
                 };
                 &&& self.inspect_found(root, at, ret)
@@ -1991,8 +1996,9 @@ impl CapKernel {
     }
 
     /// An inspect reaches inspect: the kernel is unchanged; refused unless the slot's word names a
-    /// position holding a capability; ok when it does, with that capability's payload in the results as
-    /// inspected packs it. design/witness-per-way-an-operation-succeeds/.
+    /// position holding a capability; ok when it does, with that capability's payload and the consumed
+    /// cycles of the thread it names in the results as inspected packs them.
+    /// design/witness-per-way-an-operation-succeeds/.
     pub proof fn lemma_entry_reaches_inspect(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
             Self::invoked(pre, post, root, frame, out),
@@ -2003,7 +2009,8 @@ impl CapKernel {
                 let at = spec_position(frame.slot());
                 &&& !(at is Some && pre.cap_at(root, at->0) is Some) ==> out == status_only(STATUS_REFUSED)
                 &&& at is Some && pre.cap_at(root, at->0) is Some
-                    ==> out.status == STATUS_OK && out == inspected(pre.payload_of(pre.cap_at(root, at->0)->0))
+                    ==> out.status == STATUS_OK
+                        && out == inspected(pre.payload_of(pre.cap_at(root, at->0)->0), pre.consumed_named(pre.payload_of(pre.cap_at(root, at->0)->0)))
             }),
     {
     }
@@ -2023,7 +2030,7 @@ impl CapKernel {
             ({
                 let at = spec_position(frame.slot())->0;
                 let ret = match pre.cap_at(root, at) {
-                    Some(n) => Some(pre.payload_of(n)),
+                    Some(n) => Some((pre.payload_of(n), pre.consumed_named(pre.payload_of(n)))),
                     None => None,
                 };
                 pre.inspect_reads(root, at, ret)
@@ -2348,7 +2355,7 @@ impl CapKernel {
             Some(Operation::Inspect) => {
                 let out = match position(frame.slot()) {
                     Some(at) => match self.inspect(root, at, Tracked(steps)) {
-                        Some(payload) => inspect_outcome(payload),
+                        Some((payload, consumed)) => inspect_outcome(payload, consumed),
                         None => status_only_outcome(STATUS_REFUSED),
                     },
                     None => status_only_outcome(STATUS_REFUSED),

@@ -166,7 +166,8 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
     out
 }
 
-/// Reads the kind, the base, the order and the rights of the capability at the position `at` names.
+/// Reads the kind, the base, the order and the rights of the capability at the position `at` names,
+/// and for a thread capability the cycles the thread has run.
 pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),

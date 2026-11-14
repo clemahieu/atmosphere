@@ -171,5 +171,5 @@ pub fn step(_caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: 
     // The ABI's own: every operation may change the caller's address space, which no Rust value of
     // this crate's caller lives in unless it holds the permission the wrapper's contract speaks of.
     let (status, results) = unsafe { operation::invoke_returning(number, slot, [a1, a2, a3, a4, a5]) };
-    Outcome { status, result_1: results[0], result_2: results[1], result_3: results[2], result_4: results[3] }
+    Outcome { status, result_1: results[0], result_2: results[1], result_3: results[2], result_4: results[3], result_5: results[4] }
 }

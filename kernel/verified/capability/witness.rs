@@ -3310,8 +3310,9 @@ impl CapKernel {
 
     /// From the state boot leaves, as the root at `process`: inspect the root's first untyped in its
     /// own table, its thread capability through its process capability, and a slot of an unallocated
-    /// root entry. The first two return `Some` with the payloads boot placed there, the third returns
-    /// `None`, and the kernel is unchanged. See design/syscall-abi-in-registers/ and
+    /// root entry. The first two return `Some` with the payloads boot placed there, the untyped with 0
+    /// cycles and the thread with the cycles its record says it consumed, the third returns `None`, and
+    /// the kernel is unchanged. See design/syscall-abi-in-registers/ and
     /// design/process-holds-capabilities/.
     #[verifier::spinoff_prover]
     pub fn witness_inspect(
@@ -3327,14 +3328,14 @@ impl CapKernel {
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
-    ) -> (ret: (Option<Payload>, Option<Payload>, Option<Payload>))
+    ) -> (ret: (Option<(Payload, u64)>, Option<(Payload, u64)>, Option<(Payload, u64)>))
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
         ensures
             ret.0 is Some,
-            ret.0 == Some(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            ret.0 == Some((page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]), 0u64)),
             ret.1 is Some,
-            ret.1 == Some(thread_of(t@)),
+            ret.1 == Some((thread_of(t@), old(self).threads.records@[t@].value().consumed)),
             ret.2 is None,
             *final(self) == *old(self),
             final(self).wf(),

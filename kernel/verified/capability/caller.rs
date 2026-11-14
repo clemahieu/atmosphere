@@ -1181,7 +1181,8 @@ impl CapKernel {
     /// table changes, no block's count nor any page's block, and no space's mapping, whatever the
     /// status. Refused exactly
     /// when inspect_allowed fails; otherwise ok, with the kind's number, the base, the order and the
-    /// rights the slot's view says in results 1 to 4.
+    /// rights the slot's view says in results 1 to 4, and in result 5 the consumed cycles of the thread a
+    /// thread capability names, 0 for every other kind.
     pub open spec fn inspect_contract(pre: Self, post: Self, root: usize, at: Option<Position>, out: Outcome) -> bool {
         &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
         &&& post.blocks == pre.blocks
@@ -1201,6 +1202,7 @@ impl CapKernel {
                     result_2: v.base as u64,
                     result_3: v.order as u64,
                     result_4: v.rights as u64,
+                    result_5: if v.kind is Thread { pre.threads.records@[v.base].value().consumed } else { 0 },
                 }
             }
         }

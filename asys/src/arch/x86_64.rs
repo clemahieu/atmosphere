@@ -18,14 +18,14 @@ pub const PC_WORD: u64 = 16;
 pub const SP_WORD: u64 = 19;
 
 /// Invokes `operation` on the capability at `slot` with arguments 1 to 5, and returns the status word
-/// and result words 1 to 4.
+/// and result words 1 to 5.
 ///
 /// # Safety
 ///
 /// The operation may change the caller's address space, as a map or unmap does.
-pub unsafe fn syscall(operation: u64, slot: u64, arguments: [u64; 5]) -> (u64, [u64; 4]) {
+pub unsafe fn syscall(operation: u64, slot: u64, arguments: [u64; 5]) -> (u64, [u64; 5]) {
     let status_word: u64;
-    let (rdi, rsi, rdx, r8): (u64, u64, u64, u64);
+    let (rdi, rsi, rdx, r8, r9): (u64, u64, u64, u64, u64);
     unsafe {
         asm!(
             "syscall",
@@ -35,10 +35,10 @@ pub unsafe fn syscall(operation: u64, slot: u64, arguments: [u64; 5]) -> (u64, [
             inout("rdx") arguments[1] => rdx,
             out("rcx") _,
             inout("r8") arguments[2] => r8,
-            inout("r9") arguments[3] => _,
+            inout("r9") arguments[3] => r9,
             inout("r10") arguments[4] => _,
             out("r11") _,
         );
     }
-    (status_word, [rdi, rsi, rdx, r8])
+    (status_word, [rdi, rsi, rdx, r8, r9])
 }

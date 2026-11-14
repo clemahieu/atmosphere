@@ -234,32 +234,33 @@ pub unsafe fn invoke(operation: u64, slot: u64, arguments: [u64; 5]) -> u64 {
 }
 
 /// Invokes `operation` on the capability at `slot` with arguments 1 to 5, and returns the status word
-/// and result words 1 to 4.
+/// and result words 1 to 5.
 ///
 /// # Safety
 ///
 /// The operation may change the caller's address space, as a map or unmap does.
-pub unsafe fn invoke_returning(operation: u64, slot: u64, arguments: [u64; 5]) -> (u64, [u64; 4]) {
+pub unsafe fn invoke_returning(operation: u64, slot: u64, arguments: [u64; 5]) -> (u64, [u64; 5]) {
     unsafe { arch::syscall(operation, slot, arguments) }
 }
 
-/// What inspect says of a capability: its kind number, the base of its block, its order and its
-/// rights.
+/// What inspect says of a capability: its kind number, the base of its block, its order, its rights,
+/// and for a thread capability the cycles the thread has run, 0 for every other kind.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Capability {
     pub kind: u64,
     pub base: u64,
     pub order: u64,
     pub rights: u64,
+    pub consumed: u64,
 }
 
 /// Inspects the capability at position `slot`: what it says, or the status inspect returned when the
 /// position holds none.
 pub fn inspect(slot: u64) -> Result<Capability, u64> {
     // Inspect changes nothing, the caller's address space included.
-    let (word, [kind, base, order, rights]) = unsafe { invoke_returning(INSPECT, slot, [0; 5]) };
+    let (word, [kind, base, order, rights, consumed]) = unsafe { invoke_returning(INSPECT, slot, [0; 5]) };
     match status(word) {
-        STATUS_OK => Ok(Capability { kind, base, order, rights }),
+        STATUS_OK => Ok(Capability { kind, base, order, rights, consumed }),
         refused => Err(refused),
     }
 }
@@ -328,7 +329,7 @@ pub struct Unmapped {
 /// Nothing the caller still uses may be at `address` in that space: once the entry is clear, an access
 /// there faults.
 pub unsafe fn unmap(space: u64, address: u64, level: u64) -> Result<Unmapped, u64> {
-    let (word, [accessed, dirty, accessed_maintained, dirty_maintained]) =
+    let (word, [accessed, dirty, accessed_maintained, dirty_maintained, _]) =
         unsafe { invoke_returning(UNMAP, space, [address, level, 0, 0, 0]) };
     match status(word) {
         STATUS_OK => Ok(Unmapped {
@@ -356,7 +357,7 @@ pub struct Probed {
 /// refused.
 pub fn probe(space: u64, address: u64, count: u64) -> Result<Probed, u64> {
     // A probe changes no mapping, so no address the caller reads changes.
-    let (word, [accessed, dirty, accessed_maintained, dirty_maintained]) =
+    let (word, [accessed, dirty, accessed_maintained, dirty_maintained, _]) =
         unsafe { invoke_returning(PROBE, space, [address, count, 0, 0, 0]) };
     match status(word) {
         STATUS_OK => Ok(Probed {
