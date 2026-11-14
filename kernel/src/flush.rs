@@ -47,8 +47,10 @@ pub fn acknowledged(target: usize, epoch: usize) -> bool {
 
 /// The flush IPI's handler. An epoch read before the flush covers every unmap up to it. It serves the
 /// boot test's state, then CapKernel's: a core behind CapKernel's epoch acknowledges it, which flushes
-/// every context. The handler runs with interrupts closed, and no core holds the kernel's lock with them
-/// open, so it never waits on a lock its own core holds.
+/// every context. When the core was running a thread, it logs the epoch it acknowledged while it still
+/// holds the kernel's lock, so the line comes before anything a free that waited for it prints. The
+/// handler runs with interrupts closed, and no core holds the kernel's lock with them open, so it never
+/// waits on a lock its own core holds.
 pub fn handle_ipi() {
     let core = cpu::get_cpu_id();
     {
@@ -63,7 +65,12 @@ pub fn handle_ipi() {
         // the IPI interrupted is charged the cycles since this core's last entry, as at an invocation:
         // design/cpu-time-as-capability/. The entry makes its own step counter in the one passed here.
         kernel.charge(core, arch::cycles());
+        let state = kernel.cores.get(core);
+        let logged = state.acked_epoch < kernel.flush_epoch && state.current_thread.is_some();
         kernel.enter_flush(core, Tracked::assume_new());
+        if logged {
+            log::info!("CPU {} acknowledged flush epoch {}", core, kernel.flush_epoch);
+        }
     }
 }
 

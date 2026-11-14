@@ -92,6 +92,12 @@
 //! inspect in the shared frame, and suspends itself at a count dom0 gives it. While it does, dom0 inspects
 //! its console capability over and over on core 0, until it has seen the thread's count reach that end
 //! after seeing it change between two of its own inspects at least three times, and prints both counts.
+//! It maps a new frame into the child's space and starts the eighth thread on core 1 the same way; the
+//! thread writes the frame's page and spins in the child's space. dom0 unmaps the page and deletes the
+//! frame's capability, and the free of the frame returns again until CPU 1, sent the unmap's flush IPI,
+//! has acknowledged it; the frame is then freed and retyped, and the kernel's line for CPU 1's
+//! acknowledgement comes between the two lines dom0 prints around it. dom0 then lets the thread suspend
+//! itself.
 //! It gives the first thread an entry in its child's space that counts in the shared frame, and starts it,
 //! Runnable behind dom0 at the same priority, after a start of the console slot and of the second
 //! thread, not placed, are refused; a second start is refused, the thread being started, and dom0
@@ -1097,12 +1103,14 @@ const SWITCH_READS: u64 = 1 << 24;
 // dom0_child_count it adds one to the word at its first argument, for good, and enters the kernel only
 // when the timer takes the core from it; from dom0_child_invoke it inspects the capability at the slot its
 // third argument names and adds one to the word at its first after each inspect accepted, until that word
-// reaches its second argument or an inspect is refused, then suspends its own thread through that slot.
-// All three fit in 128 bytes, aligned so they stay in one page. The invoking loop keeps its arguments in
-// registers the invocation keeps: r12 to r14 on x86_64, x19 to x21 on aarch64.
+// reaches its second argument or an inspect is refused, then suspends its own thread through that slot;
+// from dom0_child_hold it stores its second argument at its first, then its first at its second, waits
+// until the word at its second no longer holds its first, and suspends its own thread through the slot
+// its third names. All four fit in 256 bytes, aligned so they stay in one page. The invoking loop keeps
+// its arguments in registers the invocation keeps: r12 to r14 on x86_64, x19 to x21 on aarch64.
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
-    ".balign 128",
+    ".balign 256",
     ".global dom0_child_entry",
     "dom0_child_entry:",
     "mov [rdi], rsi",
@@ -1133,12 +1141,22 @@ core::arch::global_asm!(
     "mov eax, {suspend}",
     "syscall",
     "5: jmp 5b",
+    ".global dom0_child_hold",
+    "dom0_child_hold:",
+    "mov [rdi], rsi",
+    "mov [rsi], rdi",
+    "6: cmp [rsi], rdi",
+    "je 6b",
+    "mov rdi, rdx",
+    "mov eax, {suspend}",
+    "syscall",
+    "7: jmp 7b",
     inspect = const operation::INSPECT,
     suspend = const operation::SUSPEND,
 );
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
-    ".balign 128",
+    ".balign 256",
     ".global dom0_child_entry",
     "dom0_child_entry:",
     "str x1, [x0]",
@@ -1173,6 +1191,17 @@ core::arch::global_asm!(
     "mov x8, #{suspend}",
     "svc #0",
     "5: b 5b",
+    ".global dom0_child_hold",
+    "dom0_child_hold:",
+    "str x1, [x0]",
+    "str x0, [x1]",
+    "6: ldr x3, [x1]",
+    "cmp x3, x0",
+    "b.eq 6b",
+    "mov x0, x2",
+    "mov x8, #{suspend}",
+    "svc #0",
+    "7: b 7b",
     inspect = const operation::INSPECT,
     suspend = const operation::SUSPEND,
 );
@@ -1184,6 +1213,8 @@ unsafe extern "C" {
     fn dom0_child_count();
     /// The first instruction of the child's code above that invokes and counts its invocations.
     fn dom0_child_invoke();
+    /// The first instruction of the child's code above that writes a page and waits for dom0.
+    fn dom0_child_hold();
 }
 
 /// Where the child's thread that counts on core 0 keeps its count: the third word of the frame both
@@ -1460,6 +1491,104 @@ fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> boo
         && turns >= INVOKED_TURNS
         && print_count(INVOKED_DOM0_HEAD, ours, INVOKED_DOM0_TAIL) == operation::STATUS_OK
         && print_count(INVOKED_THREAD_HEAD, last, INVOKED_THREAD_TAIL) == operation::STATUS_OK
+}
+
+/// What dom0 prints before it unmaps a page in its child's space that a thread of the child on core 1
+/// wrote, and once the page's frame was freed and retyped, between which the gate looks for the kernel's
+/// line for CPU 1 acknowledging the unmap's flush.
+const CORE_1_UNMAP: [u64; 5] = operation::print_words(b"dom0 unmaps a page core 1 wrote\n");
+const CORE_1_FREED: [u64; 5] = operation::print_words(b"dom0 freed the page core 1 wrote\n");
+
+/// Where the child's space maps the frame its thread on core 1 writes and dom0 unmaps: the entry after
+/// CHILD_DATA_ADDRESS's, in the same level 1 table.
+const CHILD_HELD_ADDRESS: u64 = CHILD_DATA_ADDRESS + 4096;
+
+/// The word of the frame both spaces map through which dom0 and the thread on core 1 hand over: the
+/// sixth, after CHILD_INVOKED_ADDRESS's.
+const CHILD_HOLD_ADDRESS: u64 = CHILD_INVOKED_ADDRESS + 8;
+
+/// How far below the top of the gigabyte untyped the frame the thread on core 1 writes is: the page after
+/// the switch check's table leaf, below CHILD_LEAF_BELOW_TOP, where nothing else retypes.
+const CORE_1_FRAME_BELOW_TOP: u64 = SWITCH_BELOW_TOP - 3 * TABLE_PAGE_BYTES - 2 * LEAF_BYTES;
+
+/// How many again returns the free of the frame the thread on core 1 wrote may take. It returns again
+/// until CPU 1 has acknowledged the unmap's flush, which the flush IPI the unmap's glue sends it makes; a
+/// free still returning again after this many is waiting for a core that does not take the IPI, and
+/// fails.
+const CORE_1_FREE_AGAIN_MAX: u64 = 1 << 16;
+
+/// Whether dom0 unmaps a page of its child's space while a thread of the child that wrote it spins on core
+/// 1, and frees the page's frame once CPU 1 acknowledged the unmap's flush. Under the gigabyte untyped, the
+/// last from `empty` down, a 4K frame CORE_1_FRAME_BELOW_TOP below its top is retyped into the empty slot
+/// `slot` and mapped at CHILD_HELD_ADDRESS in the space of the child whose capability is in `process`,
+/// where switched_thread_held linked the path and mapped the child's code. The slot after the one
+/// invoked_beside_core_1_held used in the child's leaf at CHILD_OWN_ENTRY takes a capability with control
+/// to the eighth thread the thread check bound to the child; its frame gets the entry dom0_child_hold,
+/// CHILD_HELD_ADDRESS, CHILD_HOLD_ADDRESS and its own slot, and dom0 places it through the root's
+/// capability for core 1 and starts it. Once the thread wrote the page and dom0 reads CHILD_HELD_ADDRESS
+/// in the hand-over word, so CPU 1 holds the page's translation and still spins in the child's space, dom0
+/// prints CORE_1_UNMAP, unmaps the page through `process` and deletes the frame's capability, its last. The
+/// unmap's flush IPI goes to CPU 1, which loaded the child's space and is behind the unmap's epoch; retype's
+/// free kind returns again until CPU 1 acknowledged it, within CORE_1_FREE_AGAIN_MAX, and then frees the
+/// frame, whose page is retyped into `slot` again. With the thread still spinning, dom0 prints
+/// CORE_1_FREED, then clears the hand-over word, so the thread suspends itself and core 1 runs nothing.
+/// design/flush-without-waiting/.
+fn core_1_unmap_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, slot: u64) -> bool {
+    let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
+        return false;
+    };
+    let base = block.base + (4096 << block.order) - CORE_1_FRAME_BELOW_TOP;
+    let entry = dom0_child_entry as *const () as u64;
+    let hold = dom0_child_hold as *const () as u64;
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 8;
+    let own = first_slot(CHILD_OWN_ENTRY) + 3;
+    let word = (entry_address(SHARED_ENTRY) + (CHILD_HOLD_ADDRESS - CHILD_DATA_ADDRESS)) as *mut u64;
+    let Ok(held) = inspect(caller, thread) else {
+        return false;
+    };
+    let retype_frame = |caller: &mut Tracked<Caller>| retype(caller, untyped, operation::RETYPE_FRAME, base, slot, 0).status;
+    let free = |caller: &mut Tracked<Caller>| retype(caller, untyped, operation::RETYPE_FREE, base, 0, 0).status;
+    let arguments = [CHILD_HELD_ADDRESS, CHILD_HOLD_ADDRESS, own];
+    let running = hold & !0xfff == entry & !0xfff
+        && retype_frame(caller) == operation::STATUS_OK
+        && map(caller, process, CHILD_HELD_ADDRESS, 1, slot, 0).status == operation::STATUS_OK
+        && derive(caller, thread, operation::through(process, own), RIGHT_CONTROL, held.base, held.order).status
+            == operation::STATUS_OK
+        && set_frame_word(caller, thread, operation::PC_WORD, CHILD_CODE_ADDRESS + (hold & 0xfff)) == operation::STATUS_OK
+        && (0..3).all(|k| set_frame_word(caller, thread, ARGUMENT_WORDS[k], arguments[k]) == operation::STATUS_OK)
+        && place(caller, thread, operation::ROOT_CORE_SLOT + SECOND_CORE, 1).status == operation::STATUS_OK
+        // switched_thread_held mapped the page at `word`'s page, the shared frame's, which retype zeroed;
+        // the thread on core 1 is the only other writer of this word.
+        && unsafe { word.read_volatile() } == 0
+        && start(caller, thread).status == operation::STATUS_OK
+        && (0..SWITCH_READS).any(|_| unsafe { word.read_volatile() } == CHILD_HELD_ADDRESS);
+    if !running
+        || unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, CORE_1_UNMAP) } != operation::STATUS_OK
+        || unmap(caller, process, CHILD_HELD_ADDRESS, 1).status != operation::STATUS_OK
+        || delete(caller, slot).status != operation::STATUS_OK
+    {
+        return false;
+    }
+    let mut again = 0;
+    let freed = loop {
+        let status = free(caller);
+        if status != operation::STATUS_AGAIN || again == CORE_1_FREE_AGAIN_MAX {
+            break status;
+        }
+        again += 1;
+    };
+    let held = freed == operation::STATUS_OK
+        && retype_frame(caller) == operation::STATUS_OK
+        && matches!(
+            inspect(caller, slot),
+            Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 0
+        )
+        // The thread writes the word only before dom0 read it there, and spins until dom0 changes it.
+        && unsafe { word.read_volatile() } == CHILD_HELD_ADDRESS
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, CORE_1_FREED) } == operation::STATUS_OK;
+    // The thread on core 1 reads the word until it no longer holds CHILD_HELD_ADDRESS, then suspends.
+    unsafe { word.write_volatile(0) };
+    held
 }
 
 /// What dom0 prints once it started a thread of its child, which the gate looks for.
@@ -2115,6 +2244,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && switched_thread_held(caller, empty, empty + 4, empty + 6)
                                 && core_1_thread_held(caller, empty + 4)
                                 && invoked_beside_core_1_held(caller, empty + 4)
+                                && core_1_unmap_held(caller, empty, empty + 4, empty + 7)
                                 && started_thread_held(caller)
                                 && preempted_thread_held()
                                 && suspended_thread_held(caller, empty + 5)

@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, eager source line, heap line, freed frame
-line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -74,6 +74,15 @@ CORE_1_LINE = "dom0 thread ran on core 1"
 # The lines dom0 prints once a thread of its child on core 1 made invocations while dom0 made its own on
 # core 0, until the thread stopped at its count: dom0's count, then the count the thread wrote, neither zero.
 INVOKED_COUNTS = re.compile(r"^dom0 invoked [1-9][0-9]* times on core 0\r?\nthread invoked [1-9][0-9]* times on core 1\r?$", re.M)
+
+# The lines dom0 prints around its unmap of a page in its child's space while a thread of the child spins
+# on CPU 1, having written the page: before the unmap, and once the page's frame, its capability deleted,
+# was freed and retyped, which retype's free allows only once every core that loaded a space has
+# acknowledged the unmap's flush. Between them the kernel logs CPU 1 acknowledging the unmap's flush on
+# the flush IPI, which the unmap's glue sent it. design/flush-without-waiting/.
+CORE_1_UNMAP_LINE = "dom0 unmaps a page core 1 wrote"
+CORE_1_FREED_LINE = "dom0 freed the page core 1 wrote"
+CORE_1_ACKNOWLEDGED = "CPU 1 acknowledged flush epoch "
 
 # The lines dom0 prints once it and the thread it started, both at priority 0 on core 0, each counted while
 # the timer handed the core between them, until dom0 saw the thread's count change three times: dom0's count,
@@ -210,6 +219,16 @@ def second_core_idle(serial):
     return first is not None and second is not None and first != second
 
 
+def core_1_unmap_acknowledged(serial):
+    """Whether the log shows dom0's line before its unmap of a page CPU 1 wrote, then the kernel's line for
+    CPU 1 acknowledging a flush epoch on a flush IPI, then dom0's line that the page's frame was freed."""
+    printed = lines(serial)
+    unmapped = next((k for k, line in enumerate(printed) if line == CORE_1_UNMAP_LINE), None)
+    freed = next((k for k, line in enumerate(printed) if line == CORE_1_FREED_LINE), None)
+    return (unmapped is not None and freed is not None
+            and any(CORE_1_ACKNOWLEDGED in line for line in printed[unmapped + 1:freed]))
+
+
 def boot_log_accepted(serial, arch, translation=False):
     """What held of a successful boot's log on `arch`, or Refused naming the first check that failed."""
     untyped, frames = fixed_slots_printed(serial)
@@ -243,6 +262,9 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused(f'the serial log does not show CPU 1 running a thread of dom0\'s child: "{CORE_1_LINE}"')
     if not INVOKED_COUNTS.search(serial):
         raise Refused("the serial log does not show dom0 on core 0 and a thread of its child on core 1 both invoking")
+    if not core_1_unmap_acknowledged(serial):
+        raise Refused("the serial log does not show CPU 1 acknowledging the flush of dom0's unmap of a page a thread "
+                      f'on CPU 1 wrote, between "{CORE_1_UNMAP_LINE}" and "{CORE_1_FREED_LINE}"')
     if not PREEMPTED_COUNTS.search(serial):
         raise Refused("the serial log does not show dom0 and a thread of its child both counting on core 0 under the timer")
     if not line_printed(serial, SUSPENDED_LINE):
@@ -262,7 +284,7 @@ def boot_log_accepted(serial, arch, translation=False):
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, "
+            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
@@ -314,6 +336,9 @@ def boot_log():
             "dom0 thread ran on core 1\n"
             "dom0 invoked 90000 times on core 0\n"
             "thread invoked 4096 times on core 1\n"
+            "dom0 unmaps a page core 1 wrote\n"
+            "\x1b[34m INFO CPU 1 acknowledged flush epoch 812\x1b[0m\n"
+            "dom0 freed the page core 1 wrote\n"
             "dom0 thread started\n"
             "dom0 counted 41000000 in 3 turns\n"
             "thread counted 39000000 in 3 turns\n"
@@ -358,6 +383,9 @@ class Tests(unittest.TestCase):
             ("dom0 thread ran on core 1\n", "CPU 1 running a thread"),
             ("dom0 invoked 90000 times on core 0\n", "both invoking"),
             ("thread invoked 4096 times on core 1\n", "both invoking"),
+            ("dom0 unmaps a page core 1 wrote\n", "CPU 1 acknowledging the flush"),
+            ("\x1b[34m INFO CPU 1 acknowledged flush epoch 812\x1b[0m\n", "CPU 1 acknowledging the flush"),
+            ("dom0 freed the page core 1 wrote\n", "CPU 1 acknowledging the flush"),
             ("dom0 thread started\n", "starting a thread"),
             ("dom0 counted 41000000 in 3 turns\n", "both counting"),
             ("thread counted 39000000 in 3 turns\n", "both counting"),
@@ -390,6 +418,18 @@ class Tests(unittest.TestCase):
         swapped = boot_log().replace("dom0 invoked 90000 times on core 0\nthread invoked 4096 times on core 1\n",
                                      "thread invoked 4096 times on core 1\ndom0 invoked 90000 times on core 0\n")
         self.assertIn("both invoking", self.refused(swapped))
+
+    def test_core_1_acknowledges_between_the_unmap_and_the_free(self):
+        log = boot_log()
+        acknowledged = "\x1b[34m INFO CPU 1 acknowledged flush epoch 812\x1b[0m\n"
+        before = log.replace(acknowledged, "").replace("dom0 unmaps a page core 1 wrote\n",
+                                                       acknowledged + "dom0 unmaps a page core 1 wrote\n")
+        self.assertIn("CPU 1 acknowledging the flush", self.refused(before))
+        after = log.replace(acknowledged, "").replace("dom0 freed the page core 1 wrote\n",
+                                                      "dom0 freed the page core 1 wrote\n" + acknowledged)
+        self.assertIn("CPU 1 acknowledging the flush", self.refused(after))
+        other = log.replace("INFO CPU 1 acknowledged", "INFO CPU 0 acknowledged")
+        self.assertIn("CPU 1 acknowledging the flush", self.refused(other))
 
     def test_the_thread_times_stand_beside_the_before_numbers(self):
         self.assertIn("mean cycles", self.refused(boot_log().replace("before 57405", "before 1")))
