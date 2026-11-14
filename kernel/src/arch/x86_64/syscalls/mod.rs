@@ -46,6 +46,11 @@ const _: () = {
     assert!(user::LINK == operation::OPERATION_LINK);
     assert!(user::PROBE == operation::OPERATION_PROBE);
     assert!(user::POWER_OFF == operation::OPERATION_POWER_OFF);
+    assert!(user::READ_REGISTERS == operation::OPERATION_READ_REGISTERS);
+    assert!(user::WRITE_REGISTERS == operation::OPERATION_WRITE_REGISTERS);
+    assert!(user::FRAME_WORDS == verified::arch::FRAME_WORDS as u64);
+    assert!(user::PC_WORD == verified::arch::PC_WORD as u64);
+    assert!(user::SP_WORD == verified::arch::SP_WORD as u64);
     assert!(user::PLACE == operation::OPERATION_PLACE);
     assert!(user::START == operation::OPERATION_START);
     assert!(user::SUSPEND == operation::OPERATION_SUSPEND);

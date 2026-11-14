@@ -6,6 +6,16 @@
 
 use core::arch::asm;
 
+/// How many words a thread's saved frame is, in the order the table under Thread and process operations
+/// in design/syscall-abi-in-registers/ gives: the words read registers and write registers move.
+pub const FRAME_WORDS: u64 = 34;
+
+/// The word of the frame that holds the program counter, `elr_el1`.
+pub const PC_WORD: u64 = 32;
+
+/// The word of the frame that holds the user stack pointer, `sp_el0`.
+pub const SP_WORD: u64 = 31;
+
 /// Invokes `operation` on the capability at `slot` with arguments 1 to 5, and returns the status word
 /// and result words 1 to 4.
 ///

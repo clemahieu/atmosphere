@@ -76,6 +76,17 @@ pub const PROBE: u64 = 17;
 /// succeeded when argument 1 is not zero and one that failed when it is zero. Refused unless the slot holds
 /// a power capability; accepted, it does not return.
 pub const POWER_OFF: u64 = 18;
+/// Returns in results 1 to 4 the words of the saved frame from the word index in argument 1, a multiple
+/// of four below FRAME_WORDS, of the Inactive thread the capability with control in the slot names, an
+/// index in the caller's own table; a result past the frame's end holds zero. The words are the frame's
+/// field order, which is the target's.
+pub const READ_REGISTERS: u64 = 19;
+/// Writes arguments 2 to 5 into the saved frame from the word index in argument 1, a multiple of four
+/// below FRAME_WORDS, of the Inactive thread the capability with control in the slot names, an index in
+/// the caller's own table, ignoring an argument past the frame's end, and then applies the user-return
+/// rule to the whole frame. Refused, with nothing changed, when the program counter the frame would hold
+/// is not a user address.
+pub const WRITE_REGISTERS: u64 = 20;
 /// Places the thread in the slot on the core whose capability argument 1 names, in the caller's own
 /// table, at the priority argument 2 gives, which is at most that capability's maximum. Refused unless
 /// the thread is inactive and not placed yet and argument 1 holds a live core capability whose maximum
@@ -90,6 +101,8 @@ pub const START: u64 = 22;
 /// outcome STATUS_AGAIN until it is. Refused unless the slot holds a thread with control that is not
 /// blocked or dead.
 pub const SUSPEND: u64 = 23;
+
+pub use crate::arch::{FRAME_WORDS, PC_WORD, SP_WORD};
 
 /// The most entries one probe reads.
 pub const PROBE_MAX: u64 = 64;

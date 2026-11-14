@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy, place, start, suspend and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy, read registers, write registers, place, start, suspend and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -65,6 +65,12 @@
 //! base not aligned to the block are refused; inspect finds a thread with control in the first slot, a
 //! second retype of its block is refused, and dom0 prints the best and the mean cycles of a thread's
 //! retype beside new_thread's before numbers.
+//! It reads and writes the saved frame of the first of those threads, before anything starts it: a read or a
+//! write at an index not a multiple of four or past the frame, a write of a program counter above every
+//! user address, and a read or a write through a copy of the thread's capability without control are
+//! refused, and the frame reads back as it was; a write of an entry and a stack into the program
+//! counter's and the stack pointer's words, each keeping the rest of its window, is accepted, they read
+//! back, a read of the frame's last window gives zero past its end, and dom0 prints that they held.
 //! It places the first of those threads on core 0 through its core capability at its own priority, 0,
 //! after a place of the console slot, one whose core argument is the console slot and one at priority
 //! 256 are refused, and after a copy of the core capability derived with maximum 0 refuses the thread
@@ -95,7 +101,8 @@
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
 //! `svc #1` returns unknown and prints nothing.
 //!
-//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, place, start, suspend, link and map through acall's wrappers,
+//! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, read registers, write registers,
+//! place, start, suspend, link and map through acall's wrappers,
 //! whose ensures are the kernel's proven contracts, so the code those proofs speak of is the code that
 //! boots. dom0 is not verified: the caller token it threads through them erases in its build, and
 //! nothing here checks the wrappers' requires.
@@ -110,7 +117,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 
-use acall::capability::{delete, destroy, move_cap, place, revoke, start, suspend};
+use acall::capability::{delete, destroy, move_cap, place, read_registers, revoke, start, suspend, write_registers};
 use acall::memory::{derive, link, map, retype};
 use acall::step::Caller;
 use asys::operation;
@@ -917,6 +924,84 @@ fn retyped_threads_held(caller: &mut Tracked<Caller>, empty: u64, process: u64) 
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, THREADS_HELD) } == operation::STATUS_OK
 }
 
+/// What dom0 prints once the register check held, which the gate looks for.
+const REGISTERS_HELD: [u64; 5] = operation::print_words(b"dom0 thread registers set\n");
+
+/// The program counter and the stack pointer dom0 writes into its child's first thread: user addresses,
+/// which the thread never runs at, since nothing starts it.
+const THREAD_ENTRY: u64 = 0x40_1000;
+const THREAD_STACK: u64 = 0x80_0000;
+
+/// A program counter above every user address, on each target.
+const KERNEL_ENTRY: u64 = 0xffff_8000_0000_1000;
+
+/// The four words of `thread`'s saved frame from word `index`, or the status the read returned.
+fn read_window(caller: &mut Tracked<Caller>, thread: u64, index: u64) -> Result<[u64; 4], u64> {
+    let out = read_registers(caller, thread, index);
+    if out.status == operation::STATUS_OK {
+        Ok([out.result_1, out.result_2, out.result_3, out.result_4])
+    } else {
+        Err(out.status)
+    }
+}
+
+/// Word `word` of `thread`'s saved frame, read in its window.
+fn frame_word(caller: &mut Tracked<Caller>, thread: u64, word: u64) -> Option<u64> {
+    read_window(caller, thread, word & !3).ok().map(|words| words[(word & 3) as usize])
+}
+
+/// Writes `value` into word `word` of `thread`'s saved frame, keeping the rest of its window: the status
+/// of the write, or of the read before it when that was refused.
+fn set_frame_word(caller: &mut Tracked<Caller>, thread: u64, word: u64, value: u64) -> u64 {
+    match read_window(caller, thread, word & !3) {
+        Ok(mut words) => {
+            words[(word & 3) as usize] = value;
+            write_registers(caller, thread, word & !3, words).status
+        }
+        Err(status) => status,
+    }
+}
+
+/// Whether dom0 reads and writes the saved frame of the first thread the thread check bound to its child,
+/// in the first slot after root entry FIRST_EMPTY_ENTRY's first, with the empty slot `spare` for a copy of
+/// its capability: a read or a write at index 1 or at the first multiple of four past the frame is refused,
+/// a write of the program counter's window with KERNEL_ENTRY in its word is refused and the window reads
+/// back as it was, and a read or a write through a copy without control, derived into `spare`, is
+/// refused, the copy then deleted; the writes of THREAD_ENTRY into the program counter's word and of
+/// THREAD_STACK into the stack pointer's, each keeping the rest of its window, are accepted and read back,
+/// and the frame's last window reads zero past the frame's end. dom0 prints that it held.
+fn registers_held(caller: &mut Tracked<Caller>, spare: u64) -> bool {
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 1;
+    let Ok(held) = inspect(caller, thread) else {
+        return false;
+    };
+    let pc_window = operation::PC_WORD & !3;
+    let past = (operation::FRAME_WORDS + 3) & !3;
+    let last = (operation::FRAME_WORDS - 1) & !3;
+    let Ok(before) = read_window(caller, thread, pc_window) else {
+        return false;
+    };
+    let mut above = before;
+    above[(operation::PC_WORD & 3) as usize] = KERNEL_ENTRY;
+    read_registers(caller, thread, 1).status == operation::STATUS_REFUSED
+        && read_registers(caller, thread, past).status == operation::STATUS_REFUSED
+        && write_registers(caller, thread, 1, before).status == operation::STATUS_REFUSED
+        && write_registers(caller, thread, past, before).status == operation::STATUS_REFUSED
+        && write_registers(caller, thread, pc_window, above).status == operation::STATUS_REFUSED
+        && read_window(caller, thread, pc_window) == Ok(before)
+        && derive(caller, thread, spare, 0, held.base, held.order).status == operation::STATUS_OK
+        && read_registers(caller, spare, pc_window).status == operation::STATUS_REFUSED
+        && write_registers(caller, spare, pc_window, before).status == operation::STATUS_REFUSED
+        && delete(caller, spare).status == operation::STATUS_OK
+        && set_frame_word(caller, thread, operation::PC_WORD, THREAD_ENTRY) == operation::STATUS_OK
+        && set_frame_word(caller, thread, operation::SP_WORD, THREAD_STACK) == operation::STATUS_OK
+        && frame_word(caller, thread, operation::PC_WORD) == Some(THREAD_ENTRY)
+        && frame_word(caller, thread, operation::SP_WORD) == Some(THREAD_STACK)
+        && read_window(caller, thread, last)
+            .is_ok_and(|words| (0..4).all(|k| last + k < operation::FRAME_WORDS || words[k as usize] == 0))
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, REGISTERS_HELD) } == operation::STATUS_OK
+}
+
 /// What dom0 prints once it placed a thread of its child on core 0, which the gate looks for.
 const PLACED_HELD: [u64; 5] = operation::print_words(b"dom0 thread placed\n");
 
@@ -1544,6 +1629,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && retyped_process_held(caller, untyped, tables[0], empty + 4)
                                 && retyped_leaves_held(caller, untyped, tables[3])
                                 && retyped_threads_held(caller, empty, empty + 4)
+                                && registers_held(caller, empty + 5)
                                 && placed_thread_held(caller, empty + 5)
                                 && started_thread_held(caller)
                                 && suspended_thread_held(caller, empty + 5)

@@ -229,6 +229,7 @@ def boot_log():
             "thread best 31000 before 57405\n"
             "thread mean 33000 before 59384\n"
             "dom0 threads retyped\n"
+            "dom0 thread registers set\n"
             "dom0 thread placed\n"
             "dom0 thread started\n"
             "dom0 thread suspended\n"
