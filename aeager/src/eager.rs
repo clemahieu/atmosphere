@@ -3946,16 +3946,33 @@ impl Record {
         no_unwind
     {
         // The kernel's invariant and serves stay folded: the body only hands them from one call to
-        // the next. So does what accepted says of each step: the body only joins step sequences.
+        // the next. So does what accepted says of each step: the body only joins step sequences. So
+        // do the record's invariant, readiness and accounting, and a caller stepping alone: the loop
+        // only adds up what each page's back ensures, and the lemmas it calls unfold what they need.
         hide(CapKernel::wf);
         hide(Record::serves);
         hide(acall_ok);
+        hide(caller_alone);
+        hide(Record::inv);
+        hide(Record::ready);
+        hide(Record::free_capacity);
+        hide(Record::can_back_run);
+        hide(Record::tables_for_run);
+        hide(Record::tables_for_addr);
+        hide(Record::tables_unlinked);
+        hide(refused_spent);
         let ghost parked = forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a);
         let ghost c0 = caller@;
         let ghost mut steps = Seq::<AcallStep>::empty();
         proof {
             assert(acall_ok(steps)) by {
                 reveal(acall_ok);
+            }
+            assert(old(self).window as int % BLOCK_BYTES as int == 0 && old(self).window + WINDOW_BYTES <= usize::MAX) by {
+                reveal(Record::inv);
+            }
+            assert(old(self).tables_for_run(start as int, 0) == 0) by {
+                reveal(Record::tables_for_run);
             }
             lemma_acall_steps_none(c0);
             if old(self).free_capacity() >= pages as int {
@@ -3972,6 +3989,8 @@ impl Record {
                 pages > 0,
                 k <= pages,
                 start as int % PAGE_BYTES as int == 0,
+                old(self).window as int % BLOCK_BYTES as int == 0,
+                old(self).window + WINDOW_BYTES <= usize::MAX,
                 old(self).window <= start as int,
                 start + pages * PAGE_BYTES <= old(self).window + WINDOW_BYTES,
                 run.dom() =~= Set::range(start as int, start + k * PAGE_BYTES),
@@ -4161,25 +4180,7 @@ impl Record {
                         }
                         if old(self).tables_for_run(start as int, pages as nat) == 0 && old(self).avail_pages() == 0 {
                             assert(k == 0);
-                            lemma_run_touches_step(old(self).window, start as int, pages as nat, 0);
-                            lemma_run_touches_step(old(self).window, start as int, pages as nat, 1);
-                            lemma_run_touches_step(old(self).window, start as int, pages as nat, 2);
-                            lemma_run_touches_step(old(self).window, start as int, pages as nat, 3);
-                            lemma_addr_block(old(self).window, start);
-                            let b0 = old(self).addr_block(start);
-                            if b0 != 0 {
-                                assert(!run_touches_block(old(self).window, start as int, 1, 0));
-                            }
-                            if b0 != 1 {
-                                assert(!run_touches_block(old(self).window, start as int, 1, 1));
-                            }
-                            if b0 != 2 {
-                                assert(!run_touches_block(old(self).window, start as int, 1, 2));
-                            }
-                            if b0 != 3 {
-                                assert(!run_touches_block(old(self).window, start as int, 1, 3));
-                            }
-                            assert(before.tables_for_addr(start) == 0);
+                            lemma_no_tables_first_page(before, start, pages as nat);
                             assert(next_steps =~= Seq::<AcallStep>::empty());
                         }
                         if old(self).ready(c0)
@@ -4239,14 +4240,18 @@ impl Record {
                                 assert(released.tabled@[b] == before.tabled@[b]);
                             }
                         }
-                        let linked_k = before.tables_unlinked() - released.tables_unlinked();
-                        let tk = old(self).tables_for_run(start as int, k as nat) as int;
-                        lemma_scale(tk, linked_k, TABLE_PAGES as int);
-                        lemma_scale(linked_k, 1, TABLE_PAGES as int);
-                        lemma_scale(tk + linked_k, 1, TABLE_PAGES as int);
-                        lemma_scale(tk, tk + linked_k, TABLE_PAGES as int);
                         assert(acall_ok(next_steps) == acall_ok(sp));
-                        assert(refused_spent(*old(self), *self, next_steps, pages as nat));
+                        lemma_refused_run_spent(
+                            *old(self),
+                            before,
+                            released,
+                            *self,
+                            sp,
+                            next_steps,
+                            old(self).tables_for_run(start as int, k as nat),
+                            k as nat,
+                            pages as nat,
+                        );
                         self.lemma_serves_kept(&released, caller@);
                     }
                     return (None, Ghost(next_steps));
@@ -4254,9 +4259,13 @@ impl Record {
             }
         }
         proof {
+            assert(old(self).can_back_run(start as int, pages as nat)) by {
+                reveal(Record::can_back_run);
+            }
             assert forall|a: int| #[trigger] self.parks(a)
                 implies old(self).parks(a) && !run_pages(start as int, pages as nat).contains(a) by {
                 if run_pages(start as int, pages as nat).contains(a) {
+                    reveal(Record::inv);
                     assert(self.maps(a));
                     let i = choose|i: int| 0 <= i < self.pages && #[trigger] self.state@[i] == MAPPED && self.owner@[i] == a;
                     let j = choose|j: int| 0 <= j < self.pages && #[trigger] self.state@[j] == PARKED && self.owner@[j] == a;
@@ -4497,6 +4506,88 @@ proof fn lemma_tables_for_run_snoc(start_rec: Record, before: Record, start: int
     lemma_run_touches_snoc(start_rec.window, start, k, 1);
     lemma_run_touches_snoc(start_rec.window, start, k, 2);
     lemma_run_touches_snoc(start_rec.window, start, k, 3);
+}
+
+/// A run with no unlinked table on its path has none on its first page's path.
+proof fn lemma_no_tables_first_page(r: Record, start: usize, pages: nat)
+    requires
+        r.window as int % BLOCK_BYTES as int == 0,
+        r.window + WINDOW_BYTES <= usize::MAX,
+        r.window <= start < r.window + WINDOW_BYTES,
+        start as int % PAGE_BYTES as int == 0,
+        pages >= 1,
+        r.tables_for_run(start as int, pages) == 0,
+    ensures
+        r.tables_for_addr(start) == 0,
+{
+    lemma_run_touches_step(r.window, start as int, pages, 0);
+    lemma_run_touches_step(r.window, start as int, pages, 1);
+    lemma_run_touches_step(r.window, start as int, pages, 2);
+    lemma_run_touches_step(r.window, start as int, pages, 3);
+    lemma_addr_block(r.window, start);
+    let b0 = r.addr_block(start);
+    if b0 != 0 {
+        assert(!run_touches_block(r.window, start as int, 1, 0));
+    }
+    if b0 != 1 {
+        assert(!run_touches_block(r.window, start as int, 1, 1));
+    }
+    if b0 != 2 {
+        assert(!run_touches_block(r.window, start as int, 1, 2));
+    }
+    if b0 != 3 {
+        assert(!run_touches_block(r.window, start as int, 1, 3));
+    }
+}
+
+/// What `back_run` spent when the page after the `k` it backed was refused: `before` is the record
+/// with those `k` backed, having linked `linked` tables since `start_rec`, `released` the record the
+/// refused back left, and `after` that one with the `k` pages parked again. What the refused page
+/// spent adds to what the backed ones did.
+proof fn lemma_refused_run_spent(
+    start_rec: Record,
+    before: Record,
+    released: Record,
+    after: Record,
+    sp: Seq<AcallStep>,
+    steps: Seq<AcallStep>,
+    linked: nat,
+    k: nat,
+    pages: nat,
+)
+    requires
+        k < pages,
+        refused_spent(before, released, sp, 1),
+        acall_ok(steps) == acall_ok(sp),
+        before.free_groups() + linked <= start_rec.free_groups(),
+        start_rec.free_groups() <= before.free_groups() + linked + k,
+        before.tables_unlinked() + linked as int == start_rec.tables_unlinked(),
+        before.avail_pages() + linked * TABLE_PAGES as nat + k == start_rec.avail_pages(),
+        after.top == released.top,
+        after.middle == released.middle,
+        after.tabled == released.tabled,
+        after.free_groups() == released.free_groups(),
+        after.avail_pages() == released.avail_pages() + k,
+    ensures
+        refused_spent(start_rec, after, steps, pages),
+{
+    let tp = TABLE_PAGES as int;
+    let refused = before.tables_unlinked() - released.tables_unlinked();
+    let total = start_rec.tables_unlinked() - after.tables_unlinked();
+    assert(total == linked + refused);
+    assert(linked * tp >= 0) by (nonlinear_arith)
+        requires
+            linked >= 0,
+            tp >= 0,
+    ;
+    assert(total * tp == linked * tp + refused * tp) by (nonlinear_arith)
+        requires
+            total == linked + refused,
+    ;
+    assert((total + 1) * tp == linked * tp + (refused + 1) * tp) by (nonlinear_arith)
+        requires
+            total == linked + refused,
+    ;
 }
 
 /// Accounting across `map_new`'s `Some` arm: preserves `free_capacity() - 1` when `free_capacity() >= 1`
