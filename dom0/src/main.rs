@@ -75,6 +75,13 @@
 //! after a place of the console slot, one whose core argument is the console slot and one at priority
 //! 256 are refused, and after a copy of the core capability derived with maximum 0 refuses the thread
 //! at priority 1 and is deleted; a second place of the thread is refused, and dom0 prints that it held.
+//! It links a path of three tables into its child's space, maps a frame it retypes into both spaces, maps
+//! the page of its own image that holds the child's code into the child's, which it finds by comparing
+//! each page of its executable frames with it, and gives the fourth thread a capability to itself in a
+//! leaf of the child's table. It writes that thread's entry and arguments, places it on core 0 above
+//! itself, at priority 1, and starts it: core 0 takes a reschedule IPI and runs the thread in the child's
+//! space, which writes a word into the shared frame and suspends itself, leaving the core to dom0, which
+//! reads the word and prints that it held.
 //! It starts that thread, which is Runnable behind dom0 at the same priority, after a start of the
 //! console slot and of the second thread, not placed, are refused; a second start is refused, the
 //! thread being started, and dom0 places the third thread without starting it and prints that it held.
@@ -118,7 +125,7 @@ use core::alloc::Layout;
 use core::panic::PanicInfo;
 
 use acall::capability::{delete, destroy, move_cap, place, read_registers, revoke, start, suspend, write_registers};
-use acall::memory::{derive, link, map, retype};
+use acall::memory::{derive, link, map, retype, unmap};
 use acall::step::Caller;
 use asys::operation;
 use vstd::prelude::Tracked;
@@ -1029,6 +1036,169 @@ fn placed_thread_held(caller: &mut Tracked<Caller>, copy: u64) -> bool {
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, PLACED_HELD) } == operation::STATUS_OK
 }
 
+/// What dom0 prints once a thread of its child ran in the child's space and wrote dom0 a word, which the
+/// gate looks for.
+const SWITCHED_HELD: [u64; 5] = operation::print_words(b"dom0 thread switched\n");
+
+/// The word the child's thread writes into the frame both spaces map.
+const SWITCHED_WORD: u64 = 0x7377_6974_6368_6564;
+
+/// Where the child's space maps the page of dom0's image that holds dom0_child_entry, and after it the
+/// frame both spaces map: the start of root entry 2 of the child's space, as PATH_ADDRESS is of dom0's.
+const CHILD_CODE_ADDRESS: u64 = PATH_ADDRESS;
+const CHILD_DATA_ADDRESS: u64 = PATH_ADDRESS + 4096;
+
+/// The entries of the level 1 table at PATH_ADDRESS where dom0 maps the frame it shares with its child,
+/// and where it maps each page of its image's executable frames in turn while it looks for
+/// dom0_child_entry's: past every entry the checks before it map.
+const SHARED_ENTRY: u64 = 256;
+const SCAN_ENTRY: u64 = 257;
+
+/// The root entry of the child's table whose leaf holds the child's capability to its own thread: entry
+/// 0 is destroyed_process_held's.
+const CHILD_OWN_ENTRY: u64 = 1;
+
+/// How far below the top of the gigabyte untyped the switch check's blocks start: the end of the eager
+/// source's block. Three table pages, a 4K frame and a table leaf from there end below
+/// CHILD_LEAF_BELOW_TOP, where nothing else retypes.
+const SWITCH_BELOW_TOP: u64 = EAGER_BELOW_TOP - EAGER_PAGES as u64 * 4096;
+
+/// The execute right, which a frame dom0 runs from carries.
+const RIGHT_EXECUTE: u64 = 4;
+
+/// The words of a thread's saved frame that hold its first three argument registers, in the order the
+/// table under Thread and process operations in design/syscall-abi-in-registers/ gives: rdi, rsi and
+/// rdx on x86_64, x0 to x2 on aarch64.
+#[cfg(target_arch = "x86_64")]
+const ARGUMENT_WORDS: [u64; 3] = [13, 12, 11];
+#[cfg(target_arch = "aarch64")]
+const ARGUMENT_WORDS: [u64; 3] = [0, 1, 2];
+
+/// How many times dom0 reads the shared word before it gives up on the child's write. The reschedule
+/// IPI that runs the child arrives as dom0 returns from the start, so the first read finds the word.
+const SWITCH_READS: u64 = 1 << 24;
+
+// The code the child's thread runs, from the page of dom0's image that holds it, mapped into the child's
+// space: it stores its second argument at its first, then suspends its own thread through the slot its
+// third names, which leaves its core running nothing. Aligned so it stays in one page.
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".balign 64",
+    ".global dom0_child_entry",
+    "dom0_child_entry:",
+    "mov [rdi], rsi",
+    "mov rdi, rdx",
+    "mov eax, {suspend}",
+    "syscall",
+    "2: jmp 2b",
+    suspend = const operation::SUSPEND,
+);
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".balign 64",
+    ".global dom0_child_entry",
+    "dom0_child_entry:",
+    "str x1, [x0]",
+    "mov x0, x2",
+    "mov x8, #{suspend}",
+    "svc #0",
+    "2: b 2b",
+    suspend = const operation::SUSPEND,
+);
+
+unsafe extern "C" {
+    /// The first instruction of the child's code above.
+    fn dom0_child_entry();
+}
+
+/// The frame capability in dom0's table from ROOT_FRAME_SLOT, and the page in its block, that holds the
+/// page of dom0's image at `page`. dom0 knows its image by address and the capabilities by physical
+/// page, so it maps each page of each executable frame at SCAN_ENTRY in turn, compares it with the page,
+/// and unmaps it. None when a map or an unmap is refused or no frame matches.
+fn image_page(caller: &mut Tracked<Caller>, page: u64) -> Option<(u64, u64)> {
+    let scan = entry_address(SCAN_ENTRY);
+    let mut slot = operation::ROOT_FRAME_SLOT;
+    while let Ok(frame) = inspect(caller, slot) {
+        if frame.kind != operation::KIND_FRAME {
+            return None;
+        }
+        if frame.rights & RIGHT_EXECUTE != 0 {
+            for k in 0..1u64 << frame.order {
+                if map(caller, operation::ROOT_PROCESS_SLOT, scan, 1, slot, k).status != operation::STATUS_OK {
+                    return None;
+                }
+                // The map just made the page at `scan` page k of the frame, readable; `page` is a page
+                // of dom0's image, mapped since boot.
+                let same = unsafe {
+                    core::slice::from_raw_parts(scan as *const u8, 4096) == core::slice::from_raw_parts(page as *const u8, 4096)
+                };
+                if unmap(caller, operation::ROOT_PROCESS_SLOT, scan, 1).status != operation::STATUS_OK {
+                    return None;
+                }
+                if same {
+                    return Some((slot, k));
+                }
+            }
+        }
+        slot += 1;
+    }
+    None
+}
+
+/// Whether a thread of dom0's child runs in the child's space above dom0 and writes dom0 a word. Under
+/// the gigabyte untyped, the last from `empty` down, from SWITCH_BELOW_TOP below its top: three table
+/// pages link a path at CHILD_CODE_ADDRESS in the space of the child whose capability is in `process`;
+/// a 4K frame retyped into the empty slot `shared` is mapped at SHARED_ENTRY in dom0's space and at
+/// CHILD_DATA_ADDRESS in the child's; the page of dom0's image holding dom0_child_entry is mapped at
+/// CHILD_CODE_ADDRESS; and a table leaf in the child's root entry CHILD_OWN_ENTRY takes a capability with
+/// control to the fourth thread the thread check bound to the child. That thread's frame gets the entry,
+/// the shared word's address, SWITCHED_WORD and its own slot; dom0 places it on core 0 at priority 1,
+/// above dom0's 0, reads the shared word as zero and starts the thread. The start makes the thread
+/// Runnable above dom0, so core 0 takes a reschedule IPI and runs it in the child's space; it writes the
+/// word and suspends itself, so the core runs dom0 again. dom0 reads the word and prints that it held.
+fn switched_thread_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, shared: u64) -> bool {
+    let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
+        return false;
+    };
+    let low = block.base + (4096 << block.order) - SWITCH_BELOW_TOP;
+    let frame = low + 3 * TABLE_PAGE_BYTES;
+    let leaf = frame + LEAF_BYTES;
+    let entry = dom0_child_entry as *const () as u64;
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 4;
+    let own = first_slot(CHILD_OWN_ENTRY);
+    let word = entry_address(SHARED_ENTRY) as *const u64;
+    let Some((image, page)) = image_page(caller, entry & !0xfff) else {
+        return false;
+    };
+    let Ok(held) = inspect(caller, thread) else {
+        return false;
+    };
+    let linked = (0..3).all(|k| {
+        let table = low + k * TABLE_PAGE_BYTES;
+        retype(caller, untyped, operation::RETYPE_TABLE_PAGE, table, 0, 3 - k).status == operation::STATUS_OK
+            && link(caller, process, CHILD_CODE_ADDRESS, 4 - k, untyped, table).status == operation::STATUS_OK
+    });
+    let arguments = [CHILD_DATA_ADDRESS, SWITCHED_WORD, own];
+    linked
+        && retype(caller, untyped, operation::RETYPE_FRAME, frame, shared, 0).status == operation::STATUS_OK
+        && map(caller, operation::ROOT_PROCESS_SLOT, word as u64, 1, shared, 0).status == operation::STATUS_OK
+        && map(caller, process, CHILD_DATA_ADDRESS, 1, shared, 0).status == operation::STATUS_OK
+        && map(caller, process, CHILD_CODE_ADDRESS, 1, image, page).status == operation::STATUS_OK
+        && retype(caller, untyped, operation::RETYPE_LEAF, leaf, operation::through(process, CHILD_OWN_ENTRY), 0).status
+            == operation::STATUS_OK
+        && derive(caller, thread, operation::through(process, own), RIGHT_CONTROL, held.base, held.order).status
+            == operation::STATUS_OK
+        && set_frame_word(caller, thread, operation::PC_WORD, CHILD_CODE_ADDRESS + (entry & 0xfff)) == operation::STATUS_OK
+        && (0..3).all(|k| set_frame_word(caller, thread, ARGUMENT_WORDS[k], arguments[k]) == operation::STATUS_OK)
+        && place(caller, thread, operation::ROOT_CORE_SLOT, 1).status == operation::STATUS_OK
+        // The map above made the page at `word` the shared frame's, which retype zeroed; the child's
+        // thread is the only other writer.
+        && unsafe { word.read_volatile() } == 0
+        && start(caller, thread).status == operation::STATUS_OK
+        && (0..SWITCH_READS).any(|_| unsafe { word.read_volatile() } == SWITCHED_WORD)
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, SWITCHED_HELD) } == operation::STATUS_OK
+}
+
 /// What dom0 prints once it started a thread of its child, which the gate looks for.
 const STARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread started\n");
 
@@ -1631,6 +1801,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && retyped_threads_held(caller, empty, empty + 4)
                                 && registers_held(caller, empty + 5)
                                 && placed_thread_held(caller, empty + 5)
+                                && switched_thread_held(caller, empty, empty + 4, empty + 6)
                                 && started_thread_held(caller)
                                 && suspended_thread_held(caller, empty + 5)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)

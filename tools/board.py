@@ -231,6 +231,7 @@ def boot_log():
             "dom0 threads retyped\n"
             "dom0 thread registers set\n"
             "dom0 thread placed\n"
+            "dom0 thread switched\n"
             "dom0 thread started\n"
             "dom0 thread suspended\n"
             "dom0 process destroyed\n"
