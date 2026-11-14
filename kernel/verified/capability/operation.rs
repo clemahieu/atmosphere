@@ -602,12 +602,22 @@ impl CapKernel {
     /// A map in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when can_map_at fails over the arguments, or ok with the page at the offset in argument 4 of the
     /// frame in argument 3 mapped into the entry the address in argument 1 and the level in argument 2
-    /// name in the space of the capability in the slot.
+    /// name in the space of the capability in the slot; either way the cores, the flush epoch and every
+    /// thread's binding are as map_kept says.
     pub open spec fn spec_mapped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| !pre.allows_map(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& out == status_only(STATUS_OK)
-            &&& Self::page_mapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize)
+        let slot = frame.slot() as usize;
+        let va = frame.argument(1);
+        let level = frame.argument(2);
+        let from = frame.argument(3) as usize;
+        let page = frame.argument(4) as usize;
+        &&& Self::map_kept(pre, post)
+        &&& {
+            ||| out == status_only(STATUS_REFUSED) && Self::map_answered(pre, post, root, slot, va, level, from, page, false)
+            ||| {
+                &&& out == status_only(STATUS_OK)
+                &&& Self::map_answered(pre, post, root, slot, va, level, from, page, true)
+                &&& Self::page_mapped(pre, post, root, slot, va, level, from, page)
+            }
         }
     }
 

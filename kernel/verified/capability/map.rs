@@ -1390,6 +1390,24 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
+    /// Whether a map of the page at offset page of the frame capability at index from, into the entry
+    /// the address va and the level name in the space of the capability at index slot of the table at
+    /// root, answered ok exactly when can_map_at holds, and left the kernel as it was when it refused.
+    /// map_at's ensures and spec_mapped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn map_answered(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize, ok: bool) -> bool {
+        &&& ok == pre.can_map_at(root, slot, va, level, from, page)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a map leaves as it was, whether it answered ok or refused: the cores, the flush epoch and
+    /// the process each thread is bound to. map_at's ensures and spec_mapped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn map_kept(pre: Self, post: Self) -> bool {
+        &&& post.cores == pre.cores
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
     /// Maps the page at offset `page` of the frame capability at index `from` into the entry the address
     /// `va` and the level `level` name in the space of the capability at index `slot` of the table at
     /// `root`: a 4K page at level 1, a 2M page at level 2. All of these come from user space, and a
@@ -1401,12 +1419,9 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            final(self).cores == old(self).cores,
-            final(self).flush_epoch == old(self).flush_epoch,
-            ret == old(self).can_map_at(root, slot, va, level, from, page),
-            !ret ==> *final(self) == *old(self),
+            Self::map_answered(*old(self), *final(self), root, slot, va, level, from, page, ret),
             ret ==> Self::page_mapped(*old(self), *final(self), root, slot, va, level, from, page),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            Self::map_kept(*old(self), *final(self)),
     {
         if (level != 1 && level != 2) || !entry_named(va, level) {
             return false;
