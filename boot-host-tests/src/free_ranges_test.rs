@@ -8,9 +8,11 @@ mod free_ranges;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use astd::boot::{PhysicalMemoryType, PhysicalRange};
-use free_ranges::{free_page_ranges, ByteRange, PageRun, MAX_PAGE_ADDRESS, NODE_SPACE, PAGE_SLOTS};
+use free_ranges::{
+    free_page_ranges, ByteRange, PageRun, IDENTITY_SPAN, MAX_PAGE_ADDRESS, NODE_SPACE, PAGE_SLOTS,
+};
 
-use PhysicalMemoryType::{Available, Domain, Kernel, Reserved};
+use PhysicalMemoryType::{Available, Domain, Kernel, PageTable, Reserved};
 
 fn range(base: u64, size: u64) -> ByteRange {
     ByteRange { base, size }
@@ -134,6 +136,47 @@ fn free_page_out_of_range_is_rejected() {
         assert!(message.contains(&format!("{base:#x}")), "{message}");
         assert!(message.contains("runs past NODE_SPACE"), "{message}");
     }
+}
+
+#[test]
+fn free_page_ram_past_the_identity_mapped_span_is_rejected() {
+    // RAM of every kind that ends past the span: starting at its end, and running across it. The
+    // address named is the first byte past the span.
+    for kind in [Available, Kernel, Domain, PageTable] {
+        for (base, bytes) in [(IDENTITY_SPAN, 0x1000), (IDENTITY_SPAN - 0x1000, 0x2000)] {
+            let message = rejected(&[memory(base, bytes, kind)], &[], range(0, 0), None);
+            assert!(
+                message.contains(&format!("{IDENTITY_SPAN:#x}")),
+                "{message}"
+            );
+            assert!(
+                message.contains("past the identity-mapped span"),
+                "{message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn free_page_reserved_past_the_identity_mapped_span_is_accepted() {
+    // A device window the loader folds into Reserved lies past the span and gives no pages.
+    let ranges = [
+        memory(0x1000, 0x2000, Available),
+        memory(IDENTITY_SPAN - 0x1000, 0x10_0000, Reserved),
+        memory(IDENTITY_SPAN + 0x1000_0000, 0x1000_0000, Reserved),
+    ];
+    let got = runs(&ranges, &[], range(0, 0), None, 8).expect("well-formed map");
+    println!(
+        "free page ranges: reserved past the identity-mapped span: {}",
+        line(&got)
+    );
+    assert_eq!(
+        got,
+        vec![PageRun {
+            first: 0x1000,
+            count: 2
+        }]
+    );
 }
 
 #[test]

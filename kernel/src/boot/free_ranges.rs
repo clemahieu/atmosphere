@@ -3,8 +3,10 @@
 //! Folds the loader's memory map into the free runs boot can hand the root.
 //!
 //! The map crosses the trust boundary, so a range that is empty, is not 4 KiB aligned, runs past
-//! the node space, shares a page with another range, or is available inside the kernel image or
-//! dom0's reserved range is a boot panic. Memory past the pages the kernel tracks is left unused.
+//! the node space, is RAM that runs past the identity-mapped span, shares a page with another
+//! range, or is available inside the kernel image or dom0's reserved range is a boot panic. RAM is a
+//! range of any kind but Reserved, into which the loader folds device windows. Memory past the
+//! pages the kernel tracks is left unused.
 //! Pages set aside for the kernel, the root's own boot objects and the 2M regions of dom0's image
 //! are taken out of the runs. Why the boundary is tier 3: design/trust-boundary/. What boot sets
 //! aside: design/root-process-at-boot/.
@@ -21,8 +23,12 @@ pub const MAX_PAGE_ADDRESS: u64 = (PAGE_SLOTS as u64) * PAGE_BYTES;
 /// First address that is not a node id. `boot/mod.rs` checks this against the list's `NODE_SPACE`.
 pub const NODE_SPACE: u64 = 0x1_0000_0000_0000;
 
-// A free run is made of tracked pages, so every page of one is a node id.
-const _: () = assert!(MAX_PAGE_ADDRESS <= NODE_SPACE);
+/// First address the kernel's identity map does not cover. `boot/mod.rs` checks this against
+/// `verified::define::IDENTITY_SPAN`. design/page-metadata-sized-from-the-memory-map/.
+pub const IDENTITY_SPAN: u64 = astd::memory::USERSPACE_BASE;
+
+// A free run is made of tracked pages, so every page of one is identity-mapped and a node id.
+const _: () = assert!(MAX_PAGE_ADDRESS <= IDENTITY_SPAN && IDENTITY_SPAN <= NODE_SPACE);
 
 const TAKEN: u8 = 0;
 const FREE: u8 = 1;
@@ -122,6 +128,12 @@ fn fold(
                     reason: "runs past NODE_SPACE",
                 })
             }
+        }
+        if range.kind != PhysicalMemoryType::Reserved && range.base + range.bytes > IDENTITY_SPAN {
+            return Err(Reject {
+                address: address.max(IDENTITY_SPAN),
+                reason: "past the identity-mapped span",
+            });
         }
     }
 
