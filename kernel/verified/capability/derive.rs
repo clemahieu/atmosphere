@@ -41,9 +41,6 @@ pub open spec fn child_of(parent: Payload, rights: u32, base: usize, order: u8) 
     }
 }
 
-/// A badge fits the 48 bits above a receive's status: design/syscall-abi-in-registers/.
-pub const BADGE_LIMIT: usize = 0x1_0000_0000_0000; // not a page size: the bound of a 48-bit badge
-
 /// A derive may set this badge on a child of parent: 0, which keeps the parent's, or one that fits 48
 /// bits on a child of an endpoint's capability whose own badge is 0. A badge, once set, is in every
 /// capability derived below it, as badges_inherited states, so a receiver can tell which lineage a

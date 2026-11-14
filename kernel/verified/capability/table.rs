@@ -102,14 +102,19 @@ pub open spec fn tracked_kind(k: CapKind) -> bool {
     k is Frame || k is Space || k is Thread || k is Process || k is Endpoint || k is Notification
 }
 
+/// A badge fits the 48 bits above a receive's status: design/syscall-abi-in-registers/.
+pub const BADGE_LIMIT: usize = 0x1_0000_0000_0000; // not a page size: the bound of a 48-bit badge
+
 /// What a capability says is well formed: a block for a memory capability, the console's one page for
-/// a console's, power's one page for a power capability's, and a core's one page, with a maximum
-/// priority no higher than MAX_PRIORITY, for a core capability's.
+/// a console's, power's one page for a power capability's, a core's one page, with a maximum priority
+/// no higher than MAX_PRIORITY, for a core capability's, and a badge below BADGE_LIMIT for an
+/// endpoint capability's, so a receive can return it whole.
 pub open spec fn cap_wf(p: Payload) -> bool {
     &&& names_block(p.kind) ==> payload_wf(p)
     &&& p.kind is Console ==> p.base == CONSOLE_OBJECT && p.order == 0
     &&& p.kind is Power ==> p.base == POWER_OBJECT && p.order == 0
     &&& p.kind is Core ==> is_core_object(p.base) && p.order == 0 && p.priority <= MAX_PRIORITY
+    &&& p.kind is Endpoint ==> p.badge < BADGE_LIMIT
 }
 
 /// The bit of a capability's rights word that grants control.
@@ -290,6 +295,18 @@ impl Tables {
     /// Every capability says something well formed.
     pub open spec fn caps_wf(&self, list: &Tree) -> bool {
         forall|n: usize| #[trigger] self.is_cap(list, n) ==> cap_wf(self.payload_of(n))
+    }
+
+    /// A live endpoint capability's badge fits the 48 bits above a receive's status, so a receive
+    /// returns it whole: design/syscall-abi-in-registers/.
+    pub proof fn lemma_endpoint_badge_fits(&self, list: &Tree, n: usize)
+        requires
+            self.caps_wf(list),
+            self.is_cap(list, n),
+            self.payload_of(n).kind is Endpoint,
+        ensures
+            self.payload_of(n).badge < BADGE_LIMIT,
+    {
     }
 
     /// Every capability with the control right names a thread or a process.
