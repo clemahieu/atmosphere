@@ -293,6 +293,15 @@ pub fn wait() {
     unsafe { asm!("msr DAIFClr, #0b0010", "wfi", options(nomem, nostack, preserves_flags)) };
 }
 
+/// Gives up what runs on the stack whose top is `stack` and waits there for interrupts, for good: the
+/// core runs nothing, and an interrupt's handler leaves the wait by entering a thread
+/// ([`exception::enter`]), which takes SP_EL1 back to the top of the syscall stack. An IRQ from the
+/// wait saves its frame on this stack, so `stack` is the syscall stack's top, where nothing the wait
+/// returns to lies.
+pub unsafe fn idle_on(stack: u64) -> ! {
+    asm!("mov sp, {stack}", "2:", "msr DAIFClr, #0b0010", "wfi", "b 2b", stack = in(reg) stack, options(noreturn));
+}
+
 /// Enters user code at `pc` with stack `sp` and two entry arguments, which it finds in x0 and x1,
 /// and every other general register zero: an exception return to EL0 through ELR_EL1 and the
 /// SPSR_EL1 the verified frame names for user mode, AArch64 state at EL0 with no interrupt masked.

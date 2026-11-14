@@ -210,6 +210,13 @@ pub fn wait() {
     unsafe { asm!("sti", "hlt") };
 }
 
+/// Gives up what runs on the stack whose top is `stack` and waits there for interrupts, for good: the
+/// core runs nothing, and an interrupt's handler leaves the wait by returning to a thread. Interrupts
+/// arrive on their own stack (`interrupt::IST_IRQ`), so the wait's stack is never theirs.
+pub unsafe fn idle_on(stack: u64) -> ! {
+    asm!("mov rsp, {stack}", "2:", "sti", "hlt", "jmp 2b", stack = in(reg) stack, options(noreturn));
+}
+
 pub unsafe fn read_cr0() -> u64 {
     let cr0: u64;
     asm!("mov {}, cr0", out(reg) cr0);

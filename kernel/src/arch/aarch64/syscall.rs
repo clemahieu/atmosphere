@@ -44,13 +44,17 @@ const _: () = assert!(svc_immediate(0).is_none());
 /// Serves the `svc` with `immediate` that the thread whose frame is `frame` executed. The verified
 /// dispatch runs the invocation for the core's current thread and decides the status and result
 /// words that return; an immediate other than 0 names no invocation and returns unknown. A
-/// power-off the dispatch accepted ends the run here and returns to no thread.
+/// power-off the dispatch accepted ends the run here and returns to no thread. A thread that left the
+/// core returns to nothing: the core waits on its syscall stack, whose frames here it gives up, until
+/// the reschedule IPI enters the thread selected.
 pub fn invoke(frame: &mut Registers, immediate: u64) {
     if immediate != 0 {
         frame.write_outcome(operation::status_only_outcome(operation::STATUS_UNKNOWN));
         return;
     }
-    let returned: Outcome = dispatch(*frame);
+    let Some(returned): Option<Outcome> = dispatch(*frame) else {
+        unsafe { super::idle_on(crate::cpu::get_current().syscall_sp) }
+    };
     match returned.status {
         operation::STATUS_OK
         | operation::STATUS_REFUSED

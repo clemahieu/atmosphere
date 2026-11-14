@@ -36,19 +36,24 @@ pub static CAP_KERNEL: Locked<Option<&'static mut CapKernel>> = Locked::new("cap
 /// Runs the invocation in `frame` for the calling core's current thread under the kernel's lock, then
 /// makes the flush its unmaps owe, which the verified entry records in ghost state only: the entry has
 /// the calling core acknowledge whenever it is behind the epoch, and the flush IPIs go out once the
-/// lock is released. design/flush-without-waiting/. Each target's entry calls this.
-pub fn dispatch(frame: Registers) -> Outcome {
+/// lock is released. design/flush-without-waiting/. The reschedule IPIs go out with them, to each core
+/// whose selection the entry made due, the calling core among them. Returns the outcome, or nothing
+/// when the calling thread left its core, which then runs nothing: its caller waits, and the
+/// selection runs in the reschedule IPI's handler. Each target's entry calls this.
+pub fn dispatch(frame: Registers) -> Option<Outcome> {
     let core = crate::cpu::get_cpu_id();
-    let (returned, targets) = {
+    let (returned, flushes, reschedules) = {
         let mut guard = CAP_KERNEL.lock();
         let kernel = guard.as_deref_mut().expect("an invocation before the capability kernel was built");
         let epoch = kernel.flush_epoch;
-        let returned = kernel
-            .enter(core, frame, Tracked::assume_new())
-            .expect("no operation is wired that moves the calling thread off its core");
-        (returned, crate::flush::owed(kernel, epoch))
+        let returned = kernel.enter(core, frame, Tracked::assume_new());
+        // A thread that suspended itself leaves the core with an outcome; one that had to leave, with
+        // none. Either way the core runs nothing now.
+        let returned = returned.filter(|_| kernel.current_frame(core).is_some());
+        (returned, crate::flush::owed(kernel, epoch), crate::schedule::due(kernel))
     };
-    crate::flush::send(targets);
+    crate::flush::send(flushes);
+    crate::schedule::send(reschedules);
     returned
 }
 

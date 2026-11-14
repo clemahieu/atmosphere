@@ -28,6 +28,7 @@ mod logging;
 mod machine;
 mod lock;
 mod flush;
+mod schedule;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::panic::PanicInfo;
@@ -108,6 +109,7 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
             (0, 0)
         };
 
+        cpu::set_online();
         arch::enter_userspace(entry_point, initial_sp as *mut _, base, size);
     }
 }
@@ -152,11 +154,12 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     AP_UP.store(true, Ordering::SeqCst);
     lock::contend();
 
+    cpu::set_online();
     idle()
 }
 
-/// Waits with interrupts open, so this core takes flush IPIs. Nothing schedules a thread on it: no
-/// operation that places a thread on a core is wired.
+/// Waits with interrupts open, so this core takes flush IPIs, and the reschedule IPI, whose handler
+/// runs the selection and enters the thread it selects.
 fn idle() -> ! {
     loop {
         arch::wait();

@@ -30,6 +30,9 @@ pub const IOMMU_FAULT_VECTOR: u8 = 106;
 /// The flush IPI's interrupt, the first SGI.
 pub const FLUSH_VECTOR: u8 = 0;
 
+/// The reschedule IPI's interrupt, the second SGI.
+pub const RESCHEDULE_VECTOR: u8 = 1;
+
 /// Cores a machine crate can name. The kernel asserts this is at least `verified::define::NUM_CPUS`.
 pub const MAX_CPUS: usize = 32;
 
@@ -126,15 +129,18 @@ mod tests {
         let _: u8 = crate::TIMER_VECTOR;
         let _: u8 = crate::IOMMU_FAULT_VECTOR;
         let _: u8 = crate::FLUSH_VECTOR;
+        let _: u8 = crate::RESCHEDULE_VECTOR;
         let _: usize = crate::MAX_CPUS;
     }
 
     #[test]
-    fn the_flush_ipi_is_an_sgi_and_no_two_interrupts_share_an_id() {
+    fn the_ipis_are_sgis_and_no_two_interrupts_share_an_id() {
         assert!(crate::FLUSH_VECTOR < 16);
-        assert_ne!(crate::TIMER_VECTOR, crate::FLUSH_VECTOR);
-        assert_ne!(crate::TIMER_VECTOR, crate::IOMMU_FAULT_VECTOR);
-        assert_ne!(crate::IOMMU_FAULT_VECTOR, crate::FLUSH_VECTOR);
+        assert!(crate::RESCHEDULE_VECTOR < 16);
+        let ids = [crate::TIMER_VECTOR, crate::IOMMU_FAULT_VECTOR, crate::FLUSH_VECTOR, crate::RESCHEDULE_VECTOR];
+        for (i, a) in ids.iter().enumerate() {
+            assert!(ids[i + 1..].iter().all(|b| a != b));
+        }
     }
 
     #[test]
@@ -180,11 +186,12 @@ mod tests {
     }
 
     #[test]
-    fn the_timer_s_and_the_flush_s_interrupts_are_private_to_a_core() {
+    fn the_timer_s_and_the_ipis_interrupts_are_private_to_a_core() {
         // IHI 0069 2.2: INTIDs 0 to 15 are SGIs and 16 to 31 PPIs, the two kinds a Redistributor's
         // SGI_base configures.
         assert!((16..32).contains(&crate::TIMER_VECTOR));
         assert!(crate::FLUSH_VECTOR < 16);
+        assert!(crate::RESCHEDULE_VECTOR < 16);
     }
 
     #[test]

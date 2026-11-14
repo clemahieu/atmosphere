@@ -22,6 +22,9 @@ pub const IOMMU_FAULT_VECTOR: u8 = 33;
 /// The flush IPI's vector.
 pub const FLUSH_VECTOR: u8 = 34;
 
+/// The reschedule IPI's vector.
+pub const RESCHEDULE_VECTOR: u8 = 35;
+
 /// Cores a machine crate can name. The kernel asserts this is at least `verified::define::NUM_CPUS`.
 pub const MAX_CPUS: usize = 32;
 

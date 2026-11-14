@@ -11,7 +11,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::instruction::{dsb, isb, load, load_wide, read, store, write, System};
-use crate::{timer, FLUSH_VECTOR, MAX_CPUS, TIMER_VECTOR};
+use crate::{timer, FLUSH_VECTOR, MAX_CPUS, RESCHEDULE_VECTOR, TIMER_VECTOR};
 
 /// The Distributor's frame, where QEMU virt's device tree puts it: node `intc@8000000`, compatible
 /// `arm,gic-v3`, the first pair of `reg`.
@@ -198,7 +198,7 @@ impl Gic {
             core::hint::spin_loop();
         }
 
-        // Every SGI and PPI disabled, in Group 1 and at the one priority; then the two enabled.
+        // Every SGI and PPI disabled, in Group 1 and at the one priority; then the three enabled.
         store(sgi + GICR_ICENABLER0, u32::MAX);
         while load(rd + GICR_CTLR) & GICR_CTLR_WRITE_PENDING != 0 {
             core::hint::spin_loop();
@@ -207,7 +207,7 @@ impl Gic {
         for n in 0..GICR_IPRIORITYR_COUNT {
             store(sgi + GICR_IPRIORITYR + 4 * n, PRIORITY);
         }
-        store(sgi + GICR_ISENABLER0, 1 << TIMER_VECTOR | 1 << FLUSH_VECTOR);
+        store(sgi + GICR_ISENABLER0, 1 << TIMER_VECTOR | 1 << FLUSH_VECTOR | 1 << RESCHEDULE_VECTOR);
 
         write(System::IccSre, read(System::IccSre) | ICC_SRE_SYSTEM_REGISTERS);
         isb();
@@ -378,8 +378,8 @@ mod tests {
         ]);
         expected.extend((0..8).map(|n| fake.store(Fake::sgi(1) + 0x0400 + 4 * n, 0x8080_8080)));
         expected.extend([
-            // SGI 0, the flush IPI, and PPI 30, the EL1 physical timer.
-            fake.store(Fake::sgi(1) + 0x0100, 1 << 30 | 1 << 0),
+            // SGI 0, the flush IPI, SGI 1, the reschedule IPI, and PPI 30, the EL1 physical timer.
+            fake.store(Fake::sgi(1) + 0x0100, 1 << 30 | 1 << 0 | 1 << 1),
             // IHI 0069 12.2.23: SRE is bit 0, set before any other ICC register is used.
             Event::Read { register: System::IccSre },
             Event::Write { register: System::IccSre, value: 0b111 },
@@ -417,7 +417,7 @@ mod tests {
             assert!(!init.is_finished());
             fake.redistributors.set(Fake::rd(0) + 0x0014, 0);
         });
-        assert_eq!(fake.redistributors.get(Fake::sgi(0) + 0x0100), 1 << 30 | 1 << 0);
+        assert_eq!(fake.redistributors.get(Fake::sgi(0) + 0x0100), 1 << 30 | 1 << 0 | 1 << 1);
     }
 
     #[test]

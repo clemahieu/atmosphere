@@ -205,7 +205,7 @@ const SYNCHRONOUS_FROM_EL0: u64 = 8;
 
 /// The vectors for an IRQ, from the kernel and from EL0.
 const IRQ_FROM_EL1: u64 = 5;
-const IRQ_FROM_EL0: u64 = 9;
+pub(super) const IRQ_FROM_EL0: u64 = 9;
 
 /// Checks that the timer's interrupt reaches this core through the kernel's IRQ vector.
 pub unsafe fn check_interrupt() {

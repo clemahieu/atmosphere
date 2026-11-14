@@ -7,6 +7,7 @@
 //! (`arch::CoreState`). design/one-lock-bounded-steps/ says what may live here, outside the lock.
 
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::arch;
 use verified::arch::Registers;
@@ -157,4 +158,20 @@ pub fn spin_until(done: impl Fn() -> bool) {
     while !done() {
         core::hint::spin_loop();
     }
+}
+
+/// The cores that take interrupts, a bit each: a core sets its own once it is ready to wait or to run
+/// a thread, and the reschedule IPI goes only to these.
+static ONLINE: AtomicU64 = AtomicU64::new(0);
+
+const _: () = assert!(CPU_SLOTS <= u64::BITS as usize);
+
+/// Marks this core as taking interrupts. Once on each core, before it waits or enters a thread.
+pub fn set_online() {
+    ONLINE.fetch_or(1 << get_cpu_id(), Ordering::SeqCst);
+}
+
+/// The cores that have called [`set_online`], as a mask.
+pub fn online() -> u64 {
+    ONLINE.load(Ordering::SeqCst)
 }

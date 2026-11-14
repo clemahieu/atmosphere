@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use verified::arch::Registers;
 
+use super::exception::IRQ_FROM_EL0;
 use super::{cycles, spin_forever, stall_cycles};
 use crate::machine;
 
@@ -36,6 +37,10 @@ pub fn irq(vector: u64, frame: &mut Registers) {
         timer(vector, id, frame);
     } else if id == u32::from(machine::FLUSH_VECTOR) {
         crate::flush::handle_ipi();
+    } else if id == u32::from(machine::RESCHEDULE_VECTOR) {
+        machine::end_of_interrupt();
+        reschedule(vector, frame);
+        return;
     } else if id == u32::from(machine::IOMMU_FAULT_VECTOR) {
         log::error!("CPU {}: IOMMU fault: {:#x?}", crate::cpu::get_cpu_id(), frame);
         machine::iommu_fault_dump().unwrap();
@@ -45,6 +50,19 @@ pub fn irq(vector: u64, frame: &mut Registers) {
         unsafe { spin_forever() };
     }
     machine::end_of_interrupt();
+}
+
+/// The reschedule IPI, once it has ended: the selection, then the thread it leaves current, entered
+/// with SP_EL1 at the syscall stack's top whether the IRQ came from the thread or from the core's
+/// wait, or the wait when the core runs nothing.
+fn reschedule(vector: u64, frame: &Registers) {
+    use crate::schedule::{handle_ipi, Resume};
+    let syscall_sp = crate::cpu::get_current().syscall_sp;
+    match handle_ipi(frame, vector == IRQ_FROM_EL0) {
+        Resume::Interrupted => {},
+        Resume::Thread(resumed) => unsafe { super::exception::enter(&resumed, syscall_sp) },
+        Resume::Idle => unsafe { super::idle_on(syscall_sp) },
+    }
 }
 
 /// The timer's interrupt: the check's, when it is waiting for one. Nothing else arms the timer, so

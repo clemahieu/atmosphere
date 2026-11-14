@@ -276,6 +276,19 @@ unsafe extern "C" fn flush_ipi(_regs: &mut Registers) {
     machine::end_of_interrupt();
 }
 
+/// The reschedule IPI: the selection, once the interrupt has ended, then the thread it leaves current,
+/// whose frame the trampoline returns with, or the wait on the syscall stack when the core runs
+/// nothing.
+unsafe extern "C" fn reschedule_ipi(regs: &mut Registers) {
+    use crate::schedule::{handle_ipi, Resume};
+    machine::end_of_interrupt();
+    match handle_ipi(regs, from_process(regs)) {
+        Resume::Interrupted => {},
+        Resume::Thread(resumed) => *regs = resumed,
+        Resume::Idle => crate::arch::idle_on(crate::cpu::get_current().syscall_sp),
+    }
+}
+
 /// IOMMU fault handler.
 unsafe extern "C" fn iommu_fault(regs: &mut Registers) {
     log::error!("CPU {}: IOMMU fault: {:#x?}",
@@ -371,6 +384,8 @@ pub unsafe fn init() {
     idt.interrupts[machine::IOMMU_FAULT_VECTOR as usize - IRQ_OFFSET].set_handler_fn(wrap_interrupt!(iommu_fault));
 
     idt.interrupts[machine::FLUSH_VECTOR as usize - IRQ_OFFSET].set_handler_fn(wrap_interrupt!(flush_ipi));
+
+    idt.interrupts[machine::RESCHEDULE_VECTOR as usize - IRQ_OFFSET].set_handler_fn(wrap_interrupt!(reschedule_ipi));
 }
 
 /// Initializes per-CPU interrupt controllers.

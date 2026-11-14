@@ -233,11 +233,14 @@ unsafe extern "C" fn sys_entry() -> ! {
 
 /// The handler. The verified dispatch runs the invocation for the core's current thread and decides
 /// the status and result words that return. A power-off it accepted ends the run here and returns to
-/// no thread.
+/// no thread. A thread that left the core returns to nothing: the core waits on its syscall stack,
+/// whose frames here it gives up, until the reschedule IPI enters the thread selected.
 extern "C" fn capability_entry(regs: &mut Registers) {
     use crate::capability::{dispatch, power_off_accepted};
 
-    let returned = dispatch(*regs);
+    let Some(returned) = dispatch(*regs) else {
+        unsafe { crate::arch::idle_on(crate::cpu::get_current().syscall_sp) }
+    };
     match returned.status {
         operation::STATUS_OK
         | operation::STATUS_REFUSED
