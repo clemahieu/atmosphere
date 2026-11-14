@@ -358,16 +358,32 @@ impl CapKernel {
     /// refused for a word that names none; refused for every operation not wired yet;
     /// and unknown for a number no operation has. Print's words are arguments 1 to 5 and power-off's
     /// word is argument 1, as design/syscall-abi-in-registers/ places them; neither decides the status.
+    /// Print, power-off and inspect call here the predicates their ensures call, as
+    /// design/invoked-arm-is-the-operation-postcondition/ requires. The kernel is unchanged, so the
+    /// discharge is this kernel with itself; inspect's payload is the one the position holds.
     pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
         match spec_operation(frame.operation_number()) {
-            Some(Operation::Print) => status_only(
-                if self.holds_console(root, frame.slot() as usize) { STATUS_OK } else { STATUS_REFUSED },
-            ),
-            Some(Operation::PowerOff) => status_only(
-                if self.holds_power(root, frame.slot() as usize) { STATUS_OK } else { STATUS_REFUSED },
-            ),
+            Some(Operation::Print) => {
+                let slot = frame.slot() as usize;
+                let _discharged = discharges(self.view(), self.view(), root, Effect::Local);
+                status_only(if self.holds_console(root, slot) { STATUS_OK } else { STATUS_REFUSED })
+            },
+            Some(Operation::PowerOff) => {
+                let slot = frame.slot() as usize;
+                let _discharged = discharges(self.view(), self.view(), root, Effect::Local);
+                status_only(if self.holds_power(root, slot) { STATUS_OK } else { STATUS_REFUSED })
+            },
             Some(Operation::Inspect) => match spec_position(frame.slot()) {
-                Some(at) => self.spec_inspect_at(root, at),
+                Some(at) => {
+                    let ret = match self.cap_at(root, at) {
+                        Some(n) => Some(self.payload_of(n)),
+                        None => None,
+                    };
+                    let _found = self.inspect_found(root, at, ret);
+                    let _reads = self.inspect_reads(root, at, ret);
+                    let _discharged = discharges(self.view(), self.view(), root, Effect::Local);
+                    self.spec_inspect_at(root, at)
+                },
                 None => status_only(STATUS_REFUSED),
             },
             Some(_) => status_only(STATUS_REFUSED),

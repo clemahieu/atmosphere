@@ -140,6 +140,21 @@ impl CapKernel {
         Some(payload.kind)
     }
 
+    /// ret names a capability exactly when the position holds one. inspect's ensures and spec_outcome
+    /// both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn inspect_found(&self, root: usize, at: Position, ret: Option<Payload>) -> bool {
+        ret is Some == self.cap_at(root, at) is Some
+    }
+
+    /// When ret names a capability, it is that capability's payload, and the caller commands it.
+    /// inspect's ensures and spec_outcome both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn inspect_reads(&self, root: usize, at: Position, ret: Option<Payload>) -> bool {
+        ret is Some ==> {
+            &&& ret->0 == self.payload_of(self.cap_at(root, at)->0)
+            &&& self.view().commands(root, self.cap_at(root, at)->0)
+        }
+    }
+
     /// What inspect returns in the frame for a position: the payload of the capability there, and refused
     /// when the position names none.
     pub open spec fn spec_inspect_at(&self, root: usize, at: Position) -> Outcome {
@@ -161,11 +176,8 @@ impl CapKernel {
             self.root_live(root),
         ensures
             final(steps).count <= old(steps).count + INSPECT_STEPS,
-            ret is Some == self.cap_at(root, at) is Some,
-            ret is Some ==> {
-                &&& ret->0 == self.payload_of(self.cap_at(root, at)->0)
-                &&& self.view().commands(root, self.cap_at(root, at)->0)
-            },
+            self.inspect_found(root, at, ret),
+            self.inspect_reads(root, at, ret),
             discharges(self.view(), self.view(), root, Effect::Local),
     {
         proof {
