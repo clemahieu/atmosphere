@@ -25,7 +25,10 @@ exactly those bytes, so a witness whose requires or parameters change fails the 
 
 The check, with tools/env.sh sourced and after tools/verify.py, whose exported dependencies it reads:
 for each crate with a throwaway, one `rust_verify --cfg throwaway --verify-module <module>...` at
-the verify budget, the crates side by side. It passes when
+the verify budget, the crates side by side. Each of those runs goes through the cap tools/verify.py
+puts on rust_verify: verify.MEMORY_MAX in a systemd user scope of its own with no swap, so a
+throwaway that grows without bound is killed by its cgroup rather than by the kernel's OOM killer.
+A run killed for memory is reported as such and fails the check. It passes when
 
   every root witness has its throwaway file, byte for byte, and no other file is under throwaway/;
   each run verifies nothing and reports exactly one error per throwaway, located in its file;
@@ -381,6 +384,14 @@ def judge(output, throwaways, root):
     return findings, postcondition, budget
 
 
+def account(output, throwaways, root, out_of_memory):
+    """(findings, postcondition count, budget count) for one capped run. A run the cgroup killed
+    for memory is reported as that, and its output is left unjudged."""
+    if out_of_memory:
+        return [f"ran out of memory: its run is capped at {verify.MEMORY_MAX}"], 0, 0
+    return judge(output, throwaways, root)
+
+
 def command(crate, throwaways, verus_out):
     """rust_verify over a crate's throwaway modules alone. Nothing is exported, so the crate is named
     as no crate depends on it."""
@@ -391,9 +402,23 @@ def command(crate, throwaways, verus_out):
 
 
 def run(crate, throwaways, root):
-    ran = subprocess.run(command(crate, throwaways, root / "target" / "verus"), cwd=root, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    return ran.stdout
+    """The crate's throwaways, through the cap tools/verify.py puts on rust_verify. The output, and
+    whether the cgroup killed the run for memory. The scope is per crate, so the crates still run
+    side by side."""
+    unit = f"atmo-throwaway-{os.getpid()}-{crate['crate']}"
+    with tempfile.TemporaryFile() as captured:
+        _, out_of_memory = verify.run_capped(
+            command(crate, throwaways, root / "target" / "verus"),
+            unit,
+            verify.MEMORY_MAX,
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=captured,
+            stderr=subprocess.STDOUT,
+        )
+        captured.flush()
+        captured.seek(0)
+        return captured.read().decode(), out_of_memory
 
 
 def planned(root):
@@ -424,10 +449,10 @@ def main(args):
         return 1 if findings else 0
     with_some = [(crate, throwaways) for crate, _, throwaways, _, _ in crates if throwaways]
     with ThreadPoolExecutor(max_workers=max(1, len(with_some))) as pool:
-        outputs = list(pool.map(lambda pair: run(pair[0], pair[1], REPO), with_some))
+        ran = list(pool.map(lambda pair: run(pair[0], pair[1], REPO), with_some))
     postcondition = budget = 0
-    for (crate, throwaways), output in zip(with_some, outputs):
-        crate_findings, on_postcondition, on_budget = judge(output, throwaways, REPO)
+    for (crate, throwaways), (output, out_of_memory) in zip(with_some, ran):
+        crate_findings, on_postcondition, on_budget = account(output, throwaways, REPO, out_of_memory)
         if crate_findings:
             print(output, file=sys.stderr)
         findings += [f"{crate['package']}: {finding}" for finding in crate_findings]
@@ -806,6 +831,58 @@ impl CapKernel {
             "rust_verify", "--crate-type", "lib", str(self.user), "--rlimit", "100", "--cfg", "throwaway",
             "--verify-module", "throwaway::page", "--verify-module", "throwaway::made"])
 
+    def crate(self, name):
+        return {"package": name, "crate": name, "src": str(self.user), "deps": [], "plain": []}
+
+    def capped_calls(self, fn):
+        """Run fn while a bare rust_verify is refused and verify.run_capped is recorded."""
+        calls = []
+
+        def fake_capped(command, unit, memory_max, **kwargs):
+            calls.append({"command": command, "unit": unit, "memory_max": memory_max, "kwargs": kwargs})
+            stdout = kwargs.get("stdout")
+            if stdout is not None:
+                stdout.write(b"verifier-output\n")
+            return 0, False
+
+        def bare(command, **kwargs):
+            raise AssertionError(f"rust_verify started without the cap: {command[:1]}")
+
+        original_capped, original_run = verify.run_capped, subprocess.run
+        verify.run_capped, subprocess.run = fake_capped, bare
+        try:
+            fn()
+        finally:
+            verify.run_capped, subprocess.run = original_capped, original_run
+        return calls
+
+    def test_each_rust_verify_runs_through_run_capped_at_the_verify_cap(self):
+        throwaways, _ = self.written(self.user)
+        seen = {}
+
+        def go():
+            for name in ("aheap", "aring"):
+                seen[name] = run(self.crate(name), throwaways, self.root)
+
+        calls = self.capped_calls(go)
+        self.assertEqual([call["memory_max"] for call in calls], [verify.MEMORY_MAX, verify.MEMORY_MAX])
+        self.assertEqual(
+            [call["unit"] for call in calls],
+            [f"atmo-throwaway-{os.getpid()}-aheap", f"atmo-throwaway-{os.getpid()}-aring"],
+        )
+        for call, name in zip(calls, ("aheap", "aring")):
+            self.assertEqual(call["command"], command(self.crate(name), throwaways, self.root / "target" / "verus"))
+            self.assertEqual(call["kwargs"]["cwd"], self.root)
+            self.assertIs(call["kwargs"]["stdin"], subprocess.DEVNULL)
+        self.assertEqual(seen["aheap"], ("verifier-output\n", False))
+
+    def test_a_run_killed_for_memory_is_reported_as_such_and_not_as_a_compile_failure(self):
+        throwaways, _ = self.written(self.user)
+        findings, postcondition, budget = account("", throwaways, self.root, True)
+        self.assertEqual(findings, [f"ran out of memory: its run is capped at {verify.MEMORY_MAX}"])
+        self.assertEqual((postcondition, budget), (0, 0))
+        judged, _, _ = account("", throwaways, self.root, False)
+        self.assertIn("no verification results line, so the crate did not compile under cfg(throwaway)", judged)
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--test"]:
