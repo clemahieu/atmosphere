@@ -87,6 +87,11 @@
 //! runs the thread in the child's space, which writes a second word into the shared frame and suspends
 //! itself, leaving core 1 running nothing; dom0 reads the word on core 0, never having left it, and
 //! prints that it held.
+//! It gives the seventh thread a capability to itself in the same leaf and places it through the root's
+//! capability for core 1 with an entry that inspects that capability over and over, counting each
+//! inspect in the shared frame, and suspends itself at a count dom0 gives it. While it does, dom0 inspects
+//! its console capability over and over on core 0, until it has seen the thread's count reach that end
+//! after seeing it change between two of its own inspects at least three times, and prints both counts.
 //! It gives the first thread an entry in its child's space that counts in the shared frame, and starts it,
 //! Runnable behind dom0 at the same priority, after a start of the console slot and of the second
 //! thread, not placed, are refused; a second start is refused, the thread being started, and dom0
@@ -1090,10 +1095,14 @@ const SWITCH_READS: u64 = 1 << 24;
 // child's space. From dom0_child_entry a thread stores its second argument at its first, then suspends
 // its own thread through the slot its third names, which leaves its core running nothing; from
 // dom0_child_count it adds one to the word at its first argument, for good, and enters the kernel only
-// when the timer takes the core from it. Both fit in 64 bytes, aligned so they stay in one page.
+// when the timer takes the core from it; from dom0_child_invoke it inspects the capability at the slot its
+// third argument names and adds one to the word at its first after each inspect accepted, until that word
+// reaches its second argument or an inspect is refused, then suspends its own thread through that slot.
+// All three fit in 128 bytes, aligned so they stay in one page. The invoking loop keeps its arguments in
+// registers the invocation keeps: r12 to r14 on x86_64, x19 to x21 on aarch64.
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
-    ".balign 64",
+    ".balign 128",
     ".global dom0_child_entry",
     "dom0_child_entry:",
     "mov [rdi], rsi",
@@ -1105,11 +1114,31 @@ core::arch::global_asm!(
     "dom0_child_count:",
     "inc qword ptr [rdi]",
     "jmp dom0_child_count",
+    ".global dom0_child_invoke",
+    "dom0_child_invoke:",
+    "mov r12, rdi",
+    "mov r13, rsi",
+    "mov r14, rdx",
+    "3:",
+    "mov rdi, r14",
+    "mov eax, {inspect}",
+    "syscall",
+    "test ax, ax",
+    "jnz 4f",
+    "inc qword ptr [r12]",
+    "cmp qword ptr [r12], r13",
+    "jb 3b",
+    "4:",
+    "mov rdi, r14",
+    "mov eax, {suspend}",
+    "syscall",
+    "5: jmp 5b",
+    inspect = const operation::INSPECT,
     suspend = const operation::SUSPEND,
 );
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
-    ".balign 64",
+    ".balign 128",
     ".global dom0_child_entry",
     "dom0_child_entry:",
     "str x1, [x0]",
@@ -1123,6 +1152,28 @@ core::arch::global_asm!(
     "add x3, x3, #1",
     "str x3, [x0]",
     "b dom0_child_count",
+    ".global dom0_child_invoke",
+    "dom0_child_invoke:",
+    "mov x19, x0",
+    "mov x20, x1",
+    "mov x21, x2",
+    "3:",
+    "mov x0, x21",
+    "mov x8, #{inspect}",
+    "svc #0",
+    "tst x8, #0xffff",
+    "b.ne 4f",
+    "ldr x3, [x19]",
+    "add x3, x3, #1",
+    "str x3, [x19]",
+    "cmp x3, x20",
+    "b.lo 3b",
+    "4:",
+    "mov x0, x21",
+    "mov x8, #{suspend}",
+    "svc #0",
+    "5: b 5b",
+    inspect = const operation::INSPECT,
     suspend = const operation::SUSPEND,
 );
 
@@ -1131,11 +1182,17 @@ unsafe extern "C" {
     fn dom0_child_entry();
     /// The first instruction of the child's code above that counts.
     fn dom0_child_count();
+    /// The first instruction of the child's code above that invokes and counts its invocations.
+    fn dom0_child_invoke();
 }
 
 /// Where the child's thread that counts on core 0 keeps its count: the third word of the frame both
 /// spaces map, after SWITCHED_WORD and CORE_1_WORD.
 const CHILD_COUNT_ADDRESS: u64 = CHILD_DATA_ADDRESS + 16;
+
+/// Where the child's thread that invokes on core 1 counts its invocations: the fifth word of the frame
+/// both spaces map, after CORE_1_COUNT_ADDRESS's.
+const CHILD_INVOKED_ADDRESS: u64 = CHILD_DATA_ADDRESS + 32;
 
 /// The frame capability in dom0's table from ROOT_FRAME_SLOT, and the page in its block, that holds the
 /// page of dom0's image at `page`. dom0 knows its image by address and the capabilities by physical
@@ -1282,7 +1339,7 @@ fn core_1_count() -> u64 {
 }
 
 /// Whether a thread of dom0's child counts on core 1, for destroyed_process_held to kill by destroying
-/// the child. The seventh thread the thread check bound to the child gets the entry dom0_child_count in
+/// the child. The sixth thread the thread check bound to the child gets the entry dom0_child_count in
 /// the child's space and CORE_1_COUNT_ADDRESS as its first argument; dom0 places it through the root's
 /// capability for core 1, reads its count as zero and starts it. Core 1 runs nothing, so the reschedule
 /// IPI reaches CPU 1, which runs the thread for good: it never enters the kernel. dom0 reads the count
@@ -1331,6 +1388,78 @@ fn core_1_count_stopped() -> bool {
     still == STILL_READS
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, KILLED_HELD) } == operation::STATUS_OK
         && print_count(b"core 1 lag ", last.wrapping_sub(destroyed), b" counts\n") == operation::STATUS_OK
+}
+
+/// How many inspects the child's thread on core 1 makes before it suspends itself.
+const CORE_1_INVOCATIONS: u64 = 1 << 16;
+
+/// How many inspects dom0 makes on core 0 before it gives up on the thread's reaching its count: far more
+/// than the thread makes, the lock handing the two cores turns.
+const CORE_0_INVOCATIONS: u64 = 1 << 22;
+
+/// How many times dom0 must see the thread's count change between two of its own inspects.
+const INVOKED_TURNS: u64 = 3;
+
+/// The starts and the ends of the lines dom0 prints once it and the thread on core 1 both invoked, which
+/// the gate looks for.
+const INVOKED_DOM0_HEAD: &[u8] = b"dom0 invoked ";
+const INVOKED_DOM0_TAIL: &[u8] = b" times on core 0\n";
+const INVOKED_THREAD_HEAD: &[u8] = b"thread invoked ";
+const INVOKED_THREAD_TAIL: &[u8] = b" times on core 1\n";
+
+/// Whether a thread of dom0's child on core 1 makes invocations while dom0 makes its own on core 0. It
+/// reuses what switched_thread_held set up in the space of the child whose capability is in `process`, as
+/// core_1_thread_held does: the leaf in the child's root entry CHILD_OWN_ENTRY takes in its third slot a
+/// capability with control to the seventh thread the thread check bound to the child. That thread's frame
+/// gets the entry dom0_child_invoke, CHILD_INVOKED_ADDRESS, CORE_1_INVOCATIONS and its own slot; dom0
+/// places it through the root's capability for core 1, the fifth thread having left that core running
+/// nothing, reads its count as zero and starts it. dom0 then inspects its console capability, each inspect
+/// accepted and naming a console, and after each reads the thread's count, until the count reaches
+/// CORE_1_INVOCATIONS, at which the thread suspends itself. The thread counts only inspects the kernel
+/// accepted, and dom0 must see its count change between two of its own inspects INVOKED_TURNS times, so
+/// both cores were invoking at once. dom0 prints its own count and the thread's.
+fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> bool {
+    let entry = dom0_child_entry as *const () as u64;
+    let invoke = dom0_child_invoke as *const () as u64;
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 7;
+    let own = first_slot(CHILD_OWN_ENTRY) + 2;
+    let theirs = (entry_address(SHARED_ENTRY) + (CHILD_INVOKED_ADDRESS - CHILD_DATA_ADDRESS)) as *const u64;
+    let Ok(held) = inspect(caller, thread) else {
+        return false;
+    };
+    let arguments = [CHILD_INVOKED_ADDRESS, CORE_1_INVOCATIONS, own];
+    let started = invoke & !0xfff == entry & !0xfff
+        && derive(caller, thread, operation::through(process, own), RIGHT_CONTROL, held.base, held.order).status
+            == operation::STATUS_OK
+        && set_frame_word(caller, thread, operation::PC_WORD, CHILD_CODE_ADDRESS + (invoke & 0xfff)) == operation::STATUS_OK
+        && (0..3).all(|k| set_frame_word(caller, thread, ARGUMENT_WORDS[k], arguments[k]) == operation::STATUS_OK)
+        && place(caller, thread, operation::ROOT_CORE_SLOT + SECOND_CORE, 1).status == operation::STATUS_OK
+        // switched_thread_held mapped the shared frame at SHARED_ENTRY, which retype zeroed; this thread
+        // is the only other writer of its fifth word.
+        && unsafe { theirs.read_volatile() } == 0
+        && start(caller, thread).status == operation::STATUS_OK;
+    if !started {
+        return false;
+    }
+    let mut ours = 0;
+    let mut turns = 0;
+    let mut last = 0;
+    while last < CORE_1_INVOCATIONS && ours < CORE_0_INVOCATIONS {
+        if inspect(caller, operation::ROOT_CONSOLE_SLOT).map(|held| held.kind) != Ok(operation::KIND_CONSOLE) {
+            return false;
+        }
+        ours += 1;
+        // As above: the thread on core 1 is the only other writer of this word.
+        let now = unsafe { theirs.read_volatile() };
+        if now != last {
+            turns += 1;
+            last = now;
+        }
+    }
+    last == CORE_1_INVOCATIONS
+        && turns >= INVOKED_TURNS
+        && print_count(INVOKED_DOM0_HEAD, ours, INVOKED_DOM0_TAIL) == operation::STATUS_OK
+        && print_count(INVOKED_THREAD_HEAD, last, INVOKED_THREAD_TAIL) == operation::STATUS_OK
 }
 
 /// What dom0 prints once it started a thread of its child, which the gate looks for.
@@ -1985,6 +2114,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && placed_thread_held(caller, empty + 5)
                                 && switched_thread_held(caller, empty, empty + 4, empty + 6)
                                 && core_1_thread_held(caller, empty + 4)
+                                && invoked_beside_core_1_held(caller, empty + 4)
                                 && started_thread_held(caller)
                                 && preempted_thread_held()
                                 && suspended_thread_held(caller, empty + 5)
