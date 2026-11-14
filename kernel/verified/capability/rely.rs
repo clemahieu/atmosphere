@@ -871,6 +871,7 @@ impl CapKernel {
             Some(Operation::Map) => Self::lemma_map_keeps_slots(pre, post, root, frame, out, root),
             Some(Operation::Unmap) => Self::lemma_unmap_keeps_slots(pre, post, root, frame, out, root),
             Some(Operation::Probe) => Self::lemma_probe_keeps_slots(pre, post, root, frame, out, root),
+            Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
             _ => {},
         }
     }
@@ -1341,6 +1342,7 @@ impl CapKernel {
             Some(Operation::Map) => Self::lemma_map_keeps_record(pre, post, root, frame, out, root),
             Some(Operation::Unmap) => Self::lemma_unmap_keeps_record(pre, post, root, frame, out, root),
             Some(Operation::Probe) => Self::lemma_probe_keeps_record(pre, post, root, frame, out, root),
+            Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
             _ => {},
         }
     }
@@ -2222,6 +2224,27 @@ impl CapKernel {
         Self::lemma_destroy_keeps_record(pre, post, p, root);
         Self::lemma_destroy_keeps_space(pre, post, p, root);
         Self::lemma_destroy_keeps_count(pre, post, p, root);
+    }
+
+    /// A destroy, by any caller, as the operation in frame says it: a process destroyed or a thread
+    /// destroyed from some core, or nothing changed.
+    pub proof fn lemma_destroyed_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            Self::spec_destroyed(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+            Self::root_kept(pre, post, root),
+    {
+        let n = pre.tables.node_of(caller, frame.slot() as usize);
+        let o = pre.payload_of(n).base;
+        if !pre.allows_destroy(caller, frame) {
+            Self::lemma_rely_reflexive(pre, root);
+        } else if pre.payload_of(n).kind is Process {
+            Self::lemma_destroy_keeps_rely(pre, post, o, root);
+        } else {
+            let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o);
+            Self::lemma_destroy_thread_keeps_rely(pre, post, c, o, root);
+        }
     }
 
     /// destroy of a thread, by any caller and from any core.

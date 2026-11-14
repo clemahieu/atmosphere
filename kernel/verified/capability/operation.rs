@@ -75,6 +75,9 @@ pub const INVOKE_MOVE_STEPS: usize = 0;
 /// counted.
 pub const INVOKE_DELETE_STEPS: usize = 0;
 
+/// invoke_destroy's bound in the step counter: one destroy's, an IPI's turn for each core.
+pub const INVOKE_DESTROY_STEPS: usize = NUM_CPUS;
+
 /// invoke_revoke's bound in the step counter: one revoke's.
 pub const INVOKE_REVOKE_STEPS: usize = crate::capability::revoke::REVOKE_STEPS;
 
@@ -112,6 +115,7 @@ pub proof fn lemma_revoke_bounds_the_operations()
         INVOKE_MAP_STEPS <= INVOKE_REVOKE_STEPS,
         INVOKE_UNMAP_STEPS <= INVOKE_REVOKE_STEPS,
         INVOKE_PROBE_STEPS <= INVOKE_REVOKE_STEPS,
+        INVOKE_DESTROY_STEPS <= INVOKE_REVOKE_STEPS,
         crate::capability::console::PRINT_BYTES <= INVOKE_REVOKE_STEPS,
         crate::capability::power::POWER_OFF_STEPS <= INVOKE_REVOKE_STEPS,
         crate::capability::inspect::INSPECT_STEPS <= INVOKE_REVOKE_STEPS,
@@ -771,6 +775,29 @@ impl CapKernel {
         at is Some && self.cap_at(root, at->0) is Some
     }
 
+    /// Whether the destroy in frame is allowed: can_destroy at the index the slot names, in the caller's
+    /// own table.
+    pub open spec fn allows_destroy(&self, root: usize, frame: Registers) -> bool {
+        self.can_destroy(root, frame.slot() as usize)
+    }
+
+    /// A destroy in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, exactly when allows_destroy fails, or ok with the process
+    /// the slot's capability names destroyed as process_destroyed says, or the thread it names destroyed
+    /// from some core as thread_destroyed says, every thread bound as it was.
+    pub open spec fn spec_destroyed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        let n = pre.tables.node_of(root, frame.slot() as usize);
+        let o = pre.payload_of(n).base;
+        ||| !pre.allows_destroy(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& pre.allows_destroy(root, frame)
+            &&& out == status_only(STATUS_OK)
+            &&& pre.payload_of(n).kind is Process ==> Self::process_destroyed(pre, post, o)
+            &&& pre.payload_of(n).kind is Thread ==> exists|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o)
+            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+        }
+    }
+
     /// Whether the invocation in frame by a thread of the process whose table is at root is allowed: for
     /// an operation that can change the kernel, its allows_ predicate over the frame's decoded
     /// arguments; for every other operation, which leaves the kernel unchanged, that spec_outcome is not
@@ -786,6 +813,7 @@ impl CapKernel {
             Some(Operation::Map) => self.allows_map(root, frame),
             Some(Operation::Unmap) => self.allows_unmap(root, frame),
             Some(Operation::Probe) => self.allows_probe(root, frame),
+            Some(Operation::Destroy) => self.allows_destroy(root, frame),
             _ => self.spec_outcome(root, frame) != status_only(STATUS_REFUSED),
         }
     }
@@ -793,7 +821,7 @@ impl CapKernel {
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
     /// post with out returned, with each table position decoded from its word: a retype's effect for retype, a derive's for derive, a move's for move, a
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
-    /// unmap, a probe's for probe, and for every other operation the kernel unchanged with spec_outcome
+    /// unmap, a probe's for probe, a destroy's for destroy, and for every other operation the kernel unchanged with spec_outcome
     /// returned. Each is refused with nothing changed exactly when allows fails, as
     /// lemma_refused_exactly says.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
@@ -807,6 +835,7 @@ impl CapKernel {
             Some(Operation::Map) => Self::spec_mapped(pre, post, root, frame, out),
             Some(Operation::Unmap) => Self::spec_unmapped(pre, post, root, frame, out),
             Some(Operation::Probe) => Self::spec_probed(pre, post, root, frame, out),
+            Some(Operation::Destroy) => Self::spec_destroyed(pre, post, root, frame, out),
             _ => post == pre && out == pre.spec_outcome(root, frame),
         }
     }
@@ -1122,6 +1151,30 @@ impl CapKernel {
     {
     }
 
+    /// A destroy reaches destroy: refused with nothing changed unless the slot holds a process or
+    /// thread capability with control whose object is not dead; ok otherwise, with that process's
+    /// record dead and an IPI for each core that has its space loaded, as process_destroyed says, or
+    /// that thread destroyed from some core as thread_destroyed says, every capability and every
+    /// thread's binding staying. design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_destroy(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Destroy),
+        ensures
+            ({
+                let i = frame.slot() as usize;
+                let n = pre.tables.node_of(root, i);
+                let o = pre.payload_of(n).base;
+                &&& !pre.can_destroy(root, i) ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_destroy(root, i) ==> out == status_only(STATUS_OK)
+                    && bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+                &&& pre.can_destroy(root, i) && pre.payload_of(n).kind is Process ==> Self::process_destroyed(pre, post, o)
+                &&& pre.can_destroy(root, i) && pre.payload_of(n).kind is Thread
+                    ==> exists|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o)
+            }),
+    {
+    }
+
     /// An unmap reaches unmap_at: refused with nothing changed unless the caller may unmap the entry the
     /// address in argument 1 and the level in argument 2 name, in the space of the capability in the
     /// slot; ok otherwise, with that entry unmapped as page_unmapped says and its bits in the results.
@@ -1299,7 +1352,8 @@ impl CapKernel {
     }
 
     /// What dispatch proves of core c's step for frame, which answered ret: well formed, and the
-    /// caller's operation as invoked says when one returns to it.
+    /// caller's operation as invoked says when one returns to it. A destroy of the caller's own process
+    /// or thread leaves the caller to check_current at core c's next entry, which moves it off.
     pub open spec fn dispatched(pre: Self, post: Self, c: int, frame: Registers, ret: Option<Outcome>) -> bool {
         &&& Self::step_ok(pre, post, c)
         &&& (ret is None <==> pre.must_leave(c) || pre.cores@[c].current_thread is None)
@@ -1320,6 +1374,8 @@ impl CapKernel {
             &&& pre.cores@[c].space == Some(root)
             &&& post.cores@[c].space == Some(root)
             &&& Self::invoked(pre, post, root, frame, ret->0)
+            &&& spec_operation(frame.operation_number()) == Some(Operation::Destroy) && ret->0 == status_only(STATUS_OK)
+                && pre.destroys_own(c, root, frame.slot() as usize) ==> post.must_leave(c)
         })
     }
 
@@ -1406,6 +1462,7 @@ impl CapKernel {
             Some(Operation::Map) => Some(self.invoke_map(root, frame, Tracked(steps))),
             Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(steps))),
             Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(steps))),
+            Some(Operation::Destroy) => Some(self.invoke_destroy(c, root, frame, Tracked(steps))),
             Some(Operation::Print) => Some(status_only_outcome(
                 if self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(steps)) {
                     STATUS_OK
@@ -1648,6 +1705,36 @@ impl CapKernel {
             Some(at) => self.delete(root, at).is_some(),
             None => false,
         };
+        status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The destroy in frame, by core c's current thread, of the process whose table is at root.
+    fn invoke_destroy(&mut self, c: usize, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(steps).count <= old(steps).count + INVOKE_DESTROY_STEPS,
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_destroyed(*old(self), *final(self), root, frame, ret),
+            ret == status_only(STATUS_OK) && old(self).destroys_own(c as int, root, frame.slot() as usize)
+                ==> final(self).must_leave(c as int),
+    {
+        let done = self.destroy(c, root, frame.slot() as usize, Tracked(steps));
+        proof {
+            let pre = *old(self);
+            let post = *self;
+            if done {
+                let n = pre.tables.node_of(root, frame.slot() as usize);
+                let o = pre.payload_of(n).base;
+                if pre.payload_of(n).kind is Thread {
+                    assert(Self::thread_destroyed(pre, post, c, o));
+                }
+            }
+        }
         status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
     }
 

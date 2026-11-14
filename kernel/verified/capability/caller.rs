@@ -286,6 +286,36 @@ impl CapKernel {
         }
     }
 
+    /// Destroy's contract over the caller's view, for the slot at index i of the caller's own table: ok
+    /// exactly when can_destroy holds there and refused otherwise, and either way every table's view
+    /// and the block table as they were. A destroyed process's capabilities stay in its table, where a
+    /// holder of a control capability for it claims them by a move: design/process-holds-capabilities/.
+    pub open spec fn destroy_contract(pre: Self, post: Self, root: usize, i: usize, out: Outcome) -> bool {
+        &&& out == status_only(if pre.can_destroy(root, i) { STATUS_OK } else { STATUS_REFUSED })
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& post.blocks == pre.blocks
+    }
+
+    /// Destroy's specification implies its contract.
+    pub proof fn lemma_destroy_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::spec_destroyed(pre, post, root, frame, out),
+        ensures
+            Self::destroy_contract(pre, post, root, frame.slot() as usize, out),
+    {
+        let n = pre.tables.node_of(root, frame.slot() as usize);
+        let o = pre.payload_of(n).base;
+        if pre.allows_destroy(root, frame) {
+            if pre.payload_of(n).kind is Thread {
+                let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o);
+                assert(post.list == pre.list && post.tables == pre.tables && post.blocks == pre.blocks);
+            }
+            assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+                assert(post.table_view(t) =~= pre.table_view(t));
+            }
+        }
+    }
+
     /// A step that leaves the root entries as they were and changes no node's liveness but n's and m's,
     /// slots', leaves every table's slots as they were.
     pub proof fn lemma_slots_stay(pre: Self, post: Self, n: usize, m: usize, t: usize, j: usize)
