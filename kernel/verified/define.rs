@@ -58,6 +58,24 @@ pub const SIZE_2M: usize = PAGE_SZ * PAGES_PER_2M;
 pub const SIZE_1G: usize = PAGE_SZ * PAGES_PER_1G;
 pub const SIZE_512G: usize = SIZE_1G * ENTRIES;
 
+/// The identity-mapped span: the bytes from physical address 0 that the kernel's top-level entries
+/// below KERNEL_MEM_END_L4INDEX map. Tracked memory ends within it, and user space starts at its end.
+/// design/page-metadata-sized-from-the-memory-map/.
+pub const IDENTITY_SPAN: usize = KERNEL_MEM_END_L4INDEX * SIZE_512G;
+
+/// The identity-mapped span ends at or below 2^48: the kernel takes at most ENTRIES top-level entries,
+/// and ENTRIES of them map 2^48 bytes. It is a whole number of 1G regions.
+pub proof fn lemma_span_within_48_bits()
+    ensures
+        IDENTITY_SPAN <= 1usize << 48,
+        IDENTITY_SPAN % SIZE_1G == 0,
+{
+    assert(KERNEL_MEM_END_L4INDEX <= ENTRIES);
+    assert(ENTRIES * SIZE_512G == 1usize << 48) by (compute_only);
+    assert(IDENTITY_SPAN <= 1usize << 48) by (compute_only);
+    assert(IDENTITY_SPAN % SIZE_1G == 0) by (compute_only);
+}
+
 /// The shifts and the sizes name the same numbers.
 pub proof fn lemma_shifts()
     ensures

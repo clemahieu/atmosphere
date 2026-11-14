@@ -87,6 +87,42 @@ pub open spec fn holds(m: Map<usize, PagePerm4k>, i: usize) -> bool {
     &&& m[i].is_uninit()
 }
 
+/// n pages from address 0, with n at most a count whose pages fit the identity-mapped span, end within
+/// it.
+pub proof fn lemma_pages_in_span(n: int, count: int)
+    requires
+        0 <= n <= count,
+        count * PAGE_SZ <= IDENTITY_SPAN,
+    ensures
+        0 <= n * PAGE_SZ <= IDENTITY_SPAN,
+{
+    assert(0 <= n * PAGE_SZ <= count * PAGE_SZ) by (nonlinear_arith)
+        requires
+            0 <= n <= count,
+    ;
+}
+
+/// A count of pages that is a whole number of 1G regions is a whole number of 2M regions too.
+pub proof fn lemma_whole_regions(n: int)
+    requires
+        0 <= n,
+        n % PAGES_PER_1G as int == 0,
+    ensures
+        (n / PAGES_PER_2M as int) * PAGES_PER_2M as int == n,
+        (n / PAGES_PER_1G as int) * PAGES_PER_1G as int == n,
+{
+    let g = n / PAGES_PER_1G as int;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(n, PAGES_PER_1G as int);
+    assert(PAGES_PER_1G as int == ENTRIES as int * PAGES_PER_2M as int);
+    assert(n == PAGES_PER_2M as int * (g * ENTRIES as int)) by (nonlinear_arith)
+        requires
+            n == PAGES_PER_1G as int * g,
+            PAGES_PER_1G as int == ENTRIES as int * PAGES_PER_2M as int,
+    ;
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(g * ENTRIES as int, PAGES_PER_2M as int);
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(g, PAGES_PER_1G as int);
+}
+
 /// The state of a 2M or 1G block, held by the region that is that block.
 #[derive(Clone, Copy)]
 pub struct RegionEntry {
@@ -130,6 +166,41 @@ impl BlockTable {
             n == self.page_count(),
     {
         NUM_PAGES
+    }
+
+    /// The tracked pages are whole 1G regions from address 0 and end within the identity-mapped
+    /// span. No proof bounds the count by anything smaller. design/page-metadata-sized-from-the-memory-map/.
+    pub open spec fn span_wf(&self) -> bool {
+        &&& 0 < self.spec_page_count()
+        &&& self.spec_page_count() % PAGES_PER_1G == 0
+        &&& self.spec_page_count() * PAGE_SZ <= IDENTITY_SPAN
+    }
+
+    /// A tracked page lies within the identity-mapped span, so its address and the end of its page
+    /// are below 2^48 and index times PAGE_SZ does not overflow.
+    pub proof fn lemma_tracked_in_span(&self, i: int)
+        requires
+            self.span_wf(),
+            self.tracks(i),
+        ensures
+            0 <= i * PAGE_SZ,
+            (i + 1) * PAGE_SZ <= IDENTITY_SPAN,
+            IDENTITY_SPAN <= 1usize << 48,
+    {
+        lemma_span_within_48_bits();
+        lemma_pages_in_span(i + 1, self.spec_page_count() as int);
+    }
+
+    /// The 2M and the 1G regions each tile the tracked pages: the page count is a whole number of
+    /// either.
+    pub proof fn lemma_regions_tile(&self)
+        requires
+            self.span_wf(),
+        ensures
+            (self.spec_page_count() / PAGES_PER_2M) * PAGES_PER_2M == self.spec_page_count(),
+            (self.spec_page_count() / PAGES_PER_1G) * PAGES_PER_1G == self.spec_page_count(),
+    {
+        lemma_whole_regions(self.spec_page_count() as int);
     }
 
     /// Page i is one the table tracks.
@@ -282,6 +353,7 @@ impl BlockTable {
     }
 
     pub open spec fn wf(&self) -> bool {
+        &&& self.span_wf()
         &&& self.counts_wf()
         &&& self.large_wf()
         &&& self.free_wf()
