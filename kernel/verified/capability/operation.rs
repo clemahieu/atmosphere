@@ -736,18 +736,21 @@ impl CapKernel {
 
     /// A delete in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_delete fails, or ok with the childless capability at the position the
-    /// slot's word names gone with the reference it held, every thread bound as it was and every space's
-    /// tables as they were.
+    /// slot's word names gone with the reference it held, as delete_answered says of the payload it took
+    /// out; either way what delete_kept says is kept.
     pub open spec fn spec_deleted(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
-        ||| !pre.allows_delete(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& out == status_only(STATUS_OK)
-            &&& at is Some
-            &&& Self::cap_deleted_at(pre, post, root, at->0)
-            &&& Self::object_dropped(pre, post, pre.cap_at(root, at->0)->0)
-            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
-            &&& Self::same_tree(pre, post)
+        &&& Self::delete_kept(pre, post, root)
+        &&& {
+            ||| at is None && out == status_only(STATUS_REFUSED) && post == pre
+            ||| at is Some && out == status_only(STATUS_REFUSED) && Self::delete_answered(pre, post, root, at->0, None)
+            ||| {
+                &&& at is Some
+                &&& out == status_only(STATUS_OK)
+                &&& Self::delete_answered(pre, post, root, at->0, Some(pre.payload_of(pre.cap_at(root, at->0)->0)))
+                &&& Self::cap_deleted_at(pre, post, root, at->0)
+                &&& Self::object_dropped(pre, post, pre.cap_at(root, at->0)->0)
+            }
         }
     }
 
@@ -1944,7 +1947,12 @@ impl CapKernel {
     {
         let done = match position(frame.slot()) {
             Some(at) => self.delete(root, at).is_some(),
-            None => false,
+            None => {
+                proof {
+                    old(self).lemma_no_op_discharges(root);
+                }
+                false
+            },
         };
         status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
     }

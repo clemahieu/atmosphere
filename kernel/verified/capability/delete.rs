@@ -198,6 +198,39 @@ impl CapKernel {
             && post.processes == pre.processes && post.endpoints == pre.endpoints && post.replies == pre.replies
     }
 
+    /// Whether a delete of the capability at the position at, in the table at root or a table its
+    /// process controls, answered with the payload it took out exactly when can_delete_at holds, and
+    /// left the kernel as it was when it refused. delete's ensures and spec_deleted both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn delete_answered(pre: Self, post: Self, root: usize, at: Position, ret: Option<Payload>) -> bool {
+        &&& ret is Some == pre.can_delete_at(root, at)
+        &&& ret is None ==> post == pre
+        &&& ret is Some ==> ret.unwrap() == pre.payload_of(pre.cap_at(root, at)->0)
+    }
+
+    /// What a delete by the process whose table is at root leaves as it was, whether it answered or
+    /// refused: the cores, the list's parents, the flush epoch, the TLBs, the IOMMUs, the mapped pages,
+    /// the tables, the stale epoch, the table pages, the mappings, the zeroing, the devices, every
+    /// space's tables and the process each thread is bound to; and it discharges as a local step.
+    /// delete's ensures and spec_deleted both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn delete_kept(pre: Self, post: Self, root: usize) -> bool {
+        &&& post.cores == pre.cores
+        &&& Self::same_tree(pre, post)
+        &&& post.list.parent@ == pre.list.parent@
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.tlb == pre.tlb
+        &&& post.iommus == pre.iommus
+        &&& post.mapped == pre.mapped
+        &&& post.tables == pre.tables
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.table_pages == pre.table_pages
+        &&& post.mappings == pre.mappings
+        &&& post.zeroing == pre.zeroing
+        &&& post.devices == pre.devices
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
     /// Deletes the capability at a position: an index of the caller's table, at root, or of the table
     /// of a process the caller controls, live or dead. The position comes from user space, so it can
     /// be refused, and a refusal changes nothing.
@@ -208,26 +241,10 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            final(self).cores == old(self).cores,
-            Self::same_tree(*old(self), *final(self)),
-            final(self).list.parent@ == old(self).list.parent@,
-            ret is Some == old(self).can_delete_at(root, at),
-            ret is None ==> *final(self) == *old(self),
-            ret is Some ==> ret.unwrap() == old(self).payload_of(old(self).cap_at(root, at)->0),
+            Self::delete_answered(*old(self), *final(self), root, at, ret),
             ret is Some ==> Self::cap_deleted_at(*old(self), *final(self), root, at),
             ret is Some ==> Self::object_dropped(*old(self), *final(self), old(self).cap_at(root, at)->0),
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).tlb == old(self).tlb,
-            final(self).iommus == old(self).iommus,
-            final(self).mapped == old(self).mapped,
-            final(self).tables == old(self).tables,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).table_pages == old(self).table_pages,
-            final(self).mappings == old(self).mappings,
-            final(self).zeroing == old(self).zeroing,
-            final(self).devices == old(self).devices,
-            discharges(old(self).view(), final(self).view(), root, Effect::Local),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            Self::delete_kept(*old(self), *final(self), root),
     {
         let ghost pre = *old(self);
         proof {
@@ -309,6 +326,22 @@ impl CapKernel {
             Self::lemma_delete_removes(pre, post, n);
             lemma_removes_cap_discharges(pre.view(), post.view(), root, n);
             Self::lemma_tlb_same(pre, post);
+            assert(post.cores == pre.cores);
+            assert(Self::same_tree(pre, post));
+            assert(post.list.parent@ == pre.list.parent@);
+            assert(post.flush_epoch == pre.flush_epoch);
+            assert(post.tlb == pre.tlb);
+            assert(post.iommus == pre.iommus);
+            assert(post.mapped == pre.mapped);
+            assert(post.tables == pre.tables);
+            assert(post.stale_epoch == pre.stale_epoch);
+            assert(post.table_pages == pre.table_pages);
+            assert(post.mappings == pre.mappings);
+            assert(post.zeroing == pre.zeroing);
+            assert(post.devices == pre.devices);
+            assert(discharges(pre.view(), post.view(), root, Effect::Local));
+            assert(bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables));
+            assert(Self::delete_kept(pre, post, root));
         }
         Some(payload)
     }
