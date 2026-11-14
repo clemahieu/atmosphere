@@ -14,6 +14,8 @@ use vstd::prelude::*;
 verus! {
 
 #[cfg(verus_keep_ghost)]
+use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
@@ -75,7 +77,6 @@ pub open spec fn page_block_payload(b: (nat, nat)) -> Payload {
 pub fn first_block(start: usize, n: usize, cap: u8, Tracked(steps): Tracked<&mut Steps>) -> (ret: (u8, usize))
     requires
         0 < n,
-        start + n <= NUM_PAGES,
         cap <= MAX_ORDER,
     ensures
         final(steps).count <= old(steps).count + MAX_ORDER,
@@ -357,12 +358,14 @@ proof fn lemma_run_blocks_place(start: nat, n: nat, cap: nat)
     }
 }
 
-/// A block inside NUM_PAGES aligned to its order is one an untyped capability can name.
-proof fn lemma_page_block_wf(b: (nat, nat))
+/// A block inside the first `pages` pages, whose bytes end within the identity-mapped span, aligned
+/// to its order is one an untyped capability can name.
+proof fn lemma_page_block_wf(b: (nat, nat), pages: int)
     requires
         b.1 <= MAX_ORDER,
         b.0 % pow2(b.1) == 0,
-        b.0 + pow2(b.1) <= NUM_PAGES,
+        b.0 + pow2(b.1) <= pages,
+        pages * PAGE_SZ <= IDENTITY_SPAN,
     ensures
         payload_wf(page_block_payload(b)),
 {
@@ -375,20 +378,22 @@ proof fn lemma_page_block_wf(b: (nat, nat))
             b.0 == p * q + 0,
     ;
     lemma_mod_multiples_basic(q, p * PAGE_SZ as int);
-    assert(b.0 * PAGE_SZ + p * PAGE_SZ <= NUM_PAGES * PAGE_SZ) by (nonlinear_arith)
-        requires
-            b.0 + p <= NUM_PAGES,
-    ;
+    lemma_pages_in_span(b.0 + p, pages);
+    lemma_span_within_48_bits();
+    assert(1usize << 48 == crate::capability::list::NODE_SPACE) by (compute_only);
+    assert(b.0 * PAGE_SZ + p * PAGE_SZ == (b.0 + p) * PAGE_SZ) by (nonlinear_arith);
     assert((b.1 as u8) as nat == b.1);
     assert(block_bytes(b.1 as u8) == p * PAGE_SZ);
 }
 
-/// The decomposition of a run inside NUM_PAGES under a cap: its blocks are each of order at most the
+/// The decomposition of a run inside the first `pages` pages, whose bytes end within the
+/// identity-mapped span, under a cap: its blocks are each of order at most the
 /// cap, aligned to its size and named by an untyped capability that is payload_wf, pairwise disjoint,
 /// and together exactly the run's pages; uncapped, at most 2 * (MAX_ORDER + 1).
-pub proof fn lemma_run_blocks(start: nat, n: nat, cap: nat)
+pub proof fn lemma_run_blocks(start: nat, n: nat, cap: nat, pages: int)
     requires
-        start + n <= NUM_PAGES,
+        start + n <= pages,
+        pages * PAGE_SZ <= IDENTITY_SPAN,
         cap <= MAX_ORDER,
     ensures
         cap == MAX_ORDER ==> run_blocks(start, n, cap).len() <= 2 * (MAX_ORDER + 1),
@@ -422,7 +427,7 @@ pub proof fn lemma_run_blocks(start: nat, n: nat, cap: nat)
         &&& b.0 % pow2(b.1) == 0
         &&& payload_wf(page_block_payload(b))
     } by {
-        lemma_page_block_wf(bs[i]);
+        lemma_page_block_wf(bs[i], pages);
     }
     assert forall|i: int, j: int, x: nat|
         0 <= i < bs.len() && 0 <= j < bs.len() && i != j implies !(#[trigger] in_page_block(bs[i], x)

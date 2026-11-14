@@ -68,10 +68,16 @@ pub open spec fn in_virt_at(runs: Seq<ImageRun>, a: int, x: int) -> bool {
 }
 
 /// What kernel/src checked of the runs, short of where their virtual pages lie in a space, which
-/// mapping them checks: none is empty, their physical pages lie inside NUM_PAGES, and no physical or
-/// virtual page is in two of them.
-pub open spec fn image_runs_wf(runs: Seq<ImageRun>) -> bool {
-    &&& runs_wf(image_phys(runs))
+/// mapping them checks: their physical pages lie inside the first `pages` pages, the block table's
+/// page count where boot gives them, no physical page is in two of them, and they are image_runs_apart.
+pub open spec fn image_runs_wf(runs: Seq<ImageRun>, pages: usize) -> bool {
+    &&& runs_wf(image_phys(runs), pages)
+    &&& image_runs_apart(runs)
+}
+
+/// Of what kernel/src checked, what the virtual side needs: no run is empty and no virtual page is in
+/// two of them.
+pub open spec fn image_runs_apart(runs: Seq<ImageRun>) -> bool {
     &&& forall|a: int| #![trigger runs[a]] 0 <= a < runs.len() ==> runs[a].pages > 0
     &&& forall|a: int, b: int, x: int|
         0 <= a < runs.len() && 0 <= b < runs.len() && a != b ==> !(#[trigger] in_virt_at(runs, a, x)
@@ -135,11 +141,12 @@ proof fn lemma_in_regions_step(bs: Seq<(nat, nat)>, k: int, q: int)
     }
 }
 
-/// A block at page s aligned to its order o of at most 9 is, by address, one boot_root_frame takes, in
-/// the 2M region s is in.
-proof fn lemma_image_base(s: usize, o: u8)
+/// A block at tracked page s aligned to its order o of at most 9 is, by address, one boot_root_frame
+/// takes, in the 2M region s is in.
+proof fn lemma_image_base(s: usize, o: u8, blocks: &BlockTable)
     requires
-        s < NUM_PAGES,
+        blocks.span_wf(),
+        blocks.tracks(s as int),
         o <= IMAGE_ORDER,
         (s as nat) % pow2(o as nat) == 0,
     ensures
@@ -147,6 +154,7 @@ proof fn lemma_image_base(s: usize, o: u8)
         (s * PAGE_SZ) / PAGE_SZ as int == s,
         frame_region((s * PAGE_SZ) as usize) == s / PAGES_PER_2M,
 {
+    blocks.lemma_tracked_in_span(s as int);
     let p = pow2(o as nat) as int;
     lemma_pow2_pos(o as nat);
     lemma_fundamental_div_mod(s as int, p);
@@ -161,18 +169,19 @@ proof fn lemma_image_base(s: usize, o: u8)
 }
 
 /// A page of an aligned block of at most 512 pages lies in the 2M region the block does.
-proof fn lemma_page_block_region(b: (nat, nat), x: nat)
+proof fn lemma_page_block_region(b: (nat, nat), x: nat, blocks: &BlockTable)
     requires
         b.1 <= IMAGE_ORDER,
         b.0 % pow2(b.1) == 0,
-        b.0 < NUM_PAGES,
+        blocks.span_wf(),
+        blocks.tracks(b.0 as int),
         in_page_block(b, x),
     ensures
         region_2m(x as int) == block_region(b),
 {
     let s = b.0 as usize;
     let o = b.1 as u8;
-    lemma_image_base(s, o);
+    lemma_image_base(s, o, blocks);
     lemma_block_in_2m((s * PAGE_SZ) as usize, o);
     let r = s as int / PAGES_PER_2M as int;
     assert(r * PAGES_PER_2M <= s && s + pow2(b.1) <= (r + 1) * PAGES_PER_2M);
@@ -181,9 +190,9 @@ proof fn lemma_page_block_region(b: (nat, nat), x: nat)
 
 /// Counts the blocks the runs decompose into, or refuses when there are more than the root's second
 /// leaf has slots for.
-fn count_frames(runs: &[ImageRun]) -> (ret: Option<usize>)
+fn count_frames(runs: &[ImageRun], Ghost(pages): Ghost<usize>) -> (ret: Option<usize>)
     requires
-        image_runs_wf(runs@),
+        image_runs_wf(runs@, pages),
     ensures
         ret matches Some(count) ==> count == image_blocks(runs@).len() && count <= ROOT_FRAME_SLOTS,
         ret is None ==> image_blocks(runs@).len() > ROOT_FRAME_SLOTS,
@@ -194,7 +203,7 @@ fn count_frames(runs: &[ImageRun]) -> (ret: Option<usize>)
     while r < runs.len()
         invariant
             r <= runs@.len(),
-            image_runs_wf(runs@),
+            image_runs_wf(runs@, pages),
             phys == image_phys(runs@),
             count == runs_blocks(phys.take(r as int), IMAGE_ORDER as nat).len(),
             count <= ROOT_FRAME_SLOTS,
@@ -205,16 +214,16 @@ fn count_frames(runs: &[ImageRun]) -> (ret: Option<usize>)
         proof {
             lemma_runs_blocks_step(phys, r as int, IMAGE_ORDER as nat);
             assert(phys[r as int] == (start, n));
-            assert(start + n <= NUM_PAGES);
+            assert(start + n <= pages);
         }
         let mut s = start;
         let mut m = n;
         while m > 0
             invariant
                 r < runs@.len(),
-                image_runs_wf(runs@),
+                image_runs_wf(runs@, pages),
                 phys == image_phys(runs@),
-                s + m <= NUM_PAGES,
+                s + m <= pages,
                 count + run_blocks(s as nat, m as nat, IMAGE_ORDER as nat).len() == runs_blocks(
                     phys.take(r as int + 1),
                     IMAGE_ORDER as nat,
@@ -760,7 +769,7 @@ impl CapKernel {
                 i,
             ),
             forall|j: int| leaf2 + 1 <= j < leaf2 + NODES_PER_PAGE ==> !#[trigger] old(self).list.nodes@[j].live,
-            image_runs_wf(runs@),
+            image_runs_wf(runs@, old(self).blocks.page_count()),
             forall|q: int| #[trigger] image_region(runs@, q) ==> {
                 &&& !old(self).blocks.regions_2m@[q].typed
                 &&& forall|j: int| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M ==> #[trigger] old(self).blocks.pages@[j].kind is Reserved
@@ -842,7 +851,7 @@ impl CapKernel {
                     ==> block_ref(&final(self).blocks, g as usize) == BlockRef::Two((g / PAGES_PER_2M as int) as usize)
             },
     {
-        let count = match count_frames(runs) {
+        let count = match count_frames(runs, Ghost(self.blocks.page_count())) {
             Some(count) => count,
             None => return None,
         };
@@ -851,7 +860,7 @@ impl CapKernel {
         let ghost bs = image_blocks(runs@);
         let tracked mut perms = perms;
         proof {
-            lemma_runs_blocks(phys, IMAGE_ORDER as nat);
+            lemma_runs_blocks(phys, IMAGE_ORDER as nat, pre.blocks.page_count());
             assert(index_entry(255usize) == 1) by (compute_only);
             assert(index_slot(255usize) == 127) by (compute_only);
             assert(pre.tables.has_slot(&pre.list, process, 255usize));
@@ -878,7 +887,7 @@ impl CapKernel {
                 self.devices == pre.devices,
                 self.iommus.present == pre.iommus.present,
                 r <= runs@.len(),
-                image_runs_wf(runs@),
+                image_runs_wf(runs@, pre.blocks.page_count()),
                 phys == image_phys(runs@),
                 bs == image_blocks(runs@),
                 bs == runs_blocks(phys, IMAGE_ORDER as nat),
@@ -945,7 +954,7 @@ impl CapKernel {
                     self.devices == pre.devices,
                     self.iommus.present == pre.iommus.present,
                     r < runs@.len(),
-                    image_runs_wf(runs@),
+                    image_runs_wf(runs@, pre.blocks.page_count()),
                     phys == image_phys(runs@),
                     bs == image_blocks(runs@),
                     bs == runs_blocks(phys, IMAGE_ORDER as nat),
@@ -1014,7 +1023,7 @@ impl CapKernel {
                     assert(bs[k as int] == rest[0]);
                     assert(full[k - off] == rest[0]);
                     assert(k < bs.len());
-                    lemma_image_base(s, o);
+                    lemma_image_base(s, o, &pre.blocks);
                     assert(in_run_at(phys, r as int, s as int));
                     assert(region_2m(s as int) == q);
                     assert(image_region(runs@, q));
@@ -1094,7 +1103,7 @@ impl CapKernel {
                 <==> (o % PAGE_SZ == 0 && in_runs(phys, len, (o / PAGE_SZ) as int)) by {
                 if in_blocks(bs, bs.len() as int, o) {
                     let t = choose|t: int| 0 <= t < bs.len() && #[trigger] block_in(bs[t], o);
-                    lemma_block_in(bs[t], o);
+                    lemma_block_in(bs[t], o, pre.blocks.page_count());
                     assert(in_page_block(bs[t], (o / PAGE_SZ) as nat));
                     assert(in_runs(phys, len, ((o / PAGE_SZ) as nat) as int));
                 }
@@ -1102,7 +1111,7 @@ impl CapKernel {
                     let y = (o / PAGE_SZ) as nat;
                     assert(in_runs(phys, len, y as int));
                     let t = choose|t: int| 0 <= t < bs.len() && #[trigger] in_page_block(bs[t], y);
-                    lemma_block_in(bs[t], o);
+                    lemma_block_in(bs[t], o, pre.blocks.page_count());
                     assert(block_in(bs[t], o));
                     assert(in_blocks(bs, bs.len() as int, o));
                 }
@@ -1123,7 +1132,7 @@ impl CapKernel {
                 assert(in_page_block(b, b.0));
                 assert(in_runs(phys, len, b.0 as int));
                 let a = choose|a: int| 0 <= a < len && #[trigger] in_run_at(phys, a, b.0 as int);
-                lemma_page_block_region(b, b.0);
+                lemma_page_block_region(b, b.0, &pre.blocks);
             }
             assert forall|q: int| #[trigger] image_region(runs@, q) implies 0 <= q < NUM_2M && in_regions(bs, len_bs, q) by {
                 let (a, x) = choose|a: int, x: int| 0 <= a < runs@.len() && #[trigger] in_run_at(phys, a, x) && region_2m(x) == q;
@@ -1131,7 +1140,7 @@ impl CapKernel {
                 let y = x as nat;
                 assert(in_runs(phys, len, y as int));
                 let t = choose|t: int| 0 <= t < len_bs && #[trigger] in_page_block(bs[t], y);
-                lemma_page_block_region(bs[t], y);
+                lemma_page_block_region(bs[t], y, &pre.blocks);
                 assert(block_region(bs[t]) == q);
             }
             assert forall|q: int| 0 <= q < NUM_2M && !image_region(runs@, q)

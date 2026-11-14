@@ -53,9 +53,10 @@ pub open spec fn in_runs(runs: Seq<(usize, usize)>, r: int, x: int) -> bool {
     exists|a: int| 0 <= a < r && #[trigger] in_run_at(runs, a, x)
 }
 
-/// The runs lie inside NUM_PAGES and no page is in two of them.
-pub open spec fn runs_wf(runs: Seq<(usize, usize)>) -> bool {
-    &&& forall|a: int| #![trigger runs[a]] 0 <= a < runs.len() ==> runs[a].0 + runs[a].1 <= NUM_PAGES
+/// The runs lie inside the first `pages` pages, the block table's page count where boot gives them,
+/// and no page is in two of them.
+pub open spec fn runs_wf(runs: Seq<(usize, usize)>, pages: usize) -> bool {
+    &&& forall|a: int| #![trigger runs[a]] 0 <= a < runs.len() ==> runs[a].0 + runs[a].1 <= pages
     &&& forall|a: int, b: int, x: int|
         0 <= a < runs.len() && 0 <= b < runs.len() && a != b ==> !(#[trigger] in_run_at(runs, a, x) && #[trigger] in_run_at(
             runs,
@@ -109,12 +110,14 @@ pub proof fn lemma_runs_blocks_prefix(runs: Seq<(usize, usize)>, r: int, cap: na
     }
 }
 
-/// The blocks of the runs are each of order at most the cap, aligned to its size, inside NUM_PAGES and
-/// named by an untyped capability that is payload_wf, pairwise disjoint, and together exactly the runs'
-/// pages.
-pub proof fn lemma_runs_blocks(runs: Seq<(usize, usize)>, cap: nat)
+/// The blocks of the runs are each of order at most the cap, aligned to its size, inside the runs'
+/// first `pages` pages and named by an untyped capability that is payload_wf, pairwise disjoint, and
+/// together exactly the runs' pages. Those pages end within the identity-mapped span, as the block
+/// table's span_wf says of its page count.
+pub proof fn lemma_runs_blocks(runs: Seq<(usize, usize)>, cap: nat, pages: usize)
     requires
-        runs_wf(runs),
+        runs_wf(runs, pages),
+        pages * PAGE_SZ <= IDENTITY_SPAN,
         cap <= MAX_ORDER,
     ensures
         forall|t: int|
@@ -122,7 +125,7 @@ pub proof fn lemma_runs_blocks(runs: Seq<(usize, usize)>, cap: nat)
                 let b = #[trigger] runs_blocks(runs, cap)[t];
                 &&& b.1 <= cap
                 &&& b.0 % pow2(b.1) == 0
-                &&& b.0 + pow2(b.1) <= NUM_PAGES
+                &&& b.0 + pow2(b.1) <= pages
                 &&& payload_wf(page_block_payload(b))
             },
         forall|t: int, u: int, x: nat|
@@ -143,8 +146,8 @@ pub proof fn lemma_runs_blocks(runs: Seq<(usize, usize)>, cap: nat)
     let s = runs.drop_last();
     let last = runs[n];
     assert forall|a: int| 0 <= a < s.len() implies #[trigger] s[a] == runs[a] by {}
-    assert(runs_wf(s)) by {
-        assert forall|a: int| #![trigger s[a]] 0 <= a < s.len() implies s[a].0 + s[a].1 <= NUM_PAGES by {
+    assert(runs_wf(s, pages)) by {
+        assert forall|a: int| #![trigger s[a]] 0 <= a < s.len() implies s[a].0 + s[a].1 <= pages by {
             assert(s[a] == runs[a]);
         }
         assert forall|a: int, b: int, x: int| 0 <= a < s.len() && 0 <= b < s.len() && a != b implies !(#[trigger] in_run_at(
@@ -157,9 +160,9 @@ pub proof fn lemma_runs_blocks(runs: Seq<(usize, usize)>, cap: nat)
             assert(!(in_run_at(runs, a, x) && in_run_at(runs, b, x)));
         }
     }
-    lemma_runs_blocks(s, cap);
-    assert(last.0 + last.1 <= NUM_PAGES);
-    lemma_run_blocks(last.0 as nat, last.1 as nat, cap);
+    lemma_runs_blocks(s, cap, pages);
+    assert(last.0 + last.1 <= pages);
+    lemma_run_blocks(last.0 as nat, last.1 as nat, cap, pages as int);
     let p = runs_blocks(s, cap);
     let l = run_blocks(last.0 as nat, last.1 as nat, cap);
     let bs = runs_blocks(runs, cap);
@@ -168,7 +171,7 @@ pub proof fn lemma_runs_blocks(runs: Seq<(usize, usize)>, cap: nat)
         let b = #[trigger] bs[t];
         &&& b.1 <= cap
         &&& b.0 % pow2(b.1) == 0
-        &&& b.0 + pow2(b.1) <= NUM_PAGES
+        &&& b.0 + pow2(b.1) <= pages
         &&& payload_wf(page_block_payload(b))
     } by {
         if t < p.len() {
@@ -253,11 +256,13 @@ pub proof fn lemma_runs_blocks(runs: Seq<(usize, usize)>, cap: nat)
 }
 
 /// Reach names a block's pages by address: o is one of them exactly when it is a page address whose
-/// page is in the block.
-pub proof fn lemma_block_in(b: (nat, nat), o: usize)
+/// page is in the block. The block lies in the first `pages` pages, which end within the
+/// identity-mapped span, so its first page's address is a usize.
+pub proof fn lemma_block_in(b: (nat, nat), o: usize, pages: usize)
     requires
         b.1 <= MAX_ORDER,
-        b.0 + pow2(b.1) <= NUM_PAGES,
+        b.0 + pow2(b.1) <= pages,
+        pages * PAGE_SZ <= IDENTITY_SPAN,
     ensures
         block_in(b, o) <==> (o % PAGE_SZ == 0 && in_page_block(b, (o / PAGE_SZ) as nat)),
 {
@@ -265,10 +270,8 @@ pub proof fn lemma_block_in(b: (nat, nat), o: usize)
     let p = pow2(b.1);
     assert((b.1 as u8) as nat == b.1);
     assert(block_bytes(b.1 as u8) == p * PAGE_SZ);
-    assert(b.0 * PAGE_SZ <= NUM_PAGES * PAGE_SZ) by (nonlinear_arith)
-        requires
-            b.0 <= NUM_PAGES,
-    ;
+    lemma_pages_in_span(b.0 as int, pages as int);
+    lemma_span_within_48_bits();
     let base = (b.0 * PAGE_SZ) as usize;
     assert(base == b.0 * PAGE_SZ);
     lemma_fundamental_div_mod(o as int, PAGE_SZ as int);
@@ -285,9 +288,9 @@ pub proof fn lemma_block_in(b: (nat, nat), o: usize)
 
 /// Counts the blocks the runs decompose into, or refuses when there are more than the root's first leaf
 /// has untyped slots for.
-fn count_blocks(runs: &[(usize, usize)]) -> (ret: Option<usize>)
+fn count_blocks(runs: &[(usize, usize)], Ghost(pages): Ghost<usize>) -> (ret: Option<usize>)
     requires
-        runs_wf(runs@),
+        runs_wf(runs@, pages),
     ensures
         ret matches Some(count) ==> count == runs_blocks(runs@, MAX_ORDER as nat).len() && count <= ROOT_UNTYPED_SLOTS,
         ret is None ==> runs_blocks(runs@, MAX_ORDER as nat).len() > ROOT_UNTYPED_SLOTS,
@@ -297,7 +300,7 @@ fn count_blocks(runs: &[(usize, usize)]) -> (ret: Option<usize>)
     while r < runs.len()
         invariant
             r <= runs@.len(),
-            runs_wf(runs@),
+            runs_wf(runs@, pages),
             count == runs_blocks(runs@.take(r as int), MAX_ORDER as nat).len(),
             count <= ROOT_UNTYPED_SLOTS,
         decreases runs@.len() - r,
@@ -306,15 +309,15 @@ fn count_blocks(runs: &[(usize, usize)]) -> (ret: Option<usize>)
         proof {
             lemma_runs_blocks_step(runs@, r as int, MAX_ORDER as nat);
             assert(runs@[r as int] == (start, n));
-            assert(start + n <= NUM_PAGES);
+            assert(start + n <= pages);
         }
         let mut s = start;
         let mut m = n;
         while m > 0
             invariant
                 r < runs@.len(),
-                runs_wf(runs@),
-                s + m <= NUM_PAGES,
+                runs_wf(runs@, pages),
+                s + m <= pages,
                 count + run_blocks(s as nat, m as nat, MAX_ORDER as nat).len() == runs_blocks(runs@.take(r as int + 1), MAX_ORDER as nat).len(),
                 count <= ROOT_UNTYPED_SLOTS,
             decreases m,
@@ -364,7 +367,7 @@ impl CapKernel {
     fn free_runs(&mut self, runs: &[(usize, usize)], Tracked(pages): Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
-            runs_wf(runs@),
+            runs_wf(runs@, old(self).blocks.page_count()),
             forall|i: int| old(self).blocks.tracks(i) && in_runs(runs@, runs@.len() as int, i)
                 ==> (#[trigger] old(self).blocks.pages@[i]).kind is Reserved,
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
@@ -404,7 +407,7 @@ impl CapKernel {
         while r < runs.len()
             invariant
                 r <= runs@.len(),
-                runs_wf(runs@),
+                runs_wf(runs@, pre.blocks.page_count()),
                 self.wf(),
                 self.list == pre.list,
                 self.tables == pre.tables,
@@ -514,7 +517,7 @@ impl CapKernel {
             old(self).tables.has_slot(&old(self).list, process, ROOT_PROCESS_SLOT),
             old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
             forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] old(self).list.nodes@[j].live,
-            runs_wf(runs@),
+            runs_wf(runs@, old(self).blocks.page_count()),
             runs_blocks(runs@, MAX_ORDER as nat).len() <= ROOT_UNTYPED_SLOTS,
             no_device_space(&old(self).spaces),
         ensures
@@ -553,7 +556,7 @@ impl CapKernel {
         let ghost pre = *old(self);
         let ghost bs = runs_blocks(runs@, MAX_ORDER as nat);
         proof {
-            lemma_runs_blocks(runs@, MAX_ORDER as nat);
+            lemma_runs_blocks(runs@, MAX_ORDER as nat, pre.blocks.page_count());
             pre.lemma_slot(process, ROOT_PROCESS_SLOT);
             assert(index_ok(127usize)) by (compute_only);
             assert(index_entry(127usize) == 0) by (compute_only);
@@ -576,7 +579,7 @@ impl CapKernel {
                 self.devices == pre.devices,
                 self.iommus.present == pre.iommus.present,
                 r <= runs@.len(),
-                runs_wf(runs@),
+                runs_wf(runs@, pre.blocks.page_count()),
                 bs == runs_blocks(runs@, MAX_ORDER as nat),
                 bs.len() <= ROOT_UNTYPED_SLOTS,
                 leaf + NODES_PER_PAGE <= NODE_SPACE,
@@ -628,7 +631,7 @@ impl CapKernel {
                     self.flush_epoch == pre.flush_epoch,
                     self.cores == pre.cores,
                     r < runs@.len(),
-                    runs_wf(runs@),
+                    runs_wf(runs@, pre.blocks.page_count()),
                     bs == runs_blocks(runs@, MAX_ORDER as nat),
                     bs.len() <= ROOT_UNTYPED_SLOTS,
                     leaf + NODES_PER_PAGE <= NODE_SPACE,
@@ -836,7 +839,7 @@ impl CapKernel {
     }
 
     /// The step after the root's console and power capabilities: the free runs, which kernel/src checked
-    /// are inside NUM_PAGES, pairwise disjoint, every page reserved with its permission handed over and
+    /// are inside the pages the block table tracks, pairwise disjoint, every page reserved with its permission handed over and
     /// no list page among them, become free pages of the block table, and each block they decompose
     /// into an untyped capability at consecutive slots from ROOT_UNTYPED_SLOT, below the list's
     /// synthetic root. The root's reach grows by exactly the runs' pages, and nobody else's by anything
@@ -857,7 +860,7 @@ impl CapKernel {
             old(self).tables.has_slot(&old(self).list, process, ROOT_PROCESS_SLOT),
             old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
             forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] old(self).list.nodes@[j].live,
-            runs_wf(runs@),
+            runs_wf(runs@, old(self).blocks.page_count()),
             forall|i: int| old(self).blocks.tracks(i) && in_runs(runs@, runs@.len() as int, i)
                 ==> (#[trigger] old(self).blocks.pages@[i]).kind is Reserved,
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
@@ -916,7 +919,7 @@ impl CapKernel {
                     ==> o % PAGE_SZ == 0 && in_runs(runs@, runs@.len() as int, (o / PAGE_SZ) as int)
             },
     {
-        let count = match count_blocks(runs) {
+        let count = match count_blocks(runs, Ghost(self.blocks.page_count())) {
             Some(count) => count,
             None => return None,
         };
@@ -931,7 +934,7 @@ impl CapKernel {
             let post = *self;
             let bs = runs_blocks(runs@, MAX_ORDER as nat);
             let len = runs@.len() as int;
-            lemma_runs_blocks(runs@, MAX_ORDER as nat);
+            lemma_runs_blocks(runs@, MAX_ORDER as nat, pre.blocks.page_count());
             assert forall|x: usize| #![trigger pre.is_cap(x)]
                 !(leaf + ROOT_UNTYPED_SLOT <= x < leaf + ROOT_UNTYPED_SLOT + count) && pre.is_cap(x)
                 implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
@@ -941,7 +944,7 @@ impl CapKernel {
                 <==> (o % PAGE_SZ == 0 && in_runs(runs@, len, (o / PAGE_SZ) as int)) by {
                 if in_blocks(bs, bs.len() as int, o) {
                     let t = choose|t: int| 0 <= t < bs.len() && #[trigger] block_in(bs[t], o);
-                    lemma_block_in(bs[t], o);
+                    lemma_block_in(bs[t], o, pre.blocks.page_count());
                     assert(in_page_block(bs[t], (o / PAGE_SZ) as nat));
                     assert(in_runs(runs@, len, ((o / PAGE_SZ) as nat) as int));
                 }
@@ -949,7 +952,7 @@ impl CapKernel {
                     let x = (o / PAGE_SZ) as nat;
                     assert(in_runs(runs@, len, x as int));
                     let t = choose|t: int| 0 <= t < bs.len() && #[trigger] in_page_block(bs[t], x);
-                    lemma_block_in(bs[t], o);
+                    lemma_block_in(bs[t], o, pre.blocks.page_count());
                     assert(block_in(bs[t], o));
                     assert(in_blocks(bs, bs.len() as int, o));
                 }

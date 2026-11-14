@@ -377,7 +377,7 @@ proof fn lemma_untyped_block(p: Payload, j: int)
 /// caller can check it before a step it must not take when the tables would be refused.
 pub fn image_tables_fit(runs: &[ImageRun], cap: usize) -> (ret: bool)
     requires
-        image_runs_wf(runs@),
+        image_runs_apart(runs@),
     ensures
         ret == (image_virt_wf(runs@) && image_tables_bound(runs@) <= cap),
         ret ==> forall|a: int| #![trigger runs@[a]] 0 <= a < runs@.len() ==> run_virt_wf(runs@[a]),
@@ -387,7 +387,7 @@ pub fn image_tables_fit(runs: &[ImageRun], cap: usize) -> (ret: bool)
     while r < runs.len()
         invariant
             r <= runs@.len(),
-            image_runs_wf(runs@),
+            image_runs_apart(runs@),
             need as int == image_tables_bound(runs@.take(r as int)),
             need <= cap,
             forall|a: int| #![trigger runs@[a]] 0 <= a < r ==> run_virt_wf(runs@[a]),
@@ -1227,7 +1227,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).root_tables_ready(process),
             old(self).root_untyped_free(process),
-            image_runs_wf(runs@),
+            image_runs_wf(runs@, old(self).blocks.page_count()),
             forall|p: SpacePath| !#[trigger] space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), old(self).root_space(process)).contains_key(p),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
@@ -1319,7 +1319,7 @@ impl CapKernel {
                 self.devices == pre.devices,
                 self.iommus.present == pre.iommus.present,
                 r <= runs@.len(),
-                image_runs_wf(runs@),
+                image_runs_wf(runs@, pre.blocks.page_count()),
                 image_virt_wf(runs@),
                 forall|a: int| #![trigger runs@[a]] 0 <= a < runs@.len() ==> run_virt_wf(runs@[a]),
                 s == pre.root_space(process),
@@ -1375,7 +1375,7 @@ impl CapKernel {
                     self.devices == pre.devices,
                     self.iommus.present == pre.iommus.present,
                     r < runs@.len(),
-                    image_runs_wf(runs@),
+                    image_runs_wf(runs@, pre.blocks.page_count()),
                     image_virt_wf(runs@),
                     forall|a: int| #![trigger runs@[a]] 0 <= a < runs@.len() ==> run_virt_wf(runs@[a]),
                     v == runs@[r as int].virt,

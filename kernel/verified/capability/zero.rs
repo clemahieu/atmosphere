@@ -177,7 +177,7 @@ impl Zeroing {
         &&& self.cursor.wf()
         &&& forall|b: usize| #[trigger] self.blocks@.contains_key(b) ==> {
             &&& 0 < self.blocks@[b]
-            &&& b + self.blocks@[b] <= NUM_PAGES
+            &&& b + self.blocks@[b] <= self.cursor@.len()
             &&& self.cursor@[b as int] <= self.blocks@[b]
             &&& self.block_level(b)
         }
@@ -317,7 +317,7 @@ impl Zeroing {
             }
             assert forall|b: usize| #[trigger] me.blocks@.contains_key(b) implies {
                 &&& 0 < me.blocks@[b]
-                &&& b + me.blocks@[b] <= NUM_PAGES
+                &&& b + me.blocks@[b] <= me.cursor@.len()
                 &&& me.cursor@[b as int] <= me.blocks@[b]
                 &&& me.block_level(b)
             } by {
@@ -475,7 +475,7 @@ impl Zeroing {
             }
             assert forall|b: usize| #[trigger] me.blocks@.contains_key(b) implies {
                 &&& 0 < me.blocks@[b]
-                &&& b + me.blocks@[b] <= NUM_PAGES
+                &&& b + me.blocks@[b] <= me.cursor@.len()
                 &&& me.cursor@[b as int] <= me.blocks@[b]
                 &&& me.block_level(b)
             } by {

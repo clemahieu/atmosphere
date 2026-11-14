@@ -208,7 +208,7 @@ impl CapKernel {
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
             assert(base == first.base + itb * PROCESS_BYTES);
             assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
-            lemma_runs_blocks(free@, MAX_ORDER as nat);
+            lemma_runs_blocks(free@, MAX_ORDER as nat, s0.blocks.page_count());
             let b0 = bs[0];
             assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));
             assert(b0.0 * PAGE_SZ <= s0.blocks.page_count() * PAGE_SZ) by (nonlinear_arith)

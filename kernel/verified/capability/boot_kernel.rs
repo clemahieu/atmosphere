@@ -221,7 +221,7 @@ impl CapKernel {
         let bs = runs_blocks(free, MAX_ORDER as nat);
         let b = tree_of(&self.table_pages, &self.spaces);
         let first = page_block_payload(bs[0]);
-        &&& runs_wf(free)
+        &&& runs_wf(free, self.blocks.page_count())
         &&& untyped == bs.len()
         &&& 0 < untyped <= ROOT_UNTYPED_SLOTS
         &&& frame == image_blocks(image).len()
@@ -375,10 +375,10 @@ impl CapKernel {
             !(leaf <= root < leaf + LEAF_BYTES),
             !(frames <= root < frames + LEAF_BYTES),
             !(t <= root < t + THREAD_BYTES),
-            runs_wf(free@),
+            runs_wf(free@, old(self).blocks.page_count()),
             forall|j: int| #[trigger] in_runs(free@, free@.len() as int, j)
                 ==> !in_root_blocks(process, leaf, frames, t, j) && j != root / PAGE_SZ,
-            image_runs_wf(image@),
+            image_runs_wf(image@, old(self).blocks.page_count()),
             forall|j: int| #[trigger] image_region(image@, region_2m(j)) ==> {
                 &&& old(self).blocks.tracks(j)
                 &&& !in_root_blocks(process, leaf, frames, t, j)
@@ -525,7 +525,7 @@ impl CapKernel {
             return None;
         }
         proof {
-            lemma_runs_blocks(free@, MAX_ORDER as nat);
+            lemma_runs_blocks(free@, MAX_ORDER as nat, s3.blocks.page_count());
             assert(index_entry(ROOT_UNTYPED_SLOT) == 0) by (compute_only);
             assert(index_ok(ROOT_UNTYPED_SLOT)) by (compute_only);
             assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);

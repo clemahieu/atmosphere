@@ -190,7 +190,7 @@ impl CapKernel {
                 i,
             ),
             forall|j: int| leaf2 + 1 <= j < leaf2 + NODES_PER_PAGE ==> !#[trigger] old(self).list.nodes@[j].live,
-            image_runs_wf(runs@),
+            image_runs_wf(runs@, old(self).blocks.page_count()),
             forall|q: int| #[trigger] image_region(runs@, q) ==> {
                 &&& !old(self).blocks.regions_2m@[q].typed
                 &&& forall|j: int| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M ==> #[trigger] old(self).blocks.pages@[j].kind is Reserved

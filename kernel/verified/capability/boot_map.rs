@@ -180,7 +180,7 @@ proof fn lemma_image_rights_read(run: ImageRun)
 /// runs before r and run r's pages before x0 were; afterwards those before x0 + 1 are.
 proof fn lemma_added_step(runs: Seq<ImageRun>, r: int, x0: int, added: IMap<SpacePath, PageEntry>)
     requires
-        image_runs_wf(runs),
+        image_runs_apart(runs),
         image_virt_wf(runs),
         0 <= r < runs.len(),
         in_virt_at(runs, r, x0),
@@ -232,7 +232,7 @@ impl CapKernel {
         &&& self.wf()
         &&& self.root_tables_ready(process)
         &&& self.spaces.records@[s].value().kind == SpaceKind::Process
-        &&& image_runs_wf(runs)
+        &&& image_runs_wf(runs, self.blocks.page_count())
         &&& image_virt_wf(runs)
         &&& forall|a: int, x: int| 0 <= a < runs.len() && #[trigger] in_virt_at(runs, a, x) ==> {
             &&& walk_table(tree, s, page_path(x)) is Some

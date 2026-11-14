@@ -1290,7 +1290,8 @@ impl CapKernel {
             assert(free@.drop_last() =~= Seq::<(usize, usize)>::empty());
             assert(runs_blocks(Seq::<(usize, usize)>::empty(), MAX_ORDER as nat) == Seq::<(nat, nat)>::empty());
             assert(runs_blocks(free@, MAX_ORDER as nat) =~= run_blocks(17, 1, MAX_ORDER as nat));
-            lemma_run_blocks(17, 1, MAX_ORDER as nat);
+            assert(18 * PAGE_SZ <= IDENTITY_SPAN) by (compute_only);
+            lemma_run_blocks(17, 1, MAX_ORDER as nat, 18);
             let bs = runs_blocks(free@, MAX_ORDER as nat);
             assert(in_run(17, 1, 17));
             assert(bs.len() > 0);
@@ -2192,7 +2193,7 @@ impl CapKernel {
             assert(base == first.base + itb * PROCESS_BYTES);
             assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
             // The first untyped is the first boot block, whose pages boot left acknowledged.
-            lemma_runs_blocks(free@, MAX_ORDER as nat);
+            lemma_runs_blocks(free@, MAX_ORDER as nat, s0.blocks.page_count());
             let b0 = bs[0];
             assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));
             assert(b0.0 * PAGE_SZ <= s0.blocks.page_count() * PAGE_SZ) by (nonlinear_arith)
@@ -7293,6 +7294,9 @@ impl CapKernel {
             final(self).wf(),
     {
         hide(CapKernel::wf);
+        // Nothing here reads the block table's counts, and each reveal of wf below would bring their
+        // set ranges in for every state.
+        hide(BlockTable::counts_wf);
         let ghost s0 = *self;
         let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
         let ghost first = page_block_payload(bs[0]);
@@ -12309,7 +12313,7 @@ impl CapKernel {
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
             assert(base == first.base + itb * PROCESS_BYTES);
             assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
-            lemma_runs_blocks(free@, MAX_ORDER as nat);
+            lemma_runs_blocks(free@, MAX_ORDER as nat, s0.blocks.page_count());
             let b0 = bs[0];
             assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));
             assert(b0.0 * PAGE_SZ <= s0.blocks.page_count() * PAGE_SZ) by (nonlinear_arith)
