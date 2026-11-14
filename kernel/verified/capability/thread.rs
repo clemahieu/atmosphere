@@ -2337,6 +2337,10 @@ impl CapKernel {
             ret ==> final(self).threads.queues == old(self).threads.queues,
             ret ==> final(self).tables.roots == old(self).tables.roots,
             ret ==> forall|x: usize| x != base ==> #[trigger] thread_process(&final(self).threads, x) == thread_process(&old(self).threads, x),
+            ret ==> forall|x: usize| #[trigger] old(self).threads.records@.contains_key(x) ==> {
+                &&& final(self).threads.records@.contains_key(x)
+                &&& final(self).threads.records@[x] == old(self).threads.records@[x]
+            },
             ret ==> forall|x: usize| #[trigger] old(self).is_cap(x) ==> {
                 &&& final(self).is_cap(x)
                 &&& final(self).payload_of(x) == old(self).payload_of(x)
@@ -2794,6 +2798,11 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             !ret ==> bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret == old(self).can_retype_thread(root, from, to, base, j),
+            ret ==> forall|x: usize| #[trigger] old(self).threads.records@.contains_key(x) ==> {
+                &&& x != base
+                &&& final(self).threads.records@.contains_key(x)
+                &&& final(self).threads.records@[x] == old(self).threads.records@[x]
+            },
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);
@@ -2902,6 +2911,18 @@ impl CapKernel {
             }
             Self::lemma_bound_threads_insert(pre, post, base, p);
             Self::lemma_bind_keeps(pre, mid, post, child, page, n, base);
+            assert forall|x: usize| #[trigger] pre.threads.records@.contains_key(x) implies {
+                &&& x != base
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x] == pre.threads.records@[x]
+            } by {
+                assert(x != base) by {
+                    if x == base {
+                        assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, base));
+                    }
+                }
+                assert(mid.threads.records@.contains_key(x));
+            }
             Self::lemma_bound_nodes(pre.list, mid.list, post.list, child, base);
         }
         true
@@ -4062,6 +4083,111 @@ impl CapKernel {
             assert(post.view() == pre.view());
         }
         SuspendStep::Suspended
+    }
+
+    /// Thread record r as a Runnable thread that cannot run leaves its queue: Dead when it was marked
+    /// to die, Inactive otherwise, with no stop pending, as check_current leaves a current thread that
+    /// must leave user mode.
+    pub open spec fn dropped_record(r: ThreadRecord) -> ThreadRecord {
+        ThreadRecord {
+            state: if r.dying { ThreadState::Dead } else { ThreadState::Inactive },
+            pending_stop: false,
+            dying: false,
+            ..r
+        }
+    }
+
+    /// Takes Runnable thread t off its queue, its record written as dropped_record says. Its frame is
+    /// the one it left user mode with, and no core changes.
+    pub(crate) fn drop_runnable(&mut self, t: usize)
+        requires
+            old(self).wf(),
+            old(self).threads.records@.contains_key(t),
+            old(self).threads.records@[t].value().state is Runnable,
+        ensures
+            final(self).wf(),
+            Self::record_written(*old(self), *final(self), t, Self::dropped_record(old(self).threads.records@[t].value())),
+            dequeued_from(
+                &old(self).threads.queues,
+                &final(self).threads.queues,
+                old(self).threads.records@[t].value().state->Runnable_core as int,
+                thread_priority(old(self).threads.records@[t].value()) as int,
+                t,
+            ),
+            final(self).stop_ipis == old(self).stop_ipis,
+            final(self).flush_ipis == old(self).flush_ipis,
+            final(self).cores == old(self).cores,
+            final(self).view() == old(self).view(),
+    {
+        let ghost pre = *self;
+        proof {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        let core = match record.state {
+            ThreadState::Runnable { core } => core,
+            _ => {
+                proof {
+                    assert(false);
+                }
+                0
+            },
+        };
+        let prio = match record.placement {
+            Some(pl) => pl.priority,
+            None => 0,
+        };
+        self.dequeue_and_write(
+            core,
+            prio,
+            t,
+            ThreadRecord {
+                state: if record.dying { ThreadState::Dead } else { ThreadState::Inactive },
+                pending_stop: false,
+                dying: false,
+                ..record
+            },
+        );
+        proof {
+            reveal(current_wf);
+            let post = *self;
+            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
+            } by {
+                assert(runs(pre.cores@, d, x));
+                assert(x != t);
+                assert(post.threads.records@.contains_key(x));
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(x != t);
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+                assert(pre.threads.records@.contains_key(x));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
+                implies post.threads.records@[x].value().state is Running by {
+                assert(x != t);
+                assert(pre.threads.records@.contains_key(x));
+                assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
+            }
+            Self::lemma_switch_wf(pre, post, core as int, t);
+            assert forall|o: ObjectId| #[trigger] saved_registers(&post.threads).contains_key(o)
+                implies saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o] by {
+                if o != t {
+                    assert(post.threads.records@.contains_key(o));
+                    assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                }
+            }
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            assert(post.view() == pre.view());
+        }
     }
 
     /// Sets a pending stop on thread t, Running on core d, and sends d an IPI, so that d moves it off

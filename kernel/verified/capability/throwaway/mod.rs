@@ -48,3 +48,6 @@ pub mod switch_between_processes;
 pub mod syscall_saves_partial_frame;
 pub mod thread_registers;
 pub mod thread_switch;
+pub mod tick_drops_thread_of_dead_process;
+pub mod tick_keeps_idle_core;
+pub mod tick_preempts_for_equal_priority;

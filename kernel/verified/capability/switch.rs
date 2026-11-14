@@ -16,6 +16,8 @@ use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::mapping::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::space::*;
 #[cfg(verus_keep_ghost)]
@@ -30,7 +32,290 @@ use crate::pptr::*;
 /// switch_thread's bound in the step counter: one load_space.
 pub const SWITCH_THREAD_STEPS: usize = LOAD_SPACE_STEPS;
 
+/// tick's bound in the step counter: check_current, then at most one switch_thread.
+pub const TICK_STEPS: usize = CHECK_CURRENT_STEPS + SWITCH_THREAD_STEPS;
+
+/// What a tick on core c did. Each variant is a way the tick succeeds:
+/// design/witness-per-way-an-operation-succeeds/.
+pub enum TickStep {
+    /// The thread selected on c took the core, and the thread c ran, if any, waits behind its equals.
+    Switched,
+    /// Core c keeps what it runs: no thread is Runnable on c, the one selected is of a lower priority
+    /// than c's current thread, or c's address-space ids have run out of generations.
+    Kept,
+    /// The thread selected cannot run, its process dead or itself marked to die, and is taken off its
+    /// queue; core c keeps what it runs, and the next tick selects again.
+    Dropped,
+}
+
 impl CapKernel {
+    /// Thread t is the one select_thread returns for core c: Runnable on c, at the front of c's queue
+    /// for its priority, with no thread Runnable on c at a higher one. At most one thread is.
+    pub open spec fn selected(&self, c: int, t: usize) -> bool {
+        let r = self.threads.records@[t].value();
+        let p = thread_priority(r);
+        &&& self.threads.records@.contains_key(t)
+        &&& r.state == (ThreadState::Runnable { core: c as usize })
+        &&& self.threads.queues.queue(c, p as int).len() > 0
+        &&& self.threads.queues.queue(c, p as int)[0] == t
+        &&& forall|u: usize| #[trigger] self.threads.records@.contains_key(u)
+            && self.threads.records@[u].value().state == (ThreadState::Runnable { core: c as usize })
+            ==> thread_priority(self.threads.records@[u].value()) <= p
+    }
+
+    /// Thread t, Runnable on core c and the only thread in c's queues, is the one selected there.
+    pub proof fn lemma_selected_alone(&self, c: int, t: usize)
+        requires
+            self.wf(),
+            0 <= c < NUM_CPUS,
+            self.threads.records@.contains_key(t),
+            self.threads.records@[t].value().state == (ThreadState::Runnable { core: c as usize }),
+            self.threads.queues.queue(c, thread_priority(self.threads.records@[t].value()) as int) == seq![t],
+            forall|p: int| 0 <= p < NUM_PRIORITIES && p != thread_priority(self.threads.records@[t].value())
+                ==> #[trigger] self.threads.queues.queue(c, p) == Seq::<usize>::empty(),
+        ensures
+            self.selected(c, t),
+    {
+        reveal(CapKernel::wf);
+        reveal(queues_wf);
+        let pt = thread_priority(self.threads.records@[t].value());
+        assert(self.threads.queues.queue(c, pt as int)[0] == t);
+        assert forall|u: usize| #[trigger] self.threads.records@.contains_key(u)
+            && self.threads.records@[u].value().state == (ThreadState::Runnable { core: c as usize })
+            implies thread_priority(self.threads.records@[u].value()) <= pt by {
+            let pu = thread_priority(self.threads.records@[u].value());
+            assert(self.threads.queues.queue(c, pu as int).contains(u));
+            if pu != pt {
+                assert(self.threads.queues.queue(c, pu as int) == Seq::<usize>::empty());
+            }
+        }
+    }
+
+    /// Thread t outranks what core c runs: c runs nothing, or a thread whose priority is at most t's.
+    /// Equal priorities take turns, so a tick hands the core to an equal.
+    pub open spec fn preempts(&self, c: int, t: usize) -> bool {
+        match self.cores@[c].current_thread {
+            Some(o) => thread_priority(self.threads.records@[o].value()) <= thread_priority(self.threads.records@[t].value()),
+            None => true,
+        }
+    }
+
+    /// Thread t may be made current: not marked to die, and bound to a process that is not dead.
+    pub open spec fn can_run(&self, t: usize) -> bool {
+        let r = self.threads.records@[t].value();
+        &&& !r.dying
+        &&& r.process is Some
+        &&& !self.processes.records@[r.process->Some_0].value().dead
+    }
+
+    /// From pre to post, core c left the thread it ran, if any, for thread t: t is current and Running
+    /// on c, and the thread c ran is Runnable on c behind its equals, with `frame` saved whole and the
+    /// marker Full. No other core and no process changed, and what a process sees changed only in the
+    /// leaving thread's saved registers.
+    pub open spec fn switched(pre: Self, post: Self, c: int, frame: Registers, t: usize) -> bool {
+        &&& post.cores@[c].current_thread == Some(t)
+        &&& post.threads.records@[t].value().state == (ThreadState::Running { core: c as usize })
+        &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
+        &&& post.processes == pre.processes
+        &&& match pre.cores@[c].current_thread {
+            Some(o) => {
+                let r = post.threads.records@[o].value();
+                &&& r.state == (ThreadState::Runnable { core: c as usize })
+                &&& r.frame == frame
+                &&& r.saved == FrameKind::Full
+                &&& r.save@ == entry_frame_save(frame, FrameKind::Full)
+                &&& at_back_of_priority(&post.threads.queues, post.threads.records@, c, thread_priority(pre.threads.records@[o].value()), o)
+                &&& saves_own_frame(pre.view(), post.view(), o)
+            },
+            None => post.view() == pre.view(),
+        }
+    }
+
+    /// What a tick on core c did from pre, whose current thread on c may return to user mode. The
+    /// selected thread takes the core when it outranks what c runs, may run, and c has a generation
+    /// of ids left; one that outranks it but may not run is taken off its queue; otherwise nothing
+    /// changes.
+    pub open spec fn ticked(pre: Self, post: Self, c: int, frame: Registers, ret: TickStep) -> bool {
+        &&& (ret is Kept) == (forall|t: usize| #[trigger] pre.selected(c, t)
+            ==> !pre.preempts(c, t) || (pre.can_run(t) && pre.cores@[c].generation == ID_GENERATION_MAX))
+        &&& ret is Kept ==> post == pre
+        &&& forall|t: usize| #[trigger] pre.selected(c, t) && pre.preempts(c, t) && !pre.can_run(t) ==> {
+            &&& ret is Dropped
+            &&& Self::record_written(pre, post, t, Self::dropped_record(pre.threads.records@[t].value()))
+            &&& post.cores == pre.cores
+            &&& post.stop_ipis == pre.stop_ipis
+            &&& post.view() == pre.view()
+        }
+        &&& forall|t: usize| #[trigger] pre.selected(c, t) && pre.preempts(c, t) && pre.can_run(t)
+            && pre.cores@[c].generation < ID_GENERATION_MAX ==> {
+            &&& ret is Switched
+            &&& Self::switched(pre, post, c, frame, t)
+        }
+    }
+
+    /// The timer's tick, and the reschedule IPI, on core c: check_current first, saving a current
+    /// thread that must leave with its full frame, then the selection. The thread selected takes the
+    /// core from a current thread of no higher priority, which saves its full frame with the marker
+    /// Full and waits behind its equals, so equal priorities take turns; ticked says each case. The
+    /// tick takes nothing from user space, so it is never refused. design/cpu-time-as-capability/.
+    pub fn tick(&mut self, c: usize, frame: Registers, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: TickStep)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            kernel_root == old(self).spaces.kernel_root@,
+            kernel_root % PAGE_SZ == 0,
+            mem_valid(kernel_root),
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            final(steps).count <= old(steps).count + TICK_STEPS,
+            final(self).current_live(c as int),
+            !old(self).must_leave(c as int) ==> Self::ticked(*old(self), *final(self), c as int, frame, ret),
+            old(self).must_leave(c as int) ==> exists|mid: Self|
+                #![trigger Self::moved_off(*old(self), mid, c as int, frame, FrameKind::Full)]
+                Self::moved_off(*old(self), mid, c as int, frame, FrameKind::Full)
+                && mid.wf()
+                && Self::ticked(mid, *final(self), c as int, frame, ret),
+    {
+        let ghost pre = *self;
+        let checked = self.check_current(c, frame, FrameKind::Full, Tracked(&mut *steps));
+        let ghost mid = *self;
+        let ret = self.preempt(c, frame, kernel_root, Tracked(steps));
+        proof {
+            if pre.must_leave(c as int) {
+                assert(Self::moved_off(pre, mid, c as int, frame, FrameKind::Full));
+            } else {
+                assert(mid == pre);
+            }
+        }
+        ret
+    }
+
+    /// The tick's step after check_current: select on core c, and act on what was selected as ticked
+    /// says.
+    fn preempt(&mut self, c: usize, frame: Registers, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: TickStep)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            kernel_root == old(self).spaces.kernel_root@,
+            kernel_root % PAGE_SZ == 0,
+            mem_valid(kernel_root),
+            old(self).current_live(c as int),
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            final(steps).count <= old(steps).count + SWITCH_THREAD_STEPS,
+            final(self).current_live(c as int),
+            Self::ticked(*old(self), *final(self), c as int, frame, ret),
+    {
+        let ghost pre = *self;
+        let next = match self.select_thread(c) {
+            Some(t) => t,
+            None => {
+                proof {
+                    assert forall|u: usize| #[trigger] pre.selected(c as int, u) implies false by {
+                        assert(pre.threads.records@.contains_key(u));
+                    }
+                }
+                return TickStep::Kept;
+            },
+        };
+        proof {
+            assert(pre.selected(c as int, next));
+            assert forall|u: usize| #[trigger] pre.selected(c as int, u) implies u == next by {
+                let pu = thread_priority(pre.threads.records@[u].value());
+                let pn = thread_priority(pre.threads.records@[next].value());
+                assert(pu <= pn);
+                assert(pn <= pu);
+            }
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, next));
+        }
+        let state = *self.cores.get(c);
+        let ptr = PPtr::<ThreadRecord>::from_usize(next + THREAD_RECORD_PAGE * PAGE_SZ);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(next)));
+        let next_priority = match record.placement {
+            Some(pl) => pl.priority,
+            None => 0,
+        };
+        match state.current_thread {
+            Some(o) => {
+                proof {
+                    reveal(current_wf);
+                    assert(runs(pre.cores@, c as int, o));
+                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, o));
+                }
+                let running = *PPtr::<ThreadRecord>::from_usize(o + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+                    Tracked(self.threads.records.borrow().tracked_borrow(o)),
+                );
+                let priority = match running.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                if next_priority < priority {
+                    return TickStep::Kept;
+                }
+            },
+            None => {},
+        }
+        proof {
+            assert(pre.preempts(c as int, next));
+        }
+        let p = match record.process {
+            Some(p) => p,
+            None => {
+                proof {
+                    assert(false);
+                }
+                0
+            },
+        };
+        proof {
+            assert(pre.processes.records@.contains_key(p));
+        }
+        let dead = self.is_process_dead(p);
+        if record.dying || dead {
+            proof {
+                assert(!pre.can_run(next));
+            }
+            self.drop_runnable(next);
+            proof {
+                let post = *self;
+                assert(post.processes == pre.processes);
+                match pre.cores@[c as int].current_thread {
+                    Some(o) => {
+                        reveal(current_wf);
+                        assert(runs(pre.cores@, c as int, o));
+                        assert(o != next);
+                        assert(post.threads.records@.contains_key(o));
+                        assert(same_record_perm_but_links(pre.threads.records@[o], post.threads.records@[o]));
+                    },
+                    None => {},
+                }
+                assert(post.current_live(c as int));
+            }
+            return TickStep::Dropped;
+        }
+        proof {
+            assert(pre.can_run(next));
+        }
+        if state.generation == ID_GENERATION_MAX {
+            return TickStep::Kept;
+        }
+        proof {
+            reveal(CapKernel::wf);
+            assert(process_spaces_wf(&pre.spaces, &pre.processes));
+            assert(pre.spaces.roots@.contains_key(p));
+            assert(pre.spaces.records@[p].value().kind is Process);
+            pre.lemma_id_handed_out(c as int, p, 0);
+            assert(pre.cores@[c as int].generation < ID_GENERATION_MAX);
+            assert(*self == pre);
+        }
+        self.switch_thread(c, frame, FrameKind::Full, Some(next), kernel_root, Tracked(steps));
+        proof {
+            let post = *self;
+            assert(Self::switched(pre, post, c as int, frame, next));
+        }
+        TickStep::Switched
+    }
+
     /// Space s holds a valid id on core c, read from the space's list of cores.
     fn space_holds_id(&self, c: usize, s: usize) -> (ret: bool)
         requires

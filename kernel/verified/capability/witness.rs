@@ -1705,6 +1705,7 @@ impl CapKernel {
     /// enters it, then core 0 takes the kernel entry for the invocation in registers, whatever it
     /// encodes: dispatch, then the flush acknowledgement when core 0 is behind. The caller does not
     /// have to leave, so enter returns Some, and core 0 holds no translation of an unmapped page.
+    #[verifier::spinoff_prover]
     pub fn witness_root_enters_the_kernel(
         &mut self,
         root: Ghost<usize>,
@@ -11723,6 +11724,10 @@ impl CapKernel {
                 &&& final(self).wf()
                 &&& final(self).cores == old(self).cores
                 &&& final(self).spaces.kernel_root == old(self).spaces.kernel_root
+                &&& final(self).threads.boot_thread == old(self).threads.boot_thread
+                &&& final(self).threads.records@.contains_key(t@)
+                &&& t@ != thread
+                &&& same_thread_but_links(final(self).threads.records@[t@].value(), old(self).threads.records@[t@].value())
                 &&& witness_alive(*final(self), process)
                 &&& witness_alive(*final(self), base)
                 &&& final(self).threads.records@.contains_key(thread)
@@ -12008,6 +12013,11 @@ impl CapKernel {
             assert(s4.cores == s0.cores);
             assert(s4.outranks_current(core as int, 0));
             assert(s5.resched_ipis@ == s4.resched_ipis@.push(core));
+            assert(s0.threads.records@.contains_key(t@));
+            assert(s3.threads.records@.contains_key(t@) && t@ != bt && s3.threads.records@[t@] == s0.threads.records@[t@]);
+            assert(s4.threads.records@[t@] == s3.threads.records@[t@]);
+            assert(s5.threads.records@.contains_key(t@));
+            assert(same_record_perm_but_links(s4.threads.records@[t@], s5.threads.records@[t@]));
         }
         (placed, started)
     }
@@ -12267,6 +12277,293 @@ impl CapKernel {
         let tracked mut steps = Steps::fresh();
         self.switch_thread(0, registers, saved, selected, kernel_root, Tracked(&mut steps));
         (placed, started, selected)
+    }
+
+    /// From the state boot leaves, core 0 runs nothing and no thread is Runnable, so the timer's tick
+    /// on core 0 selects nothing and the core stays idle. The use is a tick on an idle core.
+    /// design/cpu-time-as-capability/.
+    #[verifier::spinoff_prover]
+    pub fn witness_tick_keeps_idle_core(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: usize,
+        registers: Registers,
+    ) -> (ret: TickStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
+        ensures
+            ret is Kept,
+            final(self).wf(),
+            final(self).cores@[0].current_thread is None,
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root);
+            assert(s0.threads.queues.all_empty()) by {
+                reveal(CapKernel::booted);
+            }
+            assert(s0.cores@[0].current_thread is None);
+            assert(!s0.must_leave(0));
+            assert forall|u: usize| #[trigger] s0.selected(0, u) implies false by {
+                reveal(CapKernel::wf);
+                reveal(queues_wf);
+                let p = thread_priority(s0.threads.records@[u].value()) as int;
+                assert(s0.threads.records@.contains_key(u));
+                assert(0 <= p < NUM_PRIORITIES);
+                assert(s0.threads.queues.queue(0, p) == Seq::<usize>::empty());
+            }
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.tick(0, registers, kernel_root, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, the root's thread entered on core 0 is taken off it by
+    /// switch_thread, which leaves it Runnable on core 0 and the core idle; the root then destroys its
+    /// own process through ROOT_PROCESS_SLOT, and the timer's tick on core 0 selects the thread, which
+    /// cannot run with its process dead. The tick drops it: the thread is Inactive, off its queue,
+    /// and the core stays idle. The use is a tick that clears a dead process's waiting thread.
+    /// design/cpu-time-as-capability/.
+    #[verifier::spinoff_prover]
+    pub fn witness_tick_drops_thread_of_dead_process(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: usize,
+        registers: Registers,
+    ) -> (ret: TickStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
+        ensures
+            ret is Dropped,
+            final(self).wf(),
+            final(self).cores@[0].current_thread is None,
+            final(self).processes.records@[process].value().dead,
+            final(self).threads.records@[t].value().state is Inactive,
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root);
+            assert(s0.threads.queues.all_empty() && s0.threads.records@[t].value().placement is None) by {
+                reveal(CapKernel::booted);
+            }
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s0.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(!s3.threads.records@[t].value().pending_stop);
+            assert(s3.threads.records@[t].value().placement is None);
+            assert(s3.threads.queues == s0.threads.queues);
+            assert(s3.spaces.kernel_root@ == kernel_root);
+        }
+        // The thread leaves core 0 for its queue, and the core goes idle.
+        self.switch_thread(0, registers, FrameKind::Full, None, kernel_root, Tracked(&mut steps));
+        let ghost s4 = *self;
+        proof {
+            assert(s4.cores@[0].current_thread is None);
+            assert(s4.threads.records@[t].value().state == (ThreadState::Runnable { core: 0 }));
+            assert(s4.threads.records@[t].value().placement is None);
+            assert(thread_priority(s4.threads.records@[t].value()) == 0);
+            assert(queued_at_back(&s3.threads.queues, &s4.threads.queues, 0, 0, t));
+            assert(s3.threads.queues.queue(0, 0) == Seq::<usize>::empty());
+            assert(Seq::<usize>::empty().push(t) =~= seq![t]);
+            assert(s4.threads.queues.queue(0, 0) == seq![t]);
+            assert forall|p: int| 0 <= p < NUM_PRIORITIES && p != 0
+                implies #[trigger] s4.threads.queues.queue(0, p) == Seq::<usize>::empty() by {
+                assert(s3.threads.queues.queue(0, p) == Seq::<usize>::empty());
+            }
+            assert(s4.list == s0.list);
+            assert(s4.tables == s0.tables);
+            assert(s4.processes == s0.processes);
+            assert(s4.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            s4.lemma_slot(process, ROOT_PROCESS_SLOT);
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(!s4.cap_dead((leaf@ + 1) as usize));
+            assert(s4.root_live(process));
+            assert(s4.can_destroy(process, ROOT_PROCESS_SLOT));
+        }
+        let destroyed = self.destroy(0, process, ROOT_PROCESS_SLOT, Tracked(&mut steps));
+        let ghost s5 = *self;
+        proof {
+            assert(destroyed);
+            assert(Self::process_destroyed(s4, s5, process));
+            assert(s5.threads == s4.threads);
+            assert(s5.cores == s4.cores);
+            assert(s5.processes.records@[process].value().dead);
+            assert(s5.spaces.kernel_root@ == kernel_root);
+            s5.lemma_selected_alone(0, t);
+            assert(!s5.must_leave(0));
+            assert(s5.preempts(0, t));
+            assert(!s5.can_run(t));
+        }
+        let ret = self.tick(0, registers, kernel_root, Tracked(&mut steps));
+        proof {
+            assert(Self::ticked(s5, *self, 0, registers, ret));
+            assert(s5.selected(0, t));
+            assert(Self::record_written(s5, *self, t, Self::dropped_record(s5.threads.records@[t].value())));
+        }
+        ret
+    }
+
+    /// From the state boot leaves, with a second process built at `base` and its thread at
+    /// `base + 10 * PAGE_SZ` placed on core 0 at priority 0 and started as witness_place_and_start
+    /// starts it, the root's thread, of priority 0 too, is entered on core 0; the timer's tick on
+    /// core 0 then selects the placed thread, which takes the core, and the root's thread waits on
+    /// core 0's queue behind its equals, its frame saved whole with the marker Full. The use is two
+    /// threads of equal priority taking turns on one core. design/cpu-time-as-capability/.
+    #[verifier::spinoff_prover]
+    pub fn witness_tick_preempts_for_equal_priority(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+        kernel_root: usize,
+        registers: Registers,
+    ) -> (ret: TickStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret is Switched,
+            final(self).wf(),
+            final(self).cores@[0].current_thread == Some((base + 10 * PAGE_SZ) as usize),
+            final(self).threads.records@[t].value().state == (ThreadState::Runnable { core: 0 }),
+            final(self).threads.records@[t].value().frame == registers,
+            final(self).threads.records@[t].value().saved == FrameKind::Full,
+            at_back_of_priority(&final(self).threads.queues, final(self).threads.records@, 0, 0, t),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root);
+        }
+        let _ = self.witness_place_and_start(
+            root,
+            process,
+            leaf,
+            frames,
+            Ghost(t),
+            free,
+            image,
+            untyped,
+            frame,
+            present,
+            Ghost(kernel_root),
+            base,
+            0,
+        );
+        let ghost s1 = *self;
+        let ghost thread = (base + 10 * PAGE_SZ) as usize;
+        proof {
+            assert(s1.cores@.len() == NUM_CPUS) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s1.cores == s0.cores);
+            assert(s1.cores@[0].generation == 1);
+            assert(s1.cores@[0].next_pcid == 1);
+            assert(s1.cores@[0].space is None);
+            assert(s1.cores@[0].current_thread is None);
+            assert(s1.spaces.kernel_root@ == kernel_root);
+            assert(s1.spaces.roots@.contains_key(process) && s1.spaces.records@[process].value().kind is Process
+                && space_wf(&s1.list, &s1.spaces, &s1.blocks, process)) by {
+                reveal(CapKernel::wf);
+                assert(witness_alive(s1, process));
+                assert(process_spaces_wf(&s1.spaces, &s1.processes));
+            }
+            assert(s1.threads.boot_thread@ == Some(t));
+            assert(s1.threads.records@.contains_key(t));
+            assert(s1.threads.records@[t].value().process == Some(process));
+            assert(s1.threads.records@[t].value().state is Inactive);
+            assert(s1.threads.records@[t].value().placement is None);
+            assert(!s1.threads.records@[t].value().pending_stop);
+            assert(!s1.threads.records@[t].value().dying);
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s1.threads);
+            assert(s2.processes == s1.processes);
+            assert(s2.cores@[0].current_thread is None);
+            assert(s2.cores@[0].generation == 1);
+        }
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.cores@[0].generation == 1);
+            assert(s3.processes == s1.processes);
+            assert(s3.threads.queues == s1.threads.queues);
+            assert(s3.spaces.kernel_root@ == kernel_root);
+            assert(thread != t);
+            assert(s3.threads.records@.contains_key(thread));
+            assert(same_record_perm_but_links(s2.threads.records@[thread], s3.threads.records@[thread]));
+            assert(s3.threads.records@[thread].value().state == (ThreadState::Runnable { core: 0 }));
+            assert(s3.threads.records@[thread].value().placement == Some(Placement { core: 0, priority: 0 }));
+            assert(thread_priority(s3.threads.records@[thread].value()) == 0);
+            assert(s3.threads.queues.queue(0, 0) == seq![thread]);
+            assert forall|p: int| 0 <= p < NUM_PRIORITIES && p != 0
+                implies #[trigger] s3.threads.queues.queue(0, p) == Seq::<usize>::empty() by {
+                assert(s1.threads.queues.queue(0, p) == Seq::<usize>::empty());
+            }
+            s3.lemma_selected_alone(0, thread);
+            assert(s3.threads.records@[t].value().placement is None);
+            assert(thread_priority(s3.threads.records@[t].value()) == 0);
+            assert(!s3.must_leave(0));
+            assert(s3.preempts(0, thread));
+            assert(witness_alive(s3, base));
+            assert(s3.can_run(thread));
+        }
+        let ret = self.tick(0, registers, kernel_root, Tracked(&mut steps));
+        proof {
+            assert(Self::ticked(s3, *self, 0, registers, ret));
+            assert(s3.selected(0, thread));
+            assert(Self::switched(s3, *self, 0, registers, thread));
+            assert(saved_frame(registers, FrameKind::Full) == registers);
+        }
+        ret
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
