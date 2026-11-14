@@ -2,7 +2,7 @@
 
 # Design decisions
 
-44 records: 44 active, 0 superseded.
+45 records: 45 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -76,6 +76,9 @@ in `revisit if` what would make it worth reopening.
 - **[no-gate-for-what-no-step-reads](./no-gate-for-what-no-step-reads/DECISION.md)** (2026-11-11): tools/land.py lists the paths no gate step reads (.claude/agents/, .claude/skills/, CLAUDE.md, and the loop and status tools); a change that touches nothing else, with no file over the size limit and no source that fails to state an allowed license, is rebased, merged and pushed without running the gate, and its tree takes the base's verdict in the ledger.
   - *confidence:* An argument, not a measurement: the gate's result is a function of the files its steps read. That no step reads the listed paths was checked by search on the day, and nothing in the gate keeps it true.
   - *revisit if:* A gate step starts reading a listed path, which removes the path from the list in the same commit; or a main that fails by itself is traced to a commit that landed this way.
+- **[notification-word-reserves-the-waiter-bit](./notification-word-reserves-the-waiter-bit/DECISION.md)** (2026-11-14): Signal ORs its badge into the word, never blocks and returns only ok or refused; wait returns the word and clears it, blocking while it is zero; the word's bit 63 is the kernel's waiter bit, so a badge uses bits 0 to 62 and a derive that sets bit 63 is refused; a notification may queue several waiters; one-bit badges are the convention for a sender that may later take a hardware path. This keeps a lock-free signal and hardware user interrupts addable without an ABI change.
+  - *confidence:* The fast paths are not built; the semantics are chosen so that they stay possible, which is reasoned from how a single fetch_or and a 64-bit user-interrupt request word work, not measured.
+  - *revisit if:* A lock-free signal or a user-interrupt path is built and needs a word or a result the kernel path does not give, or a workload needs signal to report whether it woke a thread.
 - **[one-kernel-instance](./one-kernel-instance/DECISION.md)** (2026-11-05): One kernel instance holds every core of the machine and a process lives inside it; the kernel provides no spanning. Four rules keep a later move to several instances cheap, and breaking one is the human's decision.
   - *confidence:* A staging judgement on top of the multicore shape. That one instance pays almost nothing for the node concept is reasoned from the code, not measured: finding the instance is one per-CPU load and no syscall path gains a check.
   - *revisit if:* Lock contention measured on this kernel is one a real workload would hit, a workload needs distrusting programs separated from the shared lock's timing, or a change would break one of the four rules.
@@ -151,14 +154,14 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
 - `arch`: who-vouches-for-an-unproven-claim
 - `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, root-process-at-boot, test-guest-memory
-- `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
+- `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, notification-word-reserves-the-waiter-bit, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
 - `gate`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, witness-per-way-an-operation-succeeds
 - `glue`: machine-glue-below-the-kernel
 - `heap`: heap-size-classes, page-buddy-metadata-in-the-span
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: device-binding-under-the-space-capability, machine-glue-below-the-kernel
-- `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
+- `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, notification-word-reserves-the-waiter-bit, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `landing`: land-without-regating, no-gate-for-what-no-step-reads
 - `license`: license-stated-in-every-source-file
@@ -167,6 +170,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, region-map-owns-the-address-space, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `network`: network-stack-proven-at-tier-1
+- `notification`: notification-word-reserves-the-waiter-bit
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
