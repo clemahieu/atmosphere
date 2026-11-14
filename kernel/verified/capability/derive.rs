@@ -378,6 +378,9 @@ impl CapKernel {
             ret ==> final(self).list.seq@[0] == old(self).list.seq@[0],
             ret == old(self).can_derive_at(root, from, to, rights, base, order, badge),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            final(self).endpoints.records == old(self).endpoints.records,
+            final(self).threads.records == old(self).threads.records,
+            final(self).threads.queues == old(self).threads.queues,
     {
         let ghost pre = *old(self);
         let dst = match self.find_table(root, to.through) {
@@ -453,6 +456,7 @@ impl CapKernel {
             final(self).threads.records == old(self).threads.records,
             final(self).threads.boot_thread == old(self).threads.boot_thread,
             final(self).threads.queues == old(self).threads.queues,
+            final(self).endpoints.records == old(self).endpoints.records,
     {
         let ghost pre = *old(self);
         let (parent, payload) = match self.tables.lookup(&self.list, src, from) {
