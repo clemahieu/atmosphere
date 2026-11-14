@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, eager source line, heap line, freed frame
-line, process line, thread line and thread times, registers line, placed thread line, switched thread line, started thread line, suspended thread line, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, started thread line, suspended thread line, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -65,6 +65,11 @@ STARTED_LINE = "dom0 thread started"
 # reschedule IPI, wrote a word dom0 reads through a frame both spaces map, and suspended itself, so its core
 # ran dom0 again.
 SWITCHED_LINE = "dom0 thread switched"
+
+# The line dom0 prints once a thread of its child, placed through the root's capability for core 1 and
+# started, wrote a word dom0 reads on core 0 through a frame both spaces map while dom0 never left core 0:
+# the reschedule IPI reached CPU 1, which ran the thread in the child's space.
+CORE_1_LINE = "dom0 thread ran on core 1"
 
 # The line dom0 prints once it suspended the thread it started, twice, and started it again, after the
 # suspends a slot without a thread and a copy without control must refuse were refused.
@@ -218,6 +223,8 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused(f'the serial log does not show dom0 starting a thread: "{STARTED_LINE}"')
     if not line_printed(serial, SWITCHED_LINE):
         raise Refused(f'the serial log does not show dom0 reading the word a thread of its child wrote: "{SWITCHED_LINE}"')
+    if not line_printed(serial, CORE_1_LINE):
+        raise Refused(f'the serial log does not show CPU 1 running a thread of dom0\'s child: "{CORE_1_LINE}"')
     if not line_printed(serial, SUSPENDED_LINE):
         raise Refused(f'the serial log does not show dom0 suspending a thread: "{SUSPENDED_LINE}"')
     if not line_printed(serial, DESTROYED_LINE):
@@ -231,7 +238,7 @@ def boot_log_accepted(serial, arch, translation=False):
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, started thread line, suspended thread line, destroyed process line, "
+            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, started thread line, suspended thread line, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
@@ -280,6 +287,7 @@ def boot_log():
             "dom0 thread registers set\n"
             "dom0 thread placed\n"
             "dom0 thread switched\n"
+            "dom0 thread ran on core 1\n"
             "dom0 thread started\n"
             "dom0 thread suspended\n"
             "dom0 process destroyed\n"
@@ -317,6 +325,7 @@ class Tests(unittest.TestCase):
             ("dom0 thread registers set\n", "a thread's registers"),
             ("dom0 thread placed\n", "placing a thread"),
             ("dom0 thread switched\n", "a thread of its child wrote"),
+            ("dom0 thread ran on core 1\n", "CPU 1 running a thread"),
             ("dom0 thread started\n", "starting a thread"),
             ("dom0 thread suspended\n", "suspending a thread"),
             ("dom0 process destroyed\n", "destroying its child"),

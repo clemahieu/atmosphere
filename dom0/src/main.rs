@@ -82,6 +82,11 @@
 //! itself, at priority 1, and starts it: core 0 takes a reschedule IPI and runs the thread in the child's
 //! space, which writes a word into the shared frame and suspends itself, leaving the core to dom0, which
 //! reads the word and prints that it held.
+//! It gives the fifth thread a capability to itself in the same leaf, writes its entry and arguments,
+//! places it through the root's capability for core 1 and starts it: CPU 1 takes a reschedule IPI and
+//! runs the thread in the child's space, which writes a second word into the shared frame and suspends
+//! itself, leaving core 1 running nothing; dom0 reads the word on core 0, never having left it, and
+//! prints that it held.
 //! It starts that thread, which is Runnable behind dom0 at the same priority, after a start of the
 //! console slot and of the second thread, not placed, are refused; a second start is refused, the
 //! thread being started, and dom0 places the third thread without starting it and prints that it held.
@@ -1199,6 +1204,49 @@ fn switched_thread_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, 
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, SWITCHED_HELD) } == operation::STATUS_OK
 }
 
+/// What dom0 prints once a thread of its child placed on core 1 ran there and wrote dom0 a word, which
+/// the gate looks for.
+const CORE_1_HELD: [u64; 5] = operation::print_words(b"dom0 thread ran on core 1\n");
+
+/// The word the child's thread on core 1 writes, into the shared frame's second word.
+const CORE_1_WORD: u64 = 0x636f_7265_5f6f_6e65;
+
+/// The core the core 1 check places its thread on, through the root's capability for it.
+const SECOND_CORE: u64 = 1;
+
+/// Whether a thread of dom0's child placed on core 1 runs there and writes dom0 a word, which dom0 reads
+/// on core 0. It reuses what switched_thread_held set up in the space of the child whose capability is in
+/// `process`: the child's code at CHILD_CODE_ADDRESS, the frame both spaces map at CHILD_DATA_ADDRESS in
+/// the child's and SHARED_ENTRY in dom0's, and the table leaf in the child's root entry CHILD_OWN_ENTRY,
+/// whose second slot takes a capability with control to the fifth thread the thread check bound to the
+/// child. That thread's frame gets the entry, the address of the shared frame's second word, CORE_1_WORD
+/// and its own slot; dom0 places it through the root's capability for core 1, its slot ROOT_CORE_SLOT +
+/// 1, reads the word as zero and starts the thread. Core 1 runs nothing, so the start makes its selection
+/// due, and the reschedule IPI reaches CPU 1, which runs the thread in the child's space: it writes the
+/// word and suspends itself, so core 1 runs nothing again. dom0 reads the word without entering the
+/// kernel, so its core never left it and only core 1 can have run the thread; dom0 prints that it held.
+fn core_1_thread_held(caller: &mut Tracked<Caller>, process: u64) -> bool {
+    let entry = dom0_child_entry as *const () as u64;
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 5;
+    let own = first_slot(CHILD_OWN_ENTRY) + 1;
+    let word = (entry_address(SHARED_ENTRY) + 8) as *const u64;
+    let Ok(held) = inspect(caller, thread) else {
+        return false;
+    };
+    let arguments = [CHILD_DATA_ADDRESS + 8, CORE_1_WORD, own];
+    derive(caller, thread, operation::through(process, own), RIGHT_CONTROL, held.base, held.order).status
+        == operation::STATUS_OK
+        && set_frame_word(caller, thread, operation::PC_WORD, CHILD_CODE_ADDRESS + (entry & 0xfff)) == operation::STATUS_OK
+        && (0..3).all(|k| set_frame_word(caller, thread, ARGUMENT_WORDS[k], arguments[k]) == operation::STATUS_OK)
+        && place(caller, thread, operation::ROOT_CORE_SLOT + SECOND_CORE, 1).status == operation::STATUS_OK
+        // switched_thread_held mapped the page at `word`'s page, the shared frame's, which retype zeroed;
+        // the child's thread on core 1 is the only other writer of this word.
+        && unsafe { word.read_volatile() } == 0
+        && start(caller, thread).status == operation::STATUS_OK
+        && (0..SWITCH_READS).any(|_| unsafe { word.read_volatile() } == CORE_1_WORD)
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, CORE_1_HELD) } == operation::STATUS_OK
+}
+
 /// What dom0 prints once it started a thread of its child, which the gate looks for.
 const STARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread started\n");
 
@@ -1802,6 +1850,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && registers_held(caller, empty + 5)
                                 && placed_thread_held(caller, empty + 5)
                                 && switched_thread_held(caller, empty, empty + 4, empty + 6)
+                                && core_1_thread_held(caller, empty + 4)
                                 && started_thread_held(caller)
                                 && suspended_thread_held(caller, empty + 5)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
