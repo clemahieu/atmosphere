@@ -37,6 +37,7 @@ pub mod probe;
 pub mod process;
 pub mod reach;
 pub mod reclaim;
+pub mod reclaim_ipc;
 #[cfg(verus_keep_ghost)]
 pub mod rely;
 pub mod reclaim_process;

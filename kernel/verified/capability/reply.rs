@@ -342,6 +342,78 @@ pub proof fn lemma_replies_small_freed(
     }
 }
 
+/// The replies after the block of the reply at page `base` frees, at zero references, its record
+/// going with it. No capability names it, since its holders are as many as its references, and every
+/// other reply lies outside its block.
+pub proof fn lemma_replies_own_freed(
+    list_a: &Tree,
+    tables_a: &Tables,
+    list_b: &Tree,
+    tables_b: &Tables,
+    ra: &Replies,
+    rb: &Replies,
+    a: &BlockTable,
+    b: &BlockTable,
+    base: usize,
+)
+    requires
+        replies_wf(list_a, tables_a, ra, a),
+        a.wf(),
+        a.tracks(base as int),
+        reply_block(a, base),
+        a.pages@[base as int].refs == 0,
+        forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
+            if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
+        rb.records@ == ra.records@.remove((base * PAGE_SZ) as usize),
+        rb.holders == ra.holders,
+        same_replies(list_a, tables_a, list_b, tables_b),
+    ensures
+        replies_wf(list_b, tables_b, rb, b),
+{
+    let e0 = (base * PAGE_SZ) as usize;
+    lemma_replies_same_caps(list_a, tables_a, list_b, tables_b, ra, a);
+    assert(ra.records@.contains_key(e0));
+    assert(reply_wf(ra, a, e0));
+    lemma_fundamental_div_mod(e0 as int, PAGE_SZ as int);
+    assert(e0 / PAGE_SZ == base);
+    assert(ra.holders@[e0].len() == 0);
+    ra.holders@[e0].lemma_len0_is_empty();
+    assert forall|e: usize| #[trigger] rb.records@.contains_key(e) implies reply_wf(rb, b, e) by {
+        assert(ra.records@.contains_key(e) && e != e0);
+        assert(reply_wf(ra, a, e));
+        lemma_reply_pages_distinct(e, e0);
+        let x = (e / PAGE_SZ) as int;
+        if a.in_block(base as int, x) && x != base {
+            a.lemma_member_of(base as int, x);
+        }
+        assert(b.pages@[x] == a.pages@[x]);
+    }
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] reply_block(b, x) implies rb.records@.contains_key((x * PAGE_SZ) as usize) by {
+        if a.in_block(base as int, x as int) {
+            assert(b.pages@[x as int] == free_entry());
+        }
+        assert(b.pages@[x as int] == a.pages@[x as int]);
+        assert(reply_block(a, x));
+        assert(x != base);
+        assert(ra.records@.contains_key((x * PAGE_SZ) as usize));
+        assert((x * PAGE_SZ) as usize != e0);
+    }
+    assert forall|n: usize| #[trigger] tables_b.is_cap(list_b, n) && tables_b.payload_of(n).kind is Reply implies {
+        &&& rb.records@.contains_key(tables_b.payload_of(n).base)
+        &&& rb.holders@[tables_b.payload_of(n).base].contains(n)
+        &&& tables_b.payload_of(n).order == 0
+    } by {
+        assert(ra.holders@[tables_b.payload_of(n).base].contains(n));
+    }
+    assert forall|e: usize, n: usize| rb.records@.contains_key(e) && #[trigger] rb.holders@[e].contains(n) implies {
+        &&& tables_b.is_cap(list_b, n)
+        &&& tables_b.payload_of(n).kind is Reply
+        &&& tables_b.payload_of(n).base == e
+    } by {
+        assert(ra.records@.contains_key(e));
+    }
+}
+
 impl CapKernel {
     /// A reply capability names a reply, whose block holds its reference, lies in no typed
     /// region and so is read as the small block at its base.
@@ -722,6 +794,8 @@ impl CapKernel {
                 &&& final(self).list.is_child(parent, child)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
                 &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
+                &&& forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
+                    ==> final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
                 &&& Self::retype_keeps(*old(self), *final(self), child, page, 0, None)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(0), into: None })
             },
@@ -785,6 +859,8 @@ impl CapKernel {
         proof {
             let post = *self;
             assert(mid == pre.list);
+            assert(forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
+                ==> post.list.nodes@[i].live == pre.list.nodes@[i].live);
             assert forall|x: usize| #[trigger] pre.list.valid(x) && x != child implies {
                 &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
                 &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind

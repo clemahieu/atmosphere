@@ -242,6 +242,28 @@ pub proof fn thread_record_into_page(tracked record: PointsTo<ThreadRecord>) -> 
     crate::pptr::typed_into_page(record)
 }
 
+/// A freed endpoint's or notification's record becomes a free page.
+pub proof fn queue_record_into_page(tracked record: PointsTo<QueueRecord>) -> (tracked ret: PagePerm4k)
+    requires
+        record.is_uninit(),
+    ensures
+        ret.addr() == record.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(record)
+}
+
+/// A freed reply's record becomes a free page.
+pub proof fn reply_record_into_page(tracked record: PointsTo<ReplyRecord>) -> (tracked ret: PagePerm4k)
+    requires
+        record.is_uninit(),
+    ensures
+        ret.addr() == record.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(record)
+}
+
 /// A freed process's table root becomes a free page.
 pub proof fn table_root_into_page(tracked root: PointsTo<TableRoot>) -> (tracked ret: PagePerm4k)
     requires

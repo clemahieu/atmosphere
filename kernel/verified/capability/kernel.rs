@@ -2591,8 +2591,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
-            post.endpoints == pre.endpoints,
-            post.replies == pre.replies,
+            post.endpoints == pre.endpoints || waits_wf(post.endpoints.records@, post.threads.records@),
             post.frames_wf(),
             post.zeroing == pre.zeroing,
             zeroing_typed(&pre.zeroing, &post.blocks),
@@ -2736,21 +2735,29 @@ impl CapKernel {
         }
     }
 
-    /// The kernel after a small block frees, its holder entry going with it. What it still holds of the
-    /// frames is the caller's to say, since a frame hands its pages back from there.
+    /// The kernel after a small block frees, its holder entry going with it, and its record when it is
+    /// an endpoint's, a notification's or a reply's. What it still holds of the frames is the caller's
+    /// to say, since a frame hands its pages back from there.
     pub proof fn lemma_small_freed(pre: Self, post: Self, base: usize)
         requires
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
-            post.endpoints == pre.endpoints,
-            post.replies == pre.replies,
+            queue_object(pre.blocks.pages@[base as int].object) ==> {
+                &&& post.endpoints.records@ == pre.endpoints.records@.remove((base * PAGE_SZ) as usize)
+                &&& post.endpoints.holders == pre.endpoints.holders
+                &&& pre.endpoints.records@[(base * PAGE_SZ) as usize].value().waiters@.len() == 0
+            },
+            !queue_object(pre.blocks.pages@[base as int].object) ==> post.endpoints == pre.endpoints,
+            pre.blocks.pages@[base as int].object is Reply ==> {
+                &&& post.replies.records@ == pre.replies.records@.remove((base * PAGE_SZ) as usize)
+                &&& post.replies.holders == pre.replies.holders
+            },
+            !(pre.blocks.pages@[base as int].object is Reply) ==> post.replies == pre.replies,
             pre.wf(),
             pre.blocks.tracks(base as int),
             pre.blocks.pages@[base as int].kind is Base,
             !(pre.blocks.pages@[base as int].object is Process),
-            !queue_object(pre.blocks.pages@[base as int].object),
-            !(pre.blocks.pages@[base as int].object is Reply),
             pre.blocks.pages@[base as int].refs == 0,
             pre.no_stale_translation(base),
             post.blocks.wf(),
@@ -2796,8 +2803,19 @@ impl CapKernel {
         }
         lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, base);
         lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, base);
-        lemma_endpoints_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, base);
-        lemma_replies_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, base);
+        if queue_object(pre.blocks.pages@[base as int].object) {
+            assert(endpoint_block(&pre.blocks, base));
+            assert(pre.endpoints.records@.contains_key((base * PAGE_SZ) as usize));
+            lemma_waits_queue_removed(pre.endpoints.records@, pre.threads.records@, (base * PAGE_SZ) as usize);
+            lemma_endpoints_own_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &post.endpoints, &pre.blocks, &post.blocks, base);
+        } else {
+            lemma_endpoints_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.endpoints, &pre.blocks, &post.blocks, base);
+        }
+        if pre.blocks.pages@[base as int].object is Reply {
+            lemma_replies_own_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &post.replies, &pre.blocks, &post.blocks, base);
+        } else {
+            lemma_replies_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.replies, &pre.blocks, &post.blocks, base);
+        }
         assert forall|x: usize| #[trigger] post.holders@.contains_key(BlockRef::Small(x))
             implies post.blocks.pages@[x as int].object is Frame by {
             assert(x != base);

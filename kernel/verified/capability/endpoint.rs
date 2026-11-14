@@ -340,6 +340,52 @@ pub proof fn lemma_waits_empty()
     reveal(waits_wf);
 }
 
+/// The queue of the object at e has no head exactly when it lists no thread, since no thread is at
+/// `NONE`.
+pub proof fn lemma_waits_head(queues: Map<usize, PointsTo<QueueRecord>>, threads: Map<usize, PointsTo<ThreadRecord>>, e: usize)
+    requires
+        waits_wf(queues, threads),
+        queues.contains_key(e),
+        forall|t: usize| #[trigger] threads.contains_key(t) ==> t != NONE,
+    ensures
+        (queues[e].value().head == NONE) == (queues[e].value().waiters@.len() == 0),
+{
+    reveal(waits_wf);
+    let s = queues[e].value().waiters@;
+    assert(wait_queue_wf(queues[e].value(), threads, e));
+    if s.len() > 0 {
+        assert(waiter_linked(s, threads, e, 0));
+    }
+}
+
+/// Dropping the record of an object whose queue lists no thread keeps the wait queues well formed: no
+/// thread names it as the object whose queue lists it.
+pub proof fn lemma_waits_queue_removed(queues: Map<usize, PointsTo<QueueRecord>>, threads: Map<usize, PointsTo<ThreadRecord>>, e: usize)
+    requires
+        waits_wf(queues, threads),
+        queues.contains_key(e),
+        queues[e].value().waiters@.len() == 0,
+    ensures
+        waits_wf(queues.remove(e), threads),
+{
+    reveal(waits_wf);
+    let qb = queues.remove(e);
+    assert forall|x: usize| #[trigger] qb.contains_key(x) implies wait_queue_wf(qb[x].value(), threads, x) by {
+        assert(queues.contains_key(x));
+    }
+    assert forall|t: usize| #[trigger] threads.contains_key(t) && threads[t].value().queued != NONE implies {
+        &&& qb.contains_key(threads[t].value().queued)
+        &&& qb[threads[t].value().queued].value().waiters@.contains(t)
+    } by {
+        let q = threads[t].value().queued;
+        assert(queues[q].value().waiters@.contains(t));
+        if q == e {
+            let i = choose|i: int| 0 <= i < queues[e].value().waiters@.len() && queues[e].value().waiters@[i] == t;
+            assert(false);
+        }
+    }
+}
+
 /// Each endpoint's and notification's holders after node i is renamed n.
 pub open spec fn moved_endpoint_holders(holders: IMap<usize, Set<usize>>, i: usize, n: usize) -> IMap<usize, Set<usize>> {
     IMap::new(
@@ -542,6 +588,78 @@ pub proof fn lemma_endpoints_small_freed(
         }
         assert(b.pages@[x as int] == a.pages@[x as int]);
         assert(endpoint_block(a, x));
+    }
+}
+
+/// The endpoints after the block of the endpoint or notification at page `base` frees, at zero
+/// references, its record going with it. No capability names it, since its holders are as many as its
+/// references, and every other endpoint lies outside its block.
+pub proof fn lemma_endpoints_own_freed(
+    list_a: &Tree,
+    tables_a: &Tables,
+    list_b: &Tree,
+    tables_b: &Tables,
+    ea: &Endpoints,
+    eb: &Endpoints,
+    a: &BlockTable,
+    b: &BlockTable,
+    base: usize,
+)
+    requires
+        endpoints_wf(list_a, tables_a, ea, a),
+        a.wf(),
+        a.tracks(base as int),
+        endpoint_block(a, base),
+        a.pages@[base as int].refs == 0,
+        forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
+            if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
+        eb.records@ == ea.records@.remove((base * PAGE_SZ) as usize),
+        eb.holders == ea.holders,
+        same_endpoints(list_a, tables_a, list_b, tables_b),
+    ensures
+        endpoints_wf(list_b, tables_b, eb, b),
+{
+    let e0 = (base * PAGE_SZ) as usize;
+    lemma_endpoints_same_caps(list_a, tables_a, list_b, tables_b, ea, a);
+    assert(ea.records@.contains_key(e0));
+    assert(endpoint_wf(ea, a, e0));
+    lemma_fundamental_div_mod(e0 as int, PAGE_SZ as int);
+    assert(e0 / PAGE_SZ == base);
+    assert(ea.holders@[e0].len() == 0);
+    ea.holders@[e0].lemma_len0_is_empty();
+    assert forall|e: usize| #[trigger] eb.records@.contains_key(e) implies endpoint_wf(eb, b, e) by {
+        assert(ea.records@.contains_key(e) && e != e0);
+        assert(endpoint_wf(ea, a, e));
+        lemma_endpoint_pages_distinct(e, e0);
+        let x = (e / PAGE_SZ) as int;
+        if a.in_block(base as int, x) && x != base {
+            a.lemma_member_of(base as int, x);
+        }
+        assert(b.pages@[x] == a.pages@[x]);
+    }
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] endpoint_block(b, x) implies eb.records@.contains_key((x * PAGE_SZ) as usize) by {
+        if a.in_block(base as int, x as int) {
+            assert(b.pages@[x as int] == free_entry());
+        }
+        assert(b.pages@[x as int] == a.pages@[x as int]);
+        assert(endpoint_block(a, x));
+        assert(x != base);
+        assert(ea.records@.contains_key((x * PAGE_SZ) as usize));
+        assert((x * PAGE_SZ) as usize != e0);
+    }
+    assert forall|n: usize| #[trigger] tables_b.is_cap(list_b, n) && queue_kind(tables_b.payload_of(n).kind) implies {
+        &&& eb.records@.contains_key(tables_b.payload_of(n).base)
+        &&& eb.holders@[tables_b.payload_of(n).base].contains(n)
+        &&& tables_b.payload_of(n).order == 0
+    } by {
+        assert(ea.holders@[tables_b.payload_of(n).base].contains(n));
+    }
+    assert forall|e: usize, n: usize| eb.records@.contains_key(e) && #[trigger] eb.holders@[e].contains(n) implies {
+        &&& tables_b.is_cap(list_b, n)
+        &&& queue_kind(tables_b.payload_of(n).kind)
+        &&& tables_b.payload_of(n).base == e
+    } by {
+        assert(ea.records@.contains_key(e));
     }
 }
 
@@ -982,6 +1100,8 @@ impl CapKernel {
         &&& post.list.is_child(parent, child)
         &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
         &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
+            ==> post.list.nodes@[i].live == pre.list.nodes@[i].live
         &&& Self::retype_keeps(pre, post, child, page, 0, None)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(0), into: None })
     }
@@ -1123,6 +1243,8 @@ impl CapKernel {
         proof {
             let post = *self;
             assert(mid == pre.list);
+            assert(forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
+                ==> post.list.nodes@[i].live == pre.list.nodes@[i].live);
             assert forall|x: usize| #[trigger] pre.list.valid(x) && x != child implies {
                 &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
                 &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind

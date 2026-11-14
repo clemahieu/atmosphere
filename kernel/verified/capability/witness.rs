@@ -553,6 +553,26 @@ pub open spec fn witness_empty(k: CapKernel, root: usize, i: usize, n: usize) ->
     &&& !k.list.nodes@[n as int].live
 }
 
+/// What a later delete of the capability ne at the page `base` and a retype of that page under the
+/// root's untyped need: the untyped still covers the page, below the deepest depth, with the leaf's
+/// hidden node at the block's third page its child; ne has no child; the page is a live object's.
+pub open spec fn witness_retyped_kept(k: CapKernel, process: usize, base: usize, ne: usize) -> bool {
+    let lb = (base + 2 * PAGE_SZ) as usize;
+    let u = k.tables.node_of(process, ROOT_UNTYPED_SLOT);
+    let page = (base / PAGE_SZ) as int;
+    &&& k.can_retype_under(process, ROOT_UNTYPED_SLOT, base, 0)
+    &&& u != ne
+    &&& k.list.childless(ne)
+    &&& lb < NODE_SPACE
+    &&& k.list.nodes@[lb as int].live
+    &&& k.list.parent@[lb] == u
+    &&& k.tables.owner@.contains_key(lb)
+    &&& page_of(lb) == lb
+    &&& k.blocks.tracks(page)
+    &&& k.blocks.pages@[page].kind is Base
+    &&& !k.blocks.pages@[page].dead
+}
+
 /// The root at process: its table, its live record, and its first untyped, first, at ROOT_UNTYPED_SLOT,
 /// node u, at depth 1, with the retype right.
 pub open spec fn witness_root(k: CapKernel, process: usize, u: usize, first: Payload) -> bool {
@@ -5738,6 +5758,8 @@ impl CapKernel {
                 &&& final(self).list.nodes@[ne as int].depth == 2
                 &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
                 &&& witness_empty(*final(self), process, WITNESS_BADGED_SLOT, (base + 2 * PAGE_SZ + 2) as usize)
+                &&& witness_retyped_kept(*final(self), process, base, ne)
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].object is Endpoint
             }),
     {
         hide(CapKernel::wf);
@@ -5879,6 +5901,37 @@ impl CapKernel {
             assert(s2.tables.node_of(process, WITNESS_BADGED_SLOT) == lb + 2);
             assert(!s2.list.nodes@[(lb + 2) as int].live);
             assert(witness_empty(s2, process, WITNESS_BADGED_SLOT, (lb + 2) as usize));
+            // What a later delete of the capability and retype of its page need.
+            assert(s2.tables.has_slot(&s2.list, process, ROOT_UNTYPED_SLOT));
+            assert(s2.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(s2.is_cap(u) && s2.payload_of(u) == first && s2.list.nodes@[u as int].depth == 1);
+            assert(s2.can_retype_under(process, ROOT_UNTYPED_SLOT, base, 0));
+            assert(s1.list.wf() && s2.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(!s1.list.nodes@[ne as int].live);
+            assert(s1.list.nodes@[u as int].live);
+            assert(u != ne);
+            assert(s2.list.parent@ == s1.list.parent@.insert(ne, u));
+            lemma_added_children(s1.list, s2.list, ne, u);
+            assert(s2.list.is_child(u, ne));
+            lemma_listed_live(s2.list, ne);
+            if !s2.list.childless(ne) {
+                s2.list.lemma_next_is_child(ne);
+            }
+            assert(s2.list.childless(ne));
+            assert(s1.list.is_child(u, lb));
+            lemma_listed_live(s1.list, lb);
+            assert(s2.list.nodes@[lb as int].live);
+            assert(s2.list.parent@[lb] == u);
+            assert(s2.tables.leaf(process, 2) == lb);
+            s2.lemma_slot(process, WITNESS_FRAME_SLOT);
+            assert(s2.tables.owner@.contains_key(lb));
+            assert(page_of(lb) == lb);
+            assert(s2.blocks.tracks(ep));
+            assert(s2.blocks.pages@[ep].kind is Base);
+            assert(!s2.blocks.pages@[ep].dead);
+            assert(witness_retyped_kept(s2, process, base, ne));
         }
         (ok1, ok2)
     }
@@ -6004,6 +6057,12 @@ impl CapKernel {
                 &&& final(self).view().holds(process, ne)
                 &&& final(self).replies.records@.contains_key(base)
                 &&& final(self).replies.records@[base].value() == fresh_reply()
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& final(self).root_live(process)
+                &&& final(self).list.nodes@[ne as int].depth == 2
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
+                &&& witness_retyped_kept(*final(self), process, base, ne)
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].object is Reply
             }),
     {
         hide(CapKernel::wf);
@@ -6131,8 +6190,226 @@ impl CapKernel {
             assert(s2.view().holds(process, ne));
             assert(s2.payload_of(ne) == reply_of(base));
             assert(s2.is_cap(ne));
+            assert(s2.list.nodes@[ne as int].depth == 2);
+            assert(s2.blocks.pages@[ep].refs == 1);
+            assert(s2.processes == s1.processes);
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.root_live(process));
+            // What a later delete of the capability and retype of its page need.
+            assert(s2.tables.has_slot(&s2.list, process, ROOT_UNTYPED_SLOT));
+            assert(s2.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(s2.is_cap(u) && s2.payload_of(u) == first && s2.list.nodes@[u as int].depth == 1);
+            assert(s2.can_retype_under(process, ROOT_UNTYPED_SLOT, base, 0));
+            assert(s1.list.wf() && s2.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(!s1.list.nodes@[ne as int].live);
+            assert(s1.list.nodes@[u as int].live);
+            assert(u != ne);
+            assert(s2.list.parent@ == s1.list.parent@.insert(ne, u));
+            lemma_added_children(s1.list, s2.list, ne, u);
+            assert(s2.list.is_child(u, ne));
+            lemma_listed_live(s2.list, ne);
+            if !s2.list.childless(ne) {
+                s2.list.lemma_next_is_child(ne);
+            }
+            assert(s2.list.childless(ne));
+            assert(s1.list.is_child(u, lb));
+            lemma_listed_live(s1.list, lb);
+            assert(s2.list.nodes@[lb as int].live);
+            assert(s2.list.parent@[lb] == u);
+            assert(s2.tables.leaf(process, 2) == lb);
+            s2.lemma_slot(process, WITNESS_FRAME_SLOT);
+            assert(s2.tables.owner@.contains_key(lb));
+            assert(page_of(lb) == lb);
+            assert(s2.blocks.tracks(ep));
+            assert(s2.blocks.pages@[ep].kind is Base);
+            assert(!s2.blocks.pages@[ep].dead);
+            assert(witness_retyped_kept(s2, process, base, ne));
         }
         (ok1, ok2)
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: retype an endpoint as witness_root_retypes_an_endpoint does,
+    /// delete its only capability, which leaves it dead with no reference, and retype its page under the
+    /// root's untyped again. The retype frees the page, and the endpoint's record is gone.
+    /// design/teardown-driven-by-retype/, design/witness-per-way-an-operation-succeeds/.
+    #[verifier::spinoff_prover]
+    pub fn witness_dead_endpoint_freed(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: ReclaimStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret is Freed,
+            final(self).wf(),
+            final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free,
+            !final(self).endpoints.records@.contains_key(base),
+    {
+        hide(CapKernel::wf);
+        let _ = self.witness_root_retypes_an_endpoint(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
+        let ghost s1 = *self;
+        let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
+        let ghost lb = (base + 2 * PAGE_SZ) as usize;
+        let ghost u = s1.tables.node_of(process, ROOT_UNTYPED_SLOT);
+        let ghost ep = (base / PAGE_SZ) as int;
+        let at = Position { through: None, index: WITNESS_FRAME_SLOT };
+        proof {
+            assert(s1.table_at(process, None) == Some(process));
+            assert(s1.is_cap(ne));
+            assert(s1.cap_at(process, at) == Some(ne));
+            assert(s1.can_delete_at(process, at));
+        }
+
+        // Delete the endpoint's capability: its last reference.
+        let ok = self.delete(process, at);
+        let ghost s2 = *self;
+        proof {
+            assert(ok is Some);
+            assert(Self::cap_deleted_at(s1, s2, process, at));
+            assert(Self::object_dropped(s1, s2, ne));
+            assert(s1.payload_of(ne).base == base);
+            let br = BlockRef::Small(base / PAGE_SZ);
+            assert(block_refs(&s1.blocks, br) == 1);
+            assert(!block_dead(&s1.blocks, br));
+            assert(block_refs(&s2.blocks, br) == 0);
+            assert(block_dead(&s2.blocks, br));
+            assert(s2.blocks.pages@[ep].kind is Base);
+            assert(s2.blocks.pages@[ep].object is Endpoint);
+            assert(base % PAGE_SZ == 0);
+            lemma_fundamental_div_mod(base as int, PAGE_SZ as int);
+            assert(((base / PAGE_SZ) * PAGE_SZ) as usize == base);
+            assert(s2.endpoints.records@[base].value() == fresh_record());
+            assert(s2.endpoint_is_dead(base / PAGE_SZ));
+            assert(s2.tables == s1.tables);
+            assert(s2.processes == s1.processes);
+            assert(s2.root_live(process));
+            assert(s2.tables.roots@.contains_key(process));
+            lemma_slot_kept_but(s1, s2, process, ROOT_UNTYPED_SLOT, ne);
+            Self::lemma_caps_frame(s1, s2, ne, ne, u);
+            assert(s2.is_cap(u) && s2.payload_of(u) == s1.payload_of(u));
+            assert(s2.list.nodes@[lb as int].live);
+            assert(s2.list.parent@[lb] == u);
+            assert(s2.tables.owner@.contains_key(page_of(lb)));
+            lemma_owned_listed(s2, lb);
+            assert(s2.list.nodes@[u as int].depth < MAX_DEPTH);
+            assert(s2.can_retype_under(process, ROOT_UNTYPED_SLOT, base, 0));
+        }
+
+        // Retype the page under the root's untyped: the endpoint is dead, so the retype frees it.
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let r = self.reclaim(0, process, ROOT_UNTYPED_SLOT, base, Tracked(&mut steps));
+        proof {
+            assert(r is Freed);
+            assert(s2.endpoint_freed(*self, 0, process, ROOT_UNTYPED_SLOT, base));
+            assert(!s2.endpoints.records@.remove(base).contains_key(base));
+        }
+        r
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: retype a reply as witness_root_retypes_a_reply does,
+    /// delete its only capability, which leaves it dead with no reference, and retype its page under the
+    /// root's untyped again. The retype frees the page, and the reply's record is gone.
+    /// design/teardown-driven-by-retype/, design/witness-per-way-an-operation-succeeds/.
+    #[verifier::spinoff_prover]
+    pub fn witness_dead_reply_freed(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: ReclaimStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret is Freed,
+            final(self).wf(),
+            final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free,
+            !final(self).replies.records@.contains_key(base),
+    {
+        hide(CapKernel::wf);
+        let _ = self.witness_root_retypes_a_reply(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
+        let ghost s1 = *self;
+        let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
+        let ghost lb = (base + 2 * PAGE_SZ) as usize;
+        let ghost u = s1.tables.node_of(process, ROOT_UNTYPED_SLOT);
+        let ghost ep = (base / PAGE_SZ) as int;
+        let at = Position { through: None, index: WITNESS_FRAME_SLOT };
+        proof {
+            assert(s1.table_at(process, None) == Some(process));
+            assert(s1.is_cap(ne));
+            assert(s1.cap_at(process, at) == Some(ne));
+            assert(s1.can_delete_at(process, at));
+        }
+
+        // Delete the reply's capability: its last reference.
+        let ok = self.delete(process, at);
+        let ghost s2 = *self;
+        proof {
+            assert(ok is Some);
+            assert(Self::cap_deleted_at(s1, s2, process, at));
+            assert(Self::object_dropped(s1, s2, ne));
+            assert(s1.payload_of(ne).base == base);
+            let br = BlockRef::Small(base / PAGE_SZ);
+            assert(block_refs(&s1.blocks, br) == 1);
+            assert(!block_dead(&s1.blocks, br));
+            assert(block_refs(&s2.blocks, br) == 0);
+            assert(block_dead(&s2.blocks, br));
+            assert(s2.blocks.pages@[ep].kind is Base);
+            assert(s2.blocks.pages@[ep].object is Reply);
+            assert(s2.reply_is_dead(base / PAGE_SZ));
+            assert(s2.tables == s1.tables);
+            assert(s2.processes == s1.processes);
+            assert(s2.root_live(process));
+            assert(s2.tables.roots@.contains_key(process));
+            lemma_slot_kept_but(s1, s2, process, ROOT_UNTYPED_SLOT, ne);
+            Self::lemma_caps_frame(s1, s2, ne, ne, u);
+            assert(s2.is_cap(u) && s2.payload_of(u) == s1.payload_of(u));
+            assert(s2.list.nodes@[lb as int].live);
+            assert(s2.list.parent@[lb] == u);
+            assert(s2.tables.owner@.contains_key(page_of(lb)));
+            lemma_owned_listed(s2, lb);
+            assert(s2.list.nodes@[u as int].depth < MAX_DEPTH);
+            assert(s2.can_retype_under(process, ROOT_UNTYPED_SLOT, base, 0));
+        }
+
+        // Retype the page under the root's untyped: the reply is dead, so the retype frees it.
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let r = self.reclaim(0, process, ROOT_UNTYPED_SLOT, base, Tracked(&mut steps));
+        proof {
+            assert(r is Freed);
+            assert(s2.reply_freed(*self, 0, process, ROOT_UNTYPED_SLOT, base));
+            assert(!s2.replies.records@.remove(base).contains_key(base));
+        }
+        r
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
