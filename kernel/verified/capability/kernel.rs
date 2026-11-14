@@ -1021,20 +1021,31 @@ impl StaleEpochs {
         &&& self.one@.len() == NUM_1G
     }
 
-    /// Every word zero, no unmap yet, in the carve at `carve` that `raw` grants, as metadata_layout
-    /// places the three columns in it for the block table's page count. Each column's permission is
-    /// split from `raw` and each word written, so what the carve held before is not what this relies on.
-    pub fn new(carve: usize, Tracked(raw): Tracked<PointsToRaw>, Tracked(exposed): Tracked<IsExposed>) -> (ret: Self)
+    /// Every word zero, no unmap yet, in the carve at `carve`, as metadata_layout places the three
+    /// columns in it for the block table's page count. `raw` grants the carve from the stale epochs to
+    /// its end; each column's permission is split from it and each word written, so what the carve held
+    /// before is not what this relies on. What `raw` grants past the stale epochs comes back, for the
+    /// columns that follow them.
+    pub fn new(carve: usize, Tracked(raw): Tracked<PointsToRaw>, Tracked(exposed): Tracked<IsExposed>)
+        -> (ret: (Self, Tracked<PointsToRaw>))
         requires
             carve % PAGE_SZ == 0,
             carve + spec_metadata_layout(NUM_PAGES).bytes <= usize::MAX,
-            raw.is_range(carve as int, spec_metadata_layout(NUM_PAGES).bytes as int),
+            raw.is_range(
+                carve + spec_metadata_layout(NUM_PAGES).stale_pages,
+                spec_metadata_layout(NUM_PAGES).bytes - spec_metadata_layout(NUM_PAGES).stale_pages,
+            ),
             raw.provenance() == exposed@,
         ensures
-            ret.wf(),
-            forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] ret.pages@[j] == 0,
-            forall|r: int| 0 <= r < NUM_2M ==> #[trigger] ret.two@[r] == 0,
-            forall|r: int| 0 <= r < NUM_1G ==> #[trigger] ret.one@[r] == 0,
+            ret.0.wf(),
+            forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] ret.0.pages@[j] == 0,
+            forall|r: int| 0 <= r < NUM_2M ==> #[trigger] ret.0.two@[r] == 0,
+            forall|r: int| 0 <= r < NUM_1G ==> #[trigger] ret.0.one@[r] == 0,
+            ret.1@.is_range(
+                carve + spec_metadata_layout(NUM_PAGES).stale_end,
+                spec_metadata_layout(NUM_PAGES).bytes - spec_metadata_layout(NUM_PAGES).stale_end,
+            ),
+            ret.1@.provenance() == exposed@,
     {
         proof {
             assert(NUM_PAGES * PAGE_SZ <= IDENTITY_SPAN) by (compute_only);
@@ -1046,7 +1057,7 @@ impl StaleEpochs {
             assert(NUM_PAGES / PAGES_PER_1G == NUM_1G) by (compute_only);
             assert(l.stale_2m == NUM_PAGES * 8);
             assert(l.stale_1g == l.stale_2m + NUM_2M * 8);
-            assert(l.bytes == l.stale_1g + NUM_1G * 8);
+            assert(l.stale_end == l.stale_1g + NUM_1G * 8);
             assert(c % 8 == 0);
             lemma_word_aligned(c);
             lemma_word_aligned(c + l.stale_2m);
@@ -1056,15 +1067,21 @@ impl StaleEpochs {
         proof {
             assert(rest.dom() =~= Set::range(c + l.stale_2m, c + l.bytes));
         }
-        let tracked (second, third) = rest.split(Set::range(c + l.stale_2m, c + l.stale_1g));
+        let tracked (second, rest) = rest.split(Set::range(c + l.stale_2m, c + l.stale_1g));
         proof {
-            assert(third.dom() =~= Set::range(c + l.stale_1g, c + l.bytes));
+            assert(rest.dom() =~= Set::range(c + l.stale_1g, c + l.bytes));
         }
-        StaleEpochs {
+        let tracked (third, past) = rest.split(Set::range(c + l.stale_1g, c + l.stale_end));
+        proof {
+            assert(third.dom() =~= Set::range(c + l.stale_1g, c + l.stale_end));
+            assert(past.dom() =~= Set::range(c + l.stale_end, c + l.bytes));
+        }
+        let epochs = StaleEpochs {
             pages: Column::new(carve + l.stale_pages, NUM_PAGES, 0, Tracked(first), Tracked(exposed)),
             two: Column::new(carve + l.stale_2m, NUM_2M, 0, Tracked(second), Tracked(exposed)),
             one: Column::new(carve + l.stale_1g, NUM_1G, 0, Tracked(third), Tracked(exposed)),
-        }
+        };
+        (epochs, Tracked(past))
     }
 
     /// No page's last unmap is later than this epoch.
@@ -2258,7 +2275,9 @@ impl CapKernel {
         self.blocks.init(Tracked(&mut steps));
         self.cores.init();
         init_cores(&mut self.cores);
-        self.stale_epoch = StaleEpochs::new(carve, Tracked(carve_perm), Tracked(exposed));
+        // Nothing follows the stale epochs in the carve yet, so what new hands back past them is unused.
+        let (stale_epoch, _past_stale) = StaleEpochs::new(carve, Tracked(carve_perm), Tracked(exposed));
+        self.stale_epoch = stale_epoch;
         self.iommus.acked.init();
         self.iommus.zero();
         self.iommus.tlb = Tracked(iotlb);

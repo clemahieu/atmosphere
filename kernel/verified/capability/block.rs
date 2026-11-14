@@ -138,6 +138,8 @@ pub struct MetadataLayout {
     pub stale_pages: usize,
     pub stale_2m: usize,
     pub stale_1g: usize,
+    /// Where the stale epochs end: the columns that follow them start here.
+    pub stale_end: usize,
     pub bytes: usize,
 }
 
@@ -146,11 +148,13 @@ pub open spec fn spec_metadata_layout(pages: usize) -> MetadataLayout {
     let w = size_of::<usize>() as int;
     let stale_2m = pages * w;
     let stale_1g = stale_2m + (pages / PAGES_PER_2M) as int * w;
+    let stale_end = stale_1g + (pages / PAGES_PER_1G) as int * w;
     MetadataLayout {
         stale_pages: 0,
         stale_2m: stale_2m as usize,
         stale_1g: stale_1g as usize,
-        bytes: (stale_1g + (pages / PAGES_PER_1G) as int * w) as usize,
+        stale_end: stale_end as usize,
+        bytes: stale_end as usize,
     }
 }
 
@@ -165,8 +169,8 @@ pub fn metadata_layout(pages: usize) -> (l: MetadataLayout)
         l.stale_pages == 0,
         l.stale_2m == pages * size_of::<usize>(),
         l.stale_1g == l.stale_2m + (pages / PAGES_PER_2M) * size_of::<usize>(),
-        l.bytes == l.stale_1g + (pages / PAGES_PER_1G) * size_of::<usize>(),
-        l.bytes <= IDENTITY_SPAN,
+        l.stale_end == l.stale_1g + (pages / PAGES_PER_1G) * size_of::<usize>(),
+        l.stale_end <= l.bytes <= IDENTITY_SPAN,
 {
     let w = core::mem::size_of::<usize>();
     proof {
@@ -186,8 +190,8 @@ pub fn metadata_layout(pages: usize) -> (l: MetadataLayout)
     }
     let stale_2m = pages * w;
     let stale_1g = stale_2m + pages / PAGES_PER_2M * w;
-    let bytes = stale_1g + pages / PAGES_PER_1G * w;
-    MetadataLayout { stale_pages: 0, stale_2m, stale_1g, bytes }
+    let stale_end = stale_1g + pages / PAGES_PER_1G * w;
+    MetadataLayout { stale_pages: 0, stale_2m, stale_1g, stale_end, bytes: stale_end }
 }
 
 /// A page below n regions of p pages each is in one of them.
