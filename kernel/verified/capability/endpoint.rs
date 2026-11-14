@@ -76,6 +76,33 @@ pub struct QueueRecord {
     pub word: u64,
 }
 
+/// Bit 63 of a notification's word, which belongs to the kernel and is set exactly while a thread
+/// waits. See design/notification-word-reserves-the-waiter-bit/.
+pub const WAITER_BIT: u64 = 0x8000_0000_0000_0000; // not a page size: bit 63 of a notification's word
+
+/// The word of r, the record of an object o: a notification's waiter bit is set exactly while its
+/// queue lists a thread, and an endpoint's word is zero. See
+/// design/notification-word-reserves-the-waiter-bit/.
+pub open spec fn word_wf(r: QueueRecord, o: ObjectType) -> bool {
+    if o is Notification {
+        (r.word & WAITER_BIT != 0) == (r.waiters@.len() > 0)
+    } else {
+        r.word == 0
+    }
+}
+
+/// A record with a zero word and an empty queue, as a fresh one has, has a well-formed word for either
+/// object.
+pub proof fn lemma_zero_word_wf(r: QueueRecord, o: ObjectType)
+    requires
+        r.word == 0,
+        r.waiters@.len() == 0,
+    ensures
+        word_wf(r, o),
+{
+    assert(0u64 & 0x8000_0000_0000_0000u64 == 0) by (bit_vector); // not a page size: WAITER_BIT
+}
+
 /// A new endpoint's or notification's record: live, with no thread waiting and nothing signalled.
 pub open spec fn fresh_record() -> QueueRecord {
     QueueRecord { dead: false, head: NONE, tail: NONE, waiters: Ghost(Seq::empty()), receiving: false, word: 0 }
@@ -148,7 +175,7 @@ pub proof fn lemma_endpoint_pages_distinct(e: usize, u: usize)
 }
 
 /// The endpoint or notification at e has its record in its block's page. Its block's references are
-/// exactly its holders, and it is dead at once when they go.
+/// exactly its holders, it is dead at once when they go, and its word is as word_wf says.
 pub open spec fn endpoint_wf(endpoints: &Endpoints, blocks: &BlockTable, e: usize) -> bool {
     &&& e % PAGE_SZ == 0
     &&& blocks.tracks_addr(e)
@@ -160,6 +187,7 @@ pub open spec fn endpoint_wf(endpoints: &Endpoints, blocks: &BlockTable, e: usiz
     &&& endpoints.holders@.contains_key(e)
     &&& endpoints.holders@[e].len() == blocks.pages@[(e / PAGE_SZ) as int].refs
     &&& blocks.pages@[(e / PAGE_SZ) as int].refs == 0 ==> blocks.pages@[(e / PAGE_SZ) as int].dead
+    &&& word_wf(endpoints.records@[e].value(), blocks.pages@[(e / PAGE_SZ) as int].object)
 }
 
 /// Each endpoint and notification is well formed, an endpoint's or a notification's block is one of
@@ -959,6 +987,8 @@ impl CapKernel {
             post.endpoints.records@ == pre.endpoints.records@.insert(base, post.endpoints.records@[base]),
             post.endpoints.records@[base].addr() == base,
             post.endpoints.records@[base].is_init(),
+            post.endpoints.records@[base].value().word == 0,
+            post.endpoints.records@[base].value().waiters@.len() == 0,
             post.endpoints.holders@ == pre.endpoints.holders@.insert(base, set![child]),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
@@ -990,6 +1020,7 @@ impl CapKernel {
         assert forall|e: usize| #[trigger] eb.records@.contains_key(e) implies endpoint_wf(eb, b, e) by {
             if e == base {
                 assert(eb.holders@[base] == set![child]);
+                lemma_zero_word_wf(eb.records@[base].value(), b.pages@[page as int].object);
             } else {
                 assert(ea.records@.contains_key(e));
                 assert(endpoint_wf(ea, a, e));
