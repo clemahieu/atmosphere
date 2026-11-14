@@ -3,10 +3,11 @@
 
 """Boot a kernel whose timer fires for nothing, on both targets, and check that the core reports it and stops.
 
-The kernel is built with stray_timer, which arms CPU 0's timer as it enters dom0, outside the boot
-check that waits for the timer on aarch64; nothing else arms it. The kernel must then log one line
-naming the stray timer interrupt, on CPU 0, and stop that core, so dom0 never reaches its exit
-marker. x86_64 boots under KVM on this host, as tools/check-boot-stack.py boots; the run waits a
+The kernel is built with stray_timer, which arms CPU 0's timer as it enters dom0 without arming CPU 0's
+tick, outside the boot check that waits for the timer on aarch64: each core's timer is otherwise armed
+only by its tick, whose interrupt runs the selection, so this interrupt is one nothing in the kernel
+asked for. The kernel must then log one line naming the stray timer interrupt, on CPU 0, and stop that
+core, so dom0 never reaches its exit marker. x86_64 boots under KVM on this host, as tools/check-boot-stack.py boots; the run waits a
 while after the report for a second one or the marker. aarch64 boots under KVM on orangepi5, as
 tools/orangepi-stack-overflow.py boots, and the run ends at the report; when ssh cannot reach the
 board this prints tools/orangepi-kvm.py's skip line and that target passes. This command is not part

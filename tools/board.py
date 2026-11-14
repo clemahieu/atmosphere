@@ -234,6 +234,8 @@ def boot_log():
             "dom0 thread switched\n"
             "dom0 thread ran on core 1\n"
             "dom0 thread started\n"
+            "dom0 counted 41000000 in 3 turns\n"
+            "thread counted 39000000 in 3 turns\n"
             "dom0 thread suspended\n"
             "dom0 process destroyed\n"
             "dom0 eager backed 40\n"

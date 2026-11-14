@@ -58,6 +58,10 @@ pub struct Cpu {
     ///
     /// We do not support nested syscalls.
     pub syscall_sp: u64,
+
+    /// Whether this core armed its tick, so that the timer's interrupt runs the selection
+    /// (`schedule::arm_tick`).
+    pub ticking: bool,
 }
 
 /// A stack with its guard page under it. The guard is a page of its own, which [`guard_stacks`]
@@ -109,6 +113,7 @@ impl Cpu {
             arch: arch::CoreState::new(),
             syscall_stack: Stack::new(),
             syscall_sp: 0,
+            ticking: false,
         }
     }
 }

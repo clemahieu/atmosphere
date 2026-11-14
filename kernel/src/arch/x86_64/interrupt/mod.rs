@@ -259,15 +259,22 @@ unsafe extern "C" fn page_fault(regs: &mut Registers) {
     spin_forever();
 }
 
-/// The timer's interrupt, which nothing arms the timer for: reported, and the core stops.
+/// The timer's interrupt: the tick, which arms the next and runs the selection as the reschedule IPI
+/// does. On a core that did not arm its tick nothing in the kernel asked for it: reported, and the
+/// core stops.
 unsafe extern "C" fn timer(regs: &mut Registers) {
-    log::error!(
-        "CPU {}: stray timer interrupt, which nothing armed the timer for: {:#x?}",
-        crate::cpu::get_cpu_id(),
-        regs,
-    );
-    crate::debugger::breakpoint(2);
-    spin_forever();
+    if !crate::schedule::ticking() {
+        log::error!(
+            "CPU {}: stray timer interrupt, on a core that did not arm its tick: {:#x?}",
+            crate::cpu::get_cpu_id(),
+            regs,
+        );
+        crate::debugger::breakpoint(2);
+        spin_forever();
+    }
+    crate::schedule::arm_tick();
+    machine::end_of_interrupt();
+    resume_selected(regs);
 }
 
 /// Flush request from another CPU.
@@ -276,13 +283,18 @@ unsafe extern "C" fn flush_ipi(_regs: &mut Registers) {
     machine::end_of_interrupt();
 }
 
-/// The reschedule IPI: the selection, once the interrupt has ended, then the thread it leaves current,
-/// whose frame the trampoline returns with, or the wait on the syscall stack when the core runs
-/// nothing.
+/// The reschedule IPI: the selection, once the interrupt has ended.
 unsafe extern "C" fn reschedule_ipi(regs: &mut Registers) {
-    use crate::schedule::{handle_ipi, Resume};
     machine::end_of_interrupt();
-    match handle_ipi(regs, from_process(regs)) {
+    resume_selected(regs);
+}
+
+/// The selection, after the reschedule IPI or the tick that interrupted `regs` ended, then the thread
+/// it leaves current, whose frame the trampoline returns with, or the wait on the syscall stack when
+/// the core runs nothing.
+unsafe fn resume_selected(regs: &mut Registers) {
+    use crate::schedule::{handle_selection, Resume};
+    match handle_selection(regs, from_process(regs)) {
         Resume::Interrupted => {},
         Resume::Thread(resumed) => *regs = resumed,
         Resume::Idle => crate::arch::idle_on(crate::cpu::get_current().syscall_sp),

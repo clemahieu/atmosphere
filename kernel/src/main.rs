@@ -110,14 +110,18 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
         };
 
         cpu::set_online();
+        // The stray_timer build arms CPU 0's timer without its tick, in `arch::enter_userspace`.
+        #[cfg(not(feature = "stray_timer"))]
+        schedule::arm_tick();
         arch::enter_userspace(entry_point, initial_sp as *mut _, base, size);
     }
 }
 
 /// Ticks of the machine's timer the stray_timer build arms it for as CPU 0 enters dom0, in
-/// `arch::enter_userspace` before its last line: short beside dom0's run, so the interrupt arrives
-/// before dom0 finishes, and before that line, so the report shows that the kernel takes no
-/// interrupt while a line in progress holds the console's lock.
+/// `arch::enter_userspace` before its last line, without arming CPU 0's tick, so its interrupt is one
+/// nothing in the kernel asked for: short beside dom0's run, so the interrupt arrives before dom0
+/// finishes, and before that line, so the report shows that the kernel takes no interrupt while a line
+/// in progress holds the console's lock.
 #[cfg(feature = "stray_timer")]
 const STRAY_TIMER_TICKS: u64 = 10_000;
 
@@ -158,8 +162,8 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     idle()
 }
 
-/// Waits with interrupts open, so this core takes flush IPIs, and the reschedule IPI, whose handler
-/// runs the selection and enters the thread it selects.
+/// Waits with interrupts open, so this core takes flush IPIs, and the reschedule IPI and the tick,
+/// whose handlers run the selection and enter the thread it selects.
 fn idle() -> ! {
     loop {
         arch::wait();

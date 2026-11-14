@@ -87,9 +87,12 @@
 //! runs the thread in the child's space, which writes a second word into the shared frame and suspends
 //! itself, leaving core 1 running nothing; dom0 reads the word on core 0, never having left it, and
 //! prints that it held.
-//! It starts that thread, which is Runnable behind dom0 at the same priority, after a start of the
-//! console slot and of the second thread, not placed, are refused; a second start is refused, the
-//! thread being started, and dom0 places the third thread without starting it and prints that it held.
+//! It gives the first thread an entry in its child's space that counts in the shared frame, and starts it,
+//! Runnable behind dom0 at the same priority, after a start of the console slot and of the second
+//! thread, not placed, are refused; a second start is refused, the thread being started, and dom0
+//! places the third thread without starting it and prints that it held. dom0 then counts too, without
+//! entering the kernel, until it has seen the thread's count change three times, each a turn the timer
+//! gave the thread at core 0, and prints both counts.
 //! It retypes a table leaf into root entry 0 of the child's table, through the child's process
 //! capability, and derives its power capability into that entry's first slot, which inspect finds there.
 //! A destroy of an empty slot, of the console and of the power capability is refused; the destroy of the
@@ -1083,9 +1086,11 @@ const ARGUMENT_WORDS: [u64; 3] = [0, 1, 2];
 /// IPI that runs the child arrives as dom0 returns from the start, so the first read finds the word.
 const SWITCH_READS: u64 = 1 << 24;
 
-// The code the child's thread runs, from the page of dom0's image that holds it, mapped into the child's
-// space: it stores its second argument at its first, then suspends its own thread through the slot its
-// third names, which leaves its core running nothing. Aligned so it stays in one page.
+// The code the child's threads run, from the page of dom0's image that holds it, mapped into the
+// child's space. From dom0_child_entry a thread stores its second argument at its first, then suspends
+// its own thread through the slot its third names, which leaves its core running nothing; from
+// dom0_child_count it adds one to the word at its first argument, for good, and enters the kernel only
+// when the timer takes the core from it. Both fit in 64 bytes, aligned so they stay in one page.
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     ".balign 64",
@@ -1096,6 +1101,10 @@ core::arch::global_asm!(
     "mov eax, {suspend}",
     "syscall",
     "2: jmp 2b",
+    ".global dom0_child_count",
+    "dom0_child_count:",
+    "inc qword ptr [rdi]",
+    "jmp dom0_child_count",
     suspend = const operation::SUSPEND,
 );
 #[cfg(target_arch = "aarch64")]
@@ -1108,13 +1117,25 @@ core::arch::global_asm!(
     "mov x8, #{suspend}",
     "svc #0",
     "2: b 2b",
+    ".global dom0_child_count",
+    "dom0_child_count:",
+    "ldr x3, [x0]",
+    "add x3, x3, #1",
+    "str x3, [x0]",
+    "b dom0_child_count",
     suspend = const operation::SUSPEND,
 );
 
 unsafe extern "C" {
-    /// The first instruction of the child's code above.
+    /// The first instruction of the child's code above that writes a word and suspends.
     fn dom0_child_entry();
+    /// The first instruction of the child's code above that counts.
+    fn dom0_child_count();
 }
+
+/// Where the child's thread that counts keeps its count: the third word of the frame both spaces map,
+/// after SWITCHED_WORD and CORE_1_WORD.
+const CHILD_COUNT_ADDRESS: u64 = CHILD_DATA_ADDRESS + 16;
 
 /// The frame capability in dom0's table from ROOT_FRAME_SLOT, and the page in its block, that holds the
 /// page of dom0's image at `page`. dom0 knows its image by address and the capabilities by physical
@@ -1252,18 +1273,64 @@ const STARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread started\n");
 
 /// Whether dom0 starts the thread the place check placed on core 0 at dom0's own priority, 0, so that
 /// thread is Runnable behind dom0, which outranks it in nothing, and the core gets no reschedule IPI.
-/// A start of the console slot, which holds no thread, is refused, and so is one of the second thread
-/// the thread check retyped, which is not placed. The start is accepted and a second refused, the
-/// thread being Runnable. dom0 then places the third thread on core 0 without starting it, for
-/// destroyed_process_held to find its start refused once the child is dead, and prints that it held.
+/// First its frame gets the entry dom0_child_count in the child's space, where switched_thread_held
+/// mapped dom0's code and the shared frame, and CHILD_COUNT_ADDRESS as its first argument, so it counts
+/// whenever the timer gives it the core. A start of the console slot, which holds no thread, is refused,
+/// and so is one of the second thread the thread check retyped, which is not placed. The start is
+/// accepted and a second refused, the thread being Runnable. dom0 then places the third thread on core
+/// 0 without starting it, for destroyed_process_held to find its start refused once the child is dead,
+/// and prints that it held.
 fn started_thread_held(caller: &mut Tracked<Caller>) -> bool {
     let thread = first_slot(FIRST_EMPTY_ENTRY) + 1;
-    start(caller, operation::ROOT_CONSOLE_SLOT).status == operation::STATUS_REFUSED
+    let count = dom0_child_count as *const () as u64;
+    let entry = dom0_child_entry as *const () as u64;
+    count & !0xfff == entry & !0xfff
+        && set_frame_word(caller, thread, operation::PC_WORD, CHILD_CODE_ADDRESS + (count & 0xfff)) == operation::STATUS_OK
+        && set_frame_word(caller, thread, ARGUMENT_WORDS[0], CHILD_COUNT_ADDRESS) == operation::STATUS_OK
+        && start(caller, operation::ROOT_CONSOLE_SLOT).status == operation::STATUS_REFUSED
         && start(caller, thread + 1).status == operation::STATUS_REFUSED
         && start(caller, thread).status == operation::STATUS_OK
         && start(caller, thread).status == operation::STATUS_REFUSED
         && place(caller, thread + 2, operation::ROOT_CORE_SLOT, 0).status == operation::STATUS_OK
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, STARTED_HELD) } == operation::STATUS_OK
+}
+
+/// How many times dom0 sees the count of the thread it started change before it prints both counts:
+/// each change is a turn the thread had at core 0 between two of dom0's.
+const PREEMPT_TURNS: u64 = 3;
+
+/// How far dom0 counts before it gives up on the thread's turns: seconds of counting, many slices.
+const PREEMPT_COUNTS: u64 = 1 << 32;
+
+/// The starts and the end of the lines dom0 prints once the thread it started had PREEMPT_TURNS turns
+/// at core 0, which the gate looks for.
+const PREEMPTED_DOM0_HEAD: &[u8] = b"dom0 counted ";
+const PREEMPTED_THREAD_HEAD: &[u8] = b"thread counted ";
+const PREEMPTED_TAIL: &[u8] = b" in 3 turns\n";
+
+/// Whether dom0 and the thread started_thread_held started, both at priority 0 on core 0, each count
+/// while the timer hands the core between them. dom0 counts without entering the kernel, reading the
+/// thread's count at CHILD_COUNT_ADDRESS through the shared frame's mapping at SHARED_ENTRY after each
+/// of its own, until it saw that count change PREEMPT_TURNS times: the thread ran only while the timer
+/// had taken the core from dom0, and dom0 saw the change only once the timer gave it back. It prints
+/// its own count and the thread's.
+fn preempted_thread_held() -> bool {
+    let theirs = (entry_address(SHARED_ENTRY) + (CHILD_COUNT_ADDRESS - CHILD_DATA_ADDRESS)) as *const u64;
+    // switched_thread_held mapped the shared frame at SHARED_ENTRY; the thread is its only other writer.
+    let mut last = unsafe { theirs.read_volatile() };
+    let mut turns = 0;
+    let mut ours = 0;
+    while turns < PREEMPT_TURNS && ours < PREEMPT_COUNTS {
+        ours += 1;
+        let now = unsafe { theirs.read_volatile() };
+        if now != last {
+            turns += 1;
+            last = now;
+        }
+    }
+    turns == PREEMPT_TURNS
+        && print_count(PREEMPTED_DOM0_HEAD, ours, PREEMPTED_TAIL) == operation::STATUS_OK
+        && print_count(PREEMPTED_THREAD_HEAD, last, PREEMPTED_TAIL) == operation::STATUS_OK
 }
 
 /// What dom0 prints once it suspended the thread it started and started it again, which the gate
@@ -1852,6 +1919,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && switched_thread_held(caller, empty, empty + 4, empty + 6)
                                 && core_1_thread_held(caller, empty + 4)
                                 && started_thread_held(caller)
+                                && preempted_thread_held()
                                 && suspended_thread_held(caller, empty + 5)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && eager_source_held(caller, empty)

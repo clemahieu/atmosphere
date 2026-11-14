@@ -33,6 +33,11 @@ pub const FLUSH_VECTOR: u8 = 0;
 /// The reschedule IPI's interrupt, the second SGI.
 pub const RESCHEDULE_VECTOR: u8 = 1;
 
+/// Ticks of the physical count in the kernel's slice, the time a core runs a thread before the timer's
+/// interrupt runs the selection: 2 ms at the 24 MHz the Orange Pi's counter runs at, under 1 ms at
+/// QEMU's own 62.5 MHz.
+pub const SLICE_TICKS: u64 = 48_000;
+
 /// Cores a machine crate can name. The kernel asserts this is at least `verified::define::NUM_CPUS`.
 pub const MAX_CPUS: usize = 32;
 
@@ -130,6 +135,7 @@ mod tests {
         let _: u8 = crate::IOMMU_FAULT_VECTOR;
         let _: u8 = crate::FLUSH_VECTOR;
         let _: u8 = crate::RESCHEDULE_VECTOR;
+        let _: u64 = crate::SLICE_TICKS;
         let _: usize = crate::MAX_CPUS;
     }
 

@@ -25,6 +25,11 @@ pub const FLUSH_VECTOR: u8 = 34;
 /// The reschedule IPI's vector.
 pub const RESCHEDULE_VECTOR: u8 = 35;
 
+/// Ticks of the local APIC's timer in the kernel's slice, the time a core runs a thread before the
+/// timer's interrupt runs the selection: 1 ms under KVM, whose APIC timer counts at 1 GHz, times the
+/// divide the firmware leaves, which the kernel does not set.
+pub const SLICE_TICKS: u64 = 1_000_000;
+
 /// Cores a machine crate can name. The kernel asserts this is at least `verified::define::NUM_CPUS`.
 pub const MAX_CPUS: usize = 32;
 

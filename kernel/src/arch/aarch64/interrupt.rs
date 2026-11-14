@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! The IRQ entry: which interrupt arrived, its handler and its end, and the boot check that an
-//! interrupt arrives at all.
+//! The IRQ entry: which interrupt arrived, its handler and its end, the tick, and the boot check that
+//! an interrupt arrives at all.
 //!
 //! An IRQ comes through one vector whatever raised it, where the x86_64 IDT has a vector for each.
 //! The machine names the interrupt when it is acknowledged, and every interrupt it delivers is one
@@ -34,12 +34,15 @@ pub fn irq(vector: u64, frame: &mut Registers) {
         return;
     };
     if id == u32::from(machine::TIMER_VECTOR) {
-        timer(vector, id, frame);
+        if !checked(vector, id) {
+            tick(vector, frame);
+            return;
+        }
     } else if id == u32::from(machine::FLUSH_VECTOR) {
         crate::flush::handle_ipi();
     } else if id == u32::from(machine::RESCHEDULE_VECTOR) {
         machine::end_of_interrupt();
-        reschedule(vector, frame);
+        resume_selected(vector, frame);
         return;
     } else if id == u32::from(machine::IOMMU_FAULT_VECTOR) {
         log::error!("CPU {}: IOMMU fault: {:#x?}", crate::cpu::get_cpu_id(), frame);
@@ -52,28 +55,37 @@ pub fn irq(vector: u64, frame: &mut Registers) {
     machine::end_of_interrupt();
 }
 
-/// The reschedule IPI, once it has ended: the selection, then the thread it leaves current, entered
-/// with SP_EL1 at the syscall stack's top whether the IRQ came from the thread or from the core's
-/// wait, or the wait when the core runs nothing.
-fn reschedule(vector: u64, frame: &Registers) {
-    use crate::schedule::{handle_ipi, Resume};
+/// The selection, once the reschedule IPI or the tick has ended, then the thread it leaves current,
+/// entered with SP_EL1 at the syscall stack's top whether the IRQ came from the thread or from the
+/// core's wait, or the wait when the core runs nothing.
+fn resume_selected(vector: u64, frame: &Registers) {
+    use crate::schedule::{handle_selection, Resume};
     let syscall_sp = crate::cpu::get_current().syscall_sp;
-    match handle_ipi(frame, vector == IRQ_FROM_EL0) {
+    match handle_selection(frame, vector == IRQ_FROM_EL0) {
         Resume::Interrupted => {},
         Resume::Thread(resumed) => unsafe { super::exception::enter(&resumed, syscall_sp) },
         Resume::Idle => unsafe { super::idle_on(syscall_sp) },
     }
 }
 
-/// The timer's interrupt: the check's, when it is waiting for one. Nothing else arms the timer, so
-/// any other is reported, and the core stops.
-fn timer(vector: u64, id: u32, frame: &Registers) {
+/// Whether the timer's interrupt, taken through `vector` as `id`, is the boot check's, which is
+/// waiting for one.
+fn checked(vector: u64, id: u32) -> bool {
     let taken = vector << VECTOR_SHIFT | u64::from(id);
-    if CHECK.compare_exchange(ARMED, taken, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-        return;
+    CHECK.compare_exchange(ARMED, taken, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+}
+
+/// The timer's interrupt outside the boot check: the tick, which arms the next and, once the interrupt
+/// has ended, runs the selection as the reschedule IPI does. On a core that did not arm its tick nothing
+/// in the kernel asked for it: reported, and the core stops.
+fn tick(vector: u64, frame: &Registers) {
+    if !crate::schedule::ticking() {
+        log::error!("CPU {}: stray timer interrupt, on a core that did not arm its tick: {:#x?}", crate::cpu::get_cpu_id(), frame);
+        unsafe { spin_forever() };
     }
-    log::error!("CPU {}: stray timer interrupt, outside the boot check: {:#x?}", crate::cpu::get_cpu_id(), frame);
-    unsafe { spin_forever() };
+    crate::schedule::arm_tick();
+    machine::end_of_interrupt();
+    resume_selected(vector, frame);
 }
 
 /// Shots of the timer the check takes. The second arrives only when the first was ended and the
