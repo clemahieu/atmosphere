@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf and of a process and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -60,6 +60,11 @@
 //! a word naming no position and of a block that is not free is refused, and a second leaf into entry 3
 //! through its own process capability, after entry 2 named through it is refused; inspect refuses each
 //! leaf's first slot until a derive of the power capability into it, after which inspect finds it there.
+//! It retypes 32 threads bound to the child process into the slots of root entry 2 after the first,
+//! after a retype bound to the console slot or to an empty slot, neither holding a process, and one at a
+//! base not aligned to the block are refused; inspect finds a thread with control in the first slot, a
+//! second retype of its block is refused, and dom0 prints the best and the mean cycles of a thread's
+//! retype beside new_thread's before numbers.
 //! It retypes a third leaf into root entry 4 and derives into its first slot a child untyped of 64 pages
 //! of the gigabyte untyped, from which aeager's eager span source backs page runs of a window in root
 //! entry 3 of its space; aeager's verified exercise reserves a span, backs it a page at a time until the
@@ -829,6 +834,75 @@ fn retyped_process_held(caller: &mut Tracked<Caller>, untyped: u64, table: u64, 
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, PROCESS_HELD) } == operation::STATUS_OK
 }
 
+/// How far below the top of the gigabyte untyped the thread check's blocks start: the 32 order-1 blocks
+/// from there end at PROCESS_BELOW_TOP, below every page the checks before it may take from that top and
+/// above the eager source's leaf and block, where nothing else retypes.
+const THREADS_BELOW_TOP: u64 = PROCESS_BELOW_TOP + TIMED_THREADS * THREAD_BYTES;
+
+/// The bytes of a thread's block, order 1.
+const THREAD_BYTES: u64 = 2 * 4096;
+
+/// The order of a thread's block.
+const THREAD_ORDER: u64 = 1;
+
+/// How many threads dom0 retypes into its child and times, as many as the before number's run made.
+const TIMED_THREADS: u64 = 32;
+
+/// The before numbers for a thread's creation, logs/cutover-before.log: new_thread took 57405 TSC cycles
+/// at best and 59384 on average over 32 threads.
+const THREAD_BEST_TAIL: &[u8] = b" before 57405\n";
+const THREAD_MEAN_TAIL: &[u8] = b" before 59384\n";
+
+/// What dom0 prints once the thread check held, which the gate looks for.
+const THREADS_HELD: [u64; 5] = operation::print_words(b"dom0 threads retyped\n");
+
+/// Whether dom0 retypes TIMED_THREADS threads under the gigabyte untyped, the last from `empty` down,
+/// into the child process whose capability is in `process`, from the order-1 blocks from
+/// THREADS_BELOW_TOP below the untyped's top, into the slots of
+/// root entry FIRST_EMPTY_ENTRY after the first, which the leaf check filled: a retype bound to the
+/// console slot or to an empty slot, neither holding a process, and one at a base not aligned to the
+/// block, are refused; each of the threads is accepted, timed, and inspect finds the first a thread with
+/// control at its block; and a second retype of the first block is refused. dom0 prints the best and the
+/// mean cycles of a retype beside the before numbers.
+fn retyped_threads_held(caller: &mut Tracked<Caller>, empty: u64, process: u64) -> bool {
+    let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
+        return false;
+    };
+    let base = block.base + (4096 << block.order) - THREADS_BELOW_TOP;
+    let first = first_slot(FIRST_EMPTY_ENTRY) + 1;
+    let retype_thread = |caller: &mut Tracked<Caller>, base: u64, slot: u64, process: u64| {
+        retype(caller, untyped, operation::RETYPE_THREAD, base, slot, process).status
+    };
+    if retype_thread(caller, base, first, operation::ROOT_CONSOLE_SLOT) != operation::STATUS_REFUSED
+        || retype_thread(caller, base, first, first + 1) != operation::STATUS_REFUSED
+        || retype_thread(caller, base + 4096, first, process) != operation::STATUS_REFUSED
+    {
+        return false;
+    }
+    let mut best = u64::MAX;
+    let mut total = 0;
+    for k in 0..TIMED_THREADS {
+        let start = rdtsc();
+        let status = retype_thread(caller, base + k * THREAD_BYTES, first + k, process);
+        let cycles = rdtsc().wrapping_sub(start);
+        if status != operation::STATUS_OK {
+            return false;
+        }
+        best = best.min(cycles);
+        total += cycles;
+    }
+    matches!(
+        inspect(caller, first),
+        Ok(thread) if thread.kind == operation::KIND_THREAD
+            && thread.base == base
+            && thread.order == THREAD_ORDER
+            && thread.rights == RIGHT_CONTROL
+    ) && retype_thread(caller, base, first + TIMED_THREADS, process) == operation::STATUS_REFUSED
+        && print_count(b"thread best ", best, THREAD_BEST_TAIL) == operation::STATUS_OK
+        && print_count(b"thread mean ", total / TIMED_THREADS, THREAD_MEAN_TAIL) == operation::STATUS_OK
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, THREADS_HELD) } == operation::STATUS_OK
+}
+
 /// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
 /// into the empty slot `destination`, repeating while retype returns again, and prints how many again
 /// returns that took: a retype at a base not aligned to 2M is refused, the retype returns again at least
@@ -1060,7 +1134,7 @@ const EAGER_PAGES: usize = 64;
 const EAGER_ORDER: u64 = EAGER_PAGES.trailing_zeros() as u64;
 
 /// How far below the top of the gigabyte untyped the eager source's block starts, clear of the pages the
-/// frame, table page and leaf checks take from that top.
+/// frame, table page, leaf and thread checks take from that top.
 const EAGER_BELOW_TOP: u64 = 256 * 4096;
 
 /// The address of the eager source's window: the start of root entry 3 of dom0's space, past
@@ -1333,6 +1407,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && freed_frame_retyped(caller, untyped, empty + 3)
                                 && retyped_process_held(caller, untyped, tables[0], empty + 4)
                                 && retyped_leaves_held(caller, untyped, tables[3])
+                                && retyped_threads_held(caller, empty, empty + 4)
                                 && eager_source_held(caller, empty)
                         })
             })

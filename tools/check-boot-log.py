@@ -5,8 +5,8 @@
 
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
-design/test-guest-memory/), dom0's check line, exit marker, eager source line, heap line, freed frame line and process line, CPU 1
-idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+design/test-guest-memory/), dom0's check line, exit marker, eager source line, heap line, freed frame
+line, process line, thread line and thread times, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -48,6 +48,14 @@ FREED_LINE = "dom0 freed frame retyped"
 # The line dom0 prints once it retyped a child process from an untyped and inspect found it, after the
 # retypes a process must refuse were refused.
 PROCESS_LINE = "dom0 process retyped"
+
+# The line dom0 prints once it retyped threads bound to its child process and inspect found one, after the
+# retypes a thread must refuse were refused.
+THREADS_LINE = "dom0 threads retyped"
+
+# The lines dom0 prints before THREADS_LINE: the best and the mean cycles of a thread's retype, each beside
+# new_thread's before number.
+THREAD_TIMES = re.compile(r"thread best \d+ before 57405\r?\nthread mean \d+ before 59384\r?$", re.M)
 
 # What the kernel logs of the root's untyped and frame capabilities, before it prints each slot.
 ROOT_HOLDS = "root holds "
@@ -175,6 +183,10 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused(f'the serial log does not show dom0 retyping a freed frame: "{FREED_LINE}"')
     if not line_printed(serial, PROCESS_LINE):
         raise Refused(f'the serial log does not show dom0 retyping a child process: "{PROCESS_LINE}"')
+    if not line_printed(serial, THREADS_LINE):
+        raise Refused(f'the serial log does not show dom0 retyping threads into its child: "{THREADS_LINE}"')
+    if not THREAD_TIMES.search(serial):
+        raise Refused("the serial log does not show a thread retype's best and mean cycles beside the before numbers")
     if not second_core_idle(serial):
         raise Refused("the serial log does not show CPU 1 idle on a syscall stack of its own")
     if FLUSH_ACKNOWLEDGED not in serial:
@@ -182,7 +194,8 @@ def boot_log_accepted(serial, arch, translation=False):
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line and process line, CPU 1 idle on its own stack, "
+            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, "
+            f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
         return held
@@ -224,6 +237,9 @@ def boot_log():
     return (slot_lines("frame")
             + "dom0 freed frame retyped\n"
             "dom0 process retyped\n"
+            "thread best 31000 before 57405\n"
+            "thread mean 33000 before 59384\n"
+            "dom0 threads retyped\n"
             "dom0 eager backed 40\n"
             "dom0 heap allocator held\n"
             "dom0 slot checks held\n"
@@ -254,6 +270,8 @@ class Tests(unittest.TestCase):
             ("dom0 heap allocator held\n", "heap allocator"),
             ("dom0 freed frame retyped\n", "freed frame"),
             ("dom0 process retyped\n", "child process"),
+            ("dom0 threads retyped\n", "threads"),
+            ("thread mean 33000 before 59384\n", "mean cycles"),
             ("dom0 capability done\n", "exit marker"),
             ("CPU 1 idle, syscall stack 0x2000\n", "CPU 1 idle"),
             ("flush IPI acknowledged by CPU 1\n", "flush IPI"),
@@ -266,6 +284,9 @@ class Tests(unittest.TestCase):
 
     def test_the_eager_line_names_forty_pages(self):
         self.assertIn("eager source", self.refused(boot_log().replace("backed 40\n", "backed 39\n")))
+
+    def test_the_thread_times_stand_beside_the_before_numbers(self):
+        self.assertIn("mean cycles", self.refused(boot_log().replace("before 57405", "before 1")))
 
     def test_a_slot_of_another_kind_is_named(self):
         self.assertIn("not power", self.refused(boot_log().replace("root slot 4: power", "root slot 4: console")))
