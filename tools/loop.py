@@ -28,10 +28,13 @@ in <project root>/loop.toml every 5 s (1 when the table is absent). A larger num
 smaller one stops the newest after their run in flight. Each worker is one Beads actor, loop-<pid>, for
 every session it runs (.claude/hooks/beads-actor.sh), so an issue a round hands to the prover, or leaves
 for a retry, stays held between the two sessions, and workers of one pool claim, recover and wait on
-one another as separate loops do. A worker that stops by itself because nothing is left (`Loop: stop`, or
-no matching work with no other loop active) exits with status 3, and the pool then stops the others and
-ends with status 0. A worker that ends with status 1 (four failures in a row, or a configuration error)
-is not replaced until `jobs` changes; the pool ends with status 1 when no worker is left. Workers' lines
+one another as separate loops do. A pre-claim is one step under <project root>/logs/loop/.claim.lock: the
+worker starts a session on a leaf only when that claim holds it, and a leaf already in progress under
+another live actor is left with that actor. A worker that stops by itself because nothing is left
+(`Loop: stop`, or no matching work with no other loop active) exits with status 3, and the pool then
+stops the others and ends with status 0. A worker that ends with status 1 (four failures in a row, or a
+configuration error) is not replaced until `jobs` changes; the pool ends with status 1 when no worker is
+left. Workers' lines
 carry their pid after the time.
 
 Each session's temporary directory is <project root>/scratch, on disk: the loop sets TMPDIR, which the
@@ -212,6 +215,7 @@ MAIN = ROOT / "main"
 PIDS = ROOT / "logs" / "loop"
 STATE_FILE = "state.json"
 STATE_LOCK = ".state.lock"
+CLAIM_LOCK = ".claim.lock"
 SESSIONS_FILE = "sessions.sqlite"
 SESSIONS_LOCK = ".sessions.lock"
 SESSION_COLUMNS = (("actor", "TEXT"), ("session", "TEXT"), ("issue", "TEXT"), ("work_kind", "TEXT"), ("route", "TEXT"),
@@ -1446,7 +1450,7 @@ class Loop:
                     continue
                 abandoned = True
             elif m := re.fullmatch(r"loop-([0-9]+)", assignee):
-                abandoned = not loop_alive(int(m.group(1)))
+                abandoned = not self.alive(int(m.group(1)))
             elif m := re.fullmatch(r"claude-([0-9]+)", assignee):
                 abandoned = not claude_alive(int(m.group(1)))
             else:
@@ -1466,6 +1470,40 @@ class Loop:
         if issue_id in held:
             self.beads("update", issue_id, "-s", "open", "--assignee", "")
 
+    def actor_live(self, assignee):
+        """Whether `assignee` is a loop or a claude session that is still running.
+
+        Any other name is treated as live, so a pre-claim does not take an issue the human holds."""
+        if m := re.fullmatch(r"loop-([0-9]+)", assignee):
+            return self.alive(int(m.group(1)))
+        if m := re.fullmatch(r"claude-([0-9]+)", assignee):
+            return claude_alive(int(m.group(1)))
+        return True
+
+    def claim_leaf(self, issue_id):
+        """Claim `issue_id` for this worker. False when it must not start a session on the leaf.
+
+        The lock makes the check and the claim one step across workers. A leaf already in progress
+        under another live actor is left there. A claim that bd accepts is kept only when this worker
+        holds the leaf afterwards: a claim can land for more than one caller, and the assignee is what
+        decides. When bd show gives nothing back, the claim's exit is what there is to go on."""
+        self.pids.mkdir(parents=True, exist_ok=True)
+        with open(self.pids / CLAIM_LOCK, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            shown = self.shown_issue(issue_id)
+            if shown is not None:
+                assignee = shown.get("assignee") or ""
+                if (shown.get("status") == "in_progress" and assignee and assignee != self.actor
+                        and self.actor_live(assignee)):
+                    return False
+            ok, _ = self.beads_run("update", issue_id, "--claim")
+            if not ok:
+                return False
+            shown = self.shown_issue(issue_id)
+            if shown is None:
+                return True
+            return shown.get("status") == "in_progress" and (shown.get("assignee") or "") == self.actor
+
     def other_loop_alive(self):
         if not self.pids.exists():
             return False
@@ -1478,7 +1516,9 @@ class Loop:
     def inspect_work(self, claim=False):
         """Inspect Beads at zero token cost for the routes of loop.toml.
 
-        When claim=True, atomically claims the first matching non-cooled-down stage or leaf so no peer loop races it.
+        When claim=True, claims the first matching stage or leaf under the claim lock. A worker whose
+        claim does not hold the leaf, or that finds it already in progress under another live actor,
+        starts no session on it.
         Returns (action, payload, summary_dict).
         """
         self.tune()
@@ -1509,11 +1549,9 @@ class Loop:
                         cooled.append((rkey, leaf["id"], waits))
                     continue
                 matched_stages.append((sname, leaf["id"], leaf.get("title", ""), spec))
-                if claim:
-                    ok, _ = self.beads_run("update", leaf["id"], "--claim")
-                    if ok:
-                        self.kinds[leaf["id"]] = classify_issue(leaf, by_id)
-                        return f"stage:{sname}", (leaf["id"], rkey, spec), {}
+                if claim and self.claim_leaf(leaf["id"]):
+                    self.kinds[leaf["id"]] = classify_issue(leaf, by_id)
+                    return f"stage:{sname}", (leaf["id"], rkey, spec), {}
                 break
 
         # 2. Plain ready leaves whose kind has a route (skipping leaves waiting on another stage).
@@ -1531,11 +1569,9 @@ class Loop:
                     cooled.append((kind, leaf["id"], waits))
                 continue
             matched_leaves.append((kind, leaf["id"], leaf.get("title", ""), spec))
-            if claim:
-                ok, _ = self.beads_run("update", leaf["id"], "--claim")
-                if ok:
-                    self.kinds[leaf["id"]] = kind
-                    return "leaf", (leaf["id"], kind, spec), {}
+            if claim and self.claim_leaf(leaf["id"]):
+                self.kinds[leaf["id"]] = kind
+                return "leaf", (leaf["id"], kind, spec), {}
 
         # 3. Epic rounds (finished epics first via tools/reviews.py, then childless ready epics).
         all_list, _ = ensure_all()
@@ -2695,6 +2731,137 @@ class Tests(unittest.TestCase):
             ]))
             self.assertEqual(loop.drive(once=True), 0)
             self.assertIn("Epic round only", self.log(folder, "claude")[1][-2])
+
+    def test_several_workers_preclaiming_one_ready_leaf_start_one_session(self):
+        # Each claim lands and overwrites the assignee, which is what several workers of one pool did
+        # to a single needs-land leaf. Ready keeps listing it, as each worker's snapshot already had.
+        stealing = textwrap.dedent("""\
+            import fcntl, json, os, sys
+            folder = os.environ["FAKE"]
+            args = sys.argv[1:]
+            with open(os.path.join(folder, "bd.log"), "a") as log:
+                fcntl.flock(log, fcntl.LOCK_EX)
+                log.write(json.dumps(args) + "\\n")
+
+            def with_state(change):
+                with open(os.path.join(folder, ".bd.lock"), "a") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    path = os.path.join(folder, "claim-state.json")
+                    if os.path.exists(path):
+                        state = json.loads(open(path).read())
+                    else:
+                        ready = json.loads(open(os.path.join(folder, "ready.json")).read())
+                        state = {item["id"]: dict(item, status=item.get("status") or "open",
+                                                  assignee=item.get("assignee") or "") for item in ready}
+                    result = change(state)
+                    open(path, "w").write(json.dumps(state))
+                    return result
+
+            if args[:2] == ["ready", "--exclude-type=epic"]:
+                print(open(os.path.join(folder, "ready.json")).read())
+            elif args[:3] == ["list", "-s", "in_progress"]:
+                def rows(state):
+                    held = [item for item in state.values() if item.get("status") == "in_progress"]
+                    if "--assignee" in args:
+                        who = args[args.index("--assignee") + 1]
+                        held = [item for item in held if item.get("assignee") == who]
+                    return held
+                print(json.dumps(with_state(rows)))
+            elif args[:1] == ["show"] and "--json" in args:
+                print(json.dumps(with_state(lambda state: [state[args[1]]] if args[1] in state else [])))
+            elif args[:1] == ["update"] and "--claim" in args:
+                actor = os.environ.get("BEADS_ACTOR", "")
+                def claim(state):
+                    item = state.get(args[1])
+                    if item is not None:
+                        item["status"] = "in_progress"
+                        item["assignee"] = actor
+                with_state(claim)
+            elif args[:1] == ["update"] and "-s" in args:
+                def edit(state):
+                    item = state.get(args[1])
+                    if item is None:
+                        return
+                    item["status"] = args[args.index("-s") + 1]
+                    if "--assignee" in args:
+                        item["assignee"] = args[args.index("--assignee") + 1]
+                with_state(edit)
+            elif args[:2] in (["list", "--all"], ["ready", "-t"]):
+                print("[]")
+            """)
+        sleeping = textwrap.dedent("""\
+            import fcntl, json, os, sys, time
+            folder = os.environ["FAKE"]
+            with open(os.path.join(folder, "claude.log"), "a") as log:
+                fcntl.flock(log, fcntl.LOCK_EX)
+                log.write(json.dumps(sys.argv[1:]) + "\\n")
+            with open(os.path.join(folder, "claude.pids"), "a") as pids:
+                fcntl.flock(pids, fcntl.LOCK_EX)
+                pids.write(str(os.getpid()) + "\\n")
+            time.sleep(120)
+            print(json.dumps({"type": "result", "subtype": "success", "result": "Loop: stop\\n",
+                              "num_turns": 1, "usage": {}}))
+            """)
+        runner = textwrap.dedent("""\
+            import importlib.util, os, sys
+            path = sys.argv[1]
+            spec = importlib.util.spec_from_file_location("loop_under_test", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            folder = os.environ["FAKE"]
+            loop = mod.Loop(claude=os.path.join(folder, "claude"), bd=os.path.join(folder, "bd"),
+                            notifier="no-such-notifier", cwd=folder, pids=folder,
+                            config=os.path.join(folder, "loop.toml"), scratch=os.path.join(folder, "scratch"),
+                            sleep=lambda seconds: None, now=lambda: 0.0, out=open(os.devnull, "w"))
+            raise SystemExit(loop.drive(once=True))
+            """)
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "loop.toml").write_text(self.OFFERINGS + '[routes.needs-land]\ncandidates = ["sonnet"]\n'
+                                              '[routes.tool]\ncandidates = ["sonnet"]\n')
+            (folder / "ready.json").write_text(json.dumps([{
+                "id": "atmo-1.1", "title": "Land the proof", "issue_type": "task", "priority": 1,
+                "labels": ["kind:proof", "stage:needs-land"]}]))
+            for name, text in (("bd", stealing), ("claude", sleeping), ("runner.py", runner)):
+                path = folder / name
+                path.write_text(f"#!{sys.executable}\n{text}")
+                path.chmod(0o755)
+            env = os.environ.copy()
+            env["FAKE"] = str(folder)
+            procs = [subprocess.Popen([sys.executable, str(folder / "runner.py"), str(Path(__file__).resolve())],
+                                      env=env, start_new_session=True)
+                     for _ in range(3)]
+            try:
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    started = len(self.log(folder, "claude"))
+                    exited = sum(proc.poll() is not None for proc in procs)
+                    if started + exited >= len(procs) and started >= 1:
+                        time.sleep(0.2)
+                        break
+                    time.sleep(0.05)
+                calls = self.log(folder, "claude")
+                prompts = [arg for call in calls for arg in call if "atmo-1.1 is yours" in arg]
+            finally:
+                for proc in procs:
+                    if proc.poll() is None:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    proc.wait()
+                pids = folder / "claude.pids"
+                if pids.exists():
+                    for line in pids.read_text().splitlines():
+                        if not line:
+                            continue
+                        try:
+                            os.kill(int(line), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(prompts, ["Run one round. Issue atmo-1.1 is yours "
+                                       "(claimed for route needs-land; take no other issue)."])
 
     def test_disabled_hand_off_routes_stamp_stage_labels_and_a_loop_routing_them_runs_them(self):
         with tempfile.TemporaryDirectory() as folder:
