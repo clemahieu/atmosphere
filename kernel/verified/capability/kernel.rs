@@ -1676,6 +1676,7 @@ impl CapKernel {
         &&& current_wf(self.cores@, self.threads.records@)
         &&& placed_running_wf(self.threads.records@)
         &&& queues_wf(&self.threads.queues, self.threads.records@)
+        &&& waits_wf(self.endpoints.records@, self.threads.records@)
         &&& bindings_wf(&self.list, &self.threads, &self.processes)
         &&& binding_parents(&self.list, &self.tables, &self.threads)
         &&& placements_wf(&self.list, &self.tables, &self.threads)
@@ -2221,6 +2222,9 @@ impl CapKernel {
             reveal(placements_wf);
             reveal(device_bindings_wf);
             reveal(badges_inherited);
+            lemma_waits_empty();
+            assert(self.endpoints.records@ == Map::<usize, PointsTo<QueueRecord>>::empty());
+            assert(self.threads.records@ == Map::<usize, PointsTo<ThreadRecord>>::empty());
             assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(self.cores@, c, t) implies false by {
                 assert(self.cores@[c].current_thread is None);
             }

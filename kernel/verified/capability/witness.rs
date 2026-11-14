@@ -2064,9 +2064,9 @@ impl CapKernel {
     /// process's two, the capability and the binding, no core has the process's space loaded, its
     /// table has the one leaf, and the three slots hold what the steps put there. The thread
     /// capability and the derived untyped have no child, and the process capability's only child is
-    /// the binding. The process is live, the thread inactive and bound to it, the flush epoch still 0,
-    /// the process's space empty outside the kernel's entries, and the leaf live and hidden, owned by
-    /// root entry 0 of the process's table, with no live node past its slot 1.
+    /// the binding. The process is live, the thread inactive, bound to it and in no wait queue, the
+    /// flush epoch still 0, the process's space empty outside the kernel's entries, and the leaf live
+    /// and hidden, owned by root entry 0 of the process's table, with no live node past its slot 1.
     pub fn witness_process_holds_capability(
         &mut self,
         root: Ghost<usize>,
@@ -2127,6 +2127,7 @@ impl CapKernel {
                 &&& final(self).threads.records@[thread].value().state is Inactive
                 &&& !final(self).threads.records@[thread].value().dying
                 &&& final(self).threads.records@[thread].value().process == Some(base)
+                &&& final(self).threads.records@[thread].value().queued == NONE
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& forall|i: usize| i < ENTRIES && !holds_kernel(SpaceKind::Process, i)
                     ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
@@ -2759,6 +2760,8 @@ impl CapKernel {
             assert(THREAD_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
             assert(r0.payload_of(nt) == thread_of(bt));
             assert(r0.can_destroy(process, WITNESS_THREAD_SLOT));
+            // No wait queue lists the thread, from its retype to its free: no step here queues it.
+            assert(r0.threads.records@[bt].value().queued == NONE);
         }
 
         // Destroy the thread, through its capability in slot 258 of the root's table. It runs on no
@@ -2774,6 +2777,7 @@ impl CapKernel {
             assert(r1.processes == r0.processes);
             assert(r1.threads.records@[bt].value().state is Dead);
             assert(r1.threads.records@[bt].value().process == Some(base));
+            assert(r1.threads.records@[bt].value().queued == NONE);
             assert(r1.root_live(process));
             assert(r1.table_at(process, None) == Some(process));
             assert(r1.slot_holds(process, WITNESS_THREAD_SLOT, nt, thread_of(bt)));
@@ -2797,6 +2801,7 @@ impl CapKernel {
             lemma_deleted_dead(r2, nt);
             assert(r2.tables == r0.tables);
             assert(r2.threads.records == r1.threads.records);
+            assert(r2.threads.records@[bt].value().queued == NONE);
             assert(r2.root_live(process));
             lemma_slot_kept_but(r1, r2, process, ROOT_UNTYPED_SLOT, nt);
             Self::lemma_caps_frame(r1, r2, nt, nt, u);
@@ -2827,6 +2832,7 @@ impl CapKernel {
             assert(Self::unbound(r2, r3, bt));
             assert(same_thread_but_links(r3.threads.records@[bt].value(), unbound_record(r2.threads.records@[bt].value())));
             assert(r3.threads.records@[bt].value().process is None);
+            assert(r3.threads.records@[bt].value().queued == NONE);
             assert forall|k: int| 0 <= k < NODES_PER_PAGE implies !(#[trigger] r3.list.nodes@[bt + k]).live by {
                 if k != 0 {
                     assert(r3.list.nodes@[bt + k].live == r2.list.nodes@[bt + k].live);

@@ -482,6 +482,9 @@ impl CapKernel {
                 placement: None,
                 run_prev: NONE,
                 run_next: NONE,
+                queued: NONE,
+                wait_prev: NONE,
+                wait_next: NONE,
             }),
             final(self).list.is_child((leaf + 1) as usize, t),
             final(self).list.nodes@[t as int].kind is Binding,
@@ -659,6 +662,9 @@ impl CapKernel {
                 placement: None,
                 run_prev: NONE,
                 run_next: NONE,
+                queued: NONE,
+                wait_prev: NONE,
+                wait_next: NONE,
             }));
             assert(thread_process(&post.threads, t) == Some(process));
             assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
@@ -943,6 +949,9 @@ impl CapKernel {
                 placement: None,
                 run_prev: NONE,
                 run_next: NONE,
+                queued: NONE,
+                wait_prev: NONE,
+                wait_next: NONE,
             }),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
                 <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))),
@@ -2064,6 +2073,7 @@ impl CapKernel {
             reveal(placed_running_wf);
         }
         lemma_queues_thread_added(&pre.threads.queues, pre.threads.records@, post.threads.records@, base);
+        lemma_waits_thread_added(pre.endpoints.records@, pre.threads.records@, post.threads.records@, base);
         lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
         Self::lemma_binding_parents_same_caps(pre, post);

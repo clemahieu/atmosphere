@@ -63,9 +63,12 @@ pub const NOTIFICATION_RIGHTS: u32 = 48;
 pub struct QueueRecord {
     /// Destroyed; its block waits for its references to go.
     pub dead: bool,
-    /// The first and last thread waiting on it, 0 when none waits.
+    /// The first and last thread its queue lists, `NONE` when it lists none.
     pub head: usize,
     pub tail: usize,
+    /// The threads its queue lists, head first, linked through their `wait_prev` and `wait_next`:
+    /// see `waits_wf`.
+    pub waiters: Ghost<Seq<usize>>,
     /// An endpoint's waiting threads receive rather than send.
     pub receiving: bool,
     /// A notification's word: the badges signalled since the last wait, with bit 63 set while a thread
@@ -75,7 +78,7 @@ pub struct QueueRecord {
 
 /// A new endpoint's or notification's record: live, with no thread waiting and nothing signalled.
 pub open spec fn fresh_record() -> QueueRecord {
-    QueueRecord { dead: false, head: 0, tail: 0, receiving: false, word: 0 }
+    QueueRecord { dead: false, head: NONE, tail: NONE, waiters: Ghost(Seq::empty()), receiving: false, word: 0 }
 }
 
 /// An endpoint capability's payload.
@@ -175,6 +178,166 @@ pub open spec fn endpoints_wf(list: &Tree, tables: &Tables, endpoints: &Endpoint
         &&& queue_kind(tables.payload_of(n).kind)
         &&& tables.payload_of(n).base == e
     }
+}
+
+/// Thread s[i], the i-th listed by the queue of the object at e, has a record naming e as the object
+/// whose queue lists it, and links to its neighbours in s, `NONE` at either end.
+pub open spec fn waiter_linked(s: Seq<usize>, threads: Map<usize, PointsTo<ThreadRecord>>, e: usize, i: int) -> bool {
+    let t = s[i];
+    &&& threads.contains_key(t)
+    &&& threads[t].value().queued == e
+    &&& threads[t].value().wait_prev == if i == 0 { NONE } else { s[i - 1] }
+    &&& threads[t].value().wait_next == if i + 1 == s.len() { NONE } else { s[i + 1] }
+}
+
+/// The queue of r, the record of the object at e, which is not `NONE`: its head and tail are the
+/// first and last thread it lists, `NONE` when it lists none, and each listed thread appears once and
+/// is linked.
+pub open spec fn wait_queue_wf(r: QueueRecord, threads: Map<usize, PointsTo<ThreadRecord>>, e: usize) -> bool {
+    let s = r.waiters@;
+    &&& e != NONE
+    &&& s.no_duplicates()
+    &&& r.head == if s.len() == 0 { NONE } else { s[0] }
+    &&& r.tail == if s.len() == 0 { NONE } else { s.last() }
+    &&& forall|i: int| 0 <= i < s.len() ==> #[trigger] waiter_linked(s, threads, e, i)
+}
+
+/// Every endpoint's and notification's queue is well formed; a thread naming an object as the one
+/// whose queue lists it is listed there, so it is in one queue only; and a thread Blocked on an object
+/// is listed in that object's queue, which makes the object an endpoint or a notification, so a match
+/// can reach it. A listed thread need not be Blocked on the object: one suspended, unbound or
+/// destroyed while Blocked stays listed, stale, until a match skips it. See
+/// design/ipc-with-reply-object/. Opaque, as queues_wf is, so that its thread quantifiers do not fire
+/// in every proof that mentions a record.
+#[verifier::opaque]
+pub open spec fn waits_wf(queues: Map<usize, PointsTo<QueueRecord>>, threads: Map<usize, PointsTo<ThreadRecord>>) -> bool {
+    &&& forall|e: usize| #[trigger] queues.contains_key(e) ==> wait_queue_wf(queues[e].value(), threads, e)
+    &&& forall|t: usize| #[trigger] threads.contains_key(t) && threads[t].value().queued != NONE ==> {
+        &&& queues.contains_key(threads[t].value().queued)
+        &&& queues[threads[t].value().queued].value().waiters@.contains(t)
+    }
+    &&& forall|t: usize| #[trigger] threads.contains_key(t) && threads[t].value().state is Blocked ==> {
+        &&& threads[t].value().state->Blocked_object != NONE
+        &&& threads[t].value().queued == threads[t].value().state->Blocked_object
+    }
+}
+
+/// Thread record b keeps a's place in the wait queues: the same queue and links, and Blocked only as
+/// a was.
+pub open spec fn keeps_wait(a: ThreadRecord, b: ThreadRecord) -> bool {
+    &&& b.queued == a.queued
+    &&& b.wait_prev == a.wait_prev
+    &&& b.wait_next == a.wait_next
+    &&& b.state is Blocked ==> b.state == a.state
+}
+
+/// A queue record's queue as it was: the same head, tail and listed threads.
+pub open spec fn same_queue(a: QueueRecord, b: QueueRecord) -> bool {
+    &&& a.head == b.head
+    &&& a.tail == b.tail
+    &&& a.waiters@ == b.waiters@
+}
+
+/// A step that keeps every queue and every listed thread's place in it keeps the wait queues well
+/// formed: each queue of a is in b as it was, a queue new in b lists nothing and is not at `NONE`, each thread of both
+/// keeps its queue and links and is Blocked in b only as it was in a, a thread new in b is in no queue
+/// and not Blocked, and a thread gone from b was in no queue.
+pub proof fn lemma_waits_framed(
+    qa: Map<usize, PointsTo<QueueRecord>>,
+    qb: Map<usize, PointsTo<QueueRecord>>,
+    ta: Map<usize, PointsTo<ThreadRecord>>,
+    tb: Map<usize, PointsTo<ThreadRecord>>,
+)
+    requires
+        waits_wf(qa, ta),
+        forall|e: usize| #[trigger] qa.contains_key(e)
+            ==> qb.contains_key(e) && same_queue(qa[e].value(), qb[e].value()),
+        forall|e: usize| #[trigger] qb.contains_key(e) && !qa.contains_key(e)
+            ==> e != NONE && same_queue(qb[e].value(), fresh_record()),
+        forall|t: usize| #[trigger] tb.contains_key(t) && ta.contains_key(t) ==> keeps_wait(ta[t].value(), tb[t].value()),
+        forall|t: usize| #[trigger] tb.contains_key(t) && !ta.contains_key(t)
+            ==> tb[t].value().queued == NONE && !(tb[t].value().state is Blocked),
+        forall|t: usize| #[trigger] ta.contains_key(t) && !tb.contains_key(t) ==> ta[t].value().queued == NONE,
+    ensures
+        waits_wf(qb, tb),
+{
+    reveal(waits_wf);
+    assert forall|e: usize| #[trigger] qb.contains_key(e) implies wait_queue_wf(qb[e].value(), tb, e) by {
+        let s = qb[e].value().waiters@;
+        if qa.contains_key(e) {
+            assert(wait_queue_wf(qa[e].value(), ta, e));
+            assert forall|i: int| 0 <= i < s.len() implies #[trigger] waiter_linked(s, tb, e, i) by {
+                assert(waiter_linked(s, ta, e, i));
+                let t = s[i];
+                assert(ta.contains_key(t) && ta[t].value().queued == e);
+                assert(tb.contains_key(t));
+            }
+        } else {
+            assert(s.len() == 0);
+        }
+    }
+    assert forall|t: usize| #[trigger] tb.contains_key(t) && tb[t].value().queued != NONE implies {
+        &&& qb.contains_key(tb[t].value().queued)
+        &&& qb[tb[t].value().queued].value().waiters@.contains(t)
+    } by {
+        assert(ta.contains_key(t));
+        assert(qa.contains_key(ta[t].value().queued));
+    }
+    assert forall|t: usize| #[trigger] tb.contains_key(t) && tb[t].value().state is Blocked implies {
+        &&& tb[t].value().state->Blocked_object != NONE
+        &&& tb[t].value().queued == tb[t].value().state->Blocked_object
+    } by {
+        assert(ta.contains_key(t));
+    }
+}
+
+/// A thread typed at base, in no queue and not Blocked, keeps the wait queues well formed.
+pub proof fn lemma_waits_thread_added(
+    queues: Map<usize, PointsTo<QueueRecord>>,
+    pre: Map<usize, PointsTo<ThreadRecord>>,
+    post: Map<usize, PointsTo<ThreadRecord>>,
+    base: usize,
+)
+    requires
+        waits_wf(queues, pre),
+        !pre.contains_key(base),
+        post == pre.insert(base, post[base]),
+        post[base].value().queued == NONE,
+        !(post[base].value().state is Blocked),
+    ensures
+        waits_wf(queues, post),
+{
+    lemma_waits_framed(queues, queues, pre, post);
+}
+
+/// A step that writes thread t's record, keeping every thread's place in the wait queues, keeps them
+/// well formed.
+pub proof fn lemma_waits_written(
+    queues: Map<usize, PointsTo<QueueRecord>>,
+    pre: Map<usize, PointsTo<ThreadRecord>>,
+    post: Map<usize, PointsTo<ThreadRecord>>,
+    t: usize,
+)
+    requires
+        waits_wf(queues, pre),
+        pre.contains_key(t),
+        post.dom() == pre.dom(),
+        keeps_wait(pre[t].value(), post[t].value()),
+        forall|x: usize| x != t && #[trigger] post.contains_key(x) ==> keeps_wait(pre[x].value(), post[x].value()),
+    ensures
+        waits_wf(queues, post),
+{
+    assert forall|x: usize| #[trigger] post.contains_key(x) && pre.contains_key(x)
+        implies keeps_wait(pre[x].value(), post[x].value()) by {}
+    lemma_waits_framed(queues, queues, pre, post);
+}
+
+/// With no queue object and no thread, the wait queues are well formed.
+pub proof fn lemma_waits_empty()
+    ensures
+        waits_wf(Map::<usize, PointsTo<QueueRecord>>::empty(), Map::<usize, PointsTo<ThreadRecord>>::empty()),
+{
+    reveal(waits_wf);
 }
 
 /// Each endpoint's and notification's holders after node i is renamed n.
@@ -669,6 +832,7 @@ impl CapKernel {
             post.payload_of(child).order == 0,
         ensures
             endpoints_wf(&post.list, &post.tables, &post.endpoints, &post.blocks),
+            !pre.endpoints.records@.contains_key(base),
     {
         let a = &pre.blocks;
         let b = &post.blocks;
@@ -944,7 +1108,7 @@ impl CapKernel {
             pre.list.lemma_seq_fits();
         }
         let tracked mut record = page_into_queue_record(first);
-        PPtr::<QueueRecord>::from_usize(base).put(Tracked(&mut record), QueueRecord { dead: false, head: 0, tail: 0, receiving: false, word: 0 });
+        PPtr::<QueueRecord>::from_usize(base).put(Tracked(&mut record), QueueRecord { dead: false, head: NONE, tail: NONE, waiters: Ghost(Seq::empty()), receiving: false, word: 0 });
         proof {
             self.endpoints.records.borrow_mut().tracked_insert(base, record);
         }
@@ -1042,6 +1206,12 @@ impl CapKernel {
             lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
             Self::lemma_binding_parents_same_caps(pre, post);
+            assert(base != NONE) by {
+                assert(base % PAGE_SZ == 0);
+                assert(NONE % PAGE_SZ == PAGE_MASK);
+            }
+            assert(same_queue(post.endpoints.records@[base].value(), fresh_record()));
+            lemma_waits_framed(pre.endpoints.records@, post.endpoints.records@, pre.threads.records@, post.threads.records@);
             assert(post.wf());
             Self::lemma_bound_threads_same(pre, post);
             assert(right_bit(Right::Retype) == 8);

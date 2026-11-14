@@ -109,11 +109,12 @@ impl CapKernel {
         &&& self.threads.records@[base].value().process is Some
     }
 
-    /// The dead thread at `base` is bound to nothing and no node in its node page is live, so nothing is
-    /// left of it but its two pages.
+    /// The dead thread at `base` is bound to nothing, no wait queue lists it and no node in its node page
+    /// is live, so nothing is left of it but its two pages.
     pub open spec fn thread_is_spent(&self, base: usize) -> bool {
         &&& self.thread_is_dead(base)
         &&& self.threads.records@[base].value().process is None
+        &&& self.threads.records@[base].value().queued == NONE
         &&& forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] self.list.nodes@[base + k]).live
     }
 
@@ -345,6 +346,7 @@ impl CapKernel {
                     assert(same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]));
                 }
             }
+            lemma_waits_written(pre.endpoints.records@, pre.threads.records@, post.threads.records@, t);
             Self::lemma_bound_threads_remove(pre, post, t);
             assert forall|o: ObjectId| #[trigger] saved_registers(&post.threads).contains_key(o)
                 implies saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o] by {
@@ -777,6 +779,7 @@ impl CapKernel {
             post.threads.records@,
             base,
         );
+        lemma_waits_framed(pre.endpoints.records@, pre.endpoints.records@, pre.threads.records@, post.threads.records@);
         assert(post.tables.wf(&post.list)) by {
             reveal(Tables::leaves_wf);
             assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies post.tables.leaf_wf(&post.list, l) by {
@@ -951,8 +954,9 @@ impl CapKernel {
     /// A retype naming the block of the thread at `base`, under the untyped at index `from` of the table
     /// at `root`: once its references are gone and no core depends on it, one retype unlinks its binding
     /// to its process and the next frees its block. A thread Running on a core, which is also the only
-    /// kind with a stop pending, is refused until that core moves it off. All of these come from user
-    /// space, and anything but an unlink or a free changes nothing.
+    /// kind with a stop pending, is refused until that core moves it off, and a thread a wait queue
+    /// lists until it is taken off the queue (design/ipc-with-reply-object/). All of these come from
+    /// user space, and anything but an unlink or a free changes nothing.
     pub(crate) fn reclaim_thread(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
@@ -1046,6 +1050,9 @@ impl CapKernel {
                 assert(pre.thread_unbound(post, root, from, base));
             }
             return ReclaimStep::Slice;
+        }
+        if record.queued != NONE {
+            return ReclaimStep::Refused;
         }
         if !self.thread_nodes_dead(base, Tracked(&mut *steps)) {
             return ReclaimStep::Refused;

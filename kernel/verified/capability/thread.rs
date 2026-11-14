@@ -169,6 +169,12 @@ pub struct ThreadRecord {
     /// Intrusive links in its core and priority's Runnable queue, or `NONE` when outside it.
     pub run_prev: usize,
     pub run_next: usize,
+    /// The endpoint or notification whose queue lists it, or `NONE` when none does, and its intrusive
+    /// links in that queue. A listed thread stays listed when it stops being Blocked on the object,
+    /// until a match skips it: see `waits_wf` and design/ipc-with-reply-object/.
+    pub queued: usize,
+    pub wait_prev: usize,
+    pub wait_next: usize,
 }
 
 /// Records `a` and `b` agree on every field except the intrusive run-queue links `run_prev` and
@@ -182,6 +188,9 @@ pub open spec fn same_thread_but_links(a: ThreadRecord, b: ThreadRecord) -> bool
     &&& a.dying == b.dying
     &&& a.process == b.process
     &&& a.placement == b.placement
+    &&& a.queued == b.queued
+    &&& a.wait_prev == b.wait_prev
+    &&& a.wait_next == b.wait_next
 }
 
 /// Permissions `a` and `b` hold initialized `ThreadRecord`s at the same address that agree on
@@ -267,6 +276,9 @@ pub open spec fn fresh_thread() -> ThreadRecord {
         placement: None,
         run_prev: NONE,
         run_next: NONE,
+        queued: NONE,
+        wait_prev: NONE,
+        wait_next: NONE,
     }
 }
 
@@ -285,6 +297,9 @@ pub fn new_thread_record() -> (ret: ThreadRecord)
         placement: None,
         run_prev: NONE,
         run_next: NONE,
+        queued: NONE,
+        wait_prev: NONE,
+        wait_next: NONE,
     }
 }
 
@@ -997,6 +1012,9 @@ pub open spec fn unbound_record(r: ThreadRecord) -> ThreadRecord {
         placement: r.placement,
         run_prev: NONE,
         run_next: NONE,
+        queued: r.queued,
+        wait_prev: r.wait_prev,
+        wait_next: r.wait_next,
     }
 }
 
@@ -1018,6 +1036,9 @@ pub open spec fn unplaced_record(r: ThreadRecord) -> ThreadRecord {
         placement: None,
         run_prev: NONE,
         run_next: NONE,
+        queued: r.queued,
+        wait_prev: r.wait_prev,
+        wait_next: r.wait_next,
     }
 }
 
@@ -1745,6 +1766,9 @@ impl CapKernel {
                     placement: record.placement,
                     run_prev: NONE,
                     run_next: NONE,
+                    queued: record.queued,
+                    wait_prev: record.wait_prev,
+                    wait_next: record.wait_next,
                 });
                 proof {
                     self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -1875,6 +1899,9 @@ impl CapKernel {
                     placement: None,
                     run_prev: NONE,
                     run_next: NONE,
+                    queued: record.queued,
+                    wait_prev: record.wait_prev,
+                    wait_next: record.wait_next,
                 });
                 proof {
                     self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -2527,6 +2554,7 @@ impl CapKernel {
             }
             assert(post.threads.records@ == pre.threads.records@.insert(base, post.threads.records@[base]));
             lemma_queues_thread_added(&pre.threads.queues, pre.threads.records@, post.threads.records@, base);
+            lemma_waits_thread_added(pre.endpoints.records@, pre.threads.records@, post.threads.records@, base);
             assert(post.cores == pre.cores);
             assert(current_wf(post.cores@, post.threads.records@)) by {
                 reveal(current_wf);
@@ -2878,6 +2906,9 @@ impl CapKernel {
                     placement: None,
                     run_prev: NONE,
                     run_next: NONE,
+                    queued: NONE,
+                    wait_prev: NONE,
+                    wait_next: NONE,
                 }
                 &&& final(self).list.is_child(n, base)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent).insert(base, n)
@@ -3044,7 +3075,8 @@ impl CapKernel {
     }
 
     /// A switch on core c touched only c's current thread and thread t's record: t's state, its saved
-    /// frame and its pending stop. See design/one-lock-bounded-steps/.
+    /// frame and its pending stop, keeping its place in the wait queues. See
+    /// design/one-lock-bounded-steps/.
     pub open spec fn switch_frame(pre: Self, post: Self, c: int, t: usize) -> bool {
         &&& post.list == pre.list
         &&& post.tables == pre.tables
@@ -3073,6 +3105,7 @@ impl CapKernel {
         &&& post.threads.records@[t].is_init()
         &&& post.threads.records@[t].value().process == pre.threads.records@[t].value().process
         &&& post.threads.records@[t].value().placement == pre.threads.records@[t].value().placement
+        &&& keeps_wait(pre.threads.records@[t].value(), post.threads.records@[t].value())
         &&& post.cores@.len() == pre.cores@.len()
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
         &&& post.cores@[c].acked_epoch == pre.cores@[c].acked_epoch
@@ -3109,6 +3142,7 @@ impl CapKernel {
             post.wf(),
     {
         reveal(ids_wf);
+        lemma_waits_written(pre.endpoints.records@, pre.threads.records@, post.threads.records@, t);
         lemma_ids_core_step(pre.cores@, post.cores@, pre.spaces.loaded@, c);
         assert forall|d: int| 0 <= d < NUM_CPUS implies (#[trigger] post.cores@[d]).space == pre.cores@[d].space by {
             if d != c {
@@ -3335,6 +3369,9 @@ impl CapKernel {
             placement: record.placement,
             run_prev: record.run_prev,
             run_next: record.run_next,
+            queued: record.queued,
+            wait_prev: record.wait_prev,
+            wait_next: record.wait_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -3558,6 +3595,9 @@ impl CapKernel {
             placement: pre.threads.records@[t].value().placement,
             run_prev: pre.threads.records@[t].value().run_prev,
             run_next: pre.threads.records@[t].value().run_next,
+            queued: pre.threads.records@[t].value().queued,
+            wait_prev: pre.threads.records@[t].value().wait_prev,
+            wait_next: pre.threads.records@[t].value().wait_next,
         }
     }
 
@@ -3699,6 +3739,9 @@ impl CapKernel {
             placement: record.placement,
             run_prev: record.run_prev,
             run_next: record.run_next,
+            queued: record.queued,
+            wait_prev: record.wait_prev,
+            wait_next: record.wait_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4078,6 +4121,9 @@ impl CapKernel {
                     placement: record.placement,
                     run_prev: NONE,
                     run_next: NONE,
+                    queued: record.queued,
+                    wait_prev: record.wait_prev,
+                    wait_next: record.wait_next,
                 });
                 proof {
                     self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4282,6 +4328,9 @@ impl CapKernel {
             placement: record.placement,
             run_prev: record.run_prev,
             run_next: record.run_next,
+            queued: record.queued,
+            wait_prev: record.wait_prev,
+            wait_next: record.wait_next,
         });
         self.stop_ipis = Ghost(pre.stop_ipis@.push(d));
         proof {
@@ -4398,6 +4447,9 @@ impl CapKernel {
                     placement: record.placement,
                     run_prev: NONE,
                     run_next: NONE,
+                    queued: record.queued,
+                    wait_prev: record.wait_prev,
+                    wait_next: record.wait_next,
                 });
                 proof {
                     self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4635,6 +4687,9 @@ impl CapKernel {
             placement: record.placement,
             run_prev: NONE,
             run_next: NONE,
+            queued: record.queued,
+            wait_prev: record.wait_prev,
+            wait_next: record.wait_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4822,6 +4877,9 @@ impl CapKernel {
             placement: r.placement,
             run_prev: r.run_prev,
             run_next: r.run_next,
+            queued: r.queued,
+            wait_prev: r.wait_prev,
+            wait_next: r.wait_next,
         }
         &&& post.holders == pre.holders
         &&& post.tables == pre.tables
@@ -5067,6 +5125,7 @@ impl CapKernel {
         Self::lemma_bind_nodes(pre, post, n, t);
         Self::lemma_bind_objects(pre, post, n, t);
         Self::lemma_bind_parents(pre, post, n, t);
+        lemma_waits_written(pre.endpoints.records@, pre.threads.records@, post.threads.records@, t);
         assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
             implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
             assert(x != t);
@@ -5217,6 +5276,9 @@ impl CapKernel {
             placement: record.placement,
             run_prev: record.run_prev,
             run_next: record.run_next,
+            queued: record.queued,
+            wait_prev: record.wait_prev,
+            wait_next: record.wait_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -5677,6 +5739,7 @@ impl CapKernel {
     {
         let x = placement_node(t);
         pre.lemma_placement_node_apart(t);
+        lemma_waits_written(pre.endpoints.records@, pre.threads.records@, post.threads.records@, t);
         Self::lemma_place_nodes(pre, post, m, t, pl);
         Self::lemma_place_objects(pre, post, m, t, pl);
         assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Binding
@@ -5900,6 +5963,9 @@ impl CapKernel {
             placement: Some(pl),
             run_prev: record.run_prev,
             run_next: record.run_next,
+            queued: record.queued,
+            wait_prev: record.wait_prev,
+            wait_next: record.wait_next,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);

@@ -1247,6 +1247,13 @@ impl CapKernel {
                 ==> bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
     {
         post.tables.lemma_wf_same_pages(&pre.list, &post.list);
+        assert(waits_wf(post.endpoints.records@, post.threads.records@)) by {
+            if pre.list.nodes@[r as int].kind is Binding {
+                lemma_waits_written(pre.endpoints.records@, pre.threads.records@, mid.threads.records@, r);
+            } else if pre.list.nodes@[r as int].kind is Placement {
+                lemma_waits_written(pre.endpoints.records@, pre.threads.records@, mid.threads.records@, page_of(r));
+            }
+        }
         assert(post.view().shares.subset_of(pre.view().shares)) by {
             assert(post.view().shares == mid.view().shares);
             if pre.list.nodes@[r as int].kind is Mapping {

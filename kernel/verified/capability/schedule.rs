@@ -761,6 +761,283 @@ pub proof fn lemma_queues_unrunnable_removed(
     }
 }
 
+/// What `enqueue_and_write` reads of `(c, p)` before it appends thread `t`, not `Runnable`: the
+/// arrays it indexes are well formed, and the tail slot holds `NONE` exactly when the queue is
+/// empty and otherwise its last thread, which has a record, is `Runnable` and so is not `t`.
+proof fn lemma_enqueue_tail(
+    queues: &RunQueues,
+    records: Map<usize, PointsTo<ThreadRecord>>,
+    c: usize,
+    p: usize,
+    t: usize,
+)
+    requires
+        queues_wf(queues, records),
+        c < NUM_CPUS,
+        p < NUM_PRIORITIES,
+        records.contains_key(t),
+        !(records[t].value().state is Runnable),
+    ensures
+        queues.heads.wf(),
+        queues.tails.wf(),
+        queues.present.wf(),
+        ({
+            let s = queues.queue(c as int, p as int);
+            let tail = queues.tails@[queue_slot(c as int, p as int)];
+            &&& (tail == NONE <==> s.len() == 0)
+            &&& tail != NONE ==> {
+                &&& tail == s[s.len() - 1]
+                &&& tail != t
+                &&& records.contains_key(tail)
+                &&& records[tail].value().state is Runnable
+            }
+        }),
+{
+    reveal(queues_wf);
+    let s = queues.queue(c as int, p as int);
+    assert(single_queue_wf(queues, records, c as int, p as int));
+    if s.len() > 0 {
+        let _ = s[s.len() - 1];
+    }
+}
+
+/// The run queues after `enqueue_and_write` appended thread `t`, not `Runnable` before, to
+/// `(c, p)`, whose tail slot held `old_tail` and whose presence word was `old_w`: `post_q` is `pre_q`
+/// with `t` pushed onto `queue(c, p)`, its tail slot naming `t`, its head slot too when the queue was
+/// empty, and its presence bit set; `post_records` is `pre_records` with `t`'s record `Runnable` on
+/// `c` at `p`, linked behind `old_tail`, and `old_tail`'s `run_next` naming `t`.
+#[verifier::spinoff_prover]
+proof fn lemma_enqueue_post_wf(
+    pre_q: &RunQueues,
+    post_q: &RunQueues,
+    pre_records: Map<usize, PointsTo<ThreadRecord>>,
+    post_records: Map<usize, PointsTo<ThreadRecord>>,
+    c: usize,
+    p: usize,
+    t: usize,
+    old_tail: usize,
+    old_w: u64,
+)
+    requires
+        queues_wf(pre_q, pre_records),
+        c < NUM_CPUS,
+        p < NUM_PRIORITIES,
+        t != NONE,
+        pre_records.contains_key(t),
+        !(pre_records[t].value().state is Runnable),
+        post_q.heads.wf(),
+        post_q.tails.wf(),
+        post_q.present.wf(),
+        ({
+            let s = pre_q.queue(c as int, p as int);
+            let slot = queue_slot(c as int, p as int);
+            let w_idx = present_word(c as int, p as int);
+            let b_idx = present_bit(p as int);
+            &&& old_tail == pre_q.tails@[slot]
+            &&& old_w == pre_q.present@[w_idx]
+            &&& post_q.seqs@ == pre_q.seqs@.update(
+                c as int,
+                pre_q.seqs@[c as int].update(p as int, s.push(t)),
+            )
+            &&& post_q.heads@ == (if old_tail == NONE {
+                pre_q.heads@.update(slot, t)
+            } else {
+                pre_q.heads@
+            })
+            &&& post_q.tails@ == pre_q.tails@.update(slot, t)
+            &&& post_q.present@ == pre_q.present@.update(w_idx, old_w | (1u64 << (b_idx as u64)))
+        }),
+        post_records.dom() == pre_records.dom(),
+        post_records[t].is_init(),
+        post_records[t].value().state == (ThreadState::Runnable { core: c }),
+        thread_priority(post_records[t].value()) == p,
+        post_records[t].value().process is Some,
+        post_records[t].value().run_prev == old_tail,
+        post_records[t].value().run_next == NONE,
+        old_tail != NONE ==> {
+            &&& same_record_perm_but_links(pre_records[old_tail], post_records[old_tail])
+            &&& post_records[old_tail].value().run_prev == pre_records[old_tail].value().run_prev
+            &&& post_records[old_tail].value().run_next == t
+        },
+        forall|x: usize| x != t && (old_tail == NONE || x != old_tail) && #[trigger] post_records.contains_key(x)
+            ==> post_records[x] == pre_records[x],
+    ensures
+        queues_wf(post_q, post_records),
+        queued_at_back(pre_q, post_q, c as int, p as int, t),
+        at_back_of_priority(post_q, post_records, c as int, p, t),
+{
+    reveal(queues_wf);
+    let s = pre_q.queue(c as int, p as int);
+    let new_s = s.push(t);
+    let b_idx = present_bit(p as int);
+    lemma_queue_slot_bounds(c as int, p as int);
+    lemma_present_slot_bounds(c as int, p as int);
+    assert(single_queue_wf(pre_q, pre_records, c as int, p as int));
+    lemma_or_bit_u64(old_w, b_idx);
+    assert(post_q.queue(c as int, p as int) == new_s);
+    if s.len() > 0 {
+        let _ = s[s.len() - 1];
+        assert(old_tail == s[s.len() - 1]);
+        assert(old_tail != NONE);
+        assert(pre_records[old_tail].value().state is Runnable);
+        assert(old_tail != t);
+    } else {
+        assert(old_tail == NONE);
+    }
+
+    assert forall|c2: int, p2: int| 0 <= c2 < NUM_CPUS && 0 <= p2 < NUM_PRIORITIES
+        implies #[trigger] single_queue_wf(post_q, post_records, c2, p2) by {
+        lemma_queue_slot_bounds(c2, p2);
+        lemma_present_slot_bounds(c2, p2);
+        if c2 == c as int && p2 == p as int {
+            assert(post_q.queue(c2, p2) == new_s);
+            assert(new_s.len() == s.len() + 1);
+            assert(new_s[new_s.len() - 1] == t);
+            assert forall|k: int| 0 <= k < s.len() implies #[trigger] s[k] != t by {
+                let u = s[k];
+                assert(pre_records[u].value().state is Runnable);
+            }
+            if s.len() == 0 {
+                assert(new_s[0] == t);
+            } else {
+                assert(new_s[0] == s[0]);
+                assert(s[0] != t);
+                if s.len() == 1 {
+                    assert(s[0] == old_tail);
+                    assert(post_records[s[0]].value().run_prev == pre_records[s[0]].value().run_prev);
+                } else {
+                    assert(s[0] != old_tail);
+                    assert(post_records[s[0]] == pre_records[s[0]]);
+                }
+            }
+            assert forall|k: int| 0 <= k < new_s.len() implies {
+                let u = #[trigger] new_s[k];
+                &&& u != NONE
+                &&& post_records.contains_key(u)
+                &&& post_records[u].is_init()
+                &&& post_records[u].value().state == (ThreadState::Runnable { core: c2 as usize })
+                &&& thread_priority(post_records[u].value()) == p2 as usize
+                &&& post_records[u].value().process is Some
+            } by {
+                if k < s.len() {
+                    let u = s[k];
+                    assert(new_s[k] == u);
+                    assert(u != t);
+                    assert(pre_records.contains_key(u));
+                    if u == old_tail {
+                        assert(same_record_perm_but_links(pre_records[u], post_records[u]));
+                    } else {
+                        assert(post_records.contains_key(u));
+                        assert(post_records[u] == pre_records[u]);
+                    }
+                } else {
+                    assert(new_s[k] == t);
+                }
+            }
+            assert forall|k: int| 0 <= k < new_s.len() - 1
+                implies post_records[#[trigger] new_s[k]].value().run_next == new_s[k + 1] by {
+                assert(new_s[k] == s[k]);
+                if k < s.len() - 1 {
+                    assert(new_s[k + 1] == s[k + 1]);
+                    assert(s[k] != old_tail);
+                    assert(s[k] != t);
+                    assert(post_records.contains_key(s[k]));
+                    assert(post_records[s[k]] == pre_records[s[k]]);
+                } else {
+                    assert(k == s.len() - 1);
+                    assert(s[k] == old_tail);
+                    assert(new_s[k + 1] == t);
+                }
+            }
+            assert forall|k: int| 1 <= k < new_s.len()
+                implies post_records[#[trigger] new_s[k]].value().run_prev == new_s[k - 1] by {
+                if k < s.len() {
+                    assert(new_s[k] == s[k]);
+                    assert(new_s[k - 1] == s[k - 1]);
+                    assert(s[k] != t);
+                    if s[k] == old_tail {
+                        assert(post_records[s[k]].value().run_prev == pre_records[s[k]].value().run_prev);
+                    } else {
+                        assert(post_records.contains_key(s[k]));
+                        assert(post_records[s[k]] == pre_records[s[k]]);
+                    }
+                } else {
+                    assert(k == s.len());
+                    assert(new_s[k] == t);
+                    assert(new_s[k - 1] == s[s.len() - 1]);
+                    assert(old_tail == s[s.len() - 1]);
+                }
+            }
+            assert forall|i: int, j: int| #![trigger new_s[i], new_s[j]]
+                0 <= i < j < new_s.len() implies new_s[i] != new_s[j] by {
+                if j < s.len() {
+                    assert(new_s[i] == s[i] && new_s[j] == s[j]);
+                } else {
+                    assert(j == s.len());
+                    assert(new_s[j] == t);
+                    assert(new_s[i] == s[i]);
+                    assert(s[i] != t);
+                }
+            }
+        } else {
+            assert(single_queue_wf(pre_q, pre_records, c2, p2));
+            let s2 = pre_q.queue(c2, p2);
+            assert(post_q.queue(c2, p2) == s2);
+            assert forall|k: int| 0 <= k < s2.len()
+                implies post_records[#[trigger] s2[k]] == pre_records[s2[k]] by {
+                let u = s2[k];
+                assert(pre_records[u].value().state == (ThreadState::Runnable { core: c2 as usize }));
+                assert(thread_priority(pre_records[u].value()) == p2 as usize);
+                assert(u != t);
+                if old_tail != NONE {
+                    assert(old_tail == s[s.len() - 1]);
+                    assert(pre_records[old_tail].value().state == (ThreadState::Runnable { core: c }));
+                    assert(thread_priority(pre_records[old_tail].value()) == p);
+                    assert(u != old_tail);
+                }
+                assert(post_records.contains_key(u));
+            }
+            if s2.len() > 0 {
+                let _ = s2[0];
+                let _ = s2[s2.len() - 1];
+            }
+        }
+    }
+
+    assert forall|u: usize| #[trigger] post_records.contains_key(u)
+        && post_records[u].value().state is Runnable implies {
+        let r = post_records[u].value();
+        let cu = r.state->Runnable_core as int;
+        let pu = thread_priority(r) as int;
+        &&& r.process is Some
+        &&& 0 <= cu < NUM_CPUS
+        &&& 0 <= pu < NUM_PRIORITIES
+        &&& post_q.queue(cu, pu).contains(u)
+    } by {
+        if u == t {
+            assert(new_s[new_s.len() - 1] == t);
+            assert(post_q.queue(c as int, p as int).contains(t));
+        } else {
+            assert(pre_records.contains_key(u));
+            if u == old_tail {
+                assert(same_record_perm_but_links(pre_records[u], post_records[u]));
+            } else {
+                assert(post_records[u] == pre_records[u]);
+            }
+            let r0 = pre_records[u].value();
+            let cu = r0.state->Runnable_core as int;
+            let pu = thread_priority(r0) as int;
+            assert(pre_q.queue(cu, pu).contains(u));
+            if cu == c as int && pu == p as int {
+                let ku = choose|ku: int| 0 <= ku < s.len() && s[ku] == u;
+                assert(new_s[ku] == u);
+            }
+        }
+    }
+    assert(queues_wf(post_q, post_records));
+    lemma_tail_is_behind_all(post_q, post_records, c as int, p, t);
+}
+
 impl CapKernel {
     /// Appends non-`Runnable` thread `t` at the tail of `(c, p)` and writes its record as
     /// `base_record` with the new queue links, updating the former tail's `run_next` when `(c, p)`
@@ -820,12 +1097,10 @@ impl CapKernel {
             final(self).flush_ipis == old(self).flush_ipis,
     {
         let ghost pre = *self;
-        let ghost s = pre.threads.queues.queue(c as int, p as int);
         proof {
-            reveal(queues_wf);
+            lemma_enqueue_tail(&pre.threads.queues, pre.threads.records@, c, p, t);
             lemma_queue_slot_bounds(c as int, p as int);
             lemma_present_slot_bounds(c as int, p as int);
-            assert(single_queue_wf(&pre.threads.queues, pre.threads.records@, c as int, p as int));
             assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
             assert(t != NONE);
         }
@@ -836,11 +1111,7 @@ impl CapKernel {
             self.threads.queues.tails.set(slot, t);
         } else {
             proof {
-                assert(s.len() > 0);
-                let last = s[s.len() - 1];
-                assert(old_tail == last);
                 assert(pre.threads.records@.contains_key(old_tail));
-                assert(pre.threads.records@[old_tail].value().state is Runnable);
                 assert(old_tail != t);
                 assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, old_tail));
             }
@@ -879,16 +1150,22 @@ impl CapKernel {
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm_t);
         }
-        let ghost new_s = s.push(t);
         self.threads.queues.seqs = Ghost(
             pre.threads.queues.seqs@.update(
                 c as int,
-                pre.threads.queues.seqs@[c as int].update(p as int, new_s),
+                pre.threads.queues.seqs@[c as int].update(
+                    p as int,
+                    pre.threads.queues.queue(c as int, p as int).push(t),
+                ),
             ),
         );
         proof {
             let post = *self;
             assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert forall|x: usize| x != t && (old_tail == NONE || x != old_tail)
+                && #[trigger] post.threads.records@.contains_key(x)
+                implies post.threads.records@[x] == pre.threads.records@[x] by {
+            }
             assert forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
                 implies same_record_perm_but_links(pre.threads.records@[x], post.threads.records@[x]) by {
                 if old_tail == NONE || x != old_tail {
@@ -896,149 +1173,17 @@ impl CapKernel {
                 }
             }
             lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
-            lemma_or_bit_u64(old_w, b_idx);
-
-            assert forall|c2: int, p2: int| 0 <= c2 < NUM_CPUS && 0 <= p2 < NUM_PRIORITIES
-                implies #[trigger] single_queue_wf(&post.threads.queues, post.threads.records@, c2, p2) by {
-                lemma_queue_slot_bounds(c2, p2);
-                lemma_present_slot_bounds(c2, p2);
-                if c2 == c as int && p2 == p as int {
-                    assert(post.threads.queues.queue(c2, p2) == new_s);
-                    assert(new_s.len() == s.len() + 1);
-                    assert(new_s[new_s.len() - 1] == t);
-                    assert forall|k: int| 0 <= k < s.len() implies #[trigger] s[k] != t by {
-                        let u = s[k];
-                        assert(pre.threads.records@[u].value().state is Runnable);
-                    }
-                    if s.len() == 0 {
-                        assert(old_tail == NONE);
-                        assert(new_s[0] == t);
-                    } else {
-                        assert(old_tail == s[s.len() - 1]);
-                        assert(old_tail != NONE);
-                        assert(new_s[0] == s[0]);
-                        assert(s[0] != t);
-                        if s.len() == 1 {
-                            assert(s[0] == old_tail);
-                            assert(post.threads.records@[s[0]].value().run_prev == pre.threads.records@[s[0]].value().run_prev);
-                        } else {
-                            assert(s[0] != old_tail);
-                            assert(post.threads.records@[s[0]] == pre.threads.records@[s[0]]);
-                        }
-                    }
-                    assert forall|k: int| 0 <= k < new_s.len() implies {
-                        let u = #[trigger] new_s[k];
-                        &&& u != NONE
-                        &&& post.threads.records@.contains_key(u)
-                        &&& post.threads.records@[u].is_init()
-                        &&& post.threads.records@[u].value().state == (ThreadState::Runnable { core: c2 as usize })
-                        &&& thread_priority(post.threads.records@[u].value()) == p2 as usize
-                        &&& post.threads.records@[u].value().process is Some
-                    } by {
-                        if k < s.len() {
-                            let u = s[k];
-                            assert(new_s[k] == u);
-                            assert(u != t);
-                            assert(same_record_perm_but_links(pre.threads.records@[u], post.threads.records@[u]));
-                        } else {
-                            assert(new_s[k] == t);
-                        }
-                    }
-                    assert forall|k: int| 0 <= k < new_s.len() - 1
-                        implies post.threads.records@[#[trigger] new_s[k]].value().run_next == new_s[k + 1] by {
-                        assert(new_s[k] == s[k]);
-                        if k < s.len() - 1 {
-                            assert(new_s[k + 1] == s[k + 1]);
-                            assert(s[k] != old_tail);
-                            assert(s[k] != t);
-                            assert(post.threads.records@[s[k]] == pre.threads.records@[s[k]]);
-                        } else {
-                            assert(k == s.len() - 1);
-                            assert(s[k] == old_tail);
-                            assert(new_s[k + 1] == t);
-                        }
-                    }
-                    assert forall|k: int| 1 <= k < new_s.len()
-                        implies post.threads.records@[#[trigger] new_s[k]].value().run_prev == new_s[k - 1] by {
-                        if k < s.len() {
-                            assert(new_s[k] == s[k]);
-                            assert(new_s[k - 1] == s[k - 1]);
-                            assert(s[k] != t);
-                            if s[k] == old_tail {
-                                assert(post.threads.records@[s[k]].value().run_prev == pre.threads.records@[s[k]].value().run_prev);
-                            } else {
-                                assert(post.threads.records@[s[k]] == pre.threads.records@[s[k]]);
-                            }
-                        } else {
-                            assert(k == s.len());
-                            assert(new_s[k] == t);
-                            assert(new_s[k - 1] == s[s.len() - 1]);
-                            assert(old_tail == s[s.len() - 1]);
-                        }
-                    }
-                    assert forall|i: int, j: int| #![trigger new_s[i], new_s[j]]
-                        0 <= i < j < new_s.len() implies new_s[i] != new_s[j] by {
-                        if j < s.len() {
-                            assert(new_s[i] == s[i] && new_s[j] == s[j]);
-                        } else {
-                            assert(j == s.len());
-                            assert(new_s[j] == t);
-                            assert(new_s[i] == s[i]);
-                            assert(s[i] != t);
-                        }
-                    }
-                } else {
-                    assert(single_queue_wf(&pre.threads.queues, pre.threads.records@, c2, p2));
-                    let s2 = pre.threads.queues.queue(c2, p2);
-                    assert(post.threads.queues.queue(c2, p2) == s2);
-                    assert forall|k: int| 0 <= k < s2.len()
-                        implies post.threads.records@[#[trigger] s2[k]] == pre.threads.records@[s2[k]] by {
-                        let u = s2[k];
-                        assert(pre.threads.records@[u].value().state == (ThreadState::Runnable { core: c2 as usize }));
-                        assert(thread_priority(pre.threads.records@[u].value()) == p2 as usize);
-                        assert(u != t);
-                        if old_tail != NONE {
-                            assert(old_tail == s[s.len() - 1]);
-                            assert(pre.threads.records@[old_tail].value().state == (ThreadState::Runnable { core: c }));
-                            assert(thread_priority(pre.threads.records@[old_tail].value()) == p);
-                            assert(u != old_tail);
-                        }
-                    }
-                    if s2.len() > 0 {
-                        let _ = s2[0];
-                        let _ = s2[s2.len() - 1];
-                    }
-                }
-            }
-
-            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
-                && post.threads.records@[u].value().state is Runnable implies {
-                let r = post.threads.records@[u].value();
-                let cu = r.state->Runnable_core as int;
-                let pu = thread_priority(r) as int;
-                &&& r.process is Some
-                &&& 0 <= cu < NUM_CPUS
-                &&& 0 <= pu < NUM_PRIORITIES
-                &&& post.threads.queues.queue(cu, pu).contains(u)
-            } by {
-                if u == t {
-                    assert(new_s[new_s.len() - 1] == t);
-                    assert(post.threads.queues.queue(c as int, p as int).contains(t));
-                } else {
-                    assert(same_record_perm_but_links(pre.threads.records@[u], post.threads.records@[u]));
-                    assert(pre.threads.records@.contains_key(u));
-                    let r0 = pre.threads.records@[u].value();
-                    let cu = r0.state->Runnable_core as int;
-                    let pu = thread_priority(r0) as int;
-                    assert(pre.threads.queues.queue(cu, pu).contains(u));
-                    if cu == c as int && pu == p as int {
-                        let ku = choose|ku: int| 0 <= ku < s.len() && s[ku] == u;
-                        assert(new_s[ku] == u);
-                    }
-                }
-            }
-            assert(queues_wf(&post.threads.queues, post.threads.records@));
-            lemma_tail_is_behind_all(&post.threads.queues, post.threads.records@, c as int, p, t);
+            lemma_enqueue_post_wf(
+                &pre.threads.queues,
+                &post.threads.queues,
+                pre.threads.records@,
+                post.threads.records@,
+                c,
+                p,
+                t,
+                old_tail,
+                old_w,
+            );
         }
     }
 }

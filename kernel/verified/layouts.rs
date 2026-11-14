@@ -36,9 +36,9 @@ global layout PageMap is size == 4096, align == 8;
 global layout TableRecord is size == 56, align == 8;
 global layout SpaceCores is size == 272, align == 8;
 #[cfg(target_arch = "x86_64")]
-global layout ThreadRecord is size == 248, align == 8;
+global layout ThreadRecord is size == 272, align == 8;
 #[cfg(target_arch = "aarch64")]
-global layout ThreadRecord is size == 352, align == 8;
+global layout ThreadRecord is size == 376, align == 8;
 global layout ProcessRecord is size == 1, align == 1;
 global layout QueueRecord is size == 32, align == 8;
 global layout ReplyRecord is size == 16, align == 8;
