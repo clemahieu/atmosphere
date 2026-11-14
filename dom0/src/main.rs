@@ -42,10 +42,10 @@
 //! its slot is refused. It times one invocation of a number no operation has,
 //! and one 4K map into each of 64 free entries of the level 1 table, and prints each cycle count beside
 //! the before number from logs/cutover-before.log, 102 and 66926. It maps the frame at the entry after
-//! those, and probes the 64 entries from there after the map, after reading the page, again, and after
-//! writing it, printing the mapped entry's accessed and dirty bits each time: both clear, then accessed
-//! alone, then both clear, then dirty; the other 63 entries, none of them present, have no bit set, and
-//! both bits are maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
+//! those, reads the page and probes the 64 entries from there, writes it and probes them, and probes them
+//! again, printing the mapped entry's accessed and dirty bits each time: accessed without dirty, then
+//! dirty, then dirty clear; the other 63 entries, none of them present, have no bit set, and both bits
+//! are maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
 //! set, both maintained, which it prints. It retypes another 4K frame, maps it beside that page, writes a
 //! word through it, maps it at the unmapped page and reads that word there, not the old frame's. It
@@ -669,26 +669,35 @@ fn probe_refused(first: u64, count: u64, what: &[u8]) -> bool {
 }
 
 /// Whether the processor's accessed and dirty bits follow dom0's reads and writes through a page it maps
-/// at PROBED_ENTRY from `frame`, as probe reads and clears them: after the map both are clear, after a read
-/// accessed alone is set, after a probe with no access between both are clear, and after a write dirty is
-/// set. A write sets dirty even through a translation still cached with dirty clear, since the processor
-/// walks to set it, so that step does not depend on the TLB; whether it sets accessed again then does, and
-/// is not checked. A probe of 0 entries, of 65 and of a range that leaves the level 1 table is refused.
+/// at PROBED_ENTRY from `frame`, as probe reads and clears them: after a read accessed is set and dirty
+/// clear, after a write dirty is set, and after a probe with no write between dirty is clear. A probe of 0
+/// entries, of 65 and of a range that leaves the level 1 table is refused.
+///
+/// It expects of accessed only what an access the program performs guarantees. A present entry may have
+/// its accessed bit set by a speculative access no instruction asked for (Arm ARM D8.5.1.2, rules RLHQRX
+/// and ILLCCB; AMD APM volume 2, 5.4.2), so accessed is not expected clear at any step; on the Orange Pi
+/// the probed entry took one between the map and the first probe. An access performed through the entry
+/// sets it (Arm ARM D8.5.1.2, IGXGPN; AMD APM volume 2, 5.4.2: no entry is cached in a TLB with accessed
+/// clear), and only probe clears it, so the read's step comes before any probe of the page: a probe
+/// between the map and the read could clear a bit a speculative access set while the TLB kept the
+/// translation, and the read would then hit the TLB and set nothing. Dirty is set by a write performed
+/// through the entry and by no speculative one (Arm ARM D8.5.2.1, RRNMLQ and RDYCFD; AMD APM volume 2,
+/// 5.4.2), so the steps expect it exactly. A write sets dirty even through a translation cached with
+/// dirty clear, since the processor walks to set it, so that step does not depend on the TLB.
 fn probed_bits_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
     let page = entry_address(PROBED_ENTRY) as *mut u64;
-    if map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0).status != operation::STATUS_OK
-        || !probed_step_held(b"mapped", Some(false), false)
-    {
+    if map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0).status != operation::STATUS_OK {
         return false;
     }
     // The map just made the page the frame's, writable; the frame holds MAPPED_WORD, which the write puts
     // back.
     let word = unsafe { page.read_volatile() };
-    if !probed_step_held(b"read", Some(true), false) || !probed_step_held(b"again", Some(false), false) {
+    if !probed_step_held(b"read", Some(true), false) {
         return false;
     }
     unsafe { page.write_volatile(word) };
     probed_step_held(b"written", None, true)
+        && probed_step_held(b"again", None, false)
         && probe_refused(PROBE_FIRST, 0, b"of 0")
         && probe_refused(PROBE_FIRST, operation::PROBE_MAX + 1, b"of 65")
         && probe_refused(512 - operation::PROBE_MAX / 2, operation::PROBE_MAX, b"across tables")
