@@ -25,11 +25,13 @@ The last arm of `invoked` is `spec_outcome_carried(...)`. Its operations are the
 
 Every other conjunct must be carried.
 
-**Carried.** A conjunct is carried in one of these ways.
+**Carried.** A conjunct is carried in one of these ways. A call carries a conjunct only when the arm's value depends on it.
 
-1. Whole kernel unchanged. The conjunct is `*final(self) == *old(self)` or `final(self) == old(self)`, and the arm or its spec function contains `post == pre`.
-2. One call. Strip one leading implication, so `ret ==> P(...)` and `!(ret is Refused) ==> P(...)` leave `P(...)`, and strip a `#[trigger]` on that call. What remains is one call `Name(...)`, `Self::Name(...)`, `old(self).Name(...)`, `final(self).Name(...)` or `self.Name(...)`, and the spec function calls `Name`.
-3. Result equals one call. The conjunct is `ret == Name(...)`, `ret == old(self).Name(...)` or `ret == self.Name(...)`, and the spec function calls `Name`.
+1. Whole kernel unchanged. The conjunct is `*final(self) == *old(self)` or `final(self) == old(self)`, and the arm's value or its spec function's value contains `post == pre`. A `post == pre` that occurs only in a let binding the value does not use does not count.
+2. One call. Strip one leading implication, so `ret ==> P(...)` and `!(ret is Refused) ==> P(...)` leave `P(...)`, and strip a `#[trigger]` on that call. What remains is one call `Name(...)`, `Self::Name(...)`, `old(self).Name(...)`, `final(self).Name(...)` or `self.Name(...)`, and the spec function's value depends on a call of `Name`.
+3. Result equals one call. The conjunct is `ret == Name(...)`, `ret == old(self).Name(...)` or `ret == self.Name(...)`, and the spec function's value depends on a call of `Name`.
+
+The value depends on a call when the call is a conjunct of the expression the function returns, or of a disjunct of that expression: a `|||` arm, a `match` arm or an `if` branch. It also depends on a call in a `let` whose name that expression uses, including through a chain of such lets, because the name is how the conjunct names the call. A call in a `let` the value does not use, including `let _x = Name(...)`, is not a conjunct of the arm or of the disjunct for that outcome. The binding is thrown away, and the call does not carry.
 
 A conjunct with two calls, a comparison of fields, or a quantifier is not carried. It becomes one named `open spec fn`, without `#[verifier::opaque]`, that both the ensures and the spec function call. The body of that predicate is the conjunct, so a caller sees it without a reveal.
 

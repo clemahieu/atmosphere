@@ -22,11 +22,16 @@ An ensures is split on top-level &&& and on the commas between its clauses, whic
 the same way, after comments and string literals are blanked. A conjunct that mentions the ghost
 step counter steps is skipped, and so are final(self).wf() and old(self).wf(). What remains is
 carried when it is the whole kernel unchanged (*final(self) == *old(self) or final(self) ==
-old(self)) and the arm or its spec function contains post == pre; when, after one leading
-implication and a #[trigger] on the call are stripped, it is one call Name(...), Self::Name(...),
-old(self).Name(...), final(self).Name(...) or self.Name(...) and the spec function calls Name; or
-when it is ret == Name(...), ret == old(self).Name(...) or ret == self.Name(...) and the spec
-function calls Name. A field comparison, a quantifier or two calls is not carried.
+old(self)) and the arm's value or its spec function's value contains post == pre; when, after one
+leading implication and a #[trigger] on the call are stripped, it is one call Name(...),
+Self::Name(...), old(self).Name(...), final(self).Name(...) or self.Name(...) and the spec
+function's value depends on a call of Name; or when it is ret == Name(...), ret ==
+old(self).Name(...) or ret == self.Name(...) and the spec function's value depends on a call of
+Name. The value depends on a call when the call is part of the expression the function returns,
+including a conjunct of a disjunct of that expression, or when it is in a let whose name that
+expression uses. A call that occurs only in a let the value does not use, such as let _x =
+Name(...), does not: the binding is thrown away. A field comparison, a quantifier or two calls is
+not carried.
 
 The check prints one line path:function:conjunct for each conjunct it does not count as carried,
 the conjunct with its whitespace collapsed, and the path from the repository root. It prints
@@ -355,6 +360,156 @@ def calls(text, name):
     return re.search(r"\b" + re.escape(name) + r"\s*\(", text) is not None
 
 
+def bound_names(pattern):
+    """The identifiers a let pattern binds. A type ascription is not a binding, and neither is `_`.
+    `mut` and `ref` are words of the pattern, not names."""
+    depth = 0
+    head = []
+    for char in pattern:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == ":" and depth == 0:
+            break
+        else:
+            head.append(char)
+    names = []
+    text = "".join(head)
+    i = 0
+    while i < len(text):
+        word = word_at(text, i)
+        if word is None:
+            i += 1
+            continue
+        if word not in ("mut", "ref", "_"):
+            names.append(word)
+        i += len(word)
+    return names
+
+
+def previous_word(text, i):
+    """The identifier that ends at the last non-space character before i, or None."""
+    j = i - 1
+    while j >= 0 and text[j].isspace():
+        j -= 1
+    if j < 0:
+        return None
+    end = j + 1
+    while j >= 0 and (text[j].isalnum() or text[j] == "_"):
+        j -= 1
+    return text[j + 1:end]
+
+
+def binding_equals(text, j):
+    """Whether the `=` at j starts a let initializer, rather than ==, =>, <=, >= or !=."""
+    if j >= len(text) or text[j] != "=":
+        return False
+    if j + 1 < len(text) and text[j + 1] in "=>":
+        return False
+    return j == 0 or text[j - 1] not in "<>!"
+
+
+def let_statements(text):
+    """Each `let` statement as (names, rhs start, rhs end, statement start, statement end). The
+    statement includes its semicolon; the right-hand side stops before it. `if let` and `while let`
+    are conditions of the value, not statements. A `let` with no initializer or no semicolon is not
+    one this reads."""
+    found = []
+    i, n = 0, len(text)
+    while i < n:
+        if word_at(text, i) != "let" or previous_word(text, i) in ("if", "while"):
+            i += 1
+            continue
+        j, depth, eq = i + 3, 0, None
+        while j < n:
+            char = text[j]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and binding_equals(text, j):
+                eq = j
+                break
+            j += 1
+        if eq is None:
+            i += 3
+            continue
+        names = bound_names(text[i + 3:eq])
+        j, depth, semi = eq + 1, 0, None
+        while j < n:
+            char = text[j]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and char == ";":
+                semi = j
+                break
+            j += 1
+        if semi is None:
+            i += 3
+            continue
+        found.append((names, eq + 1, semi, i, semi + 1))
+        i = semi + 1
+    return found
+
+
+def word_in(text, name, start, end):
+    """Whether name occurs as a word in text[start:end]."""
+    return re.search(r"\b" + re.escape(name) + r"\b", text[start:end]) is not None
+
+
+def depended(text):
+    """The text with the right-hand side of each let the value does not use blanked.
+
+    The value is everything outside the let statements, plus the right-hand side of a let whose
+    name that value uses, following a chain of lets. A call that remains is part of the expression
+    the text returns, or an argument of such a part. A call only in a let the value does not use,
+    such as `let _x = Name(...)`, is gone: the binding is thrown away, and the value does not
+    depend on the call. design/invoked-arm-is-the-operation-postcondition/."""
+    bindings = let_statements(text)
+    if not bindings:
+        return text
+
+    def used_outside(name):
+        pos = 0
+        for _, _, _, lo, hi in bindings:
+            if word_in(text, name, pos, lo):
+                return True
+            pos = hi
+        return word_in(text, name, pos, len(text))
+
+    live = [any(used_outside(name) for name in names) for names, _, _, _, _ in bindings]
+    changed = True
+    while changed:
+        changed = False
+        for i, (names, _, _, _, _) in enumerate(bindings):
+            if live[i] or not names:
+                continue
+            for j, (_, rhs_lo, rhs_hi, _, _) in enumerate(bindings):
+                if not live[j]:
+                    continue
+                if any(word_in(text, name, rhs_lo, rhs_hi) for name in names):
+                    live[i] = True
+                    changed = True
+                    break
+    if all(live):
+        return text
+    chars = list(text)
+    for live_one, (_, rhs_lo, rhs_hi, _, _) in zip(live, bindings):
+        if live_one:
+            continue
+        for p in range(rhs_lo, rhs_hi):
+            if chars[p] != "\n":
+                chars[p] = " "
+    return "".join(chars)
+
+
 def unchanged(text):
     """Whether text says the kernel is unchanged, as an arm writes post == pre."""
     return POST_UNCHANGED.search(collapse(text)) is not None
@@ -407,18 +562,20 @@ def strip_implication(text):
 
 def carried(conjunct, spec_text, arm_text):
     """Whether one ensures conjunct is carried by the arm and its spec function, or is one of the
-    two shapes the record skips."""
+    two shapes the record skips. A call carries it only where the value depends on the call. A let
+    binding the value does not use is not such a place."""
     if re.search(r"\bsteps\b", conjunct):
         return True
     if conjunct in WF:
         return True
-    if conjunct in UNCHANGED and (unchanged(arm_text) or unchanged(spec_text)):
+    spec_value, arm_value = depended(spec_text), depended(arm_text)
+    if conjunct in UNCHANGED and (unchanged(arm_value) or unchanged(spec_value)):
         return True
     name = result_call(conjunct)
-    if name is not None and calls(spec_text, name):
+    if name is not None and calls(spec_value, name):
         return True
     name = one_call(re.sub(r"^#\[trigger\]\s*", "", strip_implication(conjunct)))
-    return name is not None and calls(spec_text, name)
+    return name is not None and calls(spec_value, name)
 
 
 def find_operation_match(body):
@@ -613,7 +770,7 @@ def lines_of(sources):
     lines = []
     for spec_name, arm, ops in pairings(index):
         spec = index.get(spec_name)
-        spec_text = spec.full if spec is not None else ""
+        spec_text = spec.body if spec is not None else ""
         for name in ops:
             fn = index.get(name)
             if fn is None or fn.kind != "exec_pub":
@@ -875,6 +1032,25 @@ class Tests(unittest.TestCase):
                 "op.rs:retype_frame:final(self).flush_epoch == old(self).flush_epoch",
             ],
         )
+
+    def test_a_let_binding_the_spec_function_throws_away_is_not_carried(self):
+        source = CARRIED.replace(
+            "post == pre && Self::frame_retyped(pre, post) && pre.can_retype_frame(root) && Self::kept(pre, post)",
+            "let _x = Self::kept(pre, post);\n"
+            "        post == pre && Self::frame_retyped(pre, post) && pre.can_retype_frame(root)",
+        )
+        self.assertEqual(
+            self.lines(source),
+            ["op.rs:retype_frame:!(ret is Refused) ==> #[trigger] Self::kept(old(self), final(self))"],
+        )
+
+    def test_a_let_binding_the_value_uses_is_carried(self):
+        source = CARRIED.replace(
+            "post == pre && Self::frame_retyped(pre, post) && pre.can_retype_frame(root) && Self::kept(pre, post)",
+            "let x = Self::kept(pre, post);\n"
+            "        post == pre && x && Self::frame_retyped(pre, post) && pre.can_retype_frame(root)",
+        )
+        self.assertEqual(self.lines(source), [])
 
     def test_an_equality_is_not_carried_when_neither_side_says_post_equals_pre(self):
         source = CARRIED.replace(
