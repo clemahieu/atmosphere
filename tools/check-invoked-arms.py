@@ -12,7 +12,9 @@ spec_retyped, spec_derived, spec_moved, spec_deleted, spec_revoked, spec_linked,
 spec_unmapped or spec_probed is paired, by the Operation variant, with the arm of dispatch. The
 operations are the pub fn methods of impl CapKernel that the invoke_* function named there calls
 on self. Those calls are read from the invoke_* body and not followed further, and the invoke_*
-ensures is not read. The last arm of invoked is post == pre with spec_outcome; its operations are
+ensures is not read. A pub fn the bodies of several invoke_* functions in dispatch call is an
+operation only of those among them that call no other pub fn; when every one of them calls another
+as well, it is an operation of each. The last arm of invoked is post == pre with spec_outcome; its operations are
 the pub fn methods the remaining arms of dispatch call on self (print, power_off and inspect). An
 operation dispatch does not call is not read.
 
@@ -507,19 +509,42 @@ def spec_called(expr):
     return found[-1] if found else None
 
 
-def operations_of(expr, index):
+def invoke_calls(fn, index):
+    """The pub fn methods the body of an invoke_* function calls on self, in order, each once."""
+    ops = []
+    for inner in SELF_CALL.findall(fn.body):
+        target = index.get(inner)
+        if target is not None and target.kind == "exec_pub":
+            ops.append(inner)
+    return list(dict.fromkeys(ops))
+
+
+def owners_of(invokes):
+    """For each pub fn the invoke_* bodies call, the invoke_* functions it is an operation of: those
+    that call it and no other pub fn, when there is one, and otherwise every one that calls it.
+    `invokes` maps each invoke_* name to the pub fn methods its body calls."""
+    callers = {}
+    for name, ops in invokes.items():
+        for op in ops:
+            callers.setdefault(op, []).append(name)
+    owners = {}
+    for op, names in callers.items():
+        sole = [name for name in names if invokes[name] == [op]]
+        owners[op] = set(sole or names)
+    return owners
+
+
+def operations_of(expr, index, owners):
     """The pub fn methods expr calls on self. An invoke_* call stands for the pub fn methods that
-    function's body calls on self, and is not itself an operation."""
+    function's body calls on self and is an operation of (`owners`), and is not itself an
+    operation."""
     ops = []
     for name in SELF_CALL.findall(expr):
         fn = index.get(name)
         if fn is None:
             continue
         if name.startswith("invoke_") and fn.kind == "exec":
-            for inner in SELF_CALL.findall(fn.body):
-                target = index.get(inner)
-                if target is not None and target.kind == "exec_pub":
-                    ops.append(inner)
+            ops.extend(op for op in invoke_calls(fn, index) if name in owners[op])
         elif fn.kind == "exec_pub":
             ops.append(name)
     return list(dict.fromkeys(ops))
@@ -533,21 +558,34 @@ def operation_match(fn, what):
     return parse_arms(fn.body, brace)
 
 
-def lines_of(sources):
-    """Each uncarried conjunct in the sources, as path:function:conjunct. `sources` is (path, masked
-    text) pairs."""
-    methods_found = []
-    for path, text in sources:
-        methods_found.extend(functions_in(text, path))
+def index_of(sources):
+    """Each method of impl CapKernel in the sources, by name. `sources` is (path, masked text)
+    pairs."""
     index = {}
-    for fn in methods_found:
-        if fn.name in index:
-            raise Malformed(f"{fn.name} is a method of CapKernel twice, in {index[fn.name].path} and {fn.path}")
-        index[fn.name] = fn
+    for path, text in sources:
+        for fn in functions_in(text, path):
+            if fn.name in index:
+                raise Malformed(f"{fn.name} is a method of CapKernel twice, in {index[fn.name].path} and {fn.path}")
+            index[fn.name] = fn
     if "invoked" not in index or "dispatch" not in index:
         raise Malformed("no fn invoked and fn dispatch on impl CapKernel")
+    return index
+
+
+def pairings(index):
+    """Each arm of invoked as (spec function name, arm text, operations): the arms paired with an
+    arm of dispatch by the Operation variant, then the wildcard arm with the operations of every
+    arm of dispatch that invoked does not name. A pub fn the bodies of several invoke_* functions
+    dispatch calls is an operation of each owner owners_of names."""
     invoked_arms = operation_match(index["invoked"], "the pairing")
     dispatch_arms = {variant_key(pattern): expr for pattern, expr in operation_match(index["dispatch"], "the operations")}
+    invokes = {}
+    for expr in dispatch_arms.values():
+        for name in SELF_CALL.findall(expr):
+            fn = index.get(name)
+            if fn is not None and name.startswith("invoke_") and fn.kind == "exec":
+                invokes[name] = invoke_calls(fn, index)
+    owners = owners_of(invokes)
     groups = []
     wildcard = None
     used = set()
@@ -557,16 +595,23 @@ def lines_of(sources):
             wildcard = (spec_called(expr), expr)
         else:
             used.add(key)
-            groups.append((spec_called(expr), expr, operations_of(dispatch_arms.get(key, ""), index)))
+            groups.append((spec_called(expr), expr, operations_of(dispatch_arms.get(key, ""), index, owners)))
     if wildcard is not None:
         spec, arm = wildcard
         ops = []
         for key, expr in dispatch_arms.items():
             if key not in used:
-                ops.extend(operations_of(expr, index))
+                ops.extend(operations_of(expr, index, owners))
         groups.append((spec, arm, list(dict.fromkeys(ops))))
+    return groups
+
+
+def lines_of(sources):
+    """Each uncarried conjunct in the sources, as path:function:conjunct. `sources` is (path, masked
+    text) pairs."""
+    index = index_of(sources)
     lines = []
-    for spec_name, arm, ops in groups:
+    for spec_name, arm, ops in pairings(index):
         spec = index.get(spec_name)
         spec_text = spec.full if spec is not None else ""
         for name in ops:
@@ -691,6 +736,53 @@ impl CapKernel {
 """
 
 
+SHARED = """\
+impl CapKernel {
+    pub open spec fn spec_registers_written(pre: Self, post: Self) -> bool {
+        Self::frame_written(pre, post)
+    }
+    pub open spec fn spec_outcome(&self) -> Outcome {
+        self.holds_console(root)
+    }
+    pub open spec fn invoked(pre: Self, post: Self) -> bool {
+        match spec_operation(frame.operation_number()) {
+            Some(Operation::WriteRegisters) => Self::spec_registers_written(pre, post),
+            _ => post == pre && out == pre.spec_outcome(),
+        }
+    }
+    pub fn dispatch(&mut self) -> (ret: Option<Outcome>) {
+        match operation(frame.operation_number()) {
+            Some(Operation::WriteRegisters) => Some(self.invoke_write_registers()),
+            Some(Operation::ReadRegisters) => Some(self.invoke_read_registers()),
+            None => Some(status_only_outcome(STATUS_UNKNOWN)),
+        }
+    }
+    fn invoke_write_registers(&mut self) -> (ret: Outcome) {
+        let current = self.read_registers();
+        self.write_registers(current)
+    }
+    fn invoke_read_registers(&self) -> (ret: Outcome) {
+        SECOND_BODY
+    }
+    pub fn read_registers(&self) -> (ret: Option<Registers>)
+        ensures
+            ret is Some ==> self.read_found(root),
+    {
+    }
+    pub fn write_registers(&mut self, input: Registers) -> (ret: bool)
+        ensures
+            ret ==> Self::frame_written(*old(self), *final(self)),
+    {
+    }
+    pub fn suspend(&mut self) -> (ret: bool)
+        ensures
+            *final(self) == *old(self),
+    {
+    }
+}
+"""
+
+
 def dropped():
     """The carried fixture plus the field comparison the arm does not share."""
     return CARRIED.replace(
@@ -809,6 +901,22 @@ class Tests(unittest.TestCase):
             "            final(self) == old(self),\n",
         )
         self.assertEqual(self.lines(source), [])
+
+    def test_a_pub_fn_shared_by_two_invoke_bodies_is_the_operation_of_the_one_that_calls_only_it(self):
+        source = SHARED.replace("SECOND_BODY", "self.read_registers()")
+        ops = {spec: ops for spec, _, ops in pairings(index_of([("op.rs", masked(source))]))}
+        self.assertEqual(ops["spec_registers_written"], ["write_registers"])
+        self.assertEqual(ops["spec_outcome"], ["read_registers"])
+        self.assertEqual(
+            self.lines(source),
+            ["op.rs:read_registers:ret is Some ==> self.read_found(root)"],
+        )
+
+    def test_a_pub_fn_every_caller_calls_beside_another_stays_the_operation_of_each(self):
+        source = SHARED.replace("SECOND_BODY", "self.read_registers(); self.suspend()")
+        ops = {spec: ops for spec, _, ops in pairings(index_of([("op.rs", masked(source))]))}
+        self.assertEqual(ops["spec_registers_written"], ["read_registers", "write_registers"])
+        self.assertEqual(ops["spec_outcome"], ["read_registers", "suspend"])
 
     def test_the_script_is_not_a_gate_step(self):
         gate = (REPO / "tools" / "gate.py").read_text(encoding="utf-8")
