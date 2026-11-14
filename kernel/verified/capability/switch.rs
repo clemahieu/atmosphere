@@ -322,6 +322,94 @@ impl CapKernel {
         TickStep::Switched
     }
 
+    /// Whether core c owes a selection: the thread selected on c outranks what c runs, as a start that
+    /// makes a thread Runnable there records a reschedule IPI for. The glue reads it for each core after
+    /// an entry and sends the core the IPI, whose handler ticks. design/cpu-time-as-capability/.
+    pub fn selection_due(&self, c: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            c < NUM_CPUS,
+        ensures
+            ret == exists|t: usize| #[trigger] self.selected(c as int, t)
+                && self.outranks_current(c as int, thread_priority(self.threads.records@[t].value())),
+    {
+        let next = match self.select_thread(c) {
+            Some(t) => t,
+            None => {
+                proof {
+                    assert forall|u: usize| #[trigger] self.selected(c as int, u) implies false by {
+                        assert(self.threads.records@.contains_key(u));
+                    }
+                }
+                return false;
+            },
+        };
+        proof {
+            assert(self.selected(c as int, next));
+            assert forall|u: usize| #[trigger] self.selected(c as int, u) implies u == next by {
+                let pu = thread_priority(self.threads.records@[u].value());
+                let pn = thread_priority(self.threads.records@[next].value());
+                assert(pu <= pn);
+                assert(pn <= pu);
+            }
+            assert(thread_wf(&self.list, &self.threads, &self.blocks, next));
+        }
+        let record = *PPtr::<ThreadRecord>::from_usize(next + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+            Tracked(self.threads.records.borrow().tracked_borrow(next)),
+        );
+        let next_priority = match record.placement {
+            Some(pl) => pl.priority,
+            None => 0,
+        };
+        match self.cores.get(c).current_thread {
+            Some(o) => {
+                proof {
+                    reveal(current_wf);
+                    assert(runs(self.cores@, c as int, o));
+                    assert(thread_wf(&self.list, &self.threads, &self.blocks, o));
+                }
+                let running = *PPtr::<ThreadRecord>::from_usize(o + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+                    Tracked(self.threads.records.borrow().tracked_borrow(o)),
+                );
+                let priority = match running.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                priority < next_priority
+            },
+            None => true,
+        }
+    }
+
+    /// The frame core c's current thread returns to user mode with, when c runs one: its saved
+    /// registers as user_frame makes them, so the return grants no privilege whatever was saved. The
+    /// glue resumes the thread with it after a tick switched to it.
+    pub fn current_frame(&self, c: usize) -> (ret: Option<Registers>)
+        requires
+            self.wf(),
+            c < NUM_CPUS,
+        ensures
+            ret == match self.cores@[c as int].current_thread {
+                Some(t) => Some(user_frame(self.threads.records@[t].value().frame)),
+                None => None::<Registers>,
+            },
+    {
+        match self.cores.get(c).current_thread {
+            Some(t) => {
+                proof {
+                    reveal(current_wf);
+                    assert(runs(self.cores@, c as int, t));
+                    assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+                }
+                let record = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+                    Tracked(self.threads.records.borrow().tracked_borrow(t)),
+                );
+                Some(user_frame_of(record.frame))
+            },
+            None => None,
+        }
+    }
+
     /// Space s holds a valid id on core c, read from the space's list of cores.
     fn space_holds_id(&self, c: usize, s: usize) -> (ret: bool)
         requires
