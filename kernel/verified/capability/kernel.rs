@@ -1202,6 +1202,10 @@ pub struct CapKernel {
     /// The cores sent an IPI to flush after an unmap, in the order sent: each core on the unmapped
     /// space's list of cores. The send is ghost: see design/flush-without-waiting/.
     pub flush_ipis: Ghost<Seq<usize>>,
+    /// The cores sent an IPI to run the selection now, in the order sent: each core a start made a
+    /// thread Runnable on that outranks what the core runs. The send is ghost, as the stop IPIs':
+    /// see design/cpu-time-as-capability/.
+    pub resched_ipis: Ghost<Seq<usize>>,
 }
 
 /// A live hidden node is node 0 of a table leaf or a table page, so unlinking it can find what it

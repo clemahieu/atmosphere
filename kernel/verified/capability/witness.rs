@@ -11632,7 +11632,8 @@ impl CapKernel {
     /// at `base + 10 * PAGE_SZ` into slot 2 bound to that process, then places the thread on core 0 at
     /// priority 0 through its core capability in ROOT_CORE_SLOT and starts it. Both `place` and `start`
     /// succeed: the thread's placement node is a child of the core capability, its record names core 0
-    /// at priority 0, and its state is Runnable on core 0.
+    /// at priority 0, and its state is Runnable on core 0. Core 0 runs nothing, so the thread outranks
+    /// it and the start sends core 0 a reschedule IPI.
     /// design/witness-per-way-an-operation-succeeds/, design/cpu-time-as-capability/.
     #[verifier::spinoff_prover]
     pub fn witness_root_starts_placed_thread(
@@ -11677,6 +11678,8 @@ impl CapKernel {
                 &&& final(self).threads.queues.queue(0, 0) == seq![thread]
                 &&& forall|c: int, p: int| 0 <= c < NUM_CPUS && 0 <= p < NUM_PRIORITIES && (c != 0 || p != 0)
                     ==> (#[trigger] final(self).threads.queues.queue(c, p)) == Seq::<usize>::empty()
+                &&& final(self).resched_ipis@.len() > 0
+                &&& final(self).resched_ipis@.last() == 0
             }),
     {
         self.witness_place_and_start(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, 0)
@@ -11737,6 +11740,8 @@ impl CapKernel {
                 &&& final(self).threads.queues.queue(core as int, 0) == seq![thread]
                 &&& forall|c: int, p: int| 0 <= c < NUM_CPUS && 0 <= p < NUM_PRIORITIES && (c != core || p != 0)
                     ==> (#[trigger] final(self).threads.queues.queue(c, p)) == Seq::<usize>::empty()
+                &&& final(self).resched_ipis@.len() > 0
+                &&& final(self).resched_ipis@.last() == core
             }),
     {
         hide(CapKernel::wf);
@@ -11999,6 +12004,10 @@ impl CapKernel {
             assert(s5.list == s4.list);
             assert(s5.processes == s4.processes);
             assert(s5.can_control(process, WITNESS_THREAD_SLOT));
+            // Core `core` runs nothing, so the start outranks it and sends it the reschedule IPI.
+            assert(s4.cores == s0.cores);
+            assert(s4.outranks_current(core as int, 0));
+            assert(s5.resched_ipis@ == s4.resched_ipis@.push(core));
         }
         (placed, started)
     }

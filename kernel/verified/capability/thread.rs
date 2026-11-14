@@ -3691,9 +3691,21 @@ impl CapKernel {
         &&& r.placement is Some
     }
 
+    /// A thread Runnable on core c at `priority` outranks what c runs: c runs nothing, or the thread it
+    /// runs is of a lower priority. Making such a thread Runnable sends c a reschedule IPI, so c runs
+    /// the selection now and not at its next kernel entry, which on a core with no tick may be never:
+    /// see design/cpu-time-as-capability/.
+    pub open spec fn outranks_current(&self, c: int, priority: usize) -> bool {
+        match self.cores@[c].current_thread {
+            Some(o) => thread_priority(self.threads.records@[o].value()) < priority,
+            None => true,
+        }
+    }
+
     /// Starts the thread the control capability at index i names: it becomes Runnable on the core it
-    /// is placed on, which switches it in. The index comes from user space, so it can be refused, and
-    /// a refusal changes nothing.
+    /// is placed on, which switches it in, and when it outranks what that core runs, the core is sent
+    /// a reschedule IPI. The index comes from user space, so it can be refused, and a refusal changes
+    /// nothing.
     pub fn start(&mut self, root: usize, i: usize) -> (ret: bool)
         requires
             old(self).wf(),
@@ -3714,6 +3726,11 @@ impl CapKernel {
                 &&& queued_at_back(&old(self).threads.queues, &final(self).threads.queues, core as int, pl.priority as int, t)
                 &&& at_back_of_priority(&final(self).threads.queues, final(self).threads.records@, core as int, pl.priority, t)
                 &&& final(self).cores == old(self).cores
+                &&& final(self).resched_ipis@ == if old(self).outranks_current(core as int, pl.priority) {
+                    old(self).resched_ipis@.push(core)
+                } else {
+                    old(self).resched_ipis@
+                }
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
             },
     {
@@ -3743,6 +3760,25 @@ impl CapKernel {
             reveal(placements_wf);
             assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
         }
+        // The core it is placed on gets a reschedule IPI when the thread outranks what it runs.
+        let outranks = match self.cores.get(core).current_thread {
+            None => true,
+            Some(o) => {
+                proof {
+                    reveal(current_wf);
+                    assert(runs(pre.cores@, core as int, o));
+                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, o));
+                }
+                let running = *PPtr::<ThreadRecord>::from_usize(o + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+                    Tracked(self.threads.records.borrow().tracked_borrow(o)),
+                );
+                let current_priority = match running.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                current_priority < prio
+            },
+        };
         self.enqueue_and_write(
             core,
             prio,
@@ -3752,6 +3788,7 @@ impl CapKernel {
                 ..record
             },
         );
+        self.resched_ipis = Ghost(if outranks { pre.resched_ipis@.push(core) } else { pre.resched_ipis@ });
         proof {
             reveal(current_wf);
             let post = *self;

@@ -1,9 +1,9 @@
 ---
 title: "CPU time is granted by a core capability with fixed priorities; scheduling contexts are deferred"
-date: 2026-11-05
+date: 2026-11-14
 status: active
 tags: [scheduling, capability]
-one_line: "Per-core run queues, fixed priorities, turns at equal priority, one selection function and one scheduling record per thread. A core capability allows placing a thread on that core at or below its maximum priority, a derived copy may lower it, and a placement is a binding so CPU time is revocable. Budgets and periods are deferred, with three constraints kept so they stay addable."
+one_line: "Per-core run queues, fixed priorities, turns at equal priority, one selection function and one scheduling record per thread. A core capability allows placing a thread on that core at or below its maximum priority, a derived copy may lower it, and a placement is a binding so CPU time is revocable. A thread made Runnable above what its core runs sends that core a reschedule IPI. Budgets and periods are deferred, with three constraints kept so they stay addable."
 revisit_if: "A workload needs a bound on how much time a thread can take, which fixed priorities cannot give, or temporal isolation inside a core is wanted by design/isolation-claim/."
 confidence: "The human's choice to defer scheduling contexts; the estimate that they cost about 600 to 900 lines of code and 2,500 to 4,000 of proof plus a one-time rework of the scheduler and IPC proofs is reasoned from structure, not measured."
 ---
@@ -13,6 +13,8 @@ confidence: "The human's choice to defer scheduling contexts; the estimate that 
 ## Decision
 
 Per-core queues over the intrusive list, fixed priorities, turns at equal priority, one selection function and one scheduling record in a thread. A core capability allows placing a thread on that core at or below its maximum priority, and a derived copy may lower it. A thread with no placement cannot run, so CPU time is granted. A placement is a binding under the core capability, so revoking that capability makes its threads Inactive: CPU time is revocable. Timer: a per-core capability arms a deadline that signals a notification, multiplexed with the kernel's slice, so a user-level scheduler can be built. Thread placement across cores is the default thread library's policy, and rebalancing, if wanted, is a service holding thread capabilities.
+
+A thread made Runnable on a core at a priority above that core's current thread, or on a core running nothing, sends that core a reschedule IPI, so the core runs the selection now and not at its next kernel entry. Without it, a core with no tick running a thread that never enters the kernel would never run the thread that outranks it. The rule is in `start`'s specification, as the ghost send the stop and flush IPIs use, `design/one-lock-bounded-steps/`; a wake from IPC or a notification follows the same rule. A thread of equal or lower priority sends nothing: it waits for its turn at the core's next tick or block.
 
 Scheduling contexts, a budget and period per thread, are deferred. Three constraints are kept so they stay addable: a reply is an explicit kernel object, `design/ipc-with-reply-object/`; programs create threads and do IPC through the runtime library; a thread's scheduling state stays in one record behind one selection function. The marker telling a preempted thread's full saved frame from a blocked thread's partial copy is a field on the thread set at each save point. Extended register state lives in the thread object. Running a guest adds no third saved-frame kind, `design/vmm-over-svm/`.
 
