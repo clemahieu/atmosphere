@@ -53,14 +53,6 @@ pub open spec fn large_level(order: u8) -> Large {
     if order == 9 { Large::Two } else { Large::One }
 }
 
-/// How many regions this level has.
-pub open spec fn level_regions(level: Large) -> usize {
-    match level {
-        Large::Two => NUM_2M,
-        Large::One => NUM_1G,
-    }
-}
-
 /// The first page of region r.
 pub open spec fn level_base(level: Large, r: usize) -> usize {
     (r * level_pages(level)) as usize
@@ -69,7 +61,7 @@ pub open spec fn level_base(level: Large, r: usize) -> usize {
 /// A region's pages are the range from its base.
 pub proof fn lemma_level_pages(level: Large, r: usize)
     requires
-        r < level_regions(level),
+        (r + 1) * level_pages(level) <= usize::MAX,
     ensures
         forall|i: usize| #[trigger] BlockTable::large_pages(level, r as int).contains(i)
             == (level_base(level, r) <= i < level_base(level, r) + level_pages(level)),
@@ -95,6 +87,14 @@ pub fn pages_of_level(level: Large) -> (ret: usize)
 }
 
 impl Zeroing {
+    /// How many regions of this level the active flags cover.
+    pub open spec fn regions(&self, level: Large) -> int {
+        match level {
+            Large::Two => self.active_2m@.len() as int,
+            Large::One => self.active_1g@.len() as int,
+        }
+    }
+
     pub open spec fn active(&self, level: Large, r: usize) -> bool {
         match level {
             Large::Two => self.active_2m@[r as int],
@@ -107,13 +107,13 @@ impl Zeroing {
         ||| {
             &&& self.blocks@[b] == PAGES_PER_2M
             &&& b % PAGES_PER_2M == 0
-            &&& b / PAGES_PER_2M < NUM_2M
+            &&& b / PAGES_PER_2M < self.active_2m@.len()
             &&& self.active_2m@[(b / PAGES_PER_2M) as int]
         }
         ||| {
             &&& self.blocks@[b] == PAGES_PER_1G
             &&& b % PAGES_PER_1G == 0
-            &&& b / PAGES_PER_1G < NUM_1G
+            &&& b / PAGES_PER_1G < self.active_1g@.len()
             &&& self.active_1g@[(b / PAGES_PER_1G) as int]
         }
     }
@@ -122,11 +122,11 @@ impl Zeroing {
     pub open spec fn active_wf(&self) -> bool {
         &&& self.active_2m.wf()
         &&& self.active_1g.wf()
-        &&& forall|r: usize| r < NUM_2M && #[trigger] self.active_2m@[r as int] ==> {
+        &&& forall|r: usize| r < self.active_2m@.len() && #[trigger] self.active_2m@[r as int] ==> {
             &&& self.blocks@.contains_key((r * PAGES_PER_2M) as usize)
             &&& self.blocks@[(r * PAGES_PER_2M) as usize] == PAGES_PER_2M
         }
-        &&& forall|r: usize| r < NUM_1G && #[trigger] self.active_1g@[r as int] ==> {
+        &&& forall|r: usize| r < self.active_1g@.len() && #[trigger] self.active_1g@[r as int] ==> {
             &&& self.blocks@.contains_key((r * PAGES_PER_1G) as usize)
             &&& self.blocks@[(r * PAGES_PER_1G) as usize] == PAGES_PER_1G
         }
@@ -136,7 +136,7 @@ impl Zeroing {
     pub fn is_active(&self, level: Large, r: usize) -> (ret: bool)
         requires
             self.wf(),
-            r < level_regions(level),
+            r < self.regions(level),
         ensures
             ret == self.active(level, r),
             ret ==> self.blocks@.contains_key(level_base(level, r)),
@@ -219,7 +219,7 @@ impl Zeroing {
             old(self).active_2m.wf(),
             old(self).active_1g.wf(),
         ensures
-            final(steps).count <= old(steps).count + NUM_2M + NUM_1G,
+            final(steps).count <= old(steps).count + old(self).active_2m@.len() + old(self).active_1g@.len(),
             final(self).wf(),
             final(self).blocks@ == Map::<usize, usize>::empty(),
     {
@@ -265,10 +265,10 @@ impl Zeroing {
         }
         proof {
             reveal(Zeroing::pages_wf);
-            assert forall|x: usize| x < NUM_2M && #[trigger] self.active_2m@[x as int] implies false by {
+            assert forall|x: usize| x < self.active_2m@.len() && #[trigger] self.active_2m@[x as int] implies false by {
                 assert(!self.active_2m@[x as int]);
             }
-            assert forall|x: usize| x < NUM_1G && #[trigger] self.active_1g@[x as int] implies false by {
+            assert forall|x: usize| x < self.active_1g@.len() && #[trigger] self.active_1g@[x as int] implies false by {
                 assert(!self.active_1g@[x as int]);
             }
         }
@@ -279,7 +279,7 @@ impl Zeroing {
     pub fn begin(&mut self, level: Large, r: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
-            r < level_regions(level),
+            r < old(self).regions(level),
             perms.dom() == BlockTable::large_pages(level, r as int),
             forall|i: usize| BlockTable::large_pages(level, r as int).contains(i) ==> #[trigger] holds(perms, i),
             forall|b: usize| #[trigger] old(self).blocks@.contains_key(b) ==>
@@ -327,7 +327,7 @@ impl Zeroing {
                 }
             }
             assert(me.active_wf()) by {
-                assert forall|x: usize| x < NUM_2M && #[trigger] me.active_2m@[x as int] implies {
+                assert forall|x: usize| x < me.active_2m@.len() && #[trigger] me.active_2m@[x as int] implies {
                     &&& me.blocks@.contains_key((x * PAGES_PER_2M) as usize)
                     &&& me.blocks@[(x * PAGES_PER_2M) as usize] == PAGES_PER_2M
                 } by {
@@ -336,7 +336,7 @@ impl Zeroing {
                         assert(pre.blocks@.contains_key((x * PAGES_PER_2M) as usize));
                     }
                 }
-                assert forall|x: usize| x < NUM_1G && #[trigger] me.active_1g@[x as int] implies {
+                assert forall|x: usize| x < me.active_1g@.len() && #[trigger] me.active_1g@[x as int] implies {
                     &&& me.blocks@.contains_key((x * PAGES_PER_1G) as usize)
                     &&& me.blocks@[(x * PAGES_PER_1G) as usize] == PAGES_PER_1G
                 } by {
@@ -433,7 +433,7 @@ impl Zeroing {
     pub fn finish(&mut self, level: Large, r: usize) -> (ret: Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
-            r < level_regions(level),
+            r < old(self).regions(level),
             old(self).active(level, r),
             old(self).cursor@[level_base(level, r) as int] == level_pages(level),
         ensures
@@ -483,7 +483,7 @@ impl Zeroing {
                 assert(b != base);
             }
             assert(me.active_wf()) by {
-                assert forall|x: usize| x < NUM_2M && #[trigger] me.active_2m@[x as int] implies {
+                assert forall|x: usize| x < me.active_2m@.len() && #[trigger] me.active_2m@[x as int] implies {
                     &&& me.blocks@.contains_key((x * PAGES_PER_2M) as usize)
                     &&& me.blocks@[(x * PAGES_PER_2M) as usize] == PAGES_PER_2M
                 } by {
@@ -499,7 +499,7 @@ impl Zeroing {
                         Large::One => {},
                     }
                 }
-                assert forall|x: usize| x < NUM_1G && #[trigger] me.active_1g@[x as int] implies {
+                assert forall|x: usize| x < me.active_1g@.len() && #[trigger] me.active_1g@[x as int] implies {
                     &&& me.blocks@.contains_key((x * PAGES_PER_1G) as usize)
                     &&& me.blocks@[(x * PAGES_PER_1G) as usize] == PAGES_PER_1G
                 } by {

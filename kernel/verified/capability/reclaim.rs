@@ -685,7 +685,7 @@ impl CapKernel {
     proof fn lemma_dead_region_unmapped(&self, level: Large, r: usize)
         requires
             self.wf(),
-            r < level_regions(level),
+            r < self.blocks.level_regions(level),
             self.region_is_dead(level, r),
         ensures
             self.region_unmapped(level, r),
@@ -705,7 +705,7 @@ impl CapKernel {
     proof fn lemma_large_excludes_small(&self, level: Large, base: usize)
         requires
             self.wf(),
-            base / PAGE_SZ / level_pages(level) < level_regions(level),
+            base / PAGE_SZ / level_pages(level) < self.blocks.level_regions(level),
             block_typed(&self.blocks, level_ref(level, base / PAGE_SZ / level_pages(level))),
         ensures
             !(self.blocks.pages@[(base / PAGE_SZ) as int].kind is Base),
@@ -750,7 +750,7 @@ impl CapKernel {
             Large::Two => {
                 let q = page / PAGES_PER_1G;
                 if self.blocks.regions_1g@[q as int].typed {
-                    assert(q < NUM_1G);
+                    assert(q < self.blocks.num_1g());
                     assert(block_has_page(BlockRef::One(q), page));
                     lemma_large_block_alone(&self.blocks, level, r, BlockRef::One(q), page);
                 }
@@ -758,7 +758,7 @@ impl CapKernel {
             Large::One => {
                 let q = page / PAGES_PER_2M;
                 if self.blocks.regions_2m@[q as int].typed {
-                    assert(q < NUM_2M);
+                    assert(q < self.blocks.num_2m());
                     assert(block_has_page(BlockRef::Two(q), page));
                     lemma_large_block_alone(&self.blocks, level, r, BlockRef::Two(q), page);
                 }
@@ -5073,7 +5073,7 @@ impl CapKernel {
         let r = base / PAGE_SZ / level_pages(level);
         &&& order == 9 || order == 18
         &&& self.can_retype_under(root, from, base, order)
-        &&& r < level_regions(level)
+        &&& r < self.blocks.level_regions(level)
         &&& self.region_is_dead(level, r)
     }
 
@@ -5088,7 +5088,7 @@ impl CapKernel {
         let level = large_level(order);
         let r = base / PAGE_SZ / level_pages(level);
         &&& order == 9 || order == 18
-        &&& r < level_regions(level)
+        &&& r < self.blocks.level_regions(level)
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.region_is_dead(level, r)
         &&& self.region_clean(level, r)
@@ -5105,9 +5105,9 @@ impl CapKernel {
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.blocks.pages@ == self.blocks.pages@
-        &&& forall|j: int| 0 <= j < NUM_2M && !(level is Two && j == r)
+        &&& forall|j: int| 0 <= j < post.blocks.num_2m() && !(level is Two && j == r)
             ==> #[trigger] post.blocks.regions_2m@[j] == self.blocks.regions_2m@[j]
-        &&& forall|j: int| 0 <= j < NUM_1G && !(level is One && j == r)
+        &&& forall|j: int| 0 <= j < post.blocks.num_1g() && !(level is One && j == r)
             ==> #[trigger] post.blocks.regions_1g@[j] == self.blocks.regions_1g@[j]
         &&& forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !post.frames@.contains_key(i)
         &&& Self::step_ok(*self, post, c as int)
@@ -5148,7 +5148,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return FrameReclaimStep::Refused; },
         };
-        let (level, r) = match large_region(base, order) {
+        let (level, r) = match large_region(&self.blocks, base, order) {
             Some(found) => found,
             None => { return FrameReclaimStep::Refused; },
         };
@@ -5201,7 +5201,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            r < level_regions(level),
+            r < old(self).blocks.level_regions(level),
             old(self).region_is_dead(level, r),
             old(self).region_clean(level, r),
         ensures
@@ -5220,9 +5220,9 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).blocks.pages@ == old(self).blocks.pages@,
-            forall|j: int| 0 <= j < NUM_2M && !(level is Two && j == r)
+            forall|j: int| 0 <= j < final(self).blocks.num_2m() && !(level is Two && j == r)
                 ==> #[trigger] final(self).blocks.regions_2m@[j] == old(self).blocks.regions_2m@[j],
-            forall|j: int| 0 <= j < NUM_1G && !(level is One && j == r)
+            forall|j: int| 0 <= j < final(self).blocks.num_1g() && !(level is One && j == r)
                 ==> #[trigger] final(self).blocks.regions_1g@[j] == old(self).blocks.regions_1g@[j],
             !block_typed(&final(self).blocks, level_ref(level, r)),
             final(self).blocks.large_free(level, r as int),

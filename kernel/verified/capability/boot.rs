@@ -140,8 +140,8 @@ impl CapKernel {
             &&& (#[trigger] self.blocks.pages@[i]).kind is Reserved
             &&& self.blocks.pages@[i].object is None
         }
-        &&& forall|r: int| 0 <= r < NUM_2M ==> !(#[trigger] self.blocks.regions_2m@[r]).typed
-        &&& forall|r: int| 0 <= r < NUM_1G ==> !(#[trigger] self.blocks.regions_1g@[r]).typed
+        &&& forall|r: int| 0 <= r < self.blocks.num_2m() ==> !(#[trigger] self.blocks.regions_2m@[r]).typed
+        &&& forall|r: int| 0 <= r < self.blocks.num_1g() ==> !(#[trigger] self.blocks.regions_1g@[r]).typed
     }
 
     /// The first boot step: the root process from the eight pages at `base`, and the first leaf of its

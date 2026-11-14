@@ -75,7 +75,7 @@ impl CapKernel {
                 !(leaf2 + 1 <= x < leaf2 + 1 + count) ==> post.is_cap(x) == pre.is_cap(x),
             forall|x: usize| #![trigger pre.is_cap(x)] #![trigger post.payload_of(x)]
                 !(leaf2 + 1 <= x < leaf2 + 1 + count) && pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
-            forall|q: int| 0 <= q < NUM_2M && !image_region(runs, q)
+            forall|q: int| 0 <= q < pre.blocks.num_2m() && !image_region(runs, q)
                 ==> #[trigger] post.blocks.regions_2m@[q] == pre.blocks.regions_2m@[q],
             forall|j: int| pre.blocks.tracks(j) && !image_region(runs, region_2m(j))
                 ==> #[trigger] post.blocks.pages@[j] == pre.blocks.pages@[j],

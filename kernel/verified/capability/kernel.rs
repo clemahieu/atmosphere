@@ -1019,8 +1019,8 @@ impl StaleEpochs {
         ensures
             final(self).wf(),
             forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] final(self).pages@[j] == 0,
-            forall|r: int| 0 <= r < NUM_2M ==> #[trigger] final(self).two@[r] == 0,
-            forall|r: int| 0 <= r < NUM_1G ==> #[trigger] final(self).one@[r] == 0,
+            forall|r: int| 0 <= r < final(self).two@.len() ==> #[trigger] final(self).two@[r] == 0,
+            forall|r: int| 0 <= r < final(self).one@.len() ==> #[trigger] final(self).one@[r] == 0,
     {
         let mut i = 0;
         while i != NUM_PAGES
@@ -1477,8 +1477,8 @@ pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &B
             &&& b.pages@[i].object == a.pages@[i].object
         },
         forall|i: usize| a.tracks(i as int) ==> #[trigger] block_ref(b, i) == block_ref(a, i),
-        forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed,
-        forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed,
+        forall|x: int| 0 <= x < b.num_2m() ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed,
+        forall|x: int| 0 <= x < b.num_1g() ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed,
     ensures
         list_pages_used(list, b),
 {
@@ -1766,7 +1766,7 @@ impl CapKernel {
     pub proof fn lemma_large_freed_translatable(pre: Self, post: &BlockTable, level: Large, r: usize)
         requires
             pre.wf(),
-            r < level_regions(level),
+            r < pre.blocks.level_regions(level),
             pre.region_clean(level, r),
             post.pages@ == pre.blocks.pages@,
             match level {
@@ -2164,8 +2164,8 @@ impl CapKernel {
             final(self).list.seq@[0] == root,
             final(self).boot_empty(),
             forall|j: int| final(self).blocks.tracks(j) ==> #[trigger] final(self).stale_epoch.pages@[j] == 0,
-            forall|r: int| 0 <= r < NUM_2M ==> #[trigger] final(self).stale_epoch.two@[r] == 0,
-            forall|r: int| 0 <= r < NUM_1G ==> #[trigger] final(self).stale_epoch.one@[r] == 0,
+            forall|r: int| 0 <= r < final(self).blocks.num_2m() ==> #[trigger] final(self).stale_epoch.two@[r] == 0,
+            forall|r: int| 0 <= r < final(self).blocks.num_1g() ==> #[trigger] final(self).stale_epoch.one@[r] == 0,
     {
         reveal(table_links_wf);
         self.list = Tree::new(root, Tracked(perm));
@@ -2260,7 +2260,7 @@ impl CapKernel {
     pub fn is_region_acknowledged(&self, level: Large, r: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
-            r < level_regions(level),
+            r < self.blocks.level_regions(level),
         ensures
             final(steps).count <= old(steps).count + NUM_CPUS + NUM_IOMMUS,
             ret == self.region_acknowledged(level, r),
@@ -2875,7 +2875,7 @@ impl CapKernel {
             post.endpoints == pre.endpoints,
             post.replies == pre.replies,
             pre.wf(),
-            r < level_regions(level),
+            r < pre.blocks.level_regions(level),
             pre.region_clean(level, r),
             post.blocks.wf(),
             post.blocks.pages@ == pre.blocks.pages@,

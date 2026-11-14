@@ -47,8 +47,8 @@ pub open spec fn block_ref(blocks: &BlockTable, i: usize) -> BlockRef {
 pub open spec fn block_typed(blocks: &BlockTable, br: BlockRef) -> bool {
     match br {
         BlockRef::Small(b) => blocks.tracks(b as int) && blocks.pages@[b as int].kind is Base,
-        BlockRef::Two(r) => r < NUM_2M && blocks.regions_2m@[r as int].typed,
-        BlockRef::One(r) => r < NUM_1G && blocks.regions_1g@[r as int].typed,
+        BlockRef::Two(r) => r < blocks.num_2m() && blocks.regions_2m@[r as int].typed,
+        BlockRef::One(r) => r < blocks.num_1g() && blocks.regions_1g@[r as int].typed,
     }
 }
 
@@ -125,11 +125,11 @@ pub open spec fn holders_wf(
         &&& blocks.tracks_addr(tables.payload_of(n).base)
         &&& block_ref(blocks, tables.payload_of(n).base / PAGE_SZ) == br
     } || (n < NODE_SPACE && list.nodes@[n as int].live && list.nodes@[n as int].kind is Mapping))
-    &&& forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] ==> {
+    &&& forall|r: int| 0 <= r < blocks.num_2m() && #[trigger] zeroing.active_2m@[r] ==> {
         &&& blocks.regions_2m@[r].typed
         &&& blocks.regions_2m@[r].refs == 1
     }
-    &&& forall|r: int| 0 <= r < NUM_1G && #[trigger] zeroing.active_1g@[r] ==> {
+    &&& forall|r: int| 0 <= r < blocks.num_1g() && #[trigger] zeroing.active_1g@[r] ==> {
         &&& blocks.regions_1g@[r].typed
         &&& blocks.regions_1g@[r].refs == 1
     }
@@ -172,9 +172,9 @@ pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<
         &&& blocks.pages@[(l / PAGE_SZ) as int].order == 1
     }
     &&& leaf_blocks_owned(tables, blocks)
-    &&& forall|r: usize| r < NUM_2M && (#[trigger] blocks.regions_2m@[r as int]).typed
+    &&& forall|r: usize| r < blocks.num_2m() && (#[trigger] blocks.regions_2m@[r as int]).typed
         && blocks.regions_2m@[r as int].refs == 0 ==> holders.contains_key(BlockRef::Two(r))
-    &&& forall|r: usize| r < NUM_1G && (#[trigger] blocks.regions_1g@[r as int]).typed
+    &&& forall|r: usize| r < blocks.num_1g() && (#[trigger] blocks.regions_1g@[r as int]).typed
         && blocks.regions_1g@[r as int].refs == 0 ==> holders.contains_key(BlockRef::One(r))
 }
 
@@ -381,14 +381,14 @@ pub proof fn lemma_holders_unkeyed_small_changed(
         assert(a.tracks_addr(tables.payload_of(x).base));
         assert(block_ref(b, tables.payload_of(x).base / PAGE_SZ) == block_ref(a, tables.payload_of(x).base / PAGE_SZ));
     }
-    assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
+    assert forall|r: int| 0 <= r < b.num_2m() && #[trigger] zeroing.active_2m@[r] implies {
         &&& b.regions_2m@[r].typed
         &&& b.regions_2m@[r].refs == 1
     } by {
         assert(block_typed(a, BlockRef::Two(r as usize)));
         assert(block_refs(b, BlockRef::Two(r as usize)) == block_refs(a, BlockRef::Two(r as usize)));
     }
-    assert forall|r: int| 0 <= r < NUM_1G && #[trigger] zeroing.active_1g@[r] implies {
+    assert forall|r: int| 0 <= r < b.num_1g() && #[trigger] zeroing.active_1g@[r] implies {
         &&& b.regions_1g@[r].typed
         &&& b.regions_1g@[r].refs == 1
     } by {
@@ -482,12 +482,12 @@ pub proof fn lemma_objects_unframed_block_changed(
         assert(b.pages@[(m / PAGE_SZ) as int].object == a.pages@[(m / PAGE_SZ) as int].object);
         assert(b.pages@[(m / PAGE_SZ) as int].order == a.pages@[(m / PAGE_SZ) as int].order);
     }
-    assert forall|r: usize| r < NUM_2M && (#[trigger] b.regions_2m@[r as int]).typed
+    assert forall|r: usize| r < b.num_2m() && (#[trigger] b.regions_2m@[r as int]).typed
         && b.regions_2m@[r as int].refs == 0 implies holders.contains_key(BlockRef::Two(r)) by {
         assert(block_typed(a, BlockRef::Two(r)));
         assert(block_refs(b, BlockRef::Two(r)) == block_refs(a, BlockRef::Two(r)));
     }
-    assert forall|r: usize| r < NUM_1G && (#[trigger] b.regions_1g@[r as int]).typed
+    assert forall|r: usize| r < b.num_1g() && (#[trigger] b.regions_1g@[r as int]).typed
         && b.regions_1g@[r as int].refs == 0 implies holders.contains_key(BlockRef::One(r)) by {
         assert(block_typed(a, BlockRef::One(r)));
         assert(block_refs(b, BlockRef::One(r)) == block_refs(a, BlockRef::One(r)));
@@ -690,14 +690,14 @@ pub proof fn lemma_objects_refs_changed(
         assert(b.pages@[(l / PAGE_SZ) as int].object == a.pages@[(l / PAGE_SZ) as int].object);
         assert(b.pages@[(l / PAGE_SZ) as int].order == a.pages@[(l / PAGE_SZ) as int].order);
     }
-    assert forall|r: usize| r < NUM_2M && (#[trigger] b.regions_2m@[r as int]).typed
+    assert forall|r: usize| r < b.num_2m() && (#[trigger] b.regions_2m@[r as int]).typed
         && b.regions_2m@[r as int].refs == 0 implies hb.contains_key(BlockRef::Two(r)) by {
         assert(block_typed(a, BlockRef::Two(r)));
         if BlockRef::Two(r) != br {
             assert(block_refs(b, BlockRef::Two(r)) == block_refs(a, BlockRef::Two(r)));
         }
     }
-    assert forall|r: usize| r < NUM_1G && (#[trigger] b.regions_1g@[r as int]).typed
+    assert forall|r: usize| r < b.num_1g() && (#[trigger] b.regions_1g@[r as int]).typed
         && b.regions_1g@[r as int].refs == 0 implies hb.contains_key(BlockRef::One(r)) by {
         assert(block_typed(a, BlockRef::One(r)));
         if BlockRef::One(r) != br {
@@ -711,7 +711,7 @@ pub proof fn lemma_objects_refs_changed(
 pub proof fn lemma_large_block_alone(blocks: &BlockTable, level: Large, r: usize, x: BlockRef, i: usize)
     requires
         blocks.wf(),
-        r < level_regions(level),
+        r < blocks.level_regions(level),
         block_typed(blocks, level_ref(level, r)),
         block_typed(blocks, x),
         x != level_ref(level, r),
@@ -940,8 +940,8 @@ pub open spec fn blocks_refs_changed(a: &BlockTable, b: &BlockTable, br: BlockRe
         &&& b.pages@[i].object == a.pages@[i].object
         &&& b.pages@[i].order == a.pages@[i].order
     }
-    &&& forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed
-    &&& forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed
+    &&& forall|x: int| 0 <= x < b.num_2m() ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed
+    &&& forall|x: int| 0 <= x < b.num_1g() ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed
 }
 
 /// A table that typed a free run and changed nothing else keeps every tracked page that lay in a typed
@@ -980,8 +980,8 @@ pub proof fn lemma_same_structure(a: &BlockTable, b: &BlockTable)
             &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
             &&& b.pages@[i].base == a.pages@[i].base
         },
-        forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed,
-        forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed,
+        forall|x: int| 0 <= x < b.num_2m() ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed,
+        forall|x: int| 0 <= x < b.num_1g() ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed,
     ensures
         forall|i: usize| a.tracks(i as int) ==> #[trigger] block_ref(b, i) == block_ref(a, i),
         forall|x: BlockRef| #[trigger] block_typed(b, x) == block_typed(a, x),
@@ -1021,7 +1021,7 @@ proof fn lemma_region_of_bytes(addr: int, r: int, pages: int, regions: int)
 /// The 2M region of a byte address, from the region's bounds: the address is on a tracked page.
 pub proof fn lemma_region_2m_of_bytes(blocks: &BlockTable, addr: int, r: usize)
     requires
-        r < NUM_2M,
+        r < blocks.num_2m(),
         r * SIZE_2M <= addr < (r + 1) * SIZE_2M,
     ensures
         0 <= addr / (PAGE_SZ as int) < blocks.page_count(),
@@ -1029,13 +1029,13 @@ pub proof fn lemma_region_2m_of_bytes(blocks: &BlockTable, addr: int, r: usize)
 {
     assert(SIZE_2M as int == PAGES_PER_2M as int * PAGE_SZ as int) by (compute);
     blocks.lemma_region_counts();
-    lemma_region_of_bytes(addr, r as int, PAGES_PER_2M as int, NUM_2M as int);
+    lemma_region_of_bytes(addr, r as int, PAGES_PER_2M as int, blocks.num_2m() as int);
 }
 
 /// The 1G region of a byte address, from the region's bounds: the address is on a tracked page.
 pub proof fn lemma_region_1g_of_bytes(blocks: &BlockTable, addr: int, r: usize)
     requires
-        r < NUM_1G,
+        r < blocks.num_1g(),
         r * SIZE_1G <= addr < (r + 1) * SIZE_1G,
     ensures
         0 <= addr / (PAGE_SZ as int) < blocks.page_count(),
@@ -1043,7 +1043,7 @@ pub proof fn lemma_region_1g_of_bytes(blocks: &BlockTable, addr: int, r: usize)
 {
     assert(SIZE_1G as int == PAGES_PER_1G as int * PAGE_SZ as int) by (compute);
     blocks.lemma_region_counts();
-    lemma_region_of_bytes(addr, r as int, PAGES_PER_1G as int, NUM_1G as int);
+    lemma_region_of_bytes(addr, r as int, PAGES_PER_1G as int, blocks.num_1g() as int);
 }
 
 /// A page's 1G region is its 2M region's.
@@ -1066,7 +1066,7 @@ pub proof fn lemma_in_1g_block(blocks: &BlockTable, i: usize, r: usize)
     requires
         blocks.wf(),
         blocks.tracks(i as int),
-        r < NUM_1G,
+        r < blocks.num_1g(),
         i / PAGES_PER_1G == r,
         blocks.regions_1g@[r as int].typed,
     ensures
@@ -1278,7 +1278,7 @@ pub proof fn lemma_holders_frame_added(
             }
         }
     }
-    assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
+    assert forall|r: int| 0 <= r < blocks_b.num_2m() && #[trigger] zeroing.active_2m@[r] implies {
         &&& blocks_b.regions_2m@[r].typed
         &&& blocks_b.regions_2m@[r].refs == 1
     } by {
@@ -1286,7 +1286,7 @@ pub proof fn lemma_holders_frame_added(
         assert(BlockRef::Two(r as usize) != br);
         assert(block_refs(blocks_b, BlockRef::Two(r as usize)) == block_refs(blocks_a, BlockRef::Two(r as usize)));
     }
-    assert forall|r: int| 0 <= r < NUM_1G && #[trigger] zeroing.active_1g@[r] implies {
+    assert forall|r: int| 0 <= r < blocks_b.num_1g() && #[trigger] zeroing.active_1g@[r] implies {
         &&& blocks_b.regions_1g@[r].typed
         &&& blocks_b.regions_1g@[r].refs == 1
     } by {
@@ -1367,7 +1367,7 @@ pub proof fn lemma_holders_frame_dropped(
             assert(x < NODE_SPACE && list_a.nodes@[x as int].live && list_a.nodes@[x as int].kind is Mapping);
         }
     }
-    assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
+    assert forall|r: int| 0 <= r < blocks_b.num_2m() && #[trigger] zeroing.active_2m@[r] implies {
         &&& blocks_b.regions_2m@[r].typed
         &&& blocks_b.regions_2m@[r].refs == 1
     } by {
@@ -1375,7 +1375,7 @@ pub proof fn lemma_holders_frame_dropped(
         assert(BlockRef::Two(r as usize) != br);
         assert(block_refs(blocks_b, BlockRef::Two(r as usize)) == block_refs(blocks_a, BlockRef::Two(r as usize)));
     }
-    assert forall|r: int| 0 <= r < NUM_1G && #[trigger] zeroing.active_1g@[r] implies {
+    assert forall|r: int| 0 <= r < blocks_b.num_1g() && #[trigger] zeroing.active_1g@[r] implies {
         &&& blocks_b.regions_1g@[r].typed
         &&& blocks_b.regions_1g@[r].refs == 1
     } by {
@@ -1466,7 +1466,7 @@ pub proof fn lemma_holders_mapping_dropped(
             assert(list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping);
         }
     }
-    assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
+    assert forall|r: int| 0 <= r < blocks_b.num_2m() && #[trigger] zeroing.active_2m@[r] implies {
         &&& blocks_b.regions_2m@[r].typed
         &&& blocks_b.regions_2m@[r].refs == 1
     } by {
@@ -1474,7 +1474,7 @@ pub proof fn lemma_holders_mapping_dropped(
         assert(BlockRef::Two(r as usize) != br);
         assert(block_refs(blocks_b, BlockRef::Two(r as usize)) == block_refs(blocks_a, BlockRef::Two(r as usize)));
     }
-    assert forall|r: int| 0 <= r < NUM_1G && #[trigger] zeroing.active_1g@[r] implies {
+    assert forall|r: int| 0 <= r < blocks_b.num_1g() && #[trigger] zeroing.active_1g@[r] implies {
         &&& blocks_b.regions_1g@[r].typed
         &&& blocks_b.regions_1g@[r].refs == 1
     } by {
@@ -1645,7 +1645,7 @@ pub proof fn lemma_holders_2m_freed(
     requires
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing, holders),
-        r < NUM_2M,
+        r < blocks_a.num_2m(),
         blocks_a.regions_2m@[r as int].typed,
         blocks_a.regions_2m@[r as int].refs == 0,
         blocks_b.pages@ == blocks_a.pages@,
@@ -1680,7 +1680,7 @@ pub proof fn lemma_holders_2m_freed(
         assert(holders.contains_key(k));
         assert(holders[k].contains(x));
     }
-    assert forall|x: int| 0 <= x < NUM_2M && #[trigger] zeroing.active_2m@[x] implies {
+    assert forall|x: int| 0 <= x < blocks_b.num_2m() && #[trigger] zeroing.active_2m@[x] implies {
         &&& blocks_b.regions_2m@[x].typed
         &&& blocks_b.regions_2m@[x].refs == 1
     } by {
@@ -1701,7 +1701,7 @@ pub proof fn lemma_holders_1g_freed(
     requires
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing, holders),
-        r < NUM_1G,
+        r < blocks_a.num_1g(),
         blocks_a.regions_1g@[r as int].typed,
         blocks_a.regions_1g@[r as int].refs == 0,
         blocks_b.pages@ == blocks_a.pages@,
@@ -1738,7 +1738,7 @@ pub proof fn lemma_holders_1g_freed(
         assert(holders.contains_key(k));
         assert(holders[k].contains(x));
     }
-    assert forall|x: int| 0 <= x < NUM_1G && #[trigger] zeroing.active_1g@[x] implies {
+    assert forall|x: int| 0 <= x < blocks_b.num_1g() && #[trigger] zeroing.active_1g@[x] implies {
         &&& blocks_b.regions_1g@[x].typed
         &&& blocks_b.regions_1g@[x].refs == 1
     } by {
@@ -1943,7 +1943,7 @@ pub proof fn lemma_holders_region_typed(
     requires
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing_a, holders),
-        r < level_regions(level),
+        r < blocks_a.level_regions(level),
         forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level) ==> {
             &&& #[trigger] blocks_a.pages@[i].kind is Free
             &&& !blocks_a.covered(i)
@@ -2043,7 +2043,7 @@ pub proof fn lemma_holders_region_done(
 )
     requires
         holders_wf(list, tables, blocks, zeroing_a, holders),
-        r < level_regions(level),
+        r < blocks.level_regions(level),
         zeroing_a.active(level, r),
         match level {
             Large::Two => zeroing_b.active_2m@ == zeroing_a.active_2m@.update(r as int, false)
@@ -2109,7 +2109,7 @@ pub proof fn lemma_block_ref_small_typed(a: &BlockTable, b: &BlockTable, base: u
 /// A page outside the 2M block being freed is read in the same block after.
 pub proof fn lemma_block_ref_2m_freed(a: &BlockTable, b: &BlockTable, r: usize, i: usize)
     requires
-        r < NUM_2M,
+        r < a.num_2m(),
         a.regions_2m@[r as int].typed,
         b.pages@ == a.pages@,
         b.regions_2m@ == a.regions_2m@.update(r as int, b.regions_2m@[r as int]),
@@ -2126,7 +2126,7 @@ pub proof fn lemma_block_ref_2m_freed(a: &BlockTable, b: &BlockTable, r: usize, 
 pub proof fn lemma_block_ref_1g_freed(a: &BlockTable, b: &BlockTable, r: usize, i: usize)
     requires
         a.wf(),
-        r < NUM_1G,
+        r < a.num_1g(),
         a.regions_1g@[r as int].typed,
         b.pages@ == a.pages@,
         b.regions_1g@ == a.regions_1g@.update(r as int, b.regions_1g@[r as int]),

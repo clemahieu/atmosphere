@@ -17,7 +17,7 @@ verus! {
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 #[cfg(verus_keep_ghost)]
-use crate::capability::block::{BlockTable, NUM_1G, NUM_2M};
+use crate::capability::block::{BlockTable};
 #[cfg(verus_keep_ghost)]
 use crate::capability::zero::*;
 use crate::capability::derive::*;
@@ -1001,7 +1001,7 @@ pub proof fn lemma_holders_mapping_added(
             }
         }
     }
-    assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
+    assert forall|r: int| 0 <= r < blocks_b.num_2m() && #[trigger] zeroing.active_2m@[r] implies {
         &&& blocks_b.regions_2m@[r].typed
         &&& blocks_b.regions_2m@[r].refs == 1
     } by {
@@ -1009,7 +1009,7 @@ pub proof fn lemma_holders_mapping_added(
         assert(BlockRef::Two(r as usize) != br);
         assert(block_refs(blocks_b, BlockRef::Two(r as usize)) == block_refs(blocks_a, BlockRef::Two(r as usize)));
     }
-    assert forall|r: int| 0 <= r < NUM_1G && #[trigger] zeroing.active_1g@[r] implies {
+    assert forall|r: int| 0 <= r < blocks_b.num_1g() && #[trigger] zeroing.active_1g@[r] implies {
         &&& blocks_b.regions_1g@[r].typed
         &&& blocks_b.regions_1g@[r].refs == 1
     } by {

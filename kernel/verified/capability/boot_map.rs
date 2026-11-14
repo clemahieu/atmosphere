@@ -115,8 +115,8 @@ pub open spec fn nodes_kept(a: Tree, b: Tree) -> bool {
 /// large region is typed or not as it was, so a block free in a is free in b.
 pub open spec fn kinds_kept(a: &BlockTable, b: &BlockTable) -> bool {
     &&& forall|i: int| a.tracks(i) ==> (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
-    &&& forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed
-    &&& forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed
+    &&& forall|x: int| 0 <= x < b.num_2m() ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed
+    &&& forall|x: int| 0 <= x < b.num_1g() ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed
 }
 
 /// A virtual page below 512 level 4 entries is the page its path names, and its level 1 index is in
@@ -585,7 +585,7 @@ impl CapKernel {
             let q = g / PAGES_PER_2M as int;
             lemma_div_pos_is_pos(g, PAGES_PER_2M as int);
             lemma_div_is_ordered(g, cur.blocks.page_count() as int - 1, PAGES_PER_2M as int);
-            assert(0 <= q < NUM_2M);
+            assert(0 <= q < cur.blocks.num_2m());
             assert(post.blocks.regions_2m@[q].typed == cur.blocks.regions_2m@[q].typed);
             if q != g0 / PAGES_PER_2M {
                 assert(block_typed(&cur.blocks, BlockRef::Two(q as usize)));

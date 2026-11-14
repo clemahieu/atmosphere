@@ -144,8 +144,8 @@ impl CapKernel {
             b0.1 <= MAX_ORDER,
             self.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int),
             forall|j: int| b0.0 <= j < b0.0 + pow2(b0.1) ==> (#[trigger] self.blocks.pages@[j]).kind is Free,
-            forall|r: int| 0 <= r < NUM_2M ==> !(#[trigger] self.blocks.regions_2m@[r]).typed,
-            forall|r: int| 0 <= r < NUM_1G ==> !(#[trigger] self.blocks.regions_1g@[r]).typed,
+            forall|r: int| 0 <= r < self.blocks.num_2m() ==> !(#[trigger] self.blocks.regions_2m@[r]).typed,
+            forall|r: int| 0 <= r < self.blocks.num_1g() ==> !(#[trigger] self.blocks.regions_1g@[r]).typed,
         ensures
             self.root_untyped_free(process),
     {
@@ -248,8 +248,8 @@ impl CapKernel {
             &&& self.list.nodes@[leaf + ROOT_UNTYPED_SLOT + k].depth == 1
         }
         &&& forall|k: int, j: nat| 0 <= k < untyped && #[trigger] in_page_block(bs[k], j) ==> self.acknowledged(j as usize)
-        &&& forall|r: usize| r < NUM_2M ==> #[trigger] self.region_acknowledged(Large::Two, r)
-        &&& forall|r: usize| r < NUM_1G ==> #[trigger] self.region_acknowledged(Large::One, r)
+        &&& forall|r: usize| r < self.blocks.num_2m() ==> #[trigger] self.region_acknowledged(Large::Two, r)
+        &&& forall|r: usize| r < self.blocks.num_1g() ==> #[trigger] self.region_acknowledged(Large::One, r)
         &&& forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(image, a, u)]
             0 <= a < image.len() && 0 <= u < run_image_blocks(image[a]).len() ==> {
             let fb = run_image_blocks(image[a])[u];
@@ -555,10 +555,10 @@ impl CapKernel {
                 assert(in_page_block(bs[0], j as nat));
                 assert(in_runs(free@, len, (j as nat) as int));
             }
-            assert forall|r: int| 0 <= r < NUM_2M implies !(#[trigger] s3.blocks.regions_2m@[r]).typed by {
+            assert forall|r: int| 0 <= r < s3.blocks.num_2m() implies !(#[trigger] s3.blocks.regions_2m@[r]).typed by {
                 assert(s3.blocks.regions_2m@[r] == s0.blocks.regions_2m@[r]);
             }
-            assert forall|r: int| 0 <= r < NUM_1G implies !(#[trigger] s3.blocks.regions_1g@[r]).typed by {
+            assert forall|r: int| 0 <= r < s3.blocks.num_1g() implies !(#[trigger] s3.blocks.regions_1g@[r]).typed by {
                 assert(s3.blocks.regions_1g@[r] == s0.blocks.regions_1g@[r]);
             }
             s3.lemma_untyped_block_free(process, bs[0]);
@@ -599,7 +599,7 @@ impl CapKernel {
                 lemma_fundamental_div_mod_converse(q * PAGES_PER_2M, PAGES_PER_2M as int, q, 0);
                 assert(region_2m(q * PAGES_PER_2M) == q);
                 assert(s3.blocks.tracks(q * PAGES_PER_2M));
-                assert(0 <= q < NUM_2M);
+                assert(0 <= q < s3.blocks.num_2m());
                 assert(s3.blocks.regions_2m@[q] == s0.blocks.regions_2m@[q]);
                 assert forall|j: int| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M implies #[trigger] s3.blocks.pages@[j].kind is Reserved by {
                     lemma_fundamental_div_mod_converse(j, PAGES_PER_2M as int, q, j - q * PAGES_PER_2M);
@@ -835,11 +835,11 @@ impl CapKernel {
                 assert(s4.stale_epoch == s0.stale_epoch);
                 assert(s0.stale_epoch.pages@[j as usize as int] == 0);
             }
-            assert forall|r: usize| r < NUM_2M implies #[trigger] s4.region_acknowledged(Large::Two, r) by {
+            assert forall|r: usize| r < s4.blocks.num_2m() implies #[trigger] s4.region_acknowledged(Large::Two, r) by {
                 assert(s4.stale_epoch == s0.stale_epoch);
                 assert(s0.stale_epoch.two@[r as int] == 0);
             }
-            assert forall|r: usize| r < NUM_1G implies #[trigger] s4.region_acknowledged(Large::One, r) by {
+            assert forall|r: usize| r < s4.blocks.num_1g() implies #[trigger] s4.region_acknowledged(Large::One, r) by {
                 assert(s4.stale_epoch == s0.stale_epoch);
                 assert(s0.stale_epoch.one@[r as int] == 0);
             }

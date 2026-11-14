@@ -161,7 +161,7 @@ proof fn lemma_free_2m(k: CapKernel, process: usize, cursor: usize, jb: int, big
         big == cursor_block(cursor, jb),
         big as int % block_bytes(9) == 0,
     ensures
-        big / PAGE_SZ / PAGES_PER_2M < NUM_2M,
+        big / PAGE_SZ / PAGES_PER_2M < k.blocks.num_2m(),
         (big / PAGE_SZ) as int == (big / PAGE_SZ / PAGES_PER_2M) * PAGES_PER_2M,
         k.blocks.large_free(Large::Two, (big / PAGE_SZ / PAGES_PER_2M) as int),
 {
@@ -9933,7 +9933,7 @@ impl CapKernel {
 
         // The region as a 2M frame, in slot 1 of the leaf: the first step, which begins its zeroing.
         proof {
-            assert(r < crate::capability::zero::level_regions(Large::Two));
+            assert(r < s1.blocks.level_regions(Large::Two));
             assert(!s1.zeroing.active(Large::Two, r)) by {
                 reveal(CapKernel::wf);
                 if s1.zeroing.active(Large::Two, r) {

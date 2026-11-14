@@ -75,20 +75,20 @@ pub enum RetypeStep {
 }
 
 /// The region a 2M or 1G block at this aligned base is, if the block table has one.
-pub fn large_region(base: usize, order: u8) -> (ret: Option<(Large, usize)>)
+pub fn large_region(blocks: &BlockTable, base: usize, order: u8) -> (ret: Option<(Large, usize)>)
     requires
         order <= MAX_ORDER,
         base as int % block_bytes(order) == 0,
     ensures
         ret is Some == {
-            ||| order == 9 && base / PAGE_SZ / PAGES_PER_2M < NUM_2M
-            ||| order == 18 && base / PAGE_SZ / PAGES_PER_1G < NUM_1G
+            ||| order == 9 && base / PAGE_SZ / PAGES_PER_2M < blocks.num_2m()
+            ||| order == 18 && base / PAGE_SZ / PAGES_PER_1G < blocks.num_1g()
         },
         ret is Some ==> {
             let (level, r) = ret.unwrap();
             &&& level == (if order == 9 { Large::Two } else { Large::One })
             &&& r == base / PAGE_SZ / level_pages(level)
-            &&& r < level_regions(level)
+            &&& r < blocks.level_regions(level)
             &&& level_base(level, r) == base / PAGE_SZ
             &&& r * level_pages(level) == base / PAGE_SZ
             &&& base == (base / PAGE_SZ) * PAGE_SZ
@@ -103,11 +103,7 @@ pub fn large_region(base: usize, order: u8) -> (ret: Option<(Large, usize)>)
         return None;
     };
     let r = page / pages_of_level(level);
-    let regions = match level {
-        Large::Two => NUM_2M,
-        Large::One => NUM_1G,
-    };
-    if r >= regions {
+    if r >= blocks.level_regions(level) {
         return None;
     }
     proof {
@@ -149,7 +145,7 @@ pub open spec fn large_frame_of(base: usize, order: u8) -> Payload {
 fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<Tracked<Map<usize, PagePerm4k>>>)
     requires
         old(blocks).wf(),
-        r < level_regions(level),
+        r < old(blocks).level_regions(level),
     ensures
         final(blocks).wf(),
         ret is None ==> *final(blocks) == *old(blocks),
@@ -160,9 +156,9 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
                 ==> !#[trigger] old(blocks).covered(i)
             &&& ret->0@.dom() == BlockTable::large_pages(level, r as int)
             &&& forall|i: usize| BlockTable::large_pages(level, r as int).contains(i) ==> #[trigger] holds(ret->0@, i)
-            &&& forall|x: int| 0 <= x < NUM_2M && (#[trigger] old(blocks).regions_2m@[x]).typed && !old(blocks).regions_2m@[x].dead
+            &&& forall|x: int| 0 <= x < old(blocks).num_2m() && (#[trigger] old(blocks).regions_2m@[x]).typed && !old(blocks).regions_2m@[x].dead
                 ==> final(blocks).regions_2m@[x].typed && !final(blocks).regions_2m@[x].dead
-            &&& forall|x: int| 0 <= x < NUM_1G && (#[trigger] old(blocks).regions_1g@[x]).typed && !old(blocks).regions_1g@[x].dead
+            &&& forall|x: int| 0 <= x < old(blocks).num_1g() && (#[trigger] old(blocks).regions_1g@[x]).typed && !old(blocks).regions_1g@[x].dead
                 ==> final(blocks).regions_1g@[x].typed && !final(blocks).regions_1g@[x].dead
             &&& level is Two ==> final(blocks).regions_2m@[r as int].typed && !final(blocks).regions_2m@[r as int].dead
             &&& level is One ==> final(blocks).regions_1g@[r as int].typed && !final(blocks).regions_1g@[r as int].dead
@@ -307,8 +303,8 @@ impl CapKernel {
         let level = if order == 9 { Large::Two } else { Large::One };
         let r = base / PAGE_SZ / level_pages(level);
         &&& self.can_retype(root, from, to, base, order)
-        &&& order == 9 ==> base / PAGE_SZ / PAGES_PER_2M < NUM_2M
-        &&& order == 18 ==> base / PAGE_SZ / PAGES_PER_1G < NUM_1G
+        &&& order == 9 ==> base / PAGE_SZ / PAGES_PER_2M < self.blocks.num_2m()
+        &&& order == 18 ==> base / PAGE_SZ / PAGES_PER_1G < self.blocks.num_1g()
         &&& order == 9 || order == 18
         &&& self.zeroing.active(level, r) || self.blocks.large_free(level, r as int)
     }
@@ -963,7 +959,7 @@ impl CapKernel {
     fn zero_large(&mut self, level: Large, r: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: RetypeStep)
         requires
             old(self).wf(),
-            r < level_regions(level),
+            r < old(self).blocks.level_regions(level),
         ensures
             final(steps).count <= old(steps).count + ZERO_LARGE_STEPS,
             final(self).wf(),
@@ -1161,7 +1157,7 @@ impl CapKernel {
             self.zeroing.wf(),
             zeroing_typed(&self.zeroing, &self.blocks),
             holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@),
-            r < level_regions(level),
+            r < self.blocks.level_regions(level),
             self.zeroing.active(level, r),
         ensures
             !self.holders@.contains_key(level_ref(level, r)),
@@ -1191,7 +1187,7 @@ impl CapKernel {
     proof fn lemma_large_block_ready(&self, level: Large, r: usize, base: usize, order: u8)
         requires
             self.blocks.wf(),
-            r < level_regions(level),
+            r < self.blocks.level_regions(level),
             base / PAGE_SZ == r * level_pages(level),
             base == (base / PAGE_SZ) * PAGE_SZ,
             order == (match level { Large::Two => 9u8, Large::One => 18u8 }),
@@ -2139,7 +2135,7 @@ impl CapKernel {
     proof fn lemma_new_region_apart(pre: Self, level: Large, r: usize)
         requires
             pre.wf(),
-            r < level_regions(level),
+            r < pre.blocks.level_regions(level),
             forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
                 ==> !#[trigger] pre.blocks.covered(i),
         ensures
@@ -2186,7 +2182,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return RetypeStep::Refused; },
         };
-        let (level, r) = match large_region(base, order) {
+        let (level, r) = match large_region(&self.blocks, base, order) {
             Some(found) => found,
             None => { return RetypeStep::Refused; },
         };

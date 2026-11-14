@@ -107,7 +107,7 @@ impl CapKernel {
         requires
             pre.wf(),
             post.blocks.wf(),
-            r < NUM_2M,
+            r < pre.blocks.num_2m(),
             !pre.blocks.regions_2m@[r as int].typed,
             !pre.blocks.regions_1g@[r as int / ENTRIES as int].typed,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@.update(r as int,
@@ -260,7 +260,7 @@ impl CapKernel {
                     assert(block_ref(&b, pre.tables.payload_of(m).base / PAGE_SZ) == br);
                 }
             }
-            assert forall|x: int| 0 <= x < NUM_2M && #[trigger] post.zeroing.active_2m@[x] implies {
+            assert forall|x: int| 0 <= x < b.num_2m() && #[trigger] post.zeroing.active_2m@[x] implies {
                 &&& b.regions_2m@[x].typed
                 &&& b.regions_2m@[x].refs == 1
             } by {
@@ -292,7 +292,7 @@ impl CapKernel {
                 assert(b.pages@[x as int] == a.pages@[x as int]);
                 assert(leaf_block(&a, x));
             }
-            assert forall|x: usize| x < NUM_2M && (#[trigger] b.regions_2m@[x as int]).typed
+            assert forall|x: usize| x < b.num_2m() && (#[trigger] b.regions_2m@[x as int]).typed
                 && b.regions_2m@[x as int].refs == 0 implies post.holders@.contains_key(BlockRef::Two(x)) by {
                 assert(x != r);
                 assert(a.regions_2m@[x as int].typed);
@@ -676,7 +676,7 @@ impl CapKernel {
         proof {
             lemma_block_in_2m(base, order);
             assert(r == frame_region(base));
-            assert(r < NUM_2M);
+            assert(r < pre.blocks.num_2m());
             pre.lemma_slot(process, i);
             assert(index_entry(i) == 1);
             assert(index_slot(i) == i - NODES_PER_PAGE);

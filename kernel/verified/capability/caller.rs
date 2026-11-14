@@ -14,7 +14,7 @@ verus! {
 #[cfg(verus_keep_ghost)]
 use crate::arch::Registers;
 #[cfg(verus_keep_ghost)]
-use crate::capability::block::{order_pages, Large, NUM_1G, NUM_2M};
+use crate::capability::block::{order_pages, Large};
 #[cfg(verus_keep_ghost)]
 use crate::define::*;
 #[cfg(verus_keep_ghost)]
@@ -52,7 +52,7 @@ use crate::capability::thread::{placement_node, THREAD_ORDER, THREAD_RIGHTS};
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 #[cfg(verus_keep_ghost)]
-use crate::capability::zero::{large_level, level_pages, level_regions};
+use crate::capability::zero::{large_level, level_pages};
 
 /// What a slot holding a capability says to the process whose table it is in: the capability's kind,
 /// the block or object it names and the block's order, its rights, and the node it was derived from.
@@ -1265,7 +1265,7 @@ impl CapKernel {
     /// step of this retype typed and is zeroing, as the kernel reads it outside the view.
     pub open spec fn large_block_ready(&self, base: usize) -> bool {
         let r = base / PAGE_SZ / crate::capability::zero::level_pages(Large::Two);
-        &&& base / PAGE_SZ / PAGES_PER_2M < NUM_2M
+        &&& base / PAGE_SZ / PAGES_PER_2M < self.blocks.num_2m()
         &&& self.zeroing.active(Large::Two, r) || self.blocks.large_free(Large::Two, r as int)
     }
 
@@ -1396,12 +1396,12 @@ impl CapKernel {
     pub proof fn lemma_region_keeps_frame_blocks(pre: Self, post: Self, level: Large, r: usize)
         requires
             pre.wf(),
-            r < level_regions(level),
+            r < pre.blocks.level_regions(level),
             pre.zeroing.active(level, r) || pre.blocks.large_free(level, r as int) || pre.region_is_dead(level, r),
             post.blocks.pages@ == pre.blocks.pages@,
-            forall|x: int| 0 <= x < NUM_2M && !(level is Two && x == r)
+            forall|x: int| 0 <= x < post.blocks.num_2m() && !(level is Two && x == r)
                 ==> #[trigger] post.blocks.regions_2m@[x] == pre.blocks.regions_2m@[x],
-            forall|x: int| 0 <= x < NUM_1G && !(level is One && x == r)
+            forall|x: int| 0 <= x < post.blocks.num_1g() && !(level is One && x == r)
                 ==> #[trigger] post.blocks.regions_1g@[x] == pre.blocks.regions_1g@[x],
         ensures
             Self::frame_blocks_kept(pre, post),
@@ -2067,8 +2067,8 @@ impl CapKernel {
             let r = base / PAGE_SZ / level_pages(Large::Two);
             assert(large_level(9) == Large::Two);
             assert(pre.blocks.kept_but_region(post.blocks, Large::Two, r as int));
-            assert(pre.blocks.regions_2m@.len() == NUM_2M);
-            assert forall|x: int| 0 <= x < NUM_2M && x != r
+            assert(pre.blocks.regions_2m@.len() == pre.blocks.num_2m());
+            assert forall|x: int| 0 <= x < post.blocks.num_2m() && x != r
                 implies #[trigger] post.blocks.regions_2m@[x] == pre.blocks.regions_2m@[x] by {
                 assert(post.blocks.regions_2m@[x] == pre.blocks.regions_2m@.update(r as int, post.blocks.regions_2m@[r as int])[x]);
             }

@@ -126,6 +126,24 @@ pub proof fn lemma_whole_regions(n: int)
     vstd::arithmetic::div_mod::lemma_div_multiples_vanish(g, PAGES_PER_1G as int);
 }
 
+/// A page below n regions of p pages each is in one of them.
+pub proof fn lemma_region_of_page(i: int, p: int, n: int)
+    requires
+        0 <= i < n * p,
+        0 < p,
+    ensures
+        0 <= i / p < n,
+{
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(i, p);
+    assert(i / p < n) by (nonlinear_arith)
+        requires
+            i == p * (i / p) + i % p,
+            0 <= i % p,
+            i < n * p,
+            0 < p;
+    vstd::arithmetic::div_mod::lemma_div_pos_is_pos(i, p);
+}
+
 /// The state of a 2M or 1G block, held by the region that is that block.
 #[derive(Clone, Copy)]
 pub struct RegionEntry {
@@ -225,24 +243,75 @@ impl BlockTable {
         lemma_whole_regions(self.spec_page_count() as int);
     }
 
-    /// The region arrays hold one entry for each 2M and each 1G region of the tracked pages.
-    pub proof fn lemma_region_counts(&self)
-        ensures
-            NUM_2M * PAGES_PER_2M == self.spec_page_count(),
-            NUM_1G * PAGES_PER_1G == self.spec_page_count(),
-    {
-        assert(NUM_2M * PAGES_PER_2M == NUM_PAGES) by (compute);
-        assert(NUM_1G * PAGES_PER_1G == NUM_PAGES) by (compute);
+    /// How many 2M regions the tracked pages make. Every bound on a 2M region index is stated
+    /// through this, as every bound on a page index is through the page count.
+    pub open spec fn spec_num_2m(&self) -> usize {
+        (self.spec_page_count() / PAGES_PER_2M) as usize
     }
 
-    /// A tracked page's 2M and 1G regions are entries of the region arrays.
+    #[verifier::when_used_as_spec(spec_num_2m)]
+    pub fn num_2m(&self) -> (n: usize)
+        ensures
+            n == self.num_2m(),
+    {
+        self.page_count() / PAGES_PER_2M
+    }
+
+    /// How many 1G regions the tracked pages make.
+    pub open spec fn spec_num_1g(&self) -> usize {
+        (self.spec_page_count() / PAGES_PER_1G) as usize
+    }
+
+    #[verifier::when_used_as_spec(spec_num_1g)]
+    pub fn num_1g(&self) -> (n: usize)
+        ensures
+            n == self.num_1g(),
+    {
+        self.page_count() / PAGES_PER_1G
+    }
+
+    /// How many regions of this level the tracked pages make.
+    pub open spec fn spec_level_regions(&self, level: Large) -> usize {
+        match level {
+            Large::Two => self.spec_num_2m(),
+            Large::One => self.spec_num_1g(),
+        }
+    }
+
+    #[verifier::when_used_as_spec(spec_level_regions)]
+    pub fn level_regions(&self, level: Large) -> (n: usize)
+        ensures
+            n == self.level_regions(level),
+    {
+        match level {
+            Large::Two => self.num_2m(),
+            Large::One => self.num_1g(),
+        }
+    }
+
+    /// The 2M and the 1G regions together are exactly the tracked pages.
+    pub proof fn lemma_region_counts(&self)
+        requires
+            self.span_wf(),
+        ensures
+            self.num_2m() * PAGES_PER_2M == self.spec_page_count(),
+            self.num_1g() * PAGES_PER_1G == self.spec_page_count(),
+    {
+        self.lemma_regions_tile();
+    }
+
+    /// A tracked page's 2M and 1G regions are regions of the table.
     pub proof fn lemma_tracked_regions(&self, i: int)
         requires
+            self.span_wf(),
             self.tracks(i),
         ensures
-            0 <= region_2m(i) < NUM_2M,
-            0 <= region_1g(i) < NUM_1G,
+            0 <= region_2m(i) < self.num_2m(),
+            0 <= region_1g(i) < self.num_1g(),
     {
+        self.lemma_region_counts();
+        lemma_region_of_page(i, PAGES_PER_2M as int, self.num_2m() as int);
+        lemma_region_of_page(i, PAGES_PER_1G as int, self.num_1g() as int);
     }
 
     /// Page i is one the table tracks.
@@ -315,13 +384,13 @@ impl BlockTable {
         &&& self.regions_1g.wf()
         &&& self.count_2m.wf()
         &&& self.count_1g.wf()
-        &&& self.in_2m@.len() == NUM_2M
-        &&& self.in_1g@.len() == NUM_1G
-        &&& forall|r: int| 0 <= r < NUM_2M ==> {
+        &&& self.in_2m@.len() == self.num_2m()
+        &&& self.in_1g@.len() == self.num_1g()
+        &&& forall|r: int| 0 <= r < self.num_2m() ==> {
             &&& (#[trigger] self.in_2m@[r]).len() == self.count_2m@[r]
             &&& self.in_2m@[r].subset_of(set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M))
         }
-        &&& forall|r: int| 0 <= r < NUM_1G ==> {
+        &&& forall|r: int| 0 <= r < self.num_1g() ==> {
             &&& (#[trigger] self.in_1g@[r]).len() == self.count_1g@[r]
             &&& self.in_1g@[r].subset_of(set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G))
         }
@@ -334,11 +403,11 @@ impl BlockTable {
 
     /// A typed large block has nothing typed inside it or around it.
     pub open spec fn large_wf(&self) -> bool {
-        &&& forall|r: int| 0 <= r < NUM_2M && (#[trigger] self.regions_2m@[r]).typed ==> {
+        &&& forall|r: int| 0 <= r < self.num_2m() && (#[trigger] self.regions_2m@[r]).typed ==> {
             &&& self.count_2m@[r] == 0
             &&& !self.regions_1g@[r / ENTRIES as int].typed
         }
-        &&& forall|r: int| 0 <= r < NUM_1G && (#[trigger] self.regions_1g@[r]).typed ==>
+        &&& forall|r: int| 0 <= r < self.num_1g() && (#[trigger] self.regions_1g@[r]).typed ==>
             self.count_1g@[r] == 0
     }
 
@@ -514,7 +583,7 @@ impl BlockTable {
     pub proof fn lemma_zero_2m_is_free(&self, r: int, i: int)
         requires
             self.counts_wf(),
-            0 <= r < NUM_2M,
+            0 <= r < self.num_2m(),
             self.count_2m@[r] == 0,
             self.tracks(i),
             region_2m(i) == r,
@@ -529,7 +598,7 @@ impl BlockTable {
     pub proof fn lemma_zero_1g_is_free(&self, r: int, i: int)
         requires
             self.counts_wf(),
-            0 <= r < NUM_1G,
+            0 <= r < self.num_1g(),
             self.count_1g@[r] == 0,
             self.tracks(i),
             region_1g(i) == r,
@@ -552,7 +621,7 @@ impl BlockTable {
     pub proof fn lemma_free_2m_is_zero(&self, r: int)
         requires
             self.counts_wf(),
-            0 <= r < NUM_2M,
+            0 <= r < self.num_2m(),
             self.large_free(Large::Two, r),
         ensures
             self.count_2m@[r] == 0,
@@ -581,7 +650,7 @@ impl BlockTable {
     pub proof fn lemma_free_1g_is_zero(&self, r: int)
         requires
             self.counts_wf(),
-            0 <= r < NUM_1G,
+            0 <= r < self.num_1g(),
             self.large_free(Large::One, r),
         ensures
             self.count_1g@[r] == 0,
@@ -688,8 +757,8 @@ impl BlockTable {
     pub proof fn lemma_large_pages(level: Large, r: int)
         requires
             match level {
-                Large::Two => 0 <= r < NUM_2M,
-                Large::One => 0 <= r < NUM_1G,
+                Large::Two => 0 <= r && (r + 1) * PAGES_PER_2M <= usize::MAX,
+                Large::One => 0 <= r && (r + 1) * PAGES_PER_1G <= usize::MAX,
             },
         ensures
             forall|i: usize| #[trigger] Self::large_pages(level, r).contains(i) == Self::in_large(level, r, i as int),
@@ -713,12 +782,12 @@ impl BlockTable {
             old(self).regions_2m.wf(),
             old(self).regions_1g.wf(),
         ensures
-            final(steps).count <= old(steps).count + NUM_PAGES + NUM_2M + NUM_1G,
+            final(steps).count <= old(steps).count + old(self).page_count() + old(self).num_2m() + old(self).num_1g(),
             final(self).wf(),
             forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i].kind is Reserved,
             forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i].object is None,
-            forall|r: int| 0 <= r < NUM_2M ==> !(#[trigger] final(self).regions_2m@[r]).typed,
-            forall|r: int| 0 <= r < NUM_1G ==> !(#[trigger] final(self).regions_1g@[r]).typed,
+            forall|r: int| 0 <= r < final(self).num_2m() ==> !(#[trigger] final(self).regions_2m@[r]).typed,
+            forall|r: int| 0 <= r < final(self).num_1g() ==> !(#[trigger] final(self).regions_1g@[r]).typed,
     {
         let n = self.page_count();
         let ghost steps0 = steps.count;
@@ -747,16 +816,19 @@ impl BlockTable {
                 steps.step();
             }
         }
+        let n2 = self.num_2m();
         let mut r = 0;
-        while r != NUM_2M
+        while r != n2
             invariant
-                0 <= r <= NUM_2M,
-                steps.count == steps0 + NUM_PAGES + r,
+                n == self.page_count(),
+                n2 == self.num_2m(),
+                0 <= r <= n2,
+                steps.count == steps0 + n + r,
                 self.count_2m.wf(),
                 self.regions_2m.wf(),
                 forall|j: int| 0 <= j < r ==> #[trigger] self.count_2m@[j] == PAGES_PER_2M,
                 forall|j: int| 0 <= j < r ==> !(#[trigger] self.regions_2m@[j]).typed,
-            decreases NUM_2M - r,
+            decreases n2 - r,
         {
             self.count_2m.set(r, PAGES_PER_2M);
             self.regions_2m.set(r, RegionEntry { typed: false, dead: false, torn_down: false, refs: 0 });
@@ -765,16 +837,20 @@ impl BlockTable {
                 steps.step();
             }
         }
+        let n1 = self.num_1g();
         let mut r = 0;
-        while r != NUM_1G
+        while r != n1
             invariant
-                0 <= r <= NUM_1G,
-                steps.count == steps0 + NUM_PAGES + NUM_2M + r,
+                n == self.page_count(),
+                n2 == self.num_2m(),
+                n1 == self.num_1g(),
+                0 <= r <= n1,
+                steps.count == steps0 + n + n2 + r,
                 self.count_1g.wf(),
                 self.regions_1g.wf(),
                 forall|j: int| 0 <= j < r ==> #[trigger] self.count_1g@[j] == PAGES_PER_1G,
                 forall|j: int| 0 <= j < r ==> !(#[trigger] self.regions_1g@[j]).typed,
-            decreases NUM_1G - r,
+            decreases n1 - r,
         {
             self.count_1g.set(r, PAGES_PER_1G);
             self.regions_1g.set(r, RegionEntry { typed: false, dead: false, torn_down: false, refs: 0 });
@@ -783,17 +859,17 @@ impl BlockTable {
                 steps.step();
             }
         }
-        self.in_2m = Ghost(Seq::new(NUM_2M as nat, |r: int| set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M)));
-        self.in_1g = Ghost(Seq::new(NUM_1G as nat, |r: int| set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G)));
+        self.in_2m = Ghost(Seq::new(n2 as nat, |r: int| set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M)));
+        self.in_1g = Ghost(Seq::new(n1 as nat, |r: int| set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G)));
         self.free_perms = Tracked(Map::tracked_empty());
         proof {
-            assert forall|r: int| 0 <= r < NUM_2M implies {
+            assert forall|r: int| 0 <= r < n2 implies {
                 &&& (#[trigger] self.in_2m@[r]).len() == self.count_2m@[r]
                 &&& self.in_2m@[r].subset_of(set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M))
             } by {
                 lemma_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M);
             }
-            assert forall|r: int| 0 <= r < NUM_1G implies {
+            assert forall|r: int| 0 <= r < n1 implies {
                 &&& (#[trigger] self.in_1g@[r]).len() == self.count_1g@[r]
                 &&& self.in_1g@[r].subset_of(set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G))
             } by {
@@ -851,12 +927,12 @@ impl BlockTable {
             self.free_perms.borrow_mut().tracked_insert(i, perm);
             let me = *self;
             assert(me.pages@ =~= pre.pages@.update(i as int, free_entry()));
-            assert forall|r: int| 0 <= r < NUM_2M implies {
+            assert forall|r: int| 0 <= r < me.num_2m() implies {
                 &&& (#[trigger] me.in_2m@[r]).len() == me.count_2m@[r]
                 &&& me.in_2m@[r].subset_of(set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M))
             } by {
             }
-            assert forall|r: int| 0 <= r < NUM_1G implies {
+            assert forall|r: int| 0 <= r < me.num_1g() implies {
                 &&& (#[trigger] me.in_1g@[r]).len() == me.count_1g@[r]
                 &&& me.in_1g@[r].subset_of(set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G))
             } by {
@@ -868,13 +944,13 @@ impl BlockTable {
             } by {
                 assert(pre.in_2m@[region_2m(j)].contains(j) == !(pre.pages@[j].kind is Free));
             }
-            assert forall|r: int| 0 <= r < NUM_2M && (#[trigger] me.regions_2m@[r]).typed implies {
+            assert forall|r: int| 0 <= r < me.num_2m() && (#[trigger] me.regions_2m@[r]).typed implies {
                 &&& me.count_2m@[r] == 0
                 &&& !me.regions_1g@[r / ENTRIES as int].typed
             } by {
                 assert(pre.regions_2m@[r].typed);
             }
-            assert forall|r: int| 0 <= r < NUM_1G && (#[trigger] me.regions_1g@[r]).typed implies
+            assert forall|r: int| 0 <= r < me.num_1g() && (#[trigger] me.regions_1g@[r]).typed implies
                 me.count_1g@[r] == 0 by {
                 assert(pre.regions_1g@[r].typed);
             }
@@ -932,12 +1008,12 @@ impl BlockTable {
             perm = self.free_perms.borrow_mut().tracked_remove(i);
             let me = *self;
             assert(me.pages@ =~= pre.pages@.update(i as int, entry));
-            assert forall|r: int| 0 <= r < NUM_2M implies {
+            assert forall|r: int| 0 <= r < me.num_2m() implies {
                 &&& (#[trigger] me.in_2m@[r]).len() == me.count_2m@[r]
                 &&& me.in_2m@[r].subset_of(set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M))
             } by {
             }
-            assert forall|r: int| 0 <= r < NUM_1G implies {
+            assert forall|r: int| 0 <= r < me.num_1g() implies {
                 &&& (#[trigger] me.in_1g@[r]).len() == me.count_1g@[r]
                 &&& me.in_1g@[r].subset_of(set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G))
             } by {
@@ -949,13 +1025,13 @@ impl BlockTable {
             } by {
                 assert(pre.in_2m@[region_2m(j)].contains(j) == !(pre.pages@[j].kind is Free));
             }
-            assert forall|r: int| 0 <= r < NUM_2M && (#[trigger] me.regions_2m@[r]).typed implies {
+            assert forall|r: int| 0 <= r < me.num_2m() && (#[trigger] me.regions_2m@[r]).typed implies {
                 &&& me.count_2m@[r] == 0
                 &&& !me.regions_1g@[r / ENTRIES as int].typed
             } by {
                 assert(pre.regions_2m@[r].typed);
             }
-            assert forall|r: int| 0 <= r < NUM_1G && (#[trigger] me.regions_1g@[r]).typed implies
+            assert forall|r: int| 0 <= r < me.num_1g() && (#[trigger] me.regions_1g@[r]).typed implies
                 me.count_1g@[r] == 0 by {
                 assert(pre.regions_1g@[r].typed);
             }
@@ -974,8 +1050,8 @@ impl BlockTable {
         requires
             old(self).wf(),
             match level {
-                Large::Two => r < NUM_2M && entry.typed == old(self).regions_2m@[r as int].typed,
-                Large::One => r < NUM_1G && entry.typed == old(self).regions_1g@[r as int].typed,
+                Large::Two => r < old(self).num_2m() && entry.typed == old(self).regions_2m@[r as int].typed,
+                Large::One => r < old(self).num_1g() && entry.typed == old(self).regions_1g@[r as int].typed,
             },
         ensures
             final(self).wf(),
@@ -999,9 +1075,9 @@ impl BlockTable {
         }
         proof {
             let me = *self;
-            assert forall|j: int| 0 <= j < NUM_2M implies
+            assert forall|j: int| 0 <= j < me.num_2m() implies
                 (#[trigger] me.regions_2m@[j]).typed == pre.regions_2m@[j].typed by {}
-            assert forall|j: int| 0 <= j < NUM_1G implies
+            assert forall|j: int| 0 <= j < me.num_1g() implies
                 (#[trigger] me.regions_1g@[j]).typed == pre.regions_1g@[j].typed by {}
             assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
@@ -1010,13 +1086,13 @@ impl BlockTable {
             } by {
                 assert(pre.in_2m@[region_2m(j)].contains(j) == !(pre.pages@[j].kind is Free));
             }
-            assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
+            assert forall|j: int| 0 <= j < me.num_2m() && (#[trigger] me.regions_2m@[j]).typed implies {
                 &&& me.count_2m@[j] == 0
                 &&& !me.regions_1g@[j / ENTRIES as int].typed
             } by {
                 assert(pre.regions_2m@[j].typed);
             }
-            assert forall|j: int| 0 <= j < NUM_1G && (#[trigger] me.regions_1g@[j]).typed implies
+            assert forall|j: int| 0 <= j < me.num_1g() && (#[trigger] me.regions_1g@[j]).typed implies
                 me.count_1g@[j] == 0 by {
                 assert(pre.regions_1g@[j].typed);
             }
@@ -1037,8 +1113,8 @@ impl BlockTable {
         requires
             self.wf(),
             match level {
-                Large::Two => r < NUM_2M,
-                Large::One => r < NUM_1G,
+                Large::Two => r < self.num_2m(),
+                Large::One => r < self.num_1g(),
             },
         ensures
             ret == match level {
@@ -1057,8 +1133,8 @@ impl BlockTable {
         requires
             old(self).wf(),
             match level {
-                Large::Two => r < NUM_2M,
-                Large::One => r < NUM_1G,
+                Large::Two => r < old(self).num_2m(),
+                Large::One => r < old(self).num_1g(),
             },
         ensures
             final(self).wf(),
@@ -1081,8 +1157,8 @@ impl BlockTable {
         requires
             old(self).wf(),
             match level {
-                Large::Two => r < NUM_2M && old(self).regions_2m@[r as int].dead,
-                Large::One => r < NUM_1G && old(self).regions_1g@[r as int].dead,
+                Large::Two => r < old(self).num_2m() && old(self).regions_2m@[r as int].dead,
+                Large::One => r < old(self).num_1g() && old(self).regions_1g@[r as int].dead,
             },
         ensures
             final(self).wf(),
@@ -1105,8 +1181,8 @@ impl BlockTable {
         requires
             old(self).wf(),
             match level {
-                Large::Two => r < NUM_2M,
-                Large::One => r < NUM_1G,
+                Large::Two => r < old(self).num_2m(),
+                Large::One => r < old(self).num_1g(),
             },
         ensures
             final(self).wf(),
@@ -1139,8 +1215,8 @@ impl BlockTable {
         requires
             old(self).wf(),
             match level {
-                Large::Two => r < NUM_2M && old(self).regions_2m@[r as int].refs > 0,
-                Large::One => r < NUM_1G && old(self).regions_1g@[r as int].refs > 0,
+                Large::Two => r < old(self).num_2m() && old(self).regions_2m@[r as int].refs > 0,
+                Large::One => r < old(self).num_1g() && old(self).regions_1g@[r as int].refs > 0,
             },
         ensures
             final(self).wf(),
@@ -1164,7 +1240,7 @@ impl BlockTable {
     pub fn try_type_2m(&mut self, r: usize) -> (ret: Option<Tracked<Map<usize, PagePerm4k>>>)
         requires
             old(self).wf(),
-            r < NUM_2M,
+            r < old(self).num_2m(),
         ensures
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
@@ -1230,12 +1306,12 @@ impl BlockTable {
                     assert(j == base);
                 }
             }
-            assert forall|j: int| 0 <= j < NUM_1G implies {
+            assert forall|j: int| 0 <= j < me.num_1g() implies {
                 &&& (#[trigger] me.in_1g@[j]).len() == me.count_1g@[j]
                 &&& me.in_1g@[j].subset_of(set_int_range(j * PAGES_PER_1G, (j + 1) * PAGES_PER_1G))
             } by {
             }
-            assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
+            assert forall|j: int| 0 <= j < me.num_2m() && (#[trigger] me.regions_2m@[j]).typed implies {
                 &&& me.count_2m@[j] == 0
                 &&& !me.regions_1g@[j / ENTRIES as int].typed
             } by {
@@ -1243,7 +1319,7 @@ impl BlockTable {
                     assert(pre.regions_2m@[j].typed);
                 }
             }
-            assert forall|j: int| 0 <= j < NUM_1G && (#[trigger] me.regions_1g@[j]).typed implies
+            assert forall|j: int| 0 <= j < me.num_1g() && (#[trigger] me.regions_1g@[j]).typed implies
                 me.count_1g@[j] == 0 by {
                 assert(pre.regions_1g@[j].typed);
             }
@@ -1278,7 +1354,7 @@ impl BlockTable {
     pub fn type_reserved_2m(&mut self, r: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
-            r < NUM_2M,
+            r < old(self).num_2m(),
             forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M ==> #[trigger] old(self).pages@[i].kind is Reserved,
         ensures
             final(steps).count <= old(steps).count + PAGES_PER_2M,
@@ -1300,11 +1376,12 @@ impl BlockTable {
             assert(region_1g(first as int) == r1);
             assert(pre.pages@[first as int].kind is Reserved);
             pre.lemma_not_free_uncovered(first as int);
+            pre.lemma_region_counts();
             assert(first + PAGES_PER_2M <= self.page_count()) by (nonlinear_arith)
                 requires
                     first == r * PAGES_PER_2M,
-                    r + 1 <= NUM_2M,
-                    NUM_2M * PAGES_PER_2M == self.page_count(),
+                    r + 1 <= pre.num_2m(),
+                    pre.num_2m() * PAGES_PER_2M == self.page_count(),
                     PAGES_PER_2M > 0;
         }
         let ghost steps0 = steps.count;
@@ -1313,7 +1390,7 @@ impl BlockTable {
             invariant
                 k <= PAGES_PER_2M,
                 steps.count == steps0 + k,
-                r < NUM_2M,
+                r < pre.num_2m(),
                 first == r * PAGES_PER_2M,
                 self.tracks_run(first as int, PAGES_PER_2M as int),
                 self.pages.wf(),
@@ -1367,12 +1444,12 @@ impl BlockTable {
                 == if region_2m(i) == r { free_entry() } else { pre.pages@[i] } by {
                 assert((first <= i < first + PAGES_PER_2M) == (region_2m(i) == r));
             }
-            assert forall|j: int| 0 <= j < NUM_2M implies {
+            assert forall|j: int| 0 <= j < me.num_2m() implies {
                 &&& (#[trigger] me.in_2m@[j]).len() == me.count_2m@[j]
                 &&& me.in_2m@[j].subset_of(set_int_range(j * PAGES_PER_2M, (j + 1) * PAGES_PER_2M))
             } by {
             }
-            assert forall|j: int| 0 <= j < NUM_1G implies {
+            assert forall|j: int| 0 <= j < me.num_1g() implies {
                 &&& (#[trigger] me.in_1g@[j]).len() == me.count_1g@[j]
                 &&& me.in_1g@[j].subset_of(set_int_range(j * PAGES_PER_1G, (j + 1) * PAGES_PER_1G))
             } by {
@@ -1391,7 +1468,7 @@ impl BlockTable {
                     assert(pre.pages@[j].kind is Reserved);
                 }
             }
-            assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
+            assert forall|j: int| 0 <= j < me.num_2m() && (#[trigger] me.regions_2m@[j]).typed implies {
                 &&& me.count_2m@[j] == 0
                 &&& !me.regions_1g@[j / ENTRIES as int].typed
             } by {
@@ -1399,7 +1476,7 @@ impl BlockTable {
                     assert(pre.regions_2m@[j].typed);
                 }
             }
-            assert forall|j: int| 0 <= j < NUM_1G && (#[trigger] me.regions_1g@[j]).typed implies
+            assert forall|j: int| 0 <= j < me.num_1g() && (#[trigger] me.regions_1g@[j]).typed implies
                 me.count_1g@[j] == 0 by {
                 assert(pre.regions_1g@[j].typed);
             }
@@ -1422,7 +1499,7 @@ impl BlockTable {
     pub fn try_type_1g(&mut self, r: usize) -> (ret: Option<Tracked<Map<usize, PagePerm4k>>>)
         requires
             old(self).wf(),
-            r < NUM_1G,
+            r < old(self).num_1g(),
         ensures
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
@@ -1477,7 +1554,7 @@ impl BlockTable {
             } by {
                 assert(pre.in_2m@[region_2m(j)].contains(j) == !(pre.pages@[j].kind is Free));
             }
-            assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
+            assert forall|j: int| 0 <= j < me.num_2m() && (#[trigger] me.regions_2m@[j]).typed implies {
                 &&& me.count_2m@[j] == 0
                 &&& !me.regions_1g@[j / ENTRIES as int].typed
             } by {
@@ -1486,7 +1563,7 @@ impl BlockTable {
                     pre.lemma_zero_1g_is_free(r as int, j * PAGES_PER_2M);
                 }
             }
-            assert forall|j: int| 0 <= j < NUM_1G && (#[trigger] me.regions_1g@[j]).typed implies
+            assert forall|j: int| 0 <= j < me.num_1g() && (#[trigger] me.regions_1g@[j]).typed implies
                 me.count_1g@[j] == 0 by {
                 if j != r {
                     assert(pre.regions_1g@[j].typed);
@@ -1521,7 +1598,7 @@ impl BlockTable {
     pub fn free_2m(&mut self, r: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
-            r < NUM_2M,
+            r < old(self).num_2m(),
             old(self).regions_2m@[r as int].typed,
             old(self).regions_2m@[r as int].dead,
             old(self).regions_2m@[r as int].torn_down,
@@ -1570,18 +1647,18 @@ impl BlockTable {
                     pre.lemma_zero_2m_is_free(r as int, j);
                 }
             }
-            assert forall|j: int| 0 <= j < NUM_1G implies {
+            assert forall|j: int| 0 <= j < me.num_1g() implies {
                 &&& (#[trigger] me.in_1g@[j]).len() == me.count_1g@[j]
                 &&& me.in_1g@[j].subset_of(set_int_range(j * PAGES_PER_1G, (j + 1) * PAGES_PER_1G))
             } by {
             }
-            assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
+            assert forall|j: int| 0 <= j < me.num_2m() && (#[trigger] me.regions_2m@[j]).typed implies {
                 &&& me.count_2m@[j] == 0
                 &&& !me.regions_1g@[j / ENTRIES as int].typed
             } by {
                 assert(pre.regions_2m@[j].typed);
             }
-            assert forall|j: int| 0 <= j < NUM_1G && (#[trigger] me.regions_1g@[j]).typed implies
+            assert forall|j: int| 0 <= j < me.num_1g() && (#[trigger] me.regions_1g@[j]).typed implies
                 me.count_1g@[j] == 0 by {
                 assert(pre.regions_1g@[j].typed);
             }
@@ -1625,7 +1702,7 @@ impl BlockTable {
     pub fn free_1g(&mut self, r: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
-            r < NUM_1G,
+            r < old(self).num_1g(),
             old(self).regions_1g@[r as int].typed,
             old(self).regions_1g@[r as int].dead,
             old(self).regions_1g@[r as int].torn_down,
@@ -1656,13 +1733,13 @@ impl BlockTable {
             } by {
                 assert(pre.in_2m@[region_2m(j)].contains(j) == !(pre.pages@[j].kind is Free));
             }
-            assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
+            assert forall|j: int| 0 <= j < me.num_2m() && (#[trigger] me.regions_2m@[j]).typed implies {
                 &&& me.count_2m@[j] == 0
                 &&& !me.regions_1g@[j / ENTRIES as int].typed
             } by {
                 assert(pre.regions_2m@[j].typed);
             }
-            assert forall|j: int| 0 <= j < NUM_1G && (#[trigger] me.regions_1g@[j]).typed implies
+            assert forall|j: int| 0 <= j < me.num_1g() && (#[trigger] me.regions_1g@[j]).typed implies
                 me.count_1g@[j] == 0 by {
                 assert(pre.regions_1g@[j].typed);
             }
