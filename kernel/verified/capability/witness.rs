@@ -1657,8 +1657,7 @@ impl CapKernel {
         let out = self.dispatch(0, registers, Tracked(&mut steps));
         proof {
             self.lemma_thread_saved_frame(t);
-            reveal(CapKernel::wf);
-            assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+            self.lemma_thread_wf(t);
         }
         let record = crate::pptr::PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
             Tracked(self.threads.records.borrow().tracked_borrow(t)),
@@ -1837,18 +1836,12 @@ impl CapKernel {
             assert(s1.cores == s0.cores);
             assert(witness_alive(s1, process));
             assert(witness_alive(s1, base));
-            assert(process_spaces_wf(&s1.spaces, &s1.processes)) by {
-                reveal(CapKernel::wf);
-            }
+            s1.lemma_process_spaces_wf();
             assert(s1.processes.records@.contains_key(process));
             assert(s1.processes.records@.contains_key(base));
             // Each space's block is in tracked memory, so its root page is an aligned address.
-            assert(space_wf(&s1.list, &s1.spaces, &s1.blocks, process)) by {
-                reveal(CapKernel::wf);
-            }
-            assert(space_wf(&s1.list, &s1.spaces, &s1.blocks, base)) by {
-                reveal(CapKernel::wf);
-            }
+            s1.lemma_space_wf(process);
+            s1.lemma_space_wf(base);
         }
         // The steps are the witness's own; no lock bounds them: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -3532,18 +3525,12 @@ impl CapKernel {
         // Load the process's space on core 0, which runs nothing, and point core 0's base register at it,
         // as a core that ran its thread would have.
         proof {
-            assert(space_wf(&r7.list, &r7.spaces, &r7.blocks, base)) by {
-                reveal(CapKernel::wf);
-            }
+            r7.lemma_space_wf(base);
             assert(r7.processes.records@.contains_key(process));
-            assert(process_spaces_wf(&r7.spaces, &r7.processes)) by {
-                reveal(CapKernel::wf);
-            }
+            r7.lemma_process_spaces_wf();
             assert(r7.spaces.roots@.contains_key(process));
             assert(r7.spaces.records@[process].value().kind is Process);
-            assert(space_wf(&r7.list, &r7.spaces, &r7.blocks, process)) by {
-                reveal(CapKernel::wf);
-            }
+            r7.lemma_space_wf(process);
             assert(process != base);
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] r7.cores@[d].space != Some(base) by {
                 if r7.cores@[d].space == Some(base) {
@@ -10636,9 +10623,7 @@ impl CapKernel {
             assert(s4.holders@[br] == set![nf].insert(m));
             assert(s4.flush_epoch == 0);
             assert(s4.cores == s0.cores);
-            assert(process_spaces_wf(&s4.spaces, &s4.processes)) by {
-                reveal(CapKernel::wf);
-            }
+            s4.lemma_process_spaces_wf();
             assert(s4.processes.records@.contains_key(process));
             assert(s4.spaces.roots@.contains_key(process));
             assert(s4.spaces.records@[process].value().kind is Process);
@@ -11227,9 +11212,7 @@ impl CapKernel {
             assert(!block_dead(&s4.blocks, br));
             assert(s4.flush_epoch == 0);
             assert(s4.cores == s0.cores);
-            assert(process_spaces_wf(&s4.spaces, &s4.processes)) by {
-                reveal(CapKernel::wf);
-            }
+            s4.lemma_process_spaces_wf();
             assert(s4.processes.records@.contains_key(process));
             assert(!s4.processes.records@[process].value().dead);
             assert(s4.spaces.roots@.contains_key(process));
@@ -12169,11 +12152,9 @@ impl CapKernel {
             assert(s1.cores@[1].generation == 1);
             assert(s1.cores@[1].current_thread is None);
             assert(s1.spaces.kernel_root@ == kernel_root);
-            assert(s1.spaces.roots@.contains_key(base) && s1.spaces.records@[base].value().kind is Process) by {
-                reveal(CapKernel::wf);
-                assert(process_spaces_wf(&s1.spaces, &s1.processes));
-                assert(s1.processes.records@.contains_key(base));
-            }
+            s1.lemma_process_spaces_wf();
+            assert(s1.processes.records@.contains_key(base));
+            assert(s1.spaces.roots@.contains_key(base) && s1.spaces.records@[base].value().kind is Process);
         }
         // The steps are the witness's own; no lock bounds them: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -12290,9 +12271,8 @@ impl CapKernel {
                 && s1.spaces.records@[base].value().kind is Process
                 && s1.processes.records@.contains_key(base)
                 && !s1.processes.records@[base].value().dead) by {
-                reveal(CapKernel::wf);
                 assert(witness_alive(s1, base));
-                assert(process_spaces_wf(&s1.spaces, &s1.processes));
+                s1.lemma_process_spaces_wf();
             }
             assert(s1.cores@[0].current_thread is None);
             assert(s1.cores@[0].generation == 1);
@@ -12524,9 +12504,9 @@ impl CapKernel {
             assert(s1.spaces.kernel_root@ == kernel_root);
             assert(s1.spaces.roots@.contains_key(process) && s1.spaces.records@[process].value().kind is Process
                 && space_wf(&s1.list, &s1.spaces, &s1.blocks, process)) by {
-                reveal(CapKernel::wf);
                 assert(witness_alive(s1, process));
-                assert(process_spaces_wf(&s1.spaces, &s1.processes));
+                s1.lemma_process_spaces_wf();
+                s1.lemma_space_wf(process);
             }
             assert(s1.threads.boot_thread@ == Some(t));
             assert(s1.threads.records@.contains_key(t));

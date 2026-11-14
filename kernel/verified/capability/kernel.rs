@@ -1687,6 +1687,36 @@ impl CapKernel {
         &&& !self.threads.records@.contains_key(self.devices.page)
     }
 
+    /// One thread's record is well formed. A caller that needs only this keeps wf hidden: revealed,
+    /// wf brings the block table's counts and their set ranges into every later query.
+    pub proof fn lemma_thread_wf(&self, t: usize)
+        requires
+            self.wf(),
+            self.threads.records@.contains_key(t),
+        ensures
+            thread_wf(&self.list, &self.threads, &self.blocks, t),
+    {
+    }
+
+    /// One space's record is well formed, without revealing wf: see lemma_thread_wf.
+    pub proof fn lemma_space_wf(&self, s: usize)
+        requires
+            self.wf(),
+            self.spaces.roots@.contains_key(s),
+        ensures
+            space_wf(&self.list, &self.spaces, &self.blocks, s),
+    {
+    }
+
+    /// Each process has its space, without revealing wf: see lemma_thread_wf.
+    pub proof fn lemma_process_spaces_wf(&self)
+        requires
+            self.wf(),
+        ensures
+            process_spaces_wf(&self.spaces, &self.processes),
+    {
+    }
+
     /// A frame's permission is for its own page.
     pub open spec fn frames_wf(&self) -> bool {
         forall|i: usize| #[trigger] self.frames@.contains_key(i) ==> self.frames@[i].addr() == i * PAGE_SZ
