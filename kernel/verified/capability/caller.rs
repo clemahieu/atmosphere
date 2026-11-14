@@ -299,15 +299,16 @@ impl CapKernel {
     /// Destroy's specification implies its contract.
     pub proof fn lemma_destroy_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
-            Self::spec_destroyed(pre, post, root, frame, out),
+            exists|c: usize| #[trigger] Self::spec_destroyed(pre, post, c, root, frame, out),
         ensures
             Self::destroy_contract(pre, post, root, frame.slot() as usize, out),
     {
+        let c = choose|c: usize| #[trigger] Self::spec_destroyed(pre, post, c, root, frame, out);
         let n = pre.tables.node_of(root, frame.slot() as usize);
         let o = pre.payload_of(n).base;
         if pre.allows_destroy(root, frame) {
             if pre.payload_of(n).kind is Thread {
-                let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o);
+                assert(Self::thread_destroyed(pre, post, c, o));
                 assert(post.list == pre.list && post.tables == pre.tables && post.blocks == pre.blocks);
             }
             assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {

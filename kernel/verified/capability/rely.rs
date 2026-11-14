@@ -2258,14 +2258,15 @@ impl CapKernel {
     }
 
     /// A destroy, by any caller, as the operation in frame says it: a process destroyed or a thread
-    /// destroyed from some core, or nothing changed.
+    /// destroyed from the core spec_destroyed names, or nothing changed.
     pub proof fn lemma_destroyed_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
         requires
-            Self::spec_destroyed(pre, post, caller, frame, out),
+            exists|c: usize| #[trigger] Self::spec_destroyed(pre, post, c, caller, frame, out),
         ensures
             Self::rely(pre, post, root),
             Self::root_kept(pre, post, root),
     {
+        let c = choose|c: usize| #[trigger] Self::spec_destroyed(pre, post, c, caller, frame, out);
         let n = pre.tables.node_of(caller, frame.slot() as usize);
         let o = pre.payload_of(n).base;
         if !pre.allows_destroy(caller, frame) {
@@ -2273,7 +2274,7 @@ impl CapKernel {
         } else if pre.payload_of(n).kind is Process {
             Self::lemma_destroy_keeps_rely(pre, post, o, root);
         } else {
-            let c = choose|c: usize| c < NUM_CPUS && #[trigger] Self::thread_destroyed(pre, post, c, o);
+            assert(Self::thread_destroyed(pre, post, c, o));
             Self::lemma_destroy_thread_keeps_rely(pre, post, c, o, root);
         }
     }

@@ -1223,12 +1223,13 @@ impl CapKernel {
         self.can_destroy(root, frame.slot() as usize)
     }
 
-    /// A destroy in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, exactly when allows_destroy fails, or ok with the process
-    /// or thread the slot's capability names destroyed from some core, as destroy_done says; either way
-    /// what destroy_kept says is kept.
-    pub open spec fn spec_destroyed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+    /// A destroy in frame from core c by a thread of the process whose table is at root, from pre to
+    /// post with out returned: refused with nothing changed, exactly when allows_destroy fails, or ok
+    /// with the process or thread the slot's capability names destroyed from core c, as destroy_done
+    /// says; either way what destroy_kept says is kept. c is the core the caller runs on.
+    pub open spec fn spec_destroyed(pre: Self, post: Self, c: usize, root: usize, frame: Registers, out: Outcome) -> bool {
         let i = frame.slot() as usize;
+        &&& c < NUM_CPUS
         &&& Self::destroy_kept(pre, post)
         &&& {
             ||| {
@@ -1241,7 +1242,7 @@ impl CapKernel {
                 &&& pre.allows_destroy(root, frame)
                 &&& out == status_only(STATUS_OK)
                 &&& Self::destroy_answered(pre, post, root, i, true)
-                &&& exists|c: usize| c < NUM_CPUS && #[trigger] Self::destroy_done(pre, post, c, root, i)
+                &&& Self::destroy_done(pre, post, c, root, i)
             }
         }
     }
@@ -1407,7 +1408,7 @@ impl CapKernel {
             Some(Operation::Map) => Self::spec_mapped(pre, post, root, frame, out),
             Some(Operation::Unmap) => Self::spec_unmapped(pre, post, root, frame, out),
             Some(Operation::Probe) => Self::spec_probed(pre, post, root, frame, out),
-            Some(Operation::Destroy) => Self::spec_destroyed(pre, post, root, frame, out),
+            Some(Operation::Destroy) => exists|c: usize| #[trigger] Self::spec_destroyed(pre, post, c, root, frame, out),
             Some(Operation::WriteRegisters) => Self::spec_registers_written(pre, post, root, frame, out),
             Some(Operation::Place) => Self::spec_placed(pre, post, root, frame, out),
             Some(Operation::Start) => Self::spec_started(pre, post, root, frame, out),
@@ -2175,9 +2176,29 @@ impl CapKernel {
             &&& spec_operation(frame.operation_number()) != Some(Operation::Suspend) ==> post.cores == pre.cores
             &&& spec_operation(frame.operation_number()) == Some(Operation::Destroy) && ret->0 == status_only(STATUS_OK)
                 && pre.destroys_own(c, root, frame.slot() as usize) ==> post.must_leave(c)
+            &&& spec_operation(frame.operation_number()) == Some(Operation::Destroy) && ret->0 == status_only(STATUS_OK)
+                ==> Self::destroy_done(pre, post, c as usize, root, frame.slot() as usize)
             &&& spec_operation(frame.operation_number()) == Some(Operation::Suspend)
                 ==> Self::suspended_from(pre, post, c as usize, root, frame, ret->0)
         })
+    }
+
+    /// A destroy that dispatch ran on core c and answered ok did destroy_done on that core, the core the
+    /// caller runs on. The stop IPI thread_destroyed records is the one that destroy sends, not one a
+    /// destroy on the target's own core would skip.
+    pub proof fn lemma_dispatched_destroy_on_caller_core(pre: Self, post: Self, c: int, frame: Registers, out: Outcome)
+        requires
+            0 <= c < NUM_CPUS,
+            Self::dispatched(pre, post, c, frame, Some(out)),
+            spec_operation(frame.operation_number()) == Some(Operation::Destroy),
+            out == status_only(STATUS_OK),
+        ensures
+            ({
+                let t = pre.cores@[c].current_thread->Some_0;
+                let root = pre.threads.records@[t].value().process->Some_0;
+                Self::destroy_done(pre, post, c as usize, root, frame.slot() as usize)
+            }),
+    {
     }
 
     /// dispatch begins with check_current on core c: when pre.must_leave(c), check_current's MovedOff
@@ -2271,7 +2292,15 @@ impl CapKernel {
             Some(Operation::Map) => Some(self.invoke_map(root, frame, Tracked(steps))),
             Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(steps))),
             Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(steps))),
-            Some(Operation::Destroy) => Some(self.invoke_destroy(c, root, frame, Tracked(steps))),
+            Some(Operation::Destroy) => {
+                let out = self.invoke_destroy(c, root, frame, Tracked(steps));
+                proof {
+                    if out == status_only(STATUS_OK) {
+                        assert(Self::destroy_done(*old(self), *self, c, root, frame.slot() as usize));
+                    }
+                }
+                Some(out)
+            },
             Some(Operation::ReadRegisters) => {
                 let out = self.invoke_read_registers(root, frame);
                 proof {
@@ -2650,7 +2679,7 @@ impl CapKernel {
             final(steps).count <= old(steps).count + INVOKE_DESTROY_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
-            Self::spec_destroyed(*old(self), *final(self), root, frame, ret),
+            Self::spec_destroyed(*old(self), *final(self), c, root, frame, ret),
             ret == status_only(STATUS_OK) && old(self).destroys_own(c as int, root, frame.slot() as usize)
                 ==> final(self).must_leave(c as int),
     {
