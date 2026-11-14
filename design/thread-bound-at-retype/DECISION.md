@@ -1,6 +1,6 @@
 ---
 title: "A thread is retyped into its process, and its process binding is never set afterwards"
-date: 2026-11-10
+date: 2026-11-14
 status: active
 tags: [capability, thread, process, proof, verified]
 one_line: "Retyping a thread names a process capability too: the thread capability goes under the untyped and the process binding under the process capability in one step, so the only holder of the new control capability already controls the process and no reach grows. There is no bind operation. Revoking the binding leaves an inert thread that cannot be bound again; its registers stay readable, and its untyped's holder retypes its block."
@@ -12,7 +12,7 @@ confidence: "Reasoned over kernel/verified/capability/reach.rs and the landed re
 
 ## Decision
 
-A thread is made in its process. The retype that types a thread's block names, besides the untyped and the destination slot, a slot holding a process capability with the control right. In one bounded step the block is typed, the thread's control capability is derived under the untyped into the destination slot, the thread's process binding, node 0 of its node page, is derived under the process capability, the process block gains one reference, and the thread's record names the process. Every refusal is readable before the block is typed: the refusals every retype has, a process slot that holds no live process capability with control, one at the depth limit, one whose block cannot take another reference, and, once dead targets are refused everywhere, a dead process. A refusal changes nothing. There is no operation that binds a thread to a process after it exists.
+A thread is made in its process. The retype that types a thread's block names, besides the untyped and the destination slot, a slot holding a process capability with the control right. That slot is argument 4, an index in the caller's own table, `design/syscall-abi-in-registers/`. In one bounded step the block is typed, the thread's control capability is derived under the untyped into the destination slot, the thread's process binding, node 0 of its node page, is derived under the process capability, the process block gains one reference, and the thread's record names the process. Every refusal is readable before the block is typed: the refusals every retype has, a process slot that holds no live process capability with control, one at the depth limit, one whose block cannot take another reference, and, once dead targets are refused everywhere, a dead process. A refusal changes nothing. There is no operation that binds a thread to a process after it exists.
 
 Reach reads this binding: a control capability over a thread reaches the thread's process, `kernel/verified/capability/reach.rs` `process_behind`, because whoever writes a thread's registers and starts it can make it invoke that process's capabilities. Made at retype, the binding grows nobody's reach: the new thread's capability has one holder, the caller, and the caller holds control over the process already, so the step discharges `Effect::Retype` as every retype does and the theorem keeps its wording, `design/theorem-over-reach/`: reach grows only by a grant from a holder or a retype from an untyped held.
 
@@ -55,5 +55,4 @@ Precedent, from published interfaces and not from code. Mach, NOVA and Zircon co
 
 - The pending stop and the IPI that moves a stopped thread off another core, `design/one-lock-bounded-steps/`.
 - Whether reach will read a vCPU's nested table, and which of the two forms above it then takes. A device's space takes the sole-holder form, `design/device-binding-under-the-space-capability/`.
-- Which argument word of the retype call carries the process slot.
 - The distinction between a reference-holding node and a back-pointer cleared with it, `design/teardown-driven-by-retype/`.

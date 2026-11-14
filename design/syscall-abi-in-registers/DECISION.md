@@ -1,11 +1,11 @@
 ---
 title: "One syscall entry, and every operation carries its arguments in registers"
-date: 2026-11-10
+date: 2026-11-14
 status: active
 tags: [abi, ipc, memory, portability]
-one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. A table position is one word: the index in bits 0 to 15, and in bits 16 to 31 one more than the slot of a process capability with control in the caller's table, or 0 for the caller's own; any higher bit is refused. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2. Power-off, operation 18, ends the run through a power capability, with argument 1 saying whether the run succeeded."
+one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. A table position is one word: the index in bits 0 to 15, and in bits 16 to 31 one more than the slot of a process capability with control in the caller's table, or 0 for the caller's own; any higher bit is refused. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2. Power-off, operation 18, ends the run through a power capability, with argument 1 saying whether the run succeeded. Retype kind 5 is a process and kind 6 a thread, whose process slot is argument 4, an index in the caller's own table. Destroy, operation 9, names a process or a thread. Reading and writing a thread's saved frame are operations 19 and 20: argument 1 is a word index, a multiple of four, and four words travel in results 1 to 4 or in arguments 2 to 5; every other word stays, and a write then applies the user-return rule to the whole frame. Place is operation 21, with the core capability's slot in argument 1 and the priority in argument 2. Start is operation 22 and suspend is operation 23, each naming only the thread."
 revisit_if: "A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, a second entry is needed for a different privilege transition, or a target's instruction leaves fewer than seven registers free to carry an invocation."
-confidence: "A packing judgement; each target's preserved set is the one its C convention keeps across a call, the memory operations' positions are counted against the verified functions' parameters in kernel/verified/capability, and the aarch64 table is written from the Arm Architecture Reference Manual; dom0's checks run through it at EL0 under KVM on a Cortex-A76, which tests the positions and that an immediate other than 0 returns unknown."
+confidence: "A packing judgement; each target's preserved set is the one its C convention keeps across a call, the operations' positions are counted against the verified functions' parameters in kernel/verified/capability, and the aarch64 table is written from the Arm Architecture Reference Manual; dom0's checks run through it at EL0 under KVM on a Cortex-A76, which tests the positions and that an immediate other than 0 returns unknown."
 ---
 
 # The syscall ABI, in registers
@@ -16,7 +16,7 @@ One entry. An invocation carries the operation number, the slot of the capabilit
 
 ### Registers
 
-One table per target, with the reasons for each. This section is the only place a register is named; the rest of this record names positions.
+One table per target, with the reasons for each. The invocation tables here, and the saved-frame tables under Thread and process operations, are the only places a register is named; the rest of this record names positions.
 
 x86_64:
 
@@ -109,8 +109,10 @@ Retype's kind in argument 1:
 | table page | 2 | base, table level | An unlinked table page of level 1, 2 or 3 at the base. No capability names it, so it takes no slot; link names it by its base. |
 | table leaf | 3 | base, the root entry's position in argument 3 | A table leaf of the two pages at the base in the empty root entry: of the caller's table, or of a live process's it controls, whose table it gives that entry's 127 slots. No capability names it, so it takes no slot. |
 | free | 4 | base, the frame's order in argument 4: 0, 9 or 18 | Frees the dead frame at the base, one whose last capability is gone: `again` while a core may still hold a translation to it, then ok with the block free, so a later retype can type it again. |
+| process | 5 | base, destination slot | A process capability in the slot, `design/process-holds-capabilities/`. |
+| thread | 6 | base, destination slot, the process's slot in argument 4 | A thread capability in the slot, bound to that process. The process slot is an index in the caller's own table, of a live process capability with control. |
 
-Any other kind is refused. Revoke returns `again` while its run is not empty after its budget of steps, ok when it is, and refused when the slot names no capability, or when the flush epoch is at its limit, since a further step could not record its staleness.
+Any other kind is refused. A thread whose argument 4 is not such a slot is refused, as is one whose process capability is at the depth limit or whose process block cannot take another reference, and a refusal changes nothing. The destination slot stays in argument 3 for every kind that takes one. Revoke returns `again` while its run is not empty after its budget of steps, ok when it is, and refused when the slot names no capability, or when the flush epoch is at its limit, since a further step could not record its staleness.
 
 Map, link and unmap name a place in a space the same way: the space capability in the slot, which must allow writing the space, a virtual address in argument 1 and a level in argument 2. The kernel splits the address into the four 9-bit indices of the path, bits 47 to 39, 38 to 30, 29 to 21 and 20 to 12, and refuses it unless:
 
@@ -173,6 +175,61 @@ The kinds in result 1:
 | power | 10 |
 | core | 11 |
 
+### Thread and process operations
+
+Destroy is operation 9. The slot names a process or a thread capability with control, and the operation reads no argument. It is refused when the slot holds no such capability, or when that object is already dead, and a refusal changes nothing. Accepted, a process's record is dead and each core that has its space loaded is sent an IPI, so that core finds its current thread's process dead at its next kernel entry; the process's threads, table, space and capabilities stay, and a holder claims a slot afterwards by a move whose source position names the dead process's table, `design/process-holds-capabilities/`. A thread that is Running gets a pending stop that makes it dead, and, when it runs on a core other than the caller's, that core is sent the stop IPI. Any other thread is dead at once. Either way its capabilities and its process binding stay. When the capability names the caller's own process or the caller's own thread, the caller does not return to user mode: the entry's check moves it off. Otherwise the status is ok.
+
+| Operation | Number | Slot | Argument 1 | Argument 2 | Argument 3 | Argument 4 | Argument 5 |
+|---|---|---|---|---|---|---|---|
+| destroy | 9 | process or thread | | | | | |
+| read registers | 19 | thread | word index | | | | |
+| write registers | 20 | thread | word index | word 0 | word 1 | word 2 | word 3 |
+| place | 21 | thread | core slot | priority | | | |
+| start | 22 | thread | | | | | |
+| suspend | 23 | thread | | | | | |
+
+Each of these asks for the control right on the capability in the slot. Place also names a core capability, by the slot index in argument 1, and a thread retype names its process by the slot index in argument 4. Both indices name the caller's own table.
+
+Read registers and write registers move the Inactive thread's saved frame, four words at a call. Argument 1 is the index of the first word. A write is refused, and nothing changes, when the index is not a multiple of four or not below the frame's length, when the slot holds no live thread capability with control, when the thread is not Inactive, or when the program counter the resulting frame would hold is not a user address. A read has those refusals apart from the program counter. A call that is accepted transfers the words that remain, up to four: a write takes them from arguments 2 onward and ignores an argument past the frame, and a read returns them in results 1 onward with a result past the frame holding zero. Repeating the call at each multiple of four covers the frame.
+
+The words are the frame's field order, which is the target's, so the same index names different registers on the two targets. x86_64 has 21 words:
+
+| Word | What a write sets, and a read returns |
+|---|---|
+| 0 | `r15` |
+| 1 | `r14` |
+| 2 | `r13` |
+| 3 | `r12` |
+| 4 | `rbp` |
+| 5 | `rbx` |
+| 6 | `r11` |
+| 7 | `r10` |
+| 8 | `r9` |
+| 9 | `r8` |
+| 10 | `rcx` |
+| 11 | `rdx` |
+| 12 | `rsi` |
+| 13 | `rdi` |
+| 14 | `rax` |
+| 15 | error code |
+| 16 | `rip`, the program counter |
+| 17 | `cs` |
+| 18 | `rflags` |
+| 19 | `rsp`, the stack pointer |
+| 20 | `ss` |
+
+aarch64 has 34 words. Words 0 to 30 are `x0` to `x30`. Word 31 is `SP_EL0`, the stack pointer. Word 32 is `ELR_EL1`, the program counter. Word 33 is `SPSR_EL1`.
+
+A write stores its window and then applies the user-return rule to the whole frame, `user_frame` in `kernel/verified/arch/`, including when the window did not cover the words the rule owns. On x86_64 the code and stack selectors become the user selectors, and the flags keep only those user mode can set, with interrupts enabled. On aarch64 `SPSR_EL1` keeps the condition flags and the mode is EL0. Every word outside the window keeps what the frame held, apart from that rule, so every accepted write leaves the selectors as user mode's. A read returns the words as stored: after a write, the selectors and the flags are what the rule stored, and a thread that has never been written still reads as zero. A frame saved at a system call reads as that partial copy, the preserved registers, the seven invocation positions and the return state, with the clobbered registers zero.
+
+One x86_64 invocation at index 16 carries the program counter, `cs`, `rflags` and the stack pointer. An aarch64 stack pointer is word 31, in the window at 28, and its program counter is word 32, in the window at 32.
+
+Place names the thread in the slot and puts it on a core at a priority. Argument 1 is the slot of a core capability in the caller's own table, and argument 2 is the priority: a greater number outranks a lesser one, and the number must be at or below that capability's maximum, which is at most 255. It is refused when the thread is not Inactive, when it is already placed, when argument 1 holds no live core capability, when that capability is at the depth limit, or when the priority is above its maximum, and a refusal changes nothing. Accepted, the thread's placement is a binding under the core capability, `design/cpu-time-as-capability/`.
+
+Start names the thread in the slot and reads no argument. The thread must be Inactive, bound to a process and placed; otherwise the start is refused and nothing changes. Accepted, the thread is Runnable at the back of its priority on the core it is placed on, and when it outranks what that core runs, the core is sent a reschedule IPI, `design/cpu-time-as-capability/`. The priority is the placement's.
+
+Suspend names the thread in the slot and reads no argument. An Inactive thread, a Runnable thread, or the caller's current thread is Inactive afterwards, and when it was the caller's current thread the core runs nothing; the status is ok. A thread Running on another core gets a pending stop and that core a stop IPI, and the status is again: the same invocation later sees the thread Inactive, once that core has entered the kernel, `design/one-lock-bounded-steps/`. A thread that is blocked or dead, or a capability without control, is refused, and nothing changes.
+
 ## Reasoning
 
 Copying nothing from user memory keeps every operation a bounded step with no page walk on its arguments, `design/one-lock-bounded-steps/`, and keeps the reach theorem's IPC relation to a fixed delivery into the receiver's frame, `design/theorem-over-reach/`. A first packing did not add up for a grant or a receive, which is why the slot and reply positions are fixed here rather than left to a leaf.
@@ -193,7 +250,11 @@ Power-off is an operation because ending the run is the machine's to do, and a p
 
 A table position is one word of two 16-bit fields because a table has 65,536 indices and a position goes through at most one capability, which is in the caller's own table: both fit with room to spare, so no operation that takes a position needs a second argument for it and none changed its argument count. The table field holds one more than the slot so that 0, the value of every slot number a process already passes, names the caller's own table. Refusing every bit above bit 31 keeps one word to one position, as the address rule keeps one address to one entry.
 
-Retype is one operation whose kind is an argument, since every kind consumes the same authority, an untyped and a base; separate numbers per kind would spend operation numbers on what is one check. A large frame and a revoke return `again` because both do more work than one bounded step allows.
+Retype is one operation whose kind is an argument, since every kind consumes the same authority, an untyped and a base; separate numbers per kind would spend operation numbers on what is one check. A large frame and a revoke return `again` because both do more work than one bounded step allows. A process is one more kind, and a thread is another whose extra word names the process it is bound into, because that binding is made at retype, `design/thread-bound-at-retype/`.
+
+Destroy takes operation 9, the number between unmap and send. Place carries the two words `place` takes, the core capability's slot and the priority. Start and suspend name only the thread, because the priority is already the placement's and a suspend that stops another core returns again, as a revoke does.
+
+The saved frame is longer than five words, and the kernel copies nothing from user memory, so a read or a write moves four words at an index. Four is what results 1 to 4 hold, and what arguments 2 to 5 hold with the index in argument 1. The index is a multiple of four, so each word belongs to one call, and the call at the tail is shorter than four where the frame's length is not a multiple of four. Repeating it covers the frame a holder writes whole, `design/process-holds-capabilities/`. The user-return rule runs on the whole frame after every write, so a window that carries neither selector nor flags still leaves them as user mode's, and a write grants nothing the thread could not do to itself.
 
 ## Alternatives rejected
 
@@ -205,12 +266,16 @@ Retype is one operation whose kind is an argument, since every kind consumes the
 - **Finding an untyped's base by probing retype.** One refused invocation per aligned candidate base across physical memory, per order.
 - **The root ending its run with a port write of its own.** It needs the process to run with I/O privilege, ambient authority over every port, and it exists on one machine: QEMU virt has no such port.
 - **A separate operation number for the large map.** The level already says which entry is written, and the same argument says it for link and unmap.
+- **A write that sets the program counter and the stack pointer and clears every other word.** A holder could not put the rest of a saved frame back.
+- **A count beside the index, with the frame's words after it.** The count would spend one of the five words, so a call would move three. A fixed four, shorter at the tail, needs no count.
+- **The frame through a shared page.** A copy from user memory, on a path a controller walks once.
+- **A new operation number for destroy.** Operation 9 already sits between unmap and send.
 
 The rejected aarch64 tables are under Registers.
 
 ## What this does not settle
 
-- The kinds a retype of a space, a process or a thread takes, and the positions of destroy and the thread and process operations: they take the next kind numbers and argument positions when they are wired, inside the five words.
+- The kind a retype of a space takes. It takes the next kind number after the thread's, and which word carries its space kind, when a space is wired.
 - A 1G frame: retype accepts no kind for it, since nothing maps one.
 - An unmap of a 2M entry: unmap accepts level 2 when one is proven.
-- The SIMD and floating-point registers and the user thread-pointer register: the kernel uses none of them, and where they sit in a thread's saved state is not decided here.
+- The SIMD and floating-point registers and the user thread-pointer register: the kernel uses none of them, and where they sit in a thread's saved state is not decided here. Read and write of the saved frame do not transfer them.
