@@ -47,6 +47,7 @@ use crate::capability::boot_image::*;
 use crate::capability::boot_kernel::*;
 use crate::capability::boot_memory::*;
 use crate::capability::boot_table::*;
+use crate::capability::charge::*;
 use crate::capability::cpu::*;
 use crate::capability::decompose::*;
 use crate::capability::delete::*;
@@ -1595,6 +1596,64 @@ impl CapKernel {
             assert(!s3.must_leave(0));
         }
         self.check_current(0, registers, saved, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters
+    /// enters it, then two kernel entries on core 0 charge it, the counter reading first at the one
+    /// and second at the other. A read of the thread's consumed time between them gives before, and
+    /// one after them gives after: the second entry charged the thread what the counter counted from
+    /// the first, second - first, wrapping. design/cpu-time-as-capability/.
+    pub fn witness_charge(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        first: u64,
+        second: u64,
+    ) -> (ret: (u64, u64))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+        ensures
+            final(self).wf(),
+            final(self).cores@[0].current_thread == Some(t),
+            final(self).cores@[0].since == second,
+            ret.1 == charged(ret.0, first, second),
+            ret.1 == final(self).threads.records@[t].value().consumed,
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
+        }
+        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root);
+        proof {
+            let s1 = *self;
+            reveal(CapKernel::wf);
+            reveal(current_wf);
+            assert(runs(s1.cores@, 0, t));
+            assert(s1.threads.records@.contains_key(t));
+        }
+        self.charge(0, first);
+        let before = self.thread_consumed(t);
+        let ghost s2 = *self;
+        self.charge(0, second);
+        let after = self.thread_consumed(t);
+        proof {
+            let s3 = *self;
+            assert(s2.cores@[0].since == first);
+            assert(s2.cores@[0].current_thread == Some(t));
+            assert(s3.threads.records@[t].value().consumed == charged(before, first, second));
+        }
+        (before, after)
     }
 
     /// From the state boot leaves, the root's thread entered on core 0 as witness_root_thread_enters

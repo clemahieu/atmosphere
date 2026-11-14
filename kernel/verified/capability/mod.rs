@@ -2,6 +2,7 @@
 
 pub mod block;
 pub mod caller;
+pub mod charge;
 pub mod boot;
 pub mod boot_frame;
 pub mod boot_image;

@@ -485,6 +485,7 @@ impl CapKernel {
                 queued: NONE,
                 wait_prev: NONE,
                 wait_next: NONE,
+                consumed: 0,
             }),
             final(self).list.is_child((leaf + 1) as usize, t),
             final(self).list.nodes@[t as int].kind is Binding,
@@ -665,6 +666,7 @@ impl CapKernel {
                 queued: NONE,
                 wait_prev: NONE,
                 wait_next: NONE,
+                consumed: 0,
             }));
             assert(thread_process(&post.threads, t) == Some(process));
             assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
@@ -952,6 +954,7 @@ impl CapKernel {
                 queued: NONE,
                 wait_prev: NONE,
                 wait_next: NONE,
+                consumed: 0,
             }),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
                 <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))),

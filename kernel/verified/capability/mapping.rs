@@ -510,6 +510,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             space,
+            since: state.since,
         });
         proof {
             reveal(registers_wf);
@@ -635,6 +636,7 @@ impl CapKernel {
                 generation: state.generation + 1,
                 next_pcid: 2,
                 space: state.space,
+                since: state.since,
             });
             proof {
                 let post = *self;
@@ -654,6 +656,7 @@ impl CapKernel {
                 generation: state.generation,
                 next_pcid: state.next_pcid + 1,
                 space: state.space,
+                since: state.since,
             });
             proof {
                 let post = *self;

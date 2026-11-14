@@ -33,19 +33,22 @@ use crate::lock::Locked;
 /// The one capability kernel, holding every core. Why one: design/one-kernel-instance/.
 pub static CAP_KERNEL: Locked<Option<&'static mut CapKernel>> = Locked::new("capability kernel", None);
 
-/// Runs the invocation in `frame` for the calling core's current thread under the kernel's lock, then
-/// makes the flush its unmaps owe, which the verified entry records in ghost state only: the entry has
-/// the calling core acknowledge whenever it is behind the epoch, and the flush IPIs go out once the
-/// lock is released. design/flush-without-waiting/. The reschedule IPIs go out with them, to each core
-/// whose selection the entry made due, the calling core among them. Returns the outcome, or nothing
-/// when the calling thread left its core, which then runs nothing: its caller waits, and the
-/// selection runs in the reschedule IPI's handler. Each target's entry calls this.
+/// Charges the calling core's current thread and runs the invocation in `frame` for it under the
+/// kernel's lock, then makes the flush its unmaps owe, which the verified entry records in ghost state
+/// only: the entry has the calling core acknowledge whenever it is behind the epoch, and the flush IPIs
+/// go out once the lock is released. design/flush-without-waiting/. The reschedule IPIs go out with
+/// them, to each core whose selection the entry made due, the calling core among them. Returns the
+/// outcome, or nothing when the calling thread left its core, which then runs nothing: its caller
+/// waits, and the selection runs in the reschedule IPI's handler. Each target's entry calls this.
 pub fn dispatch(frame: Registers) -> Option<Outcome> {
     let core = crate::cpu::get_cpu_id();
     let (returned, flushes, reschedules) = {
         let mut guard = CAP_KERNEL.lock();
         let kernel = guard.as_deref_mut().expect("an invocation before the capability kernel was built");
         let epoch = kernel.flush_epoch;
+        // The thread that entered is charged the cycles since this core's last entry, before the
+        // operation, which may move it off: design/cpu-time-as-capability/.
+        kernel.charge(core, crate::arch::cycles());
         let returned = kernel.enter(core, frame, Tracked::assume_new());
         // A thread that suspended itself leaves the core with an outcome; one that had to leave, with
         // none. Either way the core runs nothing now.

@@ -95,13 +95,14 @@ impl CapKernel {
     }
 
     /// What an unmap leaves: the entry is gone as entry_unmapped says, a flush IPI went to each core that
-    /// loaded the space, and the processes are as they were.
+    /// loaded the space, and the processes and the threads are as they were.
     pub open spec fn unmap_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath) -> bool {
         &&& Self::entry_unmapped(pre, post, root, slot, p)
         &&& Self::flush_sent(pre, post, pre.payload_of(pre.tables.node_of(root, slot)).base)
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
         &&& post.replies == pre.replies
+        &&& post.threads == pre.threads
         &&& post.spaces == pre.spaces
         &&& post.table_pages.records == pre.table_pages.records
     }
@@ -181,11 +182,12 @@ impl CapKernel {
         &&& !ok ==> post == pre
     }
 
-    /// What an unmap leaves as it was, whether it answered ok or refused: the cores, the spaces, the
-    /// table pages' records and the process each thread is bound to. unmap_at's ensures and
+    /// What an unmap leaves as it was, whether it answered ok or refused: the cores, the threads, the
+    /// spaces, the table pages' records and the process each thread is bound to. unmap_at's ensures and
     /// spec_unmapped both call it: design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn unmap_kept(pre: Self, post: Self) -> bool {
         &&& post.cores == pre.cores
+        &&& post.threads == pre.threads
         &&& post.spaces == pre.spaces
         &&& post.table_pages.records == pre.table_pages.records
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
@@ -387,6 +389,7 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
             final(self).replies == old(self).replies,
+            final(self).threads == old(self).threads,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> {
                 &&& (ret->0).0 == old(self).payload_of(old(self).tables.node_of(root, slot)).base

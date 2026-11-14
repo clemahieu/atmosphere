@@ -52,6 +52,9 @@ pub struct CoreState {
     /// root. Only switch_space writes it, in the step that writes the
     /// register through the core's BaseRegister: registers_wf. See design/teardown-driven-by-retype/.
     pub space: Option<usize>,
+    /// The cycle counter's reading at this core's last kernel entry, from which charge counts the
+    /// cycles its current thread ran: design/cpu-time-as-capability/.
+    pub since: u64,
 }
 
 /// The largest generation a space's word can hold above its 12 bits of PCID.
@@ -1162,7 +1165,7 @@ fn init_cores(cores: &mut Array<CoreState, NUM_CPUS>)
             },
         decreases NUM_CPUS - i,
     {
-        cores.set(i, CoreState { current_thread: None, acked_epoch: 0, generation: 1, next_pcid: 1, space: None });
+        cores.set(i, CoreState { current_thread: None, acked_epoch: 0, generation: 1, next_pcid: 1, space: None, since: 0 });
         i = i + 1;
     }
 }
@@ -1928,10 +1931,28 @@ impl CapKernel {
             ==> #[trigger] post.cores@[d].current_thread == pre.cores@[d].current_thread
     }
 
+    /// A step by core c changes the consumed time of no thread but the one c runs: a thread is charged
+    /// only by the core that ran it. A thread typed in the step starts from its fresh record. See
+    /// design/cpu-time-as-capability/.
+    pub open spec fn charges_only_own_current(pre: Self, post: Self, c: int) -> bool {
+        forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
+            && pre.threads.records@.contains_key(x)
+            && pre.cores@[c].current_thread != Some(x)
+            ==> post.threads.records@[x].value().consumed == pre.threads.records@[x].value().consumed
+    }
+
+    /// No thread's consumed time changed. Every operation but charge keeps it, so the consumed time a
+    /// step changes is charge's alone, the thread its core runs: design/cpu-time-as-capability/.
+    pub open spec fn consumed_kept(pre: Self, post: Self) -> bool {
+        forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && pre.threads.records@.contains_key(x)
+            ==> post.threads.records@[x].value().consumed == pre.threads.records@[x].value().consumed
+    }
+
     /// What every step by core c must establish.
     pub open spec fn step_ok(pre: Self, post: Self, c: int) -> bool {
         &&& post.wf()
         &&& Self::writes_only_own_current(pre, post, c)
+        &&& Self::charges_only_own_current(pre, post, c)
     }
 
     /// A valid id is one this core has handed out, and nothing is under a PCID it has not.
@@ -3067,6 +3088,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             space: state.space,
+            since: state.since,
         });
         proof {
             assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] self.cores@[d] == pre.cores@[d] by {}

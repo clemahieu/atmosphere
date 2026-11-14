@@ -98,6 +98,9 @@ pub fn handle_selection(frame: &Registers, from_user: bool) -> Resume {
         let mut guard = CAP_KERNEL.lock();
         let kernel = guard.as_deref_mut().expect("a reschedule IPI or a tick before the capability kernel was built");
         let epoch = kernel.flush_epoch;
+        // The thread the IPI or the tick interrupted, if any, is charged the cycles since this core's
+        // last entry, before the selection, which may switch it out: design/cpu-time-as-capability/.
+        kernel.charge(core, crate::arch::cycles());
         let switched = select(kernel, core, *frame);
         (switched, kernel.current_frame(core), crate::flush::owed(kernel, epoch))
     };

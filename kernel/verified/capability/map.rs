@@ -1259,11 +1259,12 @@ impl CapKernel {
         &&& !ok ==> post == pre
     }
 
-    /// What a link leaves as it was, whether it answered ok or refused: the cores, the flush epoch and
-    /// the process each thread is bound to. link_at's ensures and spec_linked both call it:
-    /// design/invoked-arm-is-the-operation-postcondition/.
+    /// What a link leaves as it was, whether it answered ok or refused: the cores, the threads, the
+    /// flush epoch and the process each thread is bound to. link_at's ensures and spec_linked both call
+    /// it: design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn link_kept(pre: Self, post: Self) -> bool {
         &&& post.cores == pre.cores
+        &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
     }
@@ -1399,11 +1400,12 @@ impl CapKernel {
         &&& !ok ==> post == pre
     }
 
-    /// What a map leaves as it was, whether it answered ok or refused: the cores, the flush epoch and
-    /// the process each thread is bound to. map_at's ensures and spec_mapped both call it:
-    /// design/invoked-arm-is-the-operation-postcondition/.
+    /// What a map leaves as it was, whether it answered ok or refused: the cores, the threads, the
+    /// flush epoch and the process each thread is bound to. map_at's ensures and spec_mapped both call
+    /// it: design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn map_kept(pre: Self, post: Self) -> bool {
         &&& post.cores == pre.cores
+        &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
     }
@@ -2003,6 +2005,7 @@ impl CapKernel {
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
         &&& post.replies == pre.replies
+        &&& post.threads == pre.threads
         &&& post.frames == pre.frames
         &&& walk_large_table(b, s, p) == Some(t)
         &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, true))

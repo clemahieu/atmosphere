@@ -1076,6 +1076,7 @@ impl CapKernel {
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             final(self).cores == old(self).cores,
+            final(self).threads == old(self).threads,
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {

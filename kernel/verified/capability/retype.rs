@@ -491,6 +491,7 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).endpoints == old(self).endpoints,
             final(self).replies == old(self).replies,
+            final(self).threads == old(self).threads,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).iommus == old(self).iommus,
             forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
@@ -780,11 +781,13 @@ impl CapKernel {
     }
 
     /// What a retype of a 4K frame leaves as it was, whether it answered ok or refused: the process each
-    /// thread is bound to, the cores, the flush epoch, the IOMMUs and the mappings. retype_frame's
-    /// ensures and spec_retyped both call it: design/invoked-arm-is-the-operation-postcondition/.
+    /// thread is bound to, the cores, the threads, the flush epoch, the IOMMUs and the mappings.
+    /// retype_frame's ensures and spec_retyped both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn frame_retype_kept(pre: Self, post: Self) -> bool {
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
         &&& post.cores == pre.cores
+        &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.iommus == pre.iommus
         &&& post.mappings == pre.mappings
@@ -800,12 +803,13 @@ impl CapKernel {
     }
 
     /// What a step of a large frame retype leaves as it was, whatever it answered: the process each
-    /// thread is bound to, the cores, the processes, endpoints and replies, both epochs and the IOMMUs.
-    /// retype_large_frame's ensures and spec_retyped both call it:
+    /// thread is bound to, the cores, the threads, the processes, endpoints and replies, both epochs and
+    /// the IOMMUs. retype_large_frame's ensures and spec_retyped both call it:
     /// design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn large_retype_kept(pre: Self, post: Self) -> bool {
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
         &&& post.cores == pre.cores
+        &&& post.threads == pre.threads
         &&& post.processes == pre.processes
         &&& post.endpoints == pre.endpoints
         &&& post.replies == pre.replies

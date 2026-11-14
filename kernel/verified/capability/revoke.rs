@@ -392,7 +392,7 @@ impl CapKernel {
     /// The threads after revoke steps from pre: no thread appeared or went, the boot thread is as it was,
     /// and each thread whose binding or placement node went lost that binding or placement and moved off
     /// Runnable or Blocked to Inactive (or got a stop pending if Running), while every other thread's
-    /// record is as it was.
+    /// record is as it was. No thread's consumed time changed.
     pub open spec fn threads_revoked(pre: Self, post: Self) -> bool {
         &&& post.threads.records@.dom() == pre.threads.records@.dom()
         &&& post.threads.boot_thread == pre.threads.boot_thread
@@ -407,6 +407,7 @@ impl CapKernel {
             &&& now.saved == before.saved
             &&& now.save == before.save
             &&& now.dying == before.dying
+            &&& now.consumed == before.consumed
             &&& now.process == if bind_gone { None } else { before.process }
             &&& now.placement == if place_gone { None } else { before.placement }
             &&& (now.state, now.pending_stop) == if bind_gone || place_gone {
@@ -1488,6 +1489,7 @@ impl CapKernel {
             &&& now.saved == before.saved
             &&& now.save == before.save
             &&& now.dying == before.dying
+            &&& now.consumed == before.consumed
             &&& now.process == if bind_gone { None } else { before.process }
             &&& now.placement == if place_gone { None } else { before.placement }
             &&& (now.state, now.pending_stop) == if bind_gone || place_gone {
@@ -1723,6 +1725,8 @@ impl CapKernel {
     /// The invariant's parts after binding node n goes with its thread's process and its reference on the
     /// process's block: no capability, mapping or frame changed, only that block's count did, and the
     /// thread keeps its core.
+    // In a solver of its own: beside the rest of this module it runs past its budget.
+    #[verifier::spinoff_prover]
     pub proof fn lemma_revoke_binding_holders(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),

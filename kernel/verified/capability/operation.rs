@@ -2189,6 +2189,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_RETYPE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2263,6 +2264,9 @@ impl CapKernel {
             }
         } else if frame.argument(1) == RETYPE_THREAD {
             if self.retype_thread(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, frame.argument(4) as usize, Tracked(steps)) {
+                proof {
+                    reveal(CapKernel::thread_retyped_records);
+                }
                 STATUS_OK
             } else {
                 STATUS_REFUSED
@@ -2280,6 +2284,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_DERIVE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2304,6 +2309,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_MOVE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2323,6 +2329,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_DELETE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2399,6 +2406,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_DESTROY_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2424,6 +2432,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_placed(*old(self), *final(self), root, frame, ret),
@@ -2439,6 +2448,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_started(*old(self), *final(self), root, frame, ret),
@@ -2455,6 +2465,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(self).wf(),
             final(self).cores@[c as int].space == old(self).cores@[c as int].space,
             Self::suspended_from(*old(self), *final(self), c, root, frame, ret),
@@ -2474,6 +2485,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_REVOKE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2512,6 +2524,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_LINK_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2528,6 +2541,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_MAP_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2544,6 +2558,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_UNMAP_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2569,6 +2584,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_PROBE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,

@@ -915,6 +915,7 @@ impl CapKernel {
             final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free,
             final(self).blocks.pages@[base / PAGE_SZ + 1int].kind is Free,
             !final(self).threads.records@.contains_key(base),
+            final(self).threads.records@ == old(self).threads.records@.remove(base),
             !final(self).list.pages@.dom().contains(base),
             final(self).cores == old(self).cores,
             unwaits(old(self).view(), final(self).view()),

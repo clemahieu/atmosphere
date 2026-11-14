@@ -59,8 +59,10 @@ pub fn handle_ipi() {
         state.acked[core] = epoch;
     }
     if let Some(kernel) = CAP_KERNEL.lock().as_deref_mut() {
-        // The handler runs on `core`, which the entry requires of its caller. The entry makes its own
-        // step counter in the one passed here.
+        // The handler runs on `core`, which the charge and the entry require of their caller. The thread
+        // the IPI interrupted is charged the cycles since this core's last entry, as at an invocation:
+        // design/cpu-time-as-capability/. The entry makes its own step counter in the one passed here.
+        kernel.charge(core, arch::cycles());
         kernel.enter_flush(core, Tracked::assume_new());
     }
 }

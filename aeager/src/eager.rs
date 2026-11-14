@@ -4149,19 +4149,28 @@ impl Record {
                         assert forall|a: int| #[trigger] self.parks(a) implies old(self).parks(a) by {
                             assert(before.parks(a));
                         }
-                        if old(self).ready(c0)
+                        assert((old(self).ready(c0)
                             && (flush_room(c0, pages as nat) || forall|a: int| !#[trigger] old(self).parks(a))
-                            && caller_alone(c0, caller@)
-                        {
-                            lemma_caller_alone_split(c0, cmid, caller@, prev, sp);
-                            if forall|a: int| !#[trigger] old(self).parks(a) {
-                                assert forall|a: int| !#[trigger] before.parks(a) by {
-                                    if before.parks(a) {
-                                        assert(old(self).parks(a));
+                            && caller_alone(c0, caller@)) ==> {
+                            &&& self.ready(caller@)
+                            &&& caller@.kernel().flush_epoch as int <= c0.kernel().flush_epoch as int + (k + 1) as int
+                            &&& (forall|a: int| !#[trigger] old(self).parks(a))
+                                ==> caller@.kernel().flush_epoch == c0.kernel().flush_epoch
+                        }) by {
+                            if old(self).ready(c0)
+                                && (flush_room(c0, pages as nat) || forall|a: int| !#[trigger] old(self).parks(a))
+                                && caller_alone(c0, caller@)
+                            {
+                                lemma_caller_alone_split(c0, cmid, caller@, prev, sp);
+                                if forall|a: int| !#[trigger] old(self).parks(a) {
+                                    assert forall|a: int| !#[trigger] before.parks(a) by {
+                                        if before.parks(a) {
+                                            assert(old(self).parks(a));
+                                        }
                                     }
+                                } else {
+                                    assert(flush_room(cmid, 1));
                                 }
-                            } else {
-                                assert(flush_room(cmid, 1));
                             }
                         }
                     }

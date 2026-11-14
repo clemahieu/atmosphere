@@ -288,10 +288,10 @@ impl CapKernel {
 
     /// What freeing the 4K frame at `base` did to self, under the untyped at index `from` of the table
     /// at `root`: the page is out of frames and free in the block table, and the tree, the tables, the
-    /// processes and the spaces are as they were, so the next retype of the page can succeed. The
-    /// zeroing, the epochs, the cores and the IOMMUs are as they were, and so is the block table but
-    /// for the freed page, so what a caller knew of another block, or of an acknowledgement, holds
-    /// after the free.
+    /// processes, the threads and the spaces are as they were, so the next retype of the page can
+    /// succeed. The zeroing, the epochs, the cores and the IOMMUs are as they were, and so is the block
+    /// table but for the freed page, so what a caller knew of another block, or of an acknowledgement,
+    /// holds after the free.
     pub open spec fn frame_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / PAGE_SZ;
@@ -306,6 +306,7 @@ impl CapKernel {
         &&& post.processes == self.processes
         &&& post.endpoints == self.endpoints
         &&& post.replies == self.replies
+        &&& post.threads == self.threads
         &&& post.spaces == self.spaces
         &&& post.zeroing == self.zeroing
         &&& post.stale_epoch == self.stale_epoch
@@ -5079,10 +5080,10 @@ impl CapKernel {
 
     /// What freeing the 2M or 1G frame at `base` did to self, as frame_freed says for a 4K one: every
     /// page of the region is out of frames and the block is no longer typed. The region is free and not
-    /// being zeroed, and the tree, the tables, the processes and the spaces are as they were, so the next
-    /// retype of the block can succeed. The epochs, the cores and the IOMMUs are as they were, and so
-    /// is the block table but for the freed region, so what a caller knew of another block, or of an
-    /// acknowledgement, holds after the free.
+    /// being zeroed, and the tree, the tables, the processes, the threads and the spaces are as they
+    /// were, so the next retype of the block can succeed. The epochs, the cores and the IOMMUs are as
+    /// they were, and so is the block table but for the freed region, so what a caller knew of another
+    /// block, or of an acknowledgement, holds after the free.
     pub open spec fn large_frame_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize, order: u8) -> bool {
         let untyped = self.tables.node_of(root, from);
         let level = large_level(order);
@@ -5100,6 +5101,7 @@ impl CapKernel {
         &&& post.processes == self.processes
         &&& post.endpoints == self.endpoints
         &&& post.replies == self.replies
+        &&& post.threads == self.threads
         &&& post.spaces == self.spaces
         &&& post.stale_epoch == self.stale_epoch
         &&& post.cores == self.cores

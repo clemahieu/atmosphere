@@ -175,6 +175,10 @@ pub struct ThreadRecord {
     pub queued: usize,
     pub wait_prev: usize,
     pub wait_next: usize,
+    /// The cycles it has run, as its core's counter counts them: charge adds, at each kernel entry on
+    /// the core that runs it, the cycles since that core's last entry. Only that core writes it:
+    /// CapKernel::charges_only_own_current, design/cpu-time-as-capability/.
+    pub consumed: u64,
 }
 
 /// Records `a` and `b` agree on every field except the intrusive run-queue links `run_prev` and
@@ -191,6 +195,7 @@ pub open spec fn same_thread_but_links(a: ThreadRecord, b: ThreadRecord) -> bool
     &&& a.queued == b.queued
     &&& a.wait_prev == b.wait_prev
     &&& a.wait_next == b.wait_next
+    &&& a.consumed == b.consumed
 }
 
 /// Permissions `a` and `b` hold initialized `ThreadRecord`s at the same address that agree on
@@ -279,6 +284,7 @@ pub open spec fn fresh_thread() -> ThreadRecord {
         queued: NONE,
         wait_prev: NONE,
         wait_next: NONE,
+        consumed: 0,
     }
 }
 
@@ -300,6 +306,7 @@ pub fn new_thread_record() -> (ret: ThreadRecord)
         queued: NONE,
         wait_prev: NONE,
         wait_next: NONE,
+        consumed: 0,
     }
 }
 
@@ -1015,6 +1022,7 @@ pub open spec fn unbound_record(r: ThreadRecord) -> ThreadRecord {
         queued: r.queued,
         wait_prev: r.wait_prev,
         wait_next: r.wait_next,
+        consumed: r.consumed,
     }
 }
 
@@ -1039,6 +1047,7 @@ pub open spec fn unplaced_record(r: ThreadRecord) -> ThreadRecord {
         queued: r.queued,
         wait_prev: r.wait_prev,
         wait_next: r.wait_next,
+        consumed: r.consumed,
     }
 }
 
@@ -1769,6 +1778,7 @@ impl CapKernel {
                     queued: record.queued,
                     wait_prev: record.wait_prev,
                     wait_next: record.wait_next,
+                    consumed: record.consumed,
                 });
                 proof {
                     self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -1902,6 +1912,7 @@ impl CapKernel {
                     queued: record.queued,
                     wait_prev: record.wait_prev,
                     wait_next: record.wait_next,
+                    consumed: record.consumed,
                 });
                 proof {
                     self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -3152,7 +3163,7 @@ impl CapKernel {
     }
 
     /// A switch keeps wf when it leaves the current threads matching the Running states.
-    proof fn lemma_switch_wf(pre: Self, post: Self, c: int, t: usize)
+    pub(crate) proof fn lemma_switch_wf(pre: Self, post: Self, c: int, t: usize)
         requires
             pre.wf(),
             0 <= c < NUM_CPUS,
@@ -3301,6 +3312,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             space: state.space,
+            since: state.since,
         });
         proof {
             reveal(current_wf);
@@ -3388,6 +3400,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             space: state.space,
+            since: state.since,
         });
         let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
         let tracked mut perm;
@@ -3409,6 +3422,7 @@ impl CapKernel {
             queued: record.queued,
             wait_prev: record.wait_prev,
             wait_next: record.wait_next,
+            consumed: record.consumed,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -3525,6 +3539,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             space: state.space,
+            since: state.since,
         });
         proof {
             reveal(current_wf);
@@ -3635,6 +3650,7 @@ impl CapKernel {
             queued: pre.threads.records@[t].value().queued,
             wait_prev: pre.threads.records@[t].value().wait_prev,
             wait_next: pre.threads.records@[t].value().wait_next,
+            consumed: pre.threads.records@[t].value().consumed,
         }
     }
 
@@ -3815,6 +3831,7 @@ impl CapKernel {
             queued: record.queued,
             wait_prev: record.wait_prev,
             wait_next: record.wait_next,
+            consumed: record.consumed,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4244,6 +4261,7 @@ impl CapKernel {
                         generation: state.generation,
                         next_pcid: state.next_pcid,
                         space: state.space,
+                        since: state.since,
                     });
                 }
                 let tracked mut perm;
@@ -4264,6 +4282,7 @@ impl CapKernel {
                     queued: record.queued,
                     wait_prev: record.wait_prev,
                     wait_next: record.wait_next,
+                    consumed: record.consumed,
                 });
                 proof {
                     self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4483,6 +4502,7 @@ impl CapKernel {
             queued: record.queued,
             wait_prev: record.wait_prev,
             wait_next: record.wait_next,
+            consumed: record.consumed,
         });
         self.stop_ipis = Ghost(pre.stop_ipis@.push(d));
         proof {
@@ -4602,6 +4622,7 @@ impl CapKernel {
                     queued: record.queued,
                     wait_prev: record.wait_prev,
                     wait_next: record.wait_next,
+                    consumed: record.consumed,
                 });
                 proof {
                     self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -4823,6 +4844,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             space: state.space,
+            since: state.since,
         });
         let tracked mut perm;
         proof {
@@ -4842,6 +4864,7 @@ impl CapKernel {
             queued: record.queued,
             wait_prev: record.wait_prev,
             wait_next: record.wait_next,
+            consumed: record.consumed,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -5038,6 +5061,7 @@ impl CapKernel {
             queued: r.queued,
             wait_prev: r.wait_prev,
             wait_next: r.wait_next,
+            consumed: r.consumed,
         }
         &&& post.holders == pre.holders
         &&& post.tables == pre.tables
@@ -5437,6 +5461,7 @@ impl CapKernel {
             queued: record.queued,
             wait_prev: record.wait_prev,
             wait_next: record.wait_next,
+            consumed: record.consumed,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -6147,6 +6172,7 @@ impl CapKernel {
             queued: record.queued,
             wait_prev: record.wait_prev,
             wait_next: record.wait_next,
+            consumed: record.consumed,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
