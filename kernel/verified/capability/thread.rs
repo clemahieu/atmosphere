@@ -3845,6 +3845,44 @@ impl CapKernel {
         }
     }
 
+    /// Whether a start of the thread at index i of the table at root answered ok exactly when
+    /// can_start holds, and left the kernel as it was when it refused. start's ensures and
+    /// spec_started both call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn start_answered(pre: Self, post: Self, root: usize, i: usize, ok: bool) -> bool {
+        &&& ok == pre.can_start(root, i)
+        &&& !ok ==> post == pre
+    }
+
+    /// What a start leaves as it was, whether it answered ok or refused: the process each thread is
+    /// bound to. start's ensures and spec_started both call it:
+    /// design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn start_kept(pre: Self, post: Self) -> bool {
+        bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
+    }
+
+    /// What a start of the thread at index i of the table at root did when it answered ok: the thread
+    /// Runnable on the core it is placed on, at the back of its placement's priority there, every core
+    /// as it was, a reschedule IPI recorded for that core exactly when the thread outranks what the
+    /// core runs, and the step discharging control of the thread. start's ensures and spec_started both
+    /// call it: design/invoked-arm-is-the-operation-postcondition/.
+    pub open spec fn start_done(pre: Self, post: Self, root: usize, i: usize) -> bool {
+        let n = pre.tables.node_of(root, i);
+        let t = pre.payload_of(n).base;
+        let pl = pre.threads.records@[t].value().placement->Some_0;
+        let core = pl.core;
+        &&& pre.threads.records@.contains_key(t)
+        &&& Self::state_written(pre, post, t, ThreadState::Runnable { core })
+        &&& queued_at_back(&pre.threads.queues, &post.threads.queues, core as int, pl.priority as int, t)
+        &&& at_back_of_priority(&post.threads.queues, post.threads.records@, core as int, pl.priority, t)
+        &&& post.cores == pre.cores
+        &&& post.resched_ipis@ == if pre.outranks_current(core as int, pl.priority) {
+            pre.resched_ipis@.push(core)
+        } else {
+            pre.resched_ipis@
+        }
+        &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+    }
+
     /// Starts the thread the control capability at index i names: it becomes Runnable on the core it
     /// is placed on, which switches it in, and when it outranks what that core runs, the core is sent
     /// a reschedule IPI. The index comes from user space, so it can be refused, and a refusal changes
@@ -3856,26 +3894,9 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            ret == old(self).can_start(root, i),
-            !ret ==> *final(self) == *old(self),
-            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret ==> {
-                let n = old(self).tables.node_of(root, i);
-                let t = old(self).payload_of(n).base;
-                let pl = old(self).threads.records@[t].value().placement->Some_0;
-                let core = pl.core;
-                &&& old(self).threads.records@.contains_key(t)
-                &&& Self::state_written(*old(self), *final(self), t, ThreadState::Runnable { core })
-                &&& queued_at_back(&old(self).threads.queues, &final(self).threads.queues, core as int, pl.priority as int, t)
-                &&& at_back_of_priority(&final(self).threads.queues, final(self).threads.records@, core as int, pl.priority, t)
-                &&& final(self).cores == old(self).cores
-                &&& final(self).resched_ipis@ == if old(self).outranks_current(core as int, pl.priority) {
-                    old(self).resched_ipis@.push(core)
-                } else {
-                    old(self).resched_ipis@
-                }
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
-            },
+            Self::start_answered(*old(self), *final(self), root, i, ret),
+            Self::start_kept(*old(self), *final(self)),
+            ret ==> Self::start_done(*old(self), *final(self), root, i),
     {
         let ghost pre = *self;
         let (_, t, dead) = match self.thread_control(root, i) {

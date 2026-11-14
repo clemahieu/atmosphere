@@ -980,30 +980,24 @@ impl CapKernel {
 
     /// A start in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_start fails, or ok with the thread
-    /// the slot's capability names Runnable on the core it is placed on, at the back of its placement's
-    /// priority there, every core as it was, a reschedule IPI recorded for that core exactly when the
-    /// thread outranks what the core runs, every thread's binding as it was, and the step discharging
-    /// control of the thread. design/cpu-time-as-capability/.
+    /// the slot's capability names Runnable on the core it is placed on, as start_done says; either way
+    /// what start_kept says is kept. design/cpu-time-as-capability/.
     pub open spec fn spec_started(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        let n = pre.tables.node_of(root, frame.slot() as usize);
-        let t = pre.payload_of(n).base;
-        let pl = pre.threads.records@[t].value().placement->Some_0;
-        ||| !pre.allows_start(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& pre.allows_start(root, frame)
-            &&& out == status_only(STATUS_OK)
-            &&& pre.threads.records@.contains_key(t)
-            &&& Self::state_written(pre, post, t, ThreadState::Runnable { core: pl.core })
-            &&& queued_at_back(&pre.threads.queues, &post.threads.queues, pl.core as int, pl.priority as int, t)
-            &&& at_back_of_priority(&post.threads.queues, post.threads.records@, pl.core as int, pl.priority, t)
-            &&& post.cores == pre.cores
-            &&& post.resched_ipis@ == if pre.outranks_current(pl.core as int, pl.priority) {
-                pre.resched_ipis@.push(pl.core)
-            } else {
-                pre.resched_ipis@
+        let i = frame.slot() as usize;
+        &&& Self::start_kept(pre, post)
+        &&& {
+            ||| {
+                &&& !pre.allows_start(root, frame)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& post == pre
+                &&& Self::start_answered(pre, post, root, i, false)
             }
-            &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
-            &&& discharges(pre.view(), post.view(), root, Effect::Control { cap: n, thread: t })
+            ||| {
+                &&& pre.allows_start(root, frame)
+                &&& out == status_only(STATUS_OK)
+                &&& Self::start_answered(pre, post, root, i, true)
+                &&& Self::start_done(pre, post, root, i)
+            }
         }
     }
 
