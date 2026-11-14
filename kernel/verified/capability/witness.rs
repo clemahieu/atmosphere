@@ -11756,7 +11756,7 @@ impl CapKernel {
     /// priority 0 through its core capability for that core and starts it, Runnable on `core`, with
     /// its control capability in WITNESS_THREAD_SLOT.
     #[verifier::spinoff_prover]
-    fn witness_place_and_start(
+    pub(crate) fn witness_place_and_start(
         &mut self,
         root: Ghost<usize>,
         process: usize,
@@ -11803,6 +11803,8 @@ impl CapKernel {
                 &&& final(self).list.nodes@[placement_node(thread) as int].kind is Placement
                 &&& final(self).slot_holds(process, (ROOT_CORE_SLOT + core) as usize, core_cap, core_payload(core as int, MAX_PRIORITY))
                 &&& final(self).list.nodes@[core_cap as int].depth == 1
+                &&& final(self).slot_holds(process, ROOT_CORE_SLOT, (leaf@ + ROOT_CORE_SLOT) as usize, core_payload(0, MAX_PRIORITY))
+                &&& final(self).list.nodes@[leaf@ + ROOT_CORE_SLOT].depth == 1
                 &&& final(self).slot_holds(process, ROOT_THREAD_SLOT, (leaf@ + 2) as usize, thread_of(t@))
                 &&& final(self).tables.roots@.contains_key(process)
                 &&& final(self).root_live(process)
@@ -11822,6 +11824,7 @@ impl CapKernel {
         let ghost itb = image_tables_bound(image@);
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
         let ghost core_cap = (leaf@ + ROOT_CORE_SLOT + core) as usize;
+        let ghost core0 = (leaf@ + ROOT_CORE_SLOT) as usize;
         let cs = ROOT_CORE_SLOT + core;
         proof {
             lemma2_to64();
@@ -11846,6 +11849,10 @@ impl CapKernel {
             assert(s0.list.nodes@[core_cap as int].depth == 1);
             assert(s0.tables.has_slot(&s0.list, process, cs));
             assert(s0.is_cap(core_cap));
+            assert(s0.slot_holds(process, (ROOT_CORE_SLOT + 0) as usize, (leaf@ + ROOT_CORE_SLOT + 0) as usize, core_payload(0, MAX_PRIORITY)));
+            assert(s0.list.nodes@[core0 as int].depth == 1);
+            assert(s0.tables.has_slot(&s0.list, process, ROOT_CORE_SLOT));
+            assert(s0.is_cap(core0));
             assert(s0.slot_holds(process, ROOT_THREAD_SLOT, (leaf@ + 2) as usize, thread_of(t@)));
             assert(s0.tables.has_slot(&s0.list, process, ROOT_THREAD_SLOT));
             assert(s0.is_cap((leaf@ + 2) as usize));
@@ -11920,6 +11927,9 @@ impl CapKernel {
             assert(s1.tables.has_slot(&s1.list, process, cs));
             assert(s1.tables.node_of(process, cs) == core_cap);
             assert(s1.is_cap(core_cap) && s1.payload_of(core_cap) == core_payload(core as int, MAX_PRIORITY) && s1.list.nodes@[core_cap as int].depth == 1);
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT));
+            assert(s1.tables.node_of(process, ROOT_CORE_SLOT) == core0);
+            assert(s1.is_cap(core0) && s1.payload_of(core0) == core_payload(0, MAX_PRIORITY) && s1.list.nodes@[core0 as int].depth == 1);
             assert(s1.tables.has_slot(&s1.list, process, ROOT_THREAD_SLOT));
             assert(s1.tables.node_of(process, ROOT_THREAD_SLOT) == (leaf@ + 2) as usize);
             assert(s1.is_cap((leaf@ + 2) as usize) && s1.payload_of((leaf@ + 2) as usize) == thread_of(t@));
@@ -11975,6 +11985,11 @@ impl CapKernel {
             assert(s2.tables.has_slot(&s2.list, process, cs));
             assert(s2.tables.node_of(process, cs) == core_cap);
             assert(s2.is_cap(core_cap) && s2.payload_of(core_cap) == core_payload(core as int, MAX_PRIORITY) && s2.list.nodes@[core_cap as int].depth == 1);
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT));
+            assert(s1.is_cap(core0));
+            assert(s2.tables.has_slot(&s2.list, process, ROOT_CORE_SLOT));
+            assert(s2.tables.node_of(process, ROOT_CORE_SLOT) == core0);
+            assert(s2.is_cap(core0) && s2.payload_of(core0) == core_payload(0, MAX_PRIORITY) && s2.list.nodes@[core0 as int].depth == 1);
             assert(s1.tables.has_slot(&s1.list, process, ROOT_THREAD_SLOT));
             assert(s1.is_cap((leaf@ + 2) as usize));
             assert(s2.tables.has_slot(&s2.list, process, ROOT_THREAD_SLOT));
@@ -12023,6 +12038,11 @@ impl CapKernel {
             assert(s3.tables.has_slot(&s3.list, process, cs));
             assert(s3.tables.node_of(process, cs) == core_cap);
             assert(s3.is_cap(core_cap) && s3.payload_of(core_cap) == core_payload(core as int, MAX_PRIORITY) && s3.list.nodes@[core_cap as int].depth == 1);
+            assert(s2.tables.has_slot(&s2.list, process, ROOT_CORE_SLOT));
+            assert(s2.is_cap(core0));
+            assert(s3.tables.has_slot(&s3.list, process, ROOT_CORE_SLOT));
+            assert(s3.tables.node_of(process, ROOT_CORE_SLOT) == core0);
+            assert(s3.is_cap(core0) && s3.payload_of(core0) == core_payload(0, MAX_PRIORITY) && s3.list.nodes@[core0 as int].depth == 1);
             assert(s2.tables.has_slot(&s2.list, process, ROOT_THREAD_SLOT));
             assert(s2.is_cap((leaf@ + 2) as usize));
             assert(s3.tables.has_slot(&s3.list, process, ROOT_THREAD_SLOT));
@@ -12074,6 +12094,9 @@ impl CapKernel {
             assert(s4.list.nodes@[leaf@ as int].live == s3.list.nodes@[leaf@ as int].live);
             assert(s4.list.nodes@[core_cap as int].depth == 1);
             assert(s4.slot_holds(process, cs, core_cap, core_payload(core as int, MAX_PRIORITY)));
+            assert(placement_node(bt) != core0);
+            assert(s4.list.nodes@[core0 as int].depth == 1);
+            assert(s4.slot_holds(process, ROOT_CORE_SLOT, core0, core_payload(0, MAX_PRIORITY)));
             assert(s4.slot_holds(process, ROOT_THREAD_SLOT, (leaf@ + 2) as usize, thread_of(t@)));
         }
         let started = self.start(process, WITNESS_THREAD_SLOT);
@@ -12101,6 +12124,7 @@ impl CapKernel {
             assert(s5.processes == s4.processes);
             assert(s5.can_control(process, WITNESS_THREAD_SLOT));
             assert(s5.slot_holds(process, cs, core_cap, core_payload(core as int, MAX_PRIORITY)));
+            assert(s5.slot_holds(process, ROOT_CORE_SLOT, core0, core_payload(0, MAX_PRIORITY)));
             assert(s5.slot_holds(process, ROOT_THREAD_SLOT, (leaf@ + 2) as usize, thread_of(t@)));
             // Core `core` runs nothing, so the start outranks it and sends it the reschedule IPI.
             assert(s4.cores == s0.cores);
