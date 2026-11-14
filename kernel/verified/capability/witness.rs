@@ -64,6 +64,7 @@ use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::map::*;
 use crate::capability::mapping::*;
+use crate::capability::notification::*;
 use crate::capability::operation::Outcome;
 use crate::capability::position::*;
 use crate::capability::process::*;
@@ -6834,6 +6835,11 @@ impl CapKernel {
                 &&& p.badge == 0x4000_0000_0000_0000 // not a page size: bit 62 of the word
                 &&& final(self).list.is_child(ne, n)
                 &&& final(self).list.nodes@[n as int].depth == 3
+                &&& final(self).slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base))
+                &&& final(self).endpoints.records@.contains_key(base)
+                &&& final(self).endpoints.records@[base].value() == fresh_record()
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& final(self).root_live(process)
             }),
     {
         hide(CapKernel::wf);
@@ -6877,8 +6883,85 @@ impl CapKernel {
             assert(Self::derive_step(s1, s2, n));
             Self::lemma_slot_stays(s1, s2, process, WITNESS_BADGED_SLOT);
             assert(s2.slot_holds(process, WITNESS_BADGED_SLOT, n, s2.payload_of(n)));
+            assert(Self::cap_derived_at(s1, s2, process, WITNESS_FRAME_SLOT, to, send, base, 0, badge));
+            assert(s2.processes.records == s1.processes.records);
+            assert(s2.root_live(process));
+            assert(Self::derive_kept(s1, s2));
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.endpoints.records@[base].value() == fresh_record());
+            Self::lemma_slot_stays(s1, s2, process, WITNESS_FRAME_SLOT);
+            Self::lemma_caps_frame(s1, s2, n, n, ne);
+            assert(s2.slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base)));
         }
         ok
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: retype a notification and derive
+    /// from it a send capability with badge 2^62, as witness_root_derives_a_badged_notification does,
+    /// then signal through the badged capability, which no thread waits behind, and wait through the
+    /// notification's own capability, which has the receive right. Both succeed: the wait returns the
+    /// badge at once and leaves the word zero. The use is a source telling a waiter which source
+    /// signalled. design/witness-per-way-an-operation-succeeds/,
+    /// design/notification-word-reserves-the-waiter-bit/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_signals_and_waits_on_a_notification(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: (bool, Option<u64>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret.0,
+            ret.1 is Some,
+            ret.1->0 == 0x4000_0000_0000_0000u64, // not a page size: bit 62 of the word
+            final(self).wf(),
+            final(self).endpoints.records@[base].value().word == 0,
+    {
+        hide(CapKernel::wf);
+        let _ = self.witness_root_derives_a_badged_notification(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
+        let ghost s1 = *self;
+        let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
+        let ghost n = (base + 2 * PAGE_SZ + 2) as usize;
+        proof {
+            assert(right_bit(Right::Send) == 16) by (compute_only);
+            assert(16u32 & SEND_RIGHT != 0) by (compute_only);
+            assert(NOTIFICATION_RIGHTS & RECEIVE_RIGHT != 0) by (compute_only);
+            assert(s1.holds_notification(process, WITNESS_BADGED_SLOT, SEND_RIGHT));
+            assert(s1.notification_at(process, WITNESS_BADGED_SLOT) == base);
+            assert(s1.notification_record(process, WITNESS_BADGED_SLOT) == fresh_record());
+            assert(s1.can_signal(process, WITNESS_BADGED_SLOT));
+        }
+        let ok = self.signal(process, WITNESS_BADGED_SLOT);
+        let ghost s2 = *self;
+        proof {
+            assert(ok);
+            let w: u64 = 0x4000_0000_0000_0000u64; // not a page size: bit 62 of the word
+            assert(0u64 | 0x4000_0000_0000_0000u64 == 0x4000_0000_0000_0000u64) by (compute_only); // not a page size: the badge
+            assert(0x4000_0000_0000_0000u64 & SIGNAL_BITS == 0x4000_0000_0000_0000u64) by (compute_only); // not a page size: the badge
+            assert(0x4000_0000_0000_0000u64 & !SIGNAL_BITS == 0) by (compute_only); // not a page size: the badge
+            assert(s2.endpoints.records@[base].value().word == w);
+            assert(s2.tables == s1.tables && s2.list == s1.list && s2.processes == s1.processes);
+            assert(s2.slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base)));
+            assert(s2.holds_notification(process, WITNESS_FRAME_SLOT, RECEIVE_RIGHT));
+            assert(s2.notification_at(process, WITNESS_FRAME_SLOT) == base);
+            assert(s2.can_wait(process, WITNESS_FRAME_SLOT));
+        }
+        let word = self.wait(process, WITNESS_FRAME_SLOT);
+        (ok, word)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

@@ -31,6 +31,7 @@ pub mod list;
 pub mod map;
 pub mod mapping;
 pub mod moving;
+pub mod notification;
 pub mod operation;
 pub mod position;
 pub mod power;
