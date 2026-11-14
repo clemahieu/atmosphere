@@ -118,8 +118,9 @@ pub const PAGE_BYTES: u64 = 4096;
 pub const MAPPED_RUNS: usize = 64;
 
 /// Bytes the loader reserves for dom0. The virtual reservation is this long, above the user base.
-/// The test guest's dom0 image is under 1 MiB. design/test-guest-memory/.
-pub const DOM0_RESERVATION: u64 = 16 * 1024 * 1024;
+/// It holds dom0's image, the payload and the stack; the gate's dom0 maps 285 KiB and its payload
+/// is one page. design/test-guest-memory/.
+pub const DOM0_RESERVATION: u64 = 4 * 1024 * 1024;
 
 /// The stack the loader maps at the top of dom0's reservation.
 pub const DOM0_STACK: u64 = 1024 * 1024;

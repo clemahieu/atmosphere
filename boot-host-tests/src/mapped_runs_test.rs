@@ -69,12 +69,29 @@ fn read_u64(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
 }
 
+/// The bytes of the initrd copy of `elf`, which tools/elfstrip.py strips to its allocated sections:
+/// the file up to the end of the last of them, then a section table for them and its names, which
+/// one page holds.
+fn initrd_len(elf: &[u8]) -> u64 {
+    assert_eq!(&elf[..4], b"\x7fELF", "the payload is an ELF");
+    let shoff = read_u64(elf, 40) as usize;
+    let shentsize = read_u16(elf, 58) as usize;
+    let shnum = read_u16(elf, 60) as usize;
+    assert!(shentsize >= 64 && shoff + shentsize * shnum <= elf.len());
+    let allocated_end = (0..shnum)
+        .map(|index| shoff + index * shentsize)
+        .filter(|&at| read_u64(elf, at + 8) & 2 != 0 && read_u32(elf, at + 4) != 8)
+        .map(|at| read_u64(elf, at + 24) + read_u64(elf, at + 32))
+        .max()
+        .expect("the payload has an allocated section");
+    allocated_end + PAGE_BYTES
+}
+
 /// The runs `load_domain` records for the built dom0 and hello, against a synthetic reservation.
 fn real_dom0_runs() -> (Vec<MappedRun>, u64) {
     let dom0 = fs::read(artifact("dom0")).expect("dom0 is built before this check");
-    let hello_len = fs::metadata(artifact("hello"))
-        .expect("hello is built before this check")
-        .len();
+    let hello = fs::read(artifact("hello")).expect("hello is built before this check");
+    let hello_len = initrd_len(&hello);
     assert_eq!(&dom0[..4], b"\x7fELF", "dom0 is an ELF");
     assert_eq!(dom0[4], 2, "dom0 is ELFCLASS64");
     let phoff = read_u64(&dom0, 32) as usize;
