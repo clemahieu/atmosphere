@@ -24,8 +24,14 @@ epic is not a landed leaf, whatever its close reason names. For each work kind a
   one rule both tools count by);
 - first: those landed with no round on them reporting `Retry:`, so no attempt ended at its bound;
 - escalated: those with a round on them reporting `Retry:`, whichever offering ran the retry;
-- refuted: those landed whose epic had a review close `refuted` after the leaf closed, the epic the
-  leaf served being sent back;
+- refuted: those landed whose close reason names a commit that the `Origin:` line of a leaf labelled
+  `refuted` names, one a prefix of the other, so a refutation is charged to the offering that wrote
+  what it cites and not to every offering that worked in the epic; any refuted leaf counts, whenever
+  it was filed. After every other line, one line names the refuted leaves filed in the period that
+  are on no row: `Origin: none` (nothing implemented the criterion, the split's gap), `Origin: base`
+  (main failed by itself), no `Origin:` line (filed before the line existed), and an origin naming no
+  landed leaf counted on a row. The rows and that line account for every refuted leaf filed in the
+  period;
 - weighted and points a landed leaf: every session recorded under the taken leaves, on any offering,
   prover, retry and skeptic included, over the landed ones, in millions of plan-weighted tokens and in
   weekly points of the Claude plan. An offering that hands its hard leaves to a dearer one carries
@@ -97,7 +103,8 @@ RECORD = ROOT / "logs" / "loop"
 LOGS = ROOT / "logs"
 LOOP = Path(__file__).with_name("loop.py")
 LEAF_COST = runpy.run_path(str(Path(__file__).with_name("leaf-cost.py")))
-FLAG_RATE, LANDED, MAIN_COMMITS = LEAF_COST["flag_rate"], LEAF_COST["landed"], LEAF_COST["main_commits"]
+FLAG_RATE, LANDED, MAIN_COMMITS, HEX = (LEAF_COST["flag_rate"], LEAF_COST["landed"], LEAF_COST["main_commits"],
+                                       LEAF_COST["HEX"])
 NOT_LEAVES = ("epic", "decision")
 LEAF_KINDS = ("tool", "sys", "proof", "spec", "arch")
 # Why a leaf took a round after its first, in the order they are tried (the opening comment says each).
@@ -106,6 +113,7 @@ BASE_BUG = re.compile(r"main at [0-9a-f]{7,40} fails the gate by itself")
 BASE_LOG = re.compile(r"fails the gate by itself|^exit 4$", re.M)
 FAULT_LOG = re.compile(r"^exit 1$", re.M)
 CONFLICT_LOG = re.compile(r"^exit 3$", re.M)
+ORIGIN = re.compile(r"^Origin:[ \t]*(.*?)[ \t]*$", re.M)
 
 
 def rate(session):
@@ -121,14 +129,21 @@ def label_kind(issue):
     return next((label[5:] for label in issue.get("labels") or [] if label.startswith("kind:")), None)
 
 
-def refutations(tracker):
-    """For each epic, the times its reviews closed refuted."""
-    times = {}
-    for issue in tracker:
-        if (issue["status"] == "closed" and "review" in (issue.get("labels") or [])
-                and (issue.get("close_reason") or "").startswith("refuted") and issue.get("parent")):
-            times.setdefault(issue["parent"], []).append(closed_at(issue))
-    return times
+def created_at(issue):
+    return datetime.fromisoformat(issue["created_at"]).timestamp()
+
+
+def origin(issue):
+    """A refuted leaf's `Origin:` line: "none", "base", the commits it names as a list, or None when it has none."""
+    found = ORIGIN.findall(issue.get("description") or "")
+    if not found:
+        return None
+    return found[-1] if found[-1] in ("none", "base") else HEX.findall(found[-1])
+
+
+def names_origin(reason, shas):
+    """Whether a close reason names one of `shas`: a run of its hex digits and a sha, one a prefix of the other."""
+    return any(run.startswith(sha) or sha.startswith(run) for run in HEX.findall(reason) for sha in shas)
 
 
 def is_review(issue):
@@ -234,7 +249,9 @@ def report(sessions, tracker, commits, since=-math.inf, until=math.inf, logs=LOG
     """The lines of the report over the sessions of the record and the issues of the tracker;
     `commits` are main's, which a landed leaf's close reason names one of."""
     issues = {issue["id"]: issue for issue in tracker}
-    refuted_at = refutations(tracker)
+    refuted_leaves = [issue for issue in tracker if "refuted" in (issue.get("labels") or [])]
+    origins = {issue["id"]: origin(issue) for issue in refuted_leaves}
+    blamed = set()
     by_issue, other = {}, []
     unrated = set()
     saw_grok = False
@@ -294,7 +311,10 @@ def report(sessions, tracker, commits, since=-math.inf, until=math.inf, logs=LOG
         if did_land:
             row["landed"] += 1
             row["first"] += not escalated
-            row["refuted"] += any(time > closed_at(issue) for time in refuted_at.get(issue.get("parent"), ()))
+            blames = [other for other, shas in origins.items()
+                      if isinstance(shas, list) and names_origin(issue.get("close_reason") or "", shas)]
+            row["refuted"] += bool(blames)
+            blamed.update(blames)
         for session in worked:
             spend(row, session)
         place(worked)
@@ -369,6 +389,14 @@ def report(sessions, tracker, commits, since=-math.inf, until=math.inf, logs=LOG
     if saw_grok:
         lines.append("grok: a landed leaf's cost is the weighted column, in millions of weighted tokens; "
                      "the plan is a flat subscription, so no weekly points")
+    on_no_row = {"origin none": [], "origin base": [], "no origin line": [], "origin names no leaf on a row": []}
+    for issue in sorted(refuted_leaves, key=lambda issue: issue["id"]):
+        shas = origins[issue["id"]]
+        if not since <= created_at(issue) < until or issue["id"] in blamed:
+            continue
+        on_no_row["no origin line" if shas is None else f"origin {shas}" if isinstance(shas, str)
+                  else "origin names no leaf on a row"].append(issue["id"])
+    lines.append("refuted leaves on no row: " + "; ".join(f"{name} {' '.join(ids) or '-'}" for name, ids in on_no_row.items()))
     return lines
 
 
@@ -390,8 +418,8 @@ def main(arguments):
 
 class Tests(unittest.TestCase):
     NOON = datetime(2026, 11, 12, 12).timestamp()
-    # Main's commits as the tests assume them: the SHA the default close reason names.
-    COMMITS = ["abc1234" + "0" * 33]
+    # Main's commits as the tests assume them: the SHA the default close reason names, and another.
+    COMMITS = ["abc1234" + "0" * 33, "def5678" + "0" * 33]
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -416,13 +444,16 @@ class Tests(unittest.TestCase):
             "loop": report if session == "round" else None, "prover": prover, "retry": retry, "skeptic": None})
 
     def issue(self, id, reason="abc1234: landed", status="closed", labels=("kind:tool",), closed=None, type="task",
-              title="", needs=()):
+              title="", needs=(), description="", created=None):
         """A tracker entry as bd list --json gives it; `needs` holds (issue depended on, epoch seconds the edge was made)."""
-        stamp = datetime.fromtimestamp(self.NOON + 86400 if closed is None else closed, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        def stamp(at):
+            return datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return {"id": id, "title": title, "status": status, "issue_type": type, "labels": list(labels), "close_reason": reason,
-                "closed_at": stamp if status == "closed" else None, "parent": id.rsplit(".", 1)[0],
+                "description": description, "created_at": stamp(self.NOON if created is None else created),
+                "closed_at": stamp(self.NOON + 86400 if closed is None else closed) if status == "closed" else None,
+                "parent": id.rsplit(".", 1)[0],
                 "dependencies": [{"issue_id": id, "depends_on_id": other, "type": "blocks",
-                                  "created_at": datetime.fromtimestamp(made, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+                                  "created_at": stamp(made)}
                                  for other, made in needs]}
 
     def lines(self, tracker, **window):
@@ -504,7 +535,7 @@ class Tests(unittest.TestCase):
 
     def test_a_landed_an_escalated_and_a_refuted_leaf_on_two_offerings(self):
         # On carbon-high: a-1.1 lands first time; a-1.2 ends its attempt, Fable retries and lands it;
-        # a-1.3 lands, then a review of a-1 closes refuted after it.
+        # a-1.3 lands on def5678, which a refuted leaf's Origin line names.
         self.run_session("a-1.1", "carbon-high", weighted=2_000_000)
         self.run_session("a-1.2", "carbon-high", retry="a-1.2", weighted=3_000_000)
         self.run_session("a-1.2", "fable-xhigh", weighted=1_000_000)
@@ -513,16 +544,47 @@ class Tests(unittest.TestCase):
         self.run_session("b-1.1", "opus", weighted=1_000_000)
         self.run_session("b-1.1", "fable-xhigh", session="prover", weighted=2_000_000)
         self.run_session("b-1.2", "opus", weighted=500_000)
-        tracker = [self.issue("a-1.1"), self.issue("a-1.2"), self.issue("a-1.3", closed=self.NOON + 3600),
-                   self.issue("a-1.9", reason="refuted: criterion 2", labels=("review",), closed=self.NOON + 7200),
+        tracker = [self.issue("a-1.1"), self.issue("a-1.2"), self.issue("a-1.3", reason="def5678: landed"),
+                   self.issue("a-1.10", status="open", labels=("refuted",), description="Refuted.\nOrigin: def5678"),
                    self.issue("b-1.1"), self.issue("b-1.2", reason="Already true")]
         lines = self.lines(tracker)
         self.assertEqual(lines[1].split(),
                          ["kind", "offering", "taken", "landed", "first", "escalated", "refuted", "weighted", "points", "sum"])
-        # a-1.1 lands before the review, so only a-1.3 counts as refuted; a-1.2's points are Fable's retry.
+        # Only a-1.3 counts as refuted; a-1.2's points are Fable's retry.
         self.assertEqual(self.row(lines, "tool", "carbon-high"), ["3", "3", "2", "1", "1", "2.33", f"{0.57 / 3:.3f}", "7.00"])
         self.assertEqual(self.row(lines, "tool", "opus"), ["2", "1", "1", "0", "0", "3.50", f"{0.12 * 1.5 + 0.57 * 2:.3f}", "3.50"])
         self.assertIn("no rate for agy gemini-4-carbon-high: its sessions add no points", lines)
+
+    def test_a_leaf_is_refuted_when_a_refuted_leafs_origin_names_its_commit(self):
+        # Two leaves of e-1 land on different offerings, and e-1's review closes refuted after both.
+        self.run_session("e-1.1", "opus")
+        self.run_session("e-1.2", "carbon-high")
+        tracker = [self.issue("e-1.1", reason="abc1234: landed", closed=self.NOON + 3600),
+                   self.issue("e-1.2", reason="def5678: landed", closed=self.NOON + 3600),
+                   self.issue("e-1.9", reason="refuted: criteria 1 to 4", labels=("review",), closed=self.NOON + 7200),
+                   # The Origin names the first leaf's commit by a longer prefix than its close reason does.
+                   self.issue("e-1.10", status="open", labels=("refuted",),
+                              description="Criterion 1 fails.\nThe cited line.\nOrigin: 9999999, abc12340"),
+                   self.issue("e-1.11", status="open", labels=("refuted",), description="Criterion 2.\nOrigin: none"),
+                   self.issue("e-1.12", status="open", labels=("refuted",), description="Criterion 3.\nOrigin: base"),
+                   self.issue("e-1.13", status="open", labels=("refuted",), description="Criterion 4, filed before the line."),
+                   # Filed before the period: on no line.
+                   self.issue("e-1.14", status="open", labels=("refuted",), description="Origin: none", created=self.NOON - 86400)]
+        lines = self.lines(tracker, since=self.NOON - 3600)
+        self.assertEqual(self.row(lines, "tool", "opus")[:5], ["1", "1", "1", "0", "1"])
+        self.assertEqual(self.row(lines, "tool", "carbon-high")[:5], ["1", "1", "1", "0", "0"])
+        self.assertEqual(lines[-1], "refuted leaves on no row: origin none e-1.11; origin base e-1.12; "
+                                    "no origin line e-1.13; origin names no leaf on a row -")
+        self.assertFalse(any("e-1.10" in line or "e-1.14" in line for line in lines))
+
+    def test_a_refuted_leaf_whose_origin_names_no_landed_leaf_is_on_the_last_line(self):
+        self.run_session("e-1.1", "opus")
+        tracker = [self.issue("e-1.1"),
+                   self.issue("e-1.10", status="open", labels=("refuted",), description="Refuted.\nOrigin: 7777777")]
+        lines = self.lines(tracker)
+        self.assertEqual(self.row(lines, "tool", "opus")[4], "0")
+        self.assertEqual(lines[-1], "refuted leaves on no row: origin none -; origin base -; no origin line -; "
+                                    "origin names no leaf on a row e-1.10")
 
     def test_the_kind_is_the_loops_or_the_label_and_an_offering_without_a_rate_has_no_points(self):
         self.run_session("a-1.1", "carbon-high", kind=None)
@@ -539,13 +601,13 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.row(lines, "tool", "opus")[:3], ["1", "0", "0"])
 
     def test_a_grok_offering_costs_weighted_tokens_and_is_not_unrated(self):
-        # g-1.1 lands; g-1.2 ends its attempt and lands; g-1.3 lands, then a review of g-1 closes refuted after it.
+        # g-1.1 lands; g-1.2 ends its attempt and lands; g-1.3 lands on a commit a refuted leaf's Origin line names.
         self.run_session("g-1.1", "grok-high", weighted=2_000_000)
         self.run_session("g-1.2", "grok-high", retry="g-1.2", weighted=1_000_000)
         self.run_session("g-1.3", "grok-high", weighted=3_000_000)
         self.run_session("c-1.1", "carbon-high", weighted=1_000_000)
-        tracker = [self.issue("g-1.1"), self.issue("g-1.2"), self.issue("g-1.3", closed=self.NOON + 3600),
-                   self.issue("g-1.9", reason="refuted: criterion 1", labels=("review",), closed=self.NOON + 7200),
+        tracker = [self.issue("g-1.1"), self.issue("g-1.2"), self.issue("g-1.3", reason="def5678: landed"),
+                   self.issue("g-1.10", status="open", labels=("refuted",), description="Refuted.\nOrigin: def5678"),
                    self.issue("c-1.1")]
         lines = self.lines(tracker)
         self.assertEqual(self.row(lines, "tool", "grok-high"), ["3", "3", "2", "1", "1", "2.00", "-", "6.00"])
