@@ -11660,13 +11660,71 @@ impl CapKernel {
                 &&& final(self).list.nodes@[placement_node(thread) as int].kind is Placement
             }),
     {
+        self.witness_place_and_start(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, 0)
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// of two free ones past those boot's tables took from the first untyped: the root retypes a leaf
+    /// into root entry 2 of its own table, a process at `base` into slot 1 of that leaf, and a thread
+    /// at `base + 10 * PAGE_SZ` into slot 2 bound to that process, then places the thread on `core` at
+    /// priority 0 through its core capability for that core and starts it, Runnable on `core`, with
+    /// its control capability in WITNESS_THREAD_SLOT.
+    #[verifier::spinoff_prover]
+    fn witness_place_and_start(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+        core: usize,
+    ) -> (ret: (bool, bool))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            core < NUM_CPUS,
+        ensures
+            ret.0,
+            ret.1,
+            ({
+                let thread = (base + 10 * PAGE_SZ) as usize;
+                let core_cap = (leaf@ + ROOT_CORE_SLOT + core) as usize;
+                &&& base + 10 * PAGE_SZ <= usize::MAX
+                &&& final(self).wf()
+                &&& final(self).cores == old(self).cores
+                &&& final(self).spaces.kernel_root == old(self).spaces.kernel_root
+                &&& witness_alive(*final(self), process)
+                &&& witness_alive(*final(self), base)
+                &&& final(self).threads.records@.contains_key(thread)
+                &&& final(self).threads.records@[thread].value().process == Some(base)
+                &&& final(self).threads.records@[thread].value().state == (ThreadState::Runnable { core })
+                &&& final(self).threads.records@[thread].value().placement == Some(Placement { core, priority: 0 })
+                &&& !final(self).threads.records@[thread].value().pending_stop
+                &&& !final(self).threads.records@[thread].value().dying
+                &&& final(self).list.is_child(core_cap, placement_node(thread))
+                &&& final(self).list.nodes@[placement_node(thread) as int].kind is Placement
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& final(self).root_live(process)
+                &&& final(self).can_control(process, WITNESS_THREAD_SLOT)
+                &&& final(self).payload_of(final(self).tables.node_of(process, WITNESS_THREAD_SLOT)).base == thread
+            }),
+    {
         hide(CapKernel::wf);
         let ghost s0 = *self;
         let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
         let ghost first = page_block_payload(bs[0]);
         let ghost itb = image_tables_bound(image@);
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
-        let ghost core_cap = (leaf@ + ROOT_CORE_SLOT) as usize;
+        let ghost core_cap = (leaf@ + ROOT_CORE_SLOT + core) as usize;
+        let cs = ROOT_CORE_SLOT + core;
         proof {
             lemma2_to64();
             lemma_tables_bound_nonneg(image@);
@@ -11686,9 +11744,9 @@ impl CapKernel {
             s0.lemma_process_cap(pn);
             assert(s0.processes.records@.contains_key(process));
             assert(!s0.processes.records@[process].value().dead);
-            assert(s0.slot_holds(process, ROOT_CORE_SLOT, core_cap, core_payload(0, MAX_PRIORITY)));
+            assert(s0.slot_holds(process, cs, core_cap, core_payload(core as int, MAX_PRIORITY)));
             assert(s0.list.nodes@[core_cap as int].depth == 1);
-            assert(s0.tables.has_slot(&s0.list, process, ROOT_CORE_SLOT));
+            assert(s0.tables.has_slot(&s0.list, process, cs));
             assert(s0.is_cap(core_cap));
             assert(s0.root_untyped(process) == u);
             assert(s0.root_table_block(process, cursor_block(first.base, itb)));
@@ -11758,9 +11816,9 @@ impl CapKernel {
             assert(s1.tables.has_slot(&s1.list, process, ROOT_UNTYPED_SLOT));
             assert(s1.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
             assert(s1.is_cap(u) && s1.payload_of(u) == first && s1.list.nodes@[u as int].depth == 1);
-            assert(s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT));
-            assert(s1.tables.node_of(process, ROOT_CORE_SLOT) == core_cap);
-            assert(s1.is_cap(core_cap) && s1.payload_of(core_cap) == core_payload(0, MAX_PRIORITY) && s1.list.nodes@[core_cap as int].depth == 1);
+            assert(s1.tables.has_slot(&s1.list, process, cs));
+            assert(s1.tables.node_of(process, cs) == core_cap);
+            assert(s1.is_cap(core_cap) && s1.payload_of(core_cap) == core_payload(core as int, MAX_PRIORITY) && s1.list.nodes@[core_cap as int].depth == 1);
             assert(index_ok(WITNESS_PROCESS_SLOT) && index_entry(WITNESS_PROCESS_SLOT) == 2);
             assert(index_ok(WITNESS_THREAD_SLOT) && index_entry(WITNESS_THREAD_SLOT) == 2);
             assert(s1.tables.has_slot(&s1.list, process, WITNESS_PROCESS_SLOT));
@@ -11808,11 +11866,11 @@ impl CapKernel {
             assert(s2.tables.has_slot(&s2.list, process, ROOT_UNTYPED_SLOT));
             assert(s2.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
             assert(s2.is_cap(u) && s2.payload_of(u) == first && s2.list.nodes@[u as int].depth == 1);
-            assert(s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT));
+            assert(s1.tables.has_slot(&s1.list, process, cs));
             assert(s1.is_cap(core_cap));
-            assert(s2.tables.has_slot(&s2.list, process, ROOT_CORE_SLOT));
-            assert(s2.tables.node_of(process, ROOT_CORE_SLOT) == core_cap);
-            assert(s2.is_cap(core_cap) && s2.payload_of(core_cap) == core_payload(0, MAX_PRIORITY) && s2.list.nodes@[core_cap as int].depth == 1);
+            assert(s2.tables.has_slot(&s2.list, process, cs));
+            assert(s2.tables.node_of(process, cs) == core_cap);
+            assert(s2.is_cap(core_cap) && s2.payload_of(core_cap) == core_payload(core as int, MAX_PRIORITY) && s2.list.nodes@[core_cap as int].depth == 1);
             assert(s1.tables.has_slot(&s1.list, process, WITNESS_PROCESS_SLOT));
             assert(s2.tables.has_slot(&s2.list, process, WITNESS_PROCESS_SLOT));
             assert(s2.tables.node_of(process, WITNESS_PROCESS_SLOT) == np);
@@ -11851,11 +11909,11 @@ impl CapKernel {
         proof {
             assert(ok3);
             assert(Self::retype_keeps(s2, s3, nt, (bt / PAGE_SZ) as int, 1, None));
-            assert(s2.tables.has_slot(&s2.list, process, ROOT_CORE_SLOT));
+            assert(s2.tables.has_slot(&s2.list, process, cs));
             assert(s2.is_cap(core_cap));
-            assert(s3.tables.has_slot(&s3.list, process, ROOT_CORE_SLOT));
-            assert(s3.tables.node_of(process, ROOT_CORE_SLOT) == core_cap);
-            assert(s3.is_cap(core_cap) && s3.payload_of(core_cap) == core_payload(0, MAX_PRIORITY) && s3.list.nodes@[core_cap as int].depth == 1);
+            assert(s3.tables.has_slot(&s3.list, process, cs));
+            assert(s3.tables.node_of(process, cs) == core_cap);
+            assert(s3.is_cap(core_cap) && s3.payload_of(core_cap) == core_payload(core as int, MAX_PRIORITY) && s3.list.nodes@[core_cap as int].depth == 1);
             assert(s2.tables.has_slot(&s2.list, process, WITNESS_THREAD_SLOT));
             assert(s3.tables.has_slot(&s3.list, process, WITNESS_THREAD_SLOT));
             assert(s3.tables.node_of(process, WITNESS_THREAD_SLOT) == nt);
@@ -11870,18 +11928,17 @@ impl CapKernel {
             assert(!s3.cap_dead(nt));
             assert(s3.can_control(process, WITNESS_THREAD_SLOT));
             assert(1usize < MAX_DEPTH) by (compute_only);
-            assert(s3.holds_core(process, ROOT_CORE_SLOT, 0));
-            assert(s3.can_place(process, WITNESS_THREAD_SLOT, ROOT_CORE_SLOT, 0));
+            assert(s3.holds_core(process, cs, 0));
+            assert(s3.can_place(process, WITNESS_THREAD_SLOT, cs, 0));
         }
 
         // Place the thread on core 0 at priority 0, then start it.
-        let placed = self.place(process, WITNESS_THREAD_SLOT, ROOT_CORE_SLOT, 0);
+        let placed = self.place(process, WITNESS_THREAD_SLOT, cs, 0);
         let ghost s4 = *self;
         proof {
             assert(placed);
-            lemma_core_of(core_object(0));
-            assert(core_of(core_object(0)) == 0);
-            assert(Self::placed(s3, s4, core_cap, bt, Placement { core: 0, priority: 0 }));
+            lemma_core_object(core as int);
+            assert(Self::placed(s3, s4, core_cap, bt, Placement { core, priority: 0 }));
             assert(s4.tables == s3.tables);
             assert(s4.processes == s3.processes);
             assert(b2 != placement_node(bt));
@@ -11901,11 +11958,181 @@ impl CapKernel {
             let s5 = *self;
             assert(started);
             assert(bt == base + 10 * PAGE_SZ);
-            assert(Self::state_written(s4, s5, bt, ThreadState::Runnable { core: 0 }));
+            assert(Self::state_written(s4, s5, bt, ThreadState::Runnable { core }));
             assert(witness_alive(s5, process));
             assert(witness_alive(s5, base));
+            assert(s5.tables == s4.tables);
+            assert(s5.list == s4.list);
+            assert(s5.processes == s4.processes);
+            assert(s5.can_control(process, WITNESS_THREAD_SLOT));
         }
         (placed, started)
+    }
+
+    /// From the state boot leaves, with a second process built at `base` and its thread at
+    /// `base + 10 * PAGE_SZ` placed on core 0 and started as witness_root_starts_placed_thread starts
+    /// it, the root, on core 0, suspends that thread through its control capability in
+    /// WITNESS_THREAD_SLOT while it is Runnable and current on no core. The suspend succeeds at once:
+    /// the thread is Inactive with no stop pending, still placed on core 0, and no core changed. The
+    /// use is a holder taking back a thread that waits for its core. design/cpu-time-as-capability/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_suspends_a_runnable_thread(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: SuspendStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret is Suspended,
+            ({
+                let thread = (base + 10 * PAGE_SZ) as usize;
+                &&& final(self).wf()
+                &&& final(self).cores@[0] == old(self).cores@[0]
+                &&& final(self).threads.records@[thread].value().state is Inactive
+                &&& !final(self).threads.records@[thread].value().pending_stop
+                &&& final(self).threads.records@[thread].value().process == Some(base)
+                &&& final(self).threads.records@[thread].value().placement == Some(Placement { core: 0, priority: 0 })
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let _ = self.witness_place_and_start(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, 0);
+        let ghost s1 = *self;
+        let ghost thread = (base + 10 * PAGE_SZ) as usize;
+        proof {
+            assert(s1.cores == s0.cores);
+            assert(s1.cores@[0].current_thread is None);
+            assert(s1.threads.records@[thread].value().state == (ThreadState::Runnable { core: 0 }));
+            assert(s1.can_suspend(process, WITNESS_THREAD_SLOT));
+            assert(!s1.stops_elsewhere(0, process, WITNESS_THREAD_SLOT));
+        }
+        let step = self.suspend(0, process, WITNESS_THREAD_SLOT);
+        proof {
+            let s2 = *self;
+            assert(step is Suspended);
+            assert(s2.threads.records@[thread].value() == ThreadRecord {
+                state: ThreadState::Inactive,
+                pending_stop: false,
+                ..s1.threads.records@[thread].value()
+            });
+            assert(s2.cores@[0] == s1.cores@[0]);
+        }
+        step
+    }
+
+    /// From the state boot leaves, with a second process built at `base` and its thread at
+    /// `base + 10 * PAGE_SZ` placed on core 1 and started, as witness_root_starts_placed_thread does on
+    /// core 0: switch_thread makes that thread current on core 1, straight from boot's idle core. The
+    /// root, on core 0, suspends it through its control capability in WITNESS_THREAD_SLOT, and the
+    /// suspend returns Again, with a stop pending on the thread and a stop IPI to core 1: only core 1
+    /// writes its current thread. Core 1's check_current, at its next kernel entry with frame
+    /// `registers` and marker `saved`, then moves the thread off: core 1 runs nothing, and the thread
+    /// is Inactive with no stop pending and that frame saved. design/one-lock-bounded-steps/,
+    /// design/cpu-time-as-capability/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_stops_a_thread_on_another_core(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+        kernel_root: usize,
+        registers: Registers,
+        saved: FrameKind,
+    ) -> (ret: (SuspendStep, CurrentStep))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret.0 is Again,
+            ret.1 is MovedOff,
+            ({
+                let thread = (base + 10 * PAGE_SZ) as usize;
+                &&& final(self).wf()
+                &&& final(self).cores@[1].current_thread is None
+                &&& final(self).threads.records@[thread].value().state is Inactive
+                &&& !final(self).threads.records@[thread].value().pending_stop
+                &&& final(self).threads.records@[thread].value().frame == saved_frame(registers, saved)
+                &&& final(self).threads.records@[thread].value().saved == saved
+                &&& final(self).threads.records@[thread].value().placement == Some(Placement { core: 1, priority: 0 })
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let _ = self.witness_place_and_start(root, process, leaf, frames, t, free, image, untyped, frame, present, Ghost(kernel_root), base, 1);
+        let thread = base + 10 * PAGE_SZ;
+        let ghost s1 = *self;
+        proof {
+            assert(s1.cores@.len() == NUM_CPUS) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s1.cores == s0.cores);
+            assert(s1.cores@[1].generation == 1);
+            assert(s1.cores@[1].current_thread is None);
+            assert(s1.spaces.kernel_root@ == kernel_root);
+            assert(s1.spaces.roots@.contains_key(base) && s1.spaces.records@[base].value().kind is Process) by {
+                reveal(CapKernel::wf);
+                assert(process_spaces_wf(&s1.spaces, &s1.processes));
+                assert(s1.processes.records@.contains_key(base));
+            }
+        }
+        // The steps are the witness's own; no lock bounds them: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        // Core 1 runs the thread.
+        self.switch_thread(1, registers, saved, Some(thread), kernel_root, Tracked(&mut steps));
+        let ghost s2 = *self;
+        proof {
+            assert(s2.cores@[1].current_thread == Some(thread));
+            assert(s2.threads.records@[thread].value().state == (ThreadState::Running { core: 1 }));
+            assert(s2.tables == s1.tables);
+            assert(s2.list == s1.list);
+            assert(s2.processes == s1.processes);
+            assert(s2.blocks == s1.blocks);
+            assert(s2.threads.records@[thread].value().placement == Some(Placement { core: 1, priority: 0 }));
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.root_live(process));
+            assert(s2.can_control(process, WITNESS_THREAD_SLOT));
+            assert(s2.can_suspend(process, WITNESS_THREAD_SLOT));
+            assert(s2.stops_elsewhere(0, process, WITNESS_THREAD_SLOT));
+        }
+        // The root, on core 0, asks for it back; core 1 is sent a stop.
+        let stopped = self.suspend(0, process, WITNESS_THREAD_SLOT);
+        let ghost s3 = *self;
+        proof {
+            assert(stopped is Again);
+            assert(s3.cores == s2.cores);
+            assert(s3.processes == s2.processes);
+            assert(s3.threads.records@[thread].value().pending_stop);
+            assert(s3.must_leave(1));
+        }
+        // Core 1 acts on the stop at its next kernel entry.
+        let moved = self.check_current(1, registers, saved, Tracked(&mut steps));
+        proof {
+            assert(moved is MovedOff);
+            assert(!s3.threads.records@[thread].value().dying);
+        }
+        (stopped, moved)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
