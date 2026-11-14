@@ -1566,6 +1566,18 @@ impl Record {
         )
     }
 
+    /// A record with another's space and frames serves every caller the other serves. A body that
+    /// hides `serves` carries it across a step that keeps both with this.
+    proof fn lemma_serves_kept(&self, other: &Record, caller: Caller)
+        requires
+            other.serves(caller),
+            self.space == other.space,
+            self.frames() == other.frames(),
+        ensures
+            self.serves(caller),
+    {
+    }
+
     spec fn addr_block(&self, addr: usize) -> int {
         (addr - self.window) as int / BLOCK_BYTES as int
     }
@@ -3891,8 +3903,10 @@ impl Record {
             },
         no_unwind
     {
-        // The kernel's invariant stays folded: the body only hands it from one call to the next.
+        // The kernel's invariant and serves stay folded: the body only hands them from one call to
+        // the next.
         hide(CapKernel::wf);
+        hide(Record::serves);
         let ghost parked = forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a);
         let ghost c0 = caller@;
         let ghost mut steps = Seq::<AcallStep>::empty();
@@ -4200,6 +4214,7 @@ impl Record {
                         lemma_scale(tk, tk + linked_k, TABLE_PAGES as int);
                         assert(acall_ok(next_steps) == acall_ok(sp));
                         assert(refused_spent(*old(self), *self, next_steps, pages as nat));
+                        self.lemma_serves_kept(&released, caller@);
                     }
                     return (None, Ghost(next_steps));
                 },
