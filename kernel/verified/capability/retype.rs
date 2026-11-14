@@ -786,6 +786,8 @@ impl CapKernel {
             ret ==> Self::frame_retyped(*old(self), *final(self), root, from, to, base),
             ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None),
     {
+        // try_type proves the block counts; this body only carries them.
+        hide(BlockTable::counts_wf);
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, 0) {
             Some(found) => found,
@@ -1373,6 +1375,8 @@ impl CapKernel {
                 &&& final(self).frames == old(self).frames
             },
     {
+        // try_type proves the block counts; this body only carries them.
+        hide(BlockTable::counts_wf);
         let ghost pre = *old(self);
         let page = base / PAGE_SZ;
         proof {

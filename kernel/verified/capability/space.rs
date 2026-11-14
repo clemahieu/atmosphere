@@ -2985,6 +2985,8 @@ impl CapKernel {
                     ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
             },
     {
+        // try_type proves the block counts; this body only carries them.
+        hide(BlockTable::counts_wf);
         let ghost pre = *old(self);
         if level == 0 || level > 3 {
             return false;
@@ -3541,6 +3543,8 @@ impl CapKernel {
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
             },
     {
+        // try_type proves the block counts; this body only carries them.
+        hide(BlockTable::counts_wf);
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, 3) {
             Some(found) => found,

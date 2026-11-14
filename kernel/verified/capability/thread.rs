@@ -2375,6 +2375,8 @@ impl CapKernel {
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
             },
     {
+        // try_type proves the block counts; this body only carries them.
+        hide(BlockTable::counts_wf);
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, THREAD_ORDER) {
             Some(found) => found,

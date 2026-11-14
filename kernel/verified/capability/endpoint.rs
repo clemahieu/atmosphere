@@ -888,6 +888,8 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::queue_retyped(*old(self), *final(self), root, from, to, base, kind),
     {
+        // try_type proves the block counts; this body only carries them.
+        hide(BlockTable::counts_wf);
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, 0) {
             Some(found) => found,
