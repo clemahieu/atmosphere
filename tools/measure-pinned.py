@@ -4,6 +4,7 @@
 """Boot dom0 under KVM with its two vCPUs pinned, and print the kernel's own timing lines.
 
 usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--counters] [--force]
+                               [--kernel-feature FEATURE ...]
                                                                          (from the workspace root)
        tools/measure-pinned.py --test                                    (this script's own tests)
 
@@ -34,6 +35,9 @@ in its state, is printed as fixed and does not refuse unless it fired: such an I
 NVMe queue's is, held to the CPUs that submit its I/O, and nothing submits I/O from a measured CPU
 while only a vCPU thread runs there. The CPU-local interrupts are printed and do not refuse: no
 affinity setting moves them, and only nohz_full at host boot would quiet the timer.
+
+--kernel-feature builds the kernel with that feature as well, once per use, as tools/run.py's does: flush_cost
+adds the flush cost lines.
 
 --counters gives the guest the host's performance counters (QEMU's pmu, off by default even for the
 host model), so the kernel's lock lines carry what counters 0 to 3 counted per acquisition, the lines
@@ -70,7 +74,7 @@ import run as guest
 
 # What tools/isolate-pinned.sh apply changed, for its undo; its fixed lines name the IRQs it could not move.
 ISOLATION_STATE = "/run/atmo-isolate-pinned"
-LINES = re.compile(r"lock (?:alone|contended) on CPU \d+|flush IPI|kernel lock:|contention test lock:")
+LINES = re.compile(r"lock (?:alone|contended) on CPU \d+|flush IPI|flush cost: CPU \d+ [^:]*|kernel lock:|contention test lock:")
 
 
 def read(path):
@@ -254,8 +258,16 @@ def timing_lines(log):
     return list(last.values())
 
 
-def build(lock_stats):
-    subprocess.run(["cargo", "build", "-q", "--release"] + (["--features", "lock_stats"] if lock_stats else []),
+def kernel_features(rest, lock_stats):
+    """The kernel's features: lock_stats with --lock-stats, then each --kernel-feature's argument."""
+    named = [rest[i + 1] for i, a in enumerate(rest) if a == "--kernel-feature" and i + 1 < len(rest)]
+    if rest and rest[-1] == "--kernel-feature":
+        sys.exit("--kernel-feature needs a feature")
+    return (["lock_stats"] if lock_stats else []) + named
+
+
+def build(features):
+    subprocess.run(["cargo", "build", "-q", "--release"] + (["--features", ",".join(features)] if features else []),
                    cwd="kernel", check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
     subprocess.run(["cargo", "build", "-q", "--release"], cwd="dom0", check=True,
                    env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
@@ -391,13 +403,14 @@ def main():
     lock_stats = "--lock-stats" in rest
     force = "--force" in rest
     counters = "--counters" in rest
+    features = kernel_features(rest, lock_stats)
     boots = next((int(a) for a in rest if a.isdigit()), 3)
     pair = choose(mode)
     out = "target/measure-pinned"
     os.makedirs(out, exist_ok=True)
-    build(lock_stats)
+    build(features)
     others = set(os.sched_getaffinity(0)) - set(siblings(pair))
-    print(f"{mode}: vCPUs on host CPUs {pair}, lock_stats {lock_stats}, counters {counters}, load {os.getloadavg()[0]:.2f}")
+    print(f"{mode}: vCPUs on host CPUs {pair}, kernel features {features or 'none'}, counters {counters}, load {os.getloadavg()[0]:.2f}")
     print(f"  measured and SMT siblings: {cpu_list(siblings(pair))}; QEMU's other threads on {cpu_list(others)}")
     for cpu in pair:
         print(f"  L3 of CPU {cpu}: {read(f'/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list')}")
@@ -499,6 +512,20 @@ class Tests(unittest.TestCase):
             "INFO flush IPI acknowledged by CPU 1 at epoch 1000: fastest 1 mean 2 cycles over 1000 rounds",
             "INFO kernel lock: 8192 holds, held mean 3 max 4, waited mean 0 max 0 cycles",
         ])
+
+    def test_timing_lines_keeps_each_flush_cost_case_apart(self):
+        log = (" INFO flush cost: CPU 1 running, interrupts open, IPI: fastest 1 mean 2 cycles over 1000 rounds\n"
+               " INFO flush cost: CPU 1 spinning, interrupts closed, polled word: fastest 3 mean 4 cycles over 1000 rounds\n")
+        self.assertEqual(timing_lines(log), [
+            "INFO flush cost: CPU 1 running, interrupts open, IPI: fastest 1 mean 2 cycles over 1000 rounds",
+            "INFO flush cost: CPU 1 spinning, interrupts closed, polled word: fastest 3 mean 4 cycles over 1000 rounds",
+        ])
+
+    def test_kernel_features_are_lock_stats_then_each_named_feature(self):
+        self.assertEqual(kernel_features(["5"], False), [])
+        self.assertEqual(kernel_features(["--lock-stats"], True), ["lock_stats"])
+        self.assertEqual(kernel_features(["--kernel-feature", "flush_cost", "5", "--kernel-feature", "x"], True),
+                         ["lock_stats", "flush_cost", "x"])
 
 
 if __name__ == "__main__":
