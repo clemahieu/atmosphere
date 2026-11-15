@@ -23,6 +23,7 @@ members = [
   "aheap",
   "aeager",
   "acall",
+  "awire",
 ]
 
 [workspace.package]
