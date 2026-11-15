@@ -1,6 +1,6 @@
 ---
 title: "An unproven claim in a verified crate is written by who vouches for it: a hardware guarantee is an assumed specification citing its manual, a system call's is one naming the kernel's proof, a language guarantee's is one quoting the toolchain's own documentation, and external_body is debt"
-date: 2026-11-13
+date: 2026-11-15
 status: active
 tags: [verified, proof, arch, trusted-base]
 one_line: "A hardware guarantee is a plain Rust function after the verus! block, with no attribute, holding only the instruction or register access, or nothing for a standing property no instruction asks for, with an assume_specification beside it in the arch module that cites the manual section it restates; a user-side system call is the same form naming the kernel-side item whose proof vouches for it; a claim only the language's rules make is the same form quoting the passage of the pinned toolchain's rust-src that states it; every external_body left in a verified crate is debt that nothing outside the proof vouches for."
@@ -43,7 +43,7 @@ The body is held narrow because a citation vouches for what the hardware does wh
 
 - The code that asks the hardware: hence the narrow body and everything above it verified.
 - The model matching the hardware: that the TLB, IOTLB and base-register models describe what the silicon holds is the stated assumption of `design/flush-without-waiting/` and `design/arch-module/`, not something a manual section proves. A translation guarantee vouches for what the walk does with the entries, not that the tables and the loaded space the model holds are the ones the core walks.
-- Which device sits at a port or an address. That is a machine fact: firmware's description or the platform's convention says it, no chip manual does, and it belongs to the machine glue, `design/machine-glue-below-the-kernel/`. A hardware guarantee's specification says nothing that depends on which device is at the address it is given, and a machine fact is never cited as a hardware guarantee.
+- Which device sits at a port or an address. That is a machine fact: firmware's description or the platform's convention says it, no chip manual does, and it belongs to the machine glue, `design/machine-glue-below-the-kernel/`. A hardware guarantee's specification says nothing that depends on which device is at the address it is given, and a machine fact is never cited as a hardware guarantee. Where unverified code hands the proof a value that rests on one, the boundary list cites it under its own class, machine, with the firmware or platform specification that states it; that list and the other guarantors it names, for what code outside the marked crates conjures or is trusted to meet, are `design/boundary-into-verified-code-counted/`.
 - The compiler and assembler emitting the instructions as written, which the project trusts through mass usage.
 - That a wait on the device ends. An assumed specification is taken to return; the citation must name the device state that ends the wait.
 
