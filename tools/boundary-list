@@ -114,7 +114,7 @@ dom0/src/main.rs	dom0::retyped_leaves_held::{closure#1}	call	acall::memory::rety
 dom0/src/main.rs	dom0::eager_source_held	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::eager_source_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::eager_source_held	call	aeager::exercise::exercise_eager	1	check	"window_clear(EAGER_WINDOW, &[])"
-dom0/src/main.rs	dom0::heap_source	call	aeager::allocator::new_allocator	1	nothing	"window_clear(HEAP_WINDOW, &[EAGER_WINDOW]) checks the heap window; the remaining caller invariants (wf, own_process, pages_wf, and ROOT_PROCESS_SLOT naming dom0's own space across retype and derive) rest on nothing and are tracked in atmo-6x9.5.32.5"
+dom0/src/main.rs	dom0::heap_source	call	aeager::allocator::new_allocator	1	check	"window_clear(HEAP_WINDOW, &[EAGER_WINDOW])"
 dom0/src/main.rs	dom0::heap_source	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::heap_source	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::main	conjure	astd::heap::keep_caller argument 0: Tracked<acall::step::Caller>	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter

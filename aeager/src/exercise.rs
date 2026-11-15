@@ -360,13 +360,19 @@ pub fn exercise_eager(
         names_own_space(old(caller)@, space),
     ensures
         final(caller)@.wf(),
+        final(caller)@.pages_wf(),
+        own_process(final(caller)@),
         seen is Some <==> Eager::new_ok(memory, pages, slots, window),
 {
     let mut source = match Eager::new(caller, space, untyped, memory, pages, slots, window) {
         None => return None,
         Some(source) => source,
     };
-    Some(exercise(&mut source, caller))
+    let seen = exercise(&mut source, caller);
+    proof {
+        source.lemma_holds_pages_wf(caller@);
+    }
+    Some(seen)
 }
 
 } // verus!

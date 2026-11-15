@@ -111,6 +111,9 @@ pub fn witness_exercise_eager(space: u64, untyped: u64, window: *mut u8, token: 
         window@.addr + WINDOW_BYTES <= usize::MAX,
     ensures
         seen is Some,
+        final(token)@.wf(),
+        final(token)@.pages_wf(),
+        own_process(final(token)@),
 {
     proof {
         assert(1int % LEAF_INDICES as int != 0) by (compute);
