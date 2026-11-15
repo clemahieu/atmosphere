@@ -5228,6 +5228,8 @@ impl CapKernel {
         &&& post.threads == self.threads
         &&& post.spaces == self.spaces
         &&& post.stale_epoch == self.stale_epoch
+        &&& post.flush_epoch == self.flush_epoch
+        &&& post.targeted == self.targeted
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.blocks.pages@ == self.blocks.pages@
@@ -5345,6 +5347,8 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).zeroing == old(self).zeroing,
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).blocks.pages@ == old(self).blocks.pages@,

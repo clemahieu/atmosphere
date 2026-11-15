@@ -322,6 +322,20 @@ pub(crate) proof fn lemma_block_page(b: usize, k: int)
     }
 }
 
+/// Page g + PAGES_PER_2M + k, for g the first page of 2M region r and k less than a region's pages, is
+/// in region r + 1, which starts at page g + PAGES_PER_2M.
+proof fn lemma_next_2m(g: int, r: int, k: int)
+    requires
+        g == r * PAGES_PER_2M,
+        0 <= k < PAGES_PER_2M,
+    ensures
+        g + PAGES_PER_2M == (r + 1) * PAGES_PER_2M,
+        (g + PAGES_PER_2M + k) / (PAGES_PER_2M as int) == r + 1,
+{
+    assert((r + 1) * PAGES_PER_2M == r * PAGES_PER_2M + PAGES_PER_2M) by (nonlinear_arith);
+    lemma_fundamental_div_mod_converse(g + PAGES_PER_2M + k, PAGES_PER_2M as int, r + 1, k);
+}
+
 /// An order-3 block aligned from b, and its first page, which an order-1 block starts at.
 proof fn lemma_aligned(b: usize)
     requires
@@ -960,6 +974,19 @@ proof fn lemma_parent_shallow(t: Tree, c: usize, x: usize)
     let k = choose|k: int| 0 <= k < t.seq@.len() && t.seq@[k] == x;
     assert(k != 0);
     assert(t.parent@.contains_key(t.seq@[k]));
+}
+
+/// A child is one deeper than its parent.
+proof fn lemma_child_depth(t: Tree, c: usize, x: usize)
+    requires
+        t.wf(),
+        t.is_child(c, x),
+    ensures
+        t.nodes@[x as int].depth == t.nodes@[c as int].depth + 1,
+{
+    let k = choose|k: int| 0 <= k < t.seq@.len() && t.seq@[k] == x;
+    assert(k != 0);
+    assert(t.d(t.seq@[k]) == t.d(t.parent@[t.seq@[k]]) + 1);
 }
 
 /// Across steps that keep every parent and bring no node to life, a node with no child after lost each
@@ -9908,6 +9935,8 @@ impl CapKernel {
             block_typed(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)),
             block_refs(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)) == 1,
             !block_dead(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)),
+            old(self).blocks.kept_but_region(final(self).blocks, Large::Two, (big / PAGE_SZ / PAGES_PER_2M) as int),
+            ret.1@.blocks.pages@ == old(self).blocks.pages@,
     {
         let ghost s0 = *self;
         let ghost mut mid = *self;
@@ -9924,6 +9953,9 @@ impl CapKernel {
             RetypeStep::Again => {
                 proof {
                     assert(Self::large_frame_zeroing(s0, *self, root, from, to, big, 9));
+                    assert(crate::capability::zero::large_level(9) == Large::Two
+                        && crate::capability::zero::level_pages(Large::Two) == PAGES_PER_2M);
+                    assert(s0.blocks.kept_but_region(self.blocks, Large::Two, (big / PAGE_SZ / PAGES_PER_2M) as int));
                 }
                 false
             },
@@ -9931,6 +9963,10 @@ impl CapKernel {
                 proof {
                     mid = s0;
                     assert(self.tables.roots == s0.tables.roots);
+                    assert(crate::capability::zero::large_level(9) == Large::Two
+                        && crate::capability::zero::level_pages(Large::Two) == PAGES_PER_2M);
+                    assert(Self::large_frame_retyped(mid, *self, root, from, to, big, 9));
+                    assert(s0.blocks.kept_but_region(self.blocks, Large::Two, (big / PAGE_SZ / PAGES_PER_2M) as int));
                 }
                 true
             },
@@ -9947,6 +9983,7 @@ impl CapKernel {
                 self.iommus == s0.iommus,
                 self.tables.roots@.contains_key(root),
                 self.root_live(root),
+                s0.blocks.kept_but_region(self.blocks, Large::Two, (big / PAGE_SZ / PAGES_PER_2M) as int),
                 done == (step is Done),
                 !(step is Refused),
                 !done ==> {
@@ -9958,6 +9995,7 @@ impl CapKernel {
                     &&& Self::large_frame_retyped(mid, *self, root, from, to, big, 9)
                     &&& mid.list == s0.list
                     &&& mid.tables == s0.tables
+                    &&& mid.blocks.pages@ == s0.blocks.pages@
                     &&& block_typed(&self.blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M))
                     &&& block_refs(&self.blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)) == 1
                     &&& !block_dead(&self.blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M))
@@ -9977,6 +10015,12 @@ impl CapKernel {
                 RetypeStep::Again => {
                     proof {
                         assert(Self::large_frame_zeroing(pre, *self, root, from, to, big, 9));
+                        assert(crate::capability::zero::large_level(9) == Large::Two
+                        && crate::capability::zero::level_pages(Large::Two) == PAGES_PER_2M);
+                        assert(pre.blocks.kept_but_region(self.blocks, Large::Two, (big / PAGE_SZ / PAGES_PER_2M) as int));
+                        let ghost r = (big / PAGE_SZ / PAGES_PER_2M) as int;
+                        assert(s0.blocks.regions_2m@.update(r, pre.blocks.regions_2m@[r]).update(r, self.blocks.regions_2m@[r])
+                            =~= s0.blocks.regions_2m@.update(r, self.blocks.regions_2m@[r]));
                         assert(witness_zero_left(*self, big / PAGE_SZ) < witness_zero_left(pre, big / PAGE_SZ));
                     }
                 },
@@ -9984,6 +10028,13 @@ impl CapKernel {
                     proof {
                         mid = pre;
                         assert(self.tables.roots == pre.tables.roots);
+                        assert(crate::capability::zero::large_level(9) == Large::Two
+                        && crate::capability::zero::level_pages(Large::Two) == PAGES_PER_2M);
+                        assert(Self::large_frame_retyped(mid, *self, root, from, to, big, 9));
+                        assert(mid.blocks.kept_but_region(self.blocks, Large::Two, (big / PAGE_SZ / PAGES_PER_2M) as int));
+                        let ghost r = (big / PAGE_SZ / PAGES_PER_2M) as int;
+                        assert(s0.blocks.regions_2m@.update(r, mid.blocks.regions_2m@[r]).update(r, self.blocks.regions_2m@[r])
+                            =~= s0.blocks.regions_2m@.update(r, self.blocks.regions_2m@[r]));
                     }
                     done = true;
                 },
@@ -10539,6 +10590,7 @@ impl CapKernel {
             final(self).mappings == old(self).mappings,
             final(self).iommus.present == old(self).iommus.present,
             final(self).cores == old(self).cores,
+            final(self).targeted == old(self).targeted,
     {
         hide(CapKernel::wf);
         let ghost pre = *old(self);
@@ -10560,6 +10612,7 @@ impl CapKernel {
                 self.mappings == pre.mappings,
                 self.iommus.present == pre.iommus.present,
                 self.cores == pre.cores,
+                self.targeted == pre.targeted,
                 forall|j: int| 0 <= j < i && #[trigger] self.iommu_present(j) ==> self.iommu_acked(j) == pre.flush_epoch,
             decreases NUM_IOMMUS - i,
         {
@@ -13110,6 +13163,1641 @@ impl CapKernel {
             lemma_large_retyped_slot(m4, s10, process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, nf, big);
         }
         (r1, r2, ok5, Ghost((s7, s8, s9)))
+    }
+
+    /// Helper for `witness_free_after_large_frame_freed`: sets up root leaf 2, path `c0 -> c1 -> c2`,
+    /// and second process `bp2` in slot 2, leaving slot 3 ready for `bf` and slot 1 empty for `big`.
+    #[verifier::spinoff_prover]
+    fn witness_two_frames_setup_space(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        big: usize,
+        jb: Ghost<int>,
+        l4: usize,
+    )
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) <= jb@,
+            jb@ + 70 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            big == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, jb@),
+            big as int % block_bytes(9) == 0,
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
+            !image_l4(image@, l4),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).wf(),
+            final(self).tables.roots@.contains_key(process),
+            final(self).root_live(process),
+            big < usize::MAX - 70 * PROCESS_BYTES,
+            big + 70 * PROCESS_BYTES <= NODE_SPACE,
+            ({
+                let bs = runs_blocks(free@, MAX_ORDER as nat);
+                let first = page_block_payload(bs[0]);
+                let u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+                let pn = (leaf@ + 1) as usize;
+                let lb = (big + 64 * PROCESS_BYTES) as usize;
+                let c0 = (lb + PROCESS_BYTES) as usize;
+                let c2 = (c0 + 2 * PROCESS_BYTES) as usize;
+                let bf = (big + 68 * PROCESS_BYTES) as usize;
+                let bp2 = (big + 69 * PROCESS_BYTES) as usize;
+                let nf_big = (lb + 1) as usize;
+                let nf_small = (lb + 3) as usize;
+                let fp_bf = (bf / PAGE_SZ) as int;
+                let r = big / PAGE_SZ / PAGES_PER_2M;
+                let path0 = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+                let path1 = SpacePath { l4, l3: 0, l2: 0, l1: 1 };
+                let a = tree_of(&final(self).table_pages, &final(self).spaces);
+                &&& final(self).slot_holds(process, ROOT_UNTYPED_SLOT, u, first)
+                &&& final(self).slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process))
+                &&& witness_empty(*final(self), process, WITNESS_LARGE_FRAME_SLOT, nf_big)
+                &&& witness_empty(*final(self), process, WITNESS_FRAME_SLOT, nf_small)
+                &&& final(self).list.nodes@[u as int].depth == 1
+                &&& final(self).list.nodes@[u as int].depth < MAX_DEPTH
+                &&& final(self).list.nodes@[lb as int].live
+                &&& final(self).list.parent@[lb] == u
+                &&& bp2 != process
+                &&& bf % PAGE_SZ == 0
+                &&& r * PAGES_PER_2M == big / PAGE_SZ
+                &&& fp_bf == (big / PAGE_SZ) as int + PAGES_PER_2M + 32
+                &&& witness_alive(*final(self), process)
+                &&& !final(self).blocks.pages@[(c2 / PAGE_SZ) as int].dead
+                &&& final(self).spaces.roots@.contains_key(process)
+                &&& final(self).spaces.records@[process].value().kind == SpaceKind::Process
+                &&& final(self).spaces.roots@.contains_key(bp2)
+                &&& final(self).spaces.records@[bp2].value().kind == SpaceKind::Process
+                &&& walk_table(a, process, path0) == Some(c2)
+                &&& walk_table(a, process, path1) == Some(c2)
+                &&& walk(a, process, path0) is None
+                &&& walk(a, process, path1) is None
+                &&& a.entry(c2, 0).is_empty()
+                &&& a.entry(c2, 1).is_empty()
+                &&& c2 % PAGE_SZ == 0
+                &&& final(self).flush_epoch == 0
+                &&& final(self).cores == old(self).cores
+                &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] old(self).cores@[c].generation == 1
+                &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] old(self).cores@[c].space is None
+                &&& forall|c: int| 0 <= c < NUM_CPUS ==> !has_loaded(#[trigger] final(self).cores@[c])
+                &&& final(self).can_retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf)
+                &&& final(self).blocks.tracks(fp_bf)
+                &&& final(self).blocks.tracks((big / PAGE_SZ) as int)
+                &&& r < final(self).blocks.num_2m()
+                &&& forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M ==> {
+                    &&& #[trigger] final(self).blocks.pages@[i].kind is Free
+                    &&& !final(self).blocks.covered(i)
+                }
+                &&& first.kind is Untyped
+                &&& first.rights == UNTYPED_RIGHTS
+                &&& block_within(big, 9, first)
+                &&& block_within(bf, 0, first)
+            }),
+    {
+        hide(CapKernel::wf);
+        hide(entries_translatable);
+        let ghost s0 = *self;
+        let ghost a0 = tree_of(&s0.table_pages, &s0.spaces);
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let ghost itb = image_tables_bound(image@);
+        let ghost cb = cursor_block(first.base, itb);
+        let ghost jr = jb@ - itb;
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let ghost pn = (leaf@ + 1) as usize;
+        let ghost d = s0.list.nodes@[pn as int].depth;
+        let ghost r = big / PAGE_SZ / PAGES_PER_2M;
+        let ghost g = (big / PAGE_SZ) as int;
+        let ghost path0 = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+        let ghost path1 = SpacePath { l4, l3: 0, l2: 0, l1: 1 };
+        let at = Position { through: None, index: 2 };
+        proof {
+            lemma2_to64();
+            lemma_tables_bound_nonneg(image@);
+            assert(0 < untyped@);
+            assert(s0.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s0.list.nodes@[u as int].depth == 1);
+            assert(s0.tables.is_cap(&s0.list, u));
+            assert(s0.tables.caps_wf(&s0.list)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(cap_wf(first));
+            assert(payload_wf(first));
+            assert(first.kind is Untyped && first.rights == UNTYPED_RIGHTS);
+            assert(UNTYPED_RIGHTS & right_bit(Right::Retype) != 0) by (compute_only);
+            assert(s0.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)));
+            s0.lemma_process_cap(pn);
+            s0.lemma_process_space(pn);
+            assert(s0.processes.records@.contains_key(process));
+            assert(!s0.processes.records@[process].value().dead);
+            assert(witness_root(s0, process, u, first));
+            assert(witness_slot(s0, process, ROOT_PROCESS_SLOT, pn, process_of(process), d));
+            assert(s0.root_untyped(process) == u);
+            lemma_pow2_pos(first.order as nat);
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((jb@ + 70) * PROCESS_BYTES <= block_bytes(first.order));
+            assert(first.base + block_bytes(first.order) <= NODE_SPACE);
+            assert(cb == first.base + itb * PROCESS_BYTES);
+            assert(big == first.base + jb@ * PROCESS_BYTES);
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(s0.root_table_block(process, cb));
+            assert(cb % PROCESS_BYTES == 0);
+            if first.order < 9 {
+                lemma_pow2_strictly_increases(first.order as nat, 9);
+                assert(false);
+            }
+            assert forall|j: int| 0 <= j < jr + 70 implies #[trigger] s0.root_table_block(process, cursor_block(cb, j)) by {
+                assert(cursor_block(first.base, itb + j) == cursor_block(cb, j));
+                assert(itb <= itb + j < untyped_tables(first));
+            }
+            assert(cursor_block(first.base, jb@) == cursor_block(cb, jr));
+            lemma_free_2m(s0, process, cb, jr, big);
+            lemma_cursor_block(cb, jr);
+            lemma_cursor_block(cb, jr + 64);
+            lemma_cursor_block(cb, jr + 65);
+            lemma_cursor_block(cb, jr + 66);
+            lemma_cursor_block(cb, jr + 67);
+            lemma_cursor_block(cb, jr + 68);
+            lemma_cursor_block(cb, jr + 69);
+            assert(big + 64 * PROCESS_BYTES == cursor_block(cb, jr + 64));
+            assert(big + 68 * PROCESS_BYTES == cursor_block(cb, jr + 68));
+            assert(big + 69 * PROCESS_BYTES == cursor_block(cb, jr + 69));
+            assert(s0.root_table_block(process, cursor_block(cb, jr + 64)));
+            assert forall|j: int| jr + 65 <= j < jr + 70 implies #[trigger] witness_block(s0, cursor_block(cb, j), first) by {
+                assert(s0.root_table_block(process, cursor_block(cb, j)));
+            }
+            assert(s0.flush_epoch == 0);
+            assert forall|c: int| 0 <= c < NUM_CPUS implies !has_loaded(#[trigger] s0.cores@[c]) by {
+                assert(s0.cores@[c].generation == 1 && s0.cores@[c].next_pcid == 1);
+            }
+        }
+        let lb = big + 64 * PROCESS_BYTES;
+        let c0 = lb + PROCESS_BYTES;
+        let ghost c1 = (c0 + PROCESS_BYTES) as usize;
+        let ghost c2 = (c1 + PROCESS_BYTES) as usize;
+        let bf = big + 68 * PROCESS_BYTES;
+        let bp2 = big + 69 * PROCESS_BYTES;
+        let ghost fp_bf = (bf / PAGE_SZ) as int;
+        let ghost fp_big = (big / PAGE_SZ) as usize;
+        let ghost nf_big = (lb + 1) as usize;
+        let ghost np2 = (lb + 2) as usize;
+        let ghost nf_small = (lb + 3) as usize;
+        proof {
+            assert(lb / PAGE_SZ == g + PAGES_PER_2M);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
+            assert(lb % PROCESS_BYTES == 0);
+            assert(c2 % PROCESS_BYTES == 0);
+            assert(bf % PROCESS_BYTES == 0);
+            assert(bp2 % PROCESS_BYTES == 0);
+            lemma_aligned(lb);
+            lemma_aligned(c2);
+            lemma_aligned(bf);
+            lemma_aligned(bp2);
+            lemma_block_page(lb, 0);
+            lemma_block_page(c0, 0);
+            lemma_block_page(c1, 0);
+            lemma_block_page(bf, 0);
+            lemma_block_page(bp2, 0);
+            assert(c0 / PAGE_SZ == g + PAGES_PER_2M + 8);
+            assert(bf / PAGE_SZ == g + PAGES_PER_2M + 32);
+            assert(bp2 / PAGE_SZ == g + PAGES_PER_2M + 40);
+            assert(lb != NO_LEAF);
+            assert(witness_block(s0, c0, first));
+            assert(witness_block(s0, c1, first));
+            assert(witness_block(s0, c2, first));
+            assert(witness_block(s0, bf, first));
+            assert(witness_block(s0, bp2, first));
+            assert(s0.destination_at(process, None) == Some(process));
+            assert(s0.tables.leaf(process, 2) == NO_LEAF);
+            assert(s0.can_retype_under(process, ROOT_UNTYPED_SLOT, lb, 1));
+            assert(s0.blocks.small_free((lb / PAGE_SZ) as int, 1)) by {
+                assert forall|k: int| 0 <= k < order_pages(1) implies #[trigger] s0.blocks.pages@[lb / PAGE_SZ + k].kind is Free by {
+                    assert(s0.blocks.pages@[lb / PAGE_SZ + k].kind is Free);
+                }
+            }
+            assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb));
+            assert(s0.blocks.tracks((process / PAGE_SZ) as int));
+            assert(witness_block(s0, lb, first));
+            assert(s0.blocks.tracks((lb / PAGE_SZ) as int));
+            lemma_next_2m(g, r as int, 0);
+            assert((r + 1) * PAGES_PER_2M == (lb / PAGE_SZ) as int);
+            assert forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M implies #[trigger] s0.blocks.tracks(i) by {}
+        }
+
+        // Step 1: Leaf in root entry 2 of the root's table.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb, Tracked(&mut steps));
+        let ghost s1 = *self;
+        let ghost a1 = tree_of(&s1.table_pages, &s1.spaces);
+        proof {
+            assert(ok1);
+            assert(Self::leaf_retyped(s0, s1, process, ROOT_UNTYPED_SLOT, at, lb));
+            assert(a1 == a0);
+            assert(s1.tables.leaf(process, 2) == lb);
+            assert(s0.tables.has_slot(&s0.list, process, ROOT_UNTYPED_SLOT));
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_UNTYPED_SLOT));
+            assert(s1.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(s1.is_cap(u) && s1.payload_of(u) == first && s1.list.nodes@[u as int].depth == 1);
+            assert(s1.processes == s0.processes);
+            assert(s1.tables.roots@.contains_key(process));
+            assert(witness_root(s1, process, u, first));
+            assert(s0.tables.has_slot(&s0.list, process, ROOT_PROCESS_SLOT));
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_PROCESS_SLOT));
+            assert(s1.tables.node_of(process, ROOT_PROCESS_SLOT) == pn);
+            assert(witness_slot(s1, process, ROOT_PROCESS_SLOT, pn, process_of(process), d));
+            assert(witness_alive(s1, process));
+            assert(index_ok(WITNESS_LARGE_FRAME_SLOT) && index_entry(WITNESS_LARGE_FRAME_SLOT) == 2);
+            assert(index_ok(WITNESS_SECOND_PROCESS_SLOT) && index_entry(WITNESS_SECOND_PROCESS_SLOT) == 2);
+            assert(index_ok(WITNESS_FRAME_SLOT) && index_entry(WITNESS_FRAME_SLOT) == 2);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf_big);
+            assert(!s1.list.nodes@[nf_big as int].live);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_SECOND_PROCESS_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_SECOND_PROCESS_SLOT) == np2);
+            assert(witness_empty(s1, process, WITNESS_SECOND_PROCESS_SLOT, np2));
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_FRAME_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_FRAME_SLOT) == nf_small);
+            assert(witness_empty(s1, process, WITNESS_FRAME_SLOT, nf_small));
+            assert(s1.list.nodes@[lb as int].live) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s1.list.parent@[lb] == u);
+            lemma_run_kept(s0, s1, cb, jr + 65, jr + 70, first, (lb / PAGE_SZ) as int, lb / PAGE_SZ + 2);
+            assert(witness_block(s1, c0, first));
+            assert(witness_block(s1, c1, first));
+            assert(witness_block(s1, c2, first));
+            assert(witness_block(s1, bf, first));
+            assert(witness_block(s1, bp2, first));
+            assert(s1.blocks.pages@[(process / PAGE_SZ) as int] == s0.blocks.pages@[(process / PAGE_SZ) as int]);
+            assert(!s1.blocks.pages@[(process / PAGE_SZ) as int].dead);
+            assert(a1.is_root(process));
+            assert(a1.entry(process, l4).is_empty());
+            assert(c0 + 3 * PROCESS_BYTES <= NODE_SPACE);
+            assert forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M implies {
+                &&& #[trigger] s1.blocks.pages@[i].kind is Free
+                &&& !s1.blocks.covered(i)
+            } by {
+                assert(s0.blocks.pages@[i].kind is Free && !s0.blocks.covered(i));
+                assert(s0.blocks.tracks(i));
+                assert(i < lb / PAGE_SZ);
+                assert(s1.blocks.pages@[i] == s0.blocks.pages@[i]);
+            }
+            assert(KERNEL_MEM_END_L4INDEX <= l4);
+            assert(s1.flush_epoch == 0);
+            assert(s1.cores == s0.cores);
+        }
+
+        // Step 2: Path tables c0 -> c1 -> c2 at l4 in process.
+        let ok2 = self.witness_path(process, ROOT_PROCESS_SLOT, process, l4, c0, Ghost(process_of(process)), Ghost(pn), Ghost(d), Ghost(u), Ghost(first));
+        let ghost s2 = *self;
+        let ghost a2 = tree_of(&s2.table_pages, &s2.spaces);
+        proof {
+            assert(ok2);
+            assert(walk_table(a2, process, path0) == Some(c2));
+            assert(walk_table(a2, process, path1) == Some(c2));
+            assert(space_mapping(a2, process) == space_mapping(a1, process));
+            assert(witness_root(s2, process, u, first));
+            assert(witness_slot(s2, process, ROOT_PROCESS_SLOT, pn, process_of(process), d));
+            assert(witness_alive(s2, process));
+            lemma_witness_empty_kept(s1, s2, process, WITNESS_SECOND_PROCESS_SLOT, np2);
+            lemma_witness_empty_kept(s1, s2, process, WITNESS_FRAME_SLOT, nf_small);
+            assert(nodes_kept(s1.list, s2.list));
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(s2.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf_big);
+            assert(!s2.list.nodes@[nf_big as int].live);
+            assert(s2.list.nodes@[lb as int].live);
+            assert(s2.list.parent@[lb] == u);
+            lemma_run_kept(s1, s2, cb, jr + 68, jr + 70, first, (c0 / PAGE_SZ) as int, c0 / PAGE_SZ + 24);
+            assert(witness_block(s2, bf, first));
+            assert(witness_block(s2, bp2, first));
+            assert forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M implies {
+                &&& #[trigger] s2.blocks.pages@[i].kind is Free
+                &&& !s2.blocks.covered(i)
+            } by {
+                assert(s1.blocks.tracks(i));
+                assert(i < c0 / PAGE_SZ);
+                assert(s2.blocks.pages@[i] == s1.blocks.pages@[i]);
+                assert(s1.blocks.pages@[i].kind is Free && !s1.blocks.covered(i));
+            }
+            assert(s2.flush_epoch == 0);
+            assert(s2.cores == s0.cores);
+            assert(s2.can_retype_under(process, ROOT_UNTYPED_SLOT, bp2, 3));
+            assert(s2.blocks.small_free((bp2 / PAGE_SZ) as int, 3)) by {
+                assert forall|k: int| 0 <= k < order_pages(3) implies #[trigger] s2.blocks.pages@[bp2 / PAGE_SZ + k].kind is Free by {
+                    assert(s2.blocks.pages@[bp2 / PAGE_SZ + k].kind is Free);
+                }
+            }
+            assert(s2.can_retype_block(process, ROOT_UNTYPED_SLOT, WITNESS_SECOND_PROCESS_SLOT, bp2, PROCESS_ORDER));
+            assert(s2.blocks.pages@[bp2 / PAGE_SZ + 0].kind is Free);
+            s2.lemma_free_not_table(bp2, bp2 / PAGE_SZ);
+        }
+
+        // Step 3: Second process `bp2` in slot 2 (`WITNESS_SECOND_PROCESS_SLOT`).
+        let tracked mut steps = Steps::fresh();
+        let ok3 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_SECOND_PROCESS_SLOT, bp2, Tracked(&mut steps));
+        let ghost s3 = *self;
+        let ghost a3 = tree_of(&s3.table_pages, &s3.spaces);
+        proof {
+            assert(ok3);
+            assert(Self::retype_keeps(s2, s3, np2, (bp2 / PAGE_SZ) as int, 3, None));
+            assert(Self::process_retype_done(s2, s3, process, ROOT_UNTYPED_SLOT, WITNESS_SECOND_PROCESS_SLOT, bp2));
+            assert(s2.tables.leaf(process, 2) == lb);
+            assert(s3.tables.leaf(process, 2) == lb);
+            assert(s3.tables.leaf(bp2, 2) == NO_LEAF);
+            assert(bp2 != process);
+            assert(s3.processes.records@.contains_key(bp2) && !s3.processes.records@[bp2].value().dead);
+            assert(s3.spaces.roots@.contains_key(bp2));
+            assert(s3.spaces.records@[bp2].value().kind == SpaceKind::Process);
+            lemma_new_root_steps_kept(a2, a3, bp2);
+            lemma_steps_kept(a2, a3);
+            assert(walk_table(a3, process, path0) == Some(c2));
+            assert(walk_table(a3, process, path1) == Some(c2));
+            assert(space_mapping(a3, process) == space_mapping(a2, process));
+            assert(witness_root(s3, process, u, first));
+            assert(s3.tables.has_slot(&s3.list, process, ROOT_PROCESS_SLOT));
+            assert(s3.tables.node_of(process, ROOT_PROCESS_SLOT) == pn);
+            assert(s3.is_cap(pn) && s3.payload_of(pn) == process_of(process) && s3.list.nodes@[pn as int].depth == d);
+            assert(witness_slot(s3, process, ROOT_PROCESS_SLOT, pn, process_of(process), d));
+            assert(s3.tables.has_slot(&s3.list, process, WITNESS_FRAME_SLOT));
+            assert(s3.tables.node_of(process, WITNESS_FRAME_SLOT) == nf_small);
+            assert(!s3.list.nodes@[nf_small as int].live);
+            assert(witness_empty(s3, process, WITNESS_FRAME_SLOT, nf_small));
+            assert(s3.tables.has_slot(&s3.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(s3.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf_big);
+            assert(!s3.list.nodes@[nf_big as int].live);
+            assert(s3.list.nodes@[lb as int].live);
+            assert(s3.list.parent@[lb] == u);
+            lemma_run_kept(s2, s3, cb, jr + 68, jr + 69, first, (bp2 / PAGE_SZ) as int, bp2 / PAGE_SZ + 8);
+            assert(witness_block(s3, bf, first));
+            assert forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M implies {
+                &&& #[trigger] s3.blocks.pages@[i].kind is Free
+                &&& !s3.blocks.covered(i)
+            } by {
+                assert(s2.blocks.tracks(i));
+                assert(i < bp2 / PAGE_SZ);
+                assert(s3.blocks.pages@[i] == s2.blocks.pages@[i]);
+                assert(s2.blocks.pages@[i].kind is Free && !s2.blocks.covered(i));
+            }
+            assert(s3.flush_epoch == 0);
+            assert(s3.cores == s0.cores);
+            assert(s3.can_retype_under(process, ROOT_UNTYPED_SLOT, bf, 0));
+            assert(s3.blocks.small_free(fp_bf, 0)) by {
+                assert(!s3.blocks.covered(fp_bf));
+                assert forall|k: int| 0 <= k < order_pages(0) implies #[trigger] s3.blocks.pages@[fp_bf + k].kind is Free by {
+                    assert(k == 0);
+                }
+            }
+            assert(s3.can_retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf));
+            assert(s3.tables.has_slot(&s3.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(s3.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf_big);
+            assert(witness_empty(s3, process, WITNESS_LARGE_FRAME_SLOT, nf_big));
+            assert(s3.list.nodes@[u as int].depth == 1 && s3.list.nodes@[u as int].depth < MAX_DEPTH);
+            assert(witness_alive(s3, process));
+            s3.lemma_process_space(pn);
+            assert(s3.spaces.roots@.contains_key(process) && s3.spaces.records@[process].value().kind == SpaceKind::Process);
+            assert(r < s3.blocks.num_2m());
+            s3.lemma_walk_table_facts(process, path0);
+            s3.lemma_walk_table_facts(process, path1);
+            assert(!s3.blocks.pages@[(c2 / PAGE_SZ) as int].dead);
+            assert(space_mapping(a3, process) == space_mapping(a0, process));
+            if space_mapping(a0, process).contains_key(path0) {
+                assert(crate::capability::boot_map::image_path(image@, path0));
+                let (ia, ix) = choose|ia: int, ix: int| 0 <= ia < image@.len() && #[trigger] in_virt_at(image@, ia, ix) && page_path(ix) == path0;
+                assert(in_virt_at(image@, ia, ix) && page_path(ix).l4 == l4);
+                assert(image_l4(image@, l4));
+            }
+            if space_mapping(a0, process).contains_key(path1) {
+                assert(crate::capability::boot_map::image_path(image@, path1));
+                let (ia, ix) = choose|ia: int, ix: int| 0 <= ia < image@.len() && #[trigger] in_virt_at(image@, ia, ix) && page_path(ix) == path1;
+                assert(in_virt_at(image@, ia, ix) && page_path(ix).l4 == l4);
+                assert(image_l4(image@, l4));
+            }
+            assert(!space_mapping(a3, process).contains_key(path0));
+            assert(!space_mapping(a3, process).contains_key(path1));
+            assert(walk(a3, process, path0) is None);
+            assert(walk(a3, process, path1) is None);
+            s3.lemma_level1_empty(process, path0);
+            s3.lemma_level1_empty(process, path1);
+            assert(block_within(big, 9, first));
+            assert(block_within(bf, 0, first));
+            lemma_fundamental_div_mod(g, PAGES_PER_2M as int);
+            assert(r * PAGES_PER_2M == big / PAGE_SZ);
+            assert(fp_bf == big / PAGE_SZ + PAGES_PER_2M + 32);
+        }
+    }
+
+    /// Helper for `witness_free_after_large_frame_freed`: retypes `bf` in slot 3.
+    #[verifier::spinoff_prover]
+    fn witness_two_frames_retype_small(
+        &mut self,
+        process: usize,
+        big: usize,
+        first: Ghost<Payload>,
+        u: Ghost<usize>,
+        pn: Ghost<usize>,
+    )
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(process),
+            old(self).root_live(process),
+            big as int % block_bytes(9) == 0,
+            big < usize::MAX - 70 * PROCESS_BYTES,
+            big + 70 * PROCESS_BYTES <= NODE_SPACE,
+            ({
+                let lb = (big + 64 * PROCESS_BYTES) as usize;
+                let bf = (big + 68 * PROCESS_BYTES) as usize;
+                let nf_big = (lb + 1) as usize;
+                let nf_small = (lb + 3) as usize;
+                let fp_bf = (bf / PAGE_SZ) as int;
+                let r = big / PAGE_SZ / PAGES_PER_2M;
+                &&& old(self).slot_holds(process, ROOT_UNTYPED_SLOT, u@, first@)
+                &&& old(self).slot_holds(process, ROOT_PROCESS_SLOT, pn@, process_of(process))
+                &&& witness_empty(*old(self), process, WITNESS_LARGE_FRAME_SLOT, nf_big)
+                &&& witness_empty(*old(self), process, WITNESS_FRAME_SLOT, nf_small)
+                &&& old(self).list.nodes@[u@ as int].depth == 1
+                &&& old(self).list.nodes@[u@ as int].depth < MAX_DEPTH
+                &&& old(self).list.nodes@[lb as int].live
+                &&& old(self).list.parent@[lb] == u@
+                &&& bf % PAGE_SZ == 0
+                &&& r * PAGES_PER_2M == big / PAGE_SZ
+                &&& fp_bf == (big / PAGE_SZ) as int + PAGES_PER_2M + 32
+                &&& witness_alive(*old(self), process)
+                &&& old(self).can_retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf)
+                &&& old(self).blocks.tracks(fp_bf)
+                &&& old(self).blocks.tracks((big / PAGE_SZ) as int)
+                &&& r < old(self).blocks.num_2m()
+                &&& forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M ==> {
+                    &&& #[trigger] old(self).blocks.pages@[i].kind is Free
+                    &&& !old(self).blocks.covered(i)
+                }
+                &&& first@.kind is Untyped
+                &&& first@.rights == UNTYPED_RIGHTS
+                &&& block_within(big, 9, first@)
+                &&& block_within(bf, 0, first@)
+            }),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).wf(),
+            final(self).processes == old(self).processes,
+            final(self).tables.roots@.contains_key(process),
+            final(self).root_live(process),
+            Self::same_tree(*old(self), *final(self)),
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
+            final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
+            ({
+                let lb = (big + 64 * PROCESS_BYTES) as usize;
+                let c0 = (lb + PROCESS_BYTES) as usize;
+                let c2 = (c0 + 2 * PROCESS_BYTES) as usize;
+                let bf = (big + 68 * PROCESS_BYTES) as usize;
+                let nf_big = (lb + 1) as usize;
+                let nf_small = (lb + 3) as usize;
+                let fp_bf = (bf / PAGE_SZ) as int;
+                let r = big / PAGE_SZ / PAGES_PER_2M;
+                &&& final(self).slot_holds(process, ROOT_UNTYPED_SLOT, u@, first@)
+                &&& final(self).slot_holds(process, ROOT_PROCESS_SLOT, pn@, process_of(process))
+                &&& witness_empty(*final(self), process, WITNESS_LARGE_FRAME_SLOT, nf_big)
+                &&& final(self).slot_holds(process, WITNESS_FRAME_SLOT, nf_small, crate::capability::retype::frame_of(bf))
+                &&& final(self).list.nodes@[u@ as int].depth == 1
+                &&& final(self).list.nodes@[u@ as int].depth < MAX_DEPTH
+                &&& final(self).list.nodes@[nf_small as int].depth == 2
+                &&& final(self).list.is_child(u@, nf_small)
+                &&& final(self).list.nodes@[lb as int].live
+                &&& final(self).list.parent@[lb] == u@
+                &&& forall|y: usize| !#[trigger] final(self).list.is_child(nf_small, y)
+                &&& witness_alive(*final(self), process)
+                &&& final(self).blocks.pages@[(c2 / PAGE_SZ) as int] == old(self).blocks.pages@[(c2 / PAGE_SZ) as int]
+                &&& final(self).blocks.tracks(fp_bf)
+                &&& final(self).blocks.tracks((big / PAGE_SZ) as int)
+                &&& block_ref(&final(self).blocks, fp_bf as usize) == BlockRef::Small(fp_bf as usize)
+                &&& block_refs(&final(self).blocks, BlockRef::Small(fp_bf as usize)) == 1
+                &&& !block_dead(&final(self).blocks, BlockRef::Small(fp_bf as usize))
+                &&& final(self).blocks.pages@[fp_bf].kind is Base
+                &&& final(self).blocks.pages@[fp_bf].object is Frame
+                &&& final(self).can_retype_large(process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big, 9)
+                &&& final(self).blocks.large_free(Large::Two, r as int)
+                &&& r < final(self).blocks.num_2m()
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s3 = *self;
+        let lb = big + 64 * PROCESS_BYTES;
+        let ghost c2 = (lb + 3 * PROCESS_BYTES) as usize;
+        let bf = big + 68 * PROCESS_BYTES;
+        let ghost fp_bf = (bf / PAGE_SZ) as int;
+        let ghost r = big / PAGE_SZ / PAGES_PER_2M;
+        let ghost nf_big = (lb + 1) as usize;
+        let ghost nf_small = (lb + 3) as usize;
+        let ghost first = first@;
+        let ghost u = u@;
+        let ghost pn = pn@;
+        proof {
+            assert(UNTYPED_RIGHTS & right_bit(Right::Retype) != 0) by (compute_only);
+        }
+
+        let tracked mut steps = Steps::fresh();
+        let ok4 = self.retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf, Tracked(&mut steps));
+        let ghost s4 = *self;
+        let ghost cap_small = crate::capability::retype::frame_of(bf);
+        proof {
+            assert(ok4);
+            assert(Self::frame_retyped(s3, s4, process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf));
+            assert(Self::retype_keeps(s3, s4, nf_small, fp_bf, 0, None));
+            assert(s4.slot_holds(process, WITNESS_FRAME_SLOT, nf_small, cap_small));
+            assert(s4.list.nodes@[nf_small as int].depth == 2);
+            lemma_slot_kept_two(s3, s4, process, ROOT_UNTYPED_SLOT, nf_small, nf_small);
+            lemma_slot_kept_two(s3, s4, process, ROOT_PROCESS_SLOT, nf_small, nf_small);
+            Self::lemma_caps_frame(s3, s4, nf_small, nf_small, u);
+            Self::lemma_caps_frame(s3, s4, nf_small, nf_small, pn);
+            assert(s3.is_cap(u));
+            assert(s4.is_cap(u) && s4.payload_of(u) == first);
+            assert(s4.is_cap(pn) && s4.payload_of(pn) == process_of(process));
+            assert(s4.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s4.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)));
+            assert(s4.tables.has_slot(&s4.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(s4.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf_big);
+            assert(!s4.list.nodes@[nf_big as int].live);
+            assert(witness_empty(s4, process, WITNESS_LARGE_FRAME_SLOT, nf_big));
+            assert(s4.list.nodes@[u as int].depth == 1);
+            assert(s4.list.nodes@[u as int].depth < MAX_DEPTH);
+            assert(s4.list.nodes@[lb as int].live);
+            assert(s4.list.parent@[lb] == u);
+            assert(s4.processes == s3.processes);
+            assert(witness_alive(s4, process));
+            assert(s4.tables.roots@.contains_key(process));
+            assert(s4.root_live(process));
+            assert(s4.list.wf() && s3.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_added_children(s3.list, s4.list, nf_small, u);
+            assert forall|y: usize| !#[trigger] s4.list.is_child(nf_small, y) by {
+                if s4.list.is_child(nf_small, y) {
+                    assert(y != nf_small);
+                    assert(s3.list.is_child(nf_small, y));
+                    assert(!s3.list.nodes@[nf_small as int].live);
+                    lemma_listed_live(s3.list, nf_small);
+                }
+            }
+            lemma_next_2m((big / PAGE_SZ) as int, r as int, 32);
+            let ghost c0 = (lb + PROCESS_BYTES) as usize;
+            assert(c2 == (c0 + 2 * PROCESS_BYTES) as usize);
+            assert(c2 / PAGE_SZ == big / PAGE_SZ + 67 * 8);
+            assert(c2 / PAGE_SZ != fp_bf);
+            assert(s3.blocks.tracks((c2 / PAGE_SZ) as int)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s4.blocks.pages@[(c2 / PAGE_SZ) as int] == s3.blocks.pages@[(c2 / PAGE_SZ) as int]);
+            assert(s4.blocks.tracks(fp_bf) && s4.blocks.tracks((big / PAGE_SZ) as int));
+            assert(fp_bf as usize == bf / PAGE_SZ);
+            assert(block_ref(&s4.blocks, fp_bf as usize) == BlockRef::Small(fp_bf as usize));
+            assert(block_refs(&s4.blocks, BlockRef::Small(fp_bf as usize)) == 1);
+            assert(!block_dead(&s4.blocks, BlockRef::Small(fp_bf as usize)));
+            assert(s4.blocks.pages@[fp_bf].kind is Base);
+            assert(s4.blocks.pages@[fp_bf].object is Frame) by {
+                reveal(CapKernel::frame_retyped_fields);
+            }
+            assert(s4.list.is_child(u, nf_small));
+            assert forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M implies {
+                &&& #[trigger] s4.blocks.pages@[i].kind is Free
+                &&& !s4.blocks.covered(i)
+            } by {
+                assert(s3.blocks.tracks(i));
+                assert(i != fp_bf);
+                assert(s4.blocks.pages@[i] == s3.blocks.pages@[i]);
+                assert(s3.blocks.pages@[i].kind is Free && !s3.blocks.covered(i));
+            }
+            assert(s4.blocks.large_free(Large::Two, r as int));
+            assert(s4.blocks.regions_2m@ == s3.blocks.regions_2m@);
+            assert(r < s4.blocks.num_2m());
+            assert(block_within(big, 9, first));
+            assert(s4.can_retype_under(process, ROOT_UNTYPED_SLOT, big, 9));
+            assert(s4.can_retype_large(process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big, 9));
+            assert(s4.flush_epoch == s3.flush_epoch);
+            assert(s4.cores == s3.cores);
+        }
+    }
+
+    /// Helper for `witness_free_after_large_frame_freed`: retypes `big` in slot 1.
+    #[verifier::spinoff_prover]
+    fn witness_two_frames_retype_large(
+        &mut self,
+        process: usize,
+        big: usize,
+        l4: usize,
+        first: Ghost<Payload>,
+        u: Ghost<usize>,
+        pn: Ghost<usize>,
+    )
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(process),
+            old(self).root_live(process),
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
+            big as int % block_bytes(9) == 0,
+            big < usize::MAX - 70 * PROCESS_BYTES,
+            big + 70 * PROCESS_BYTES <= NODE_SPACE,
+            ({
+                let lb = (big + 64 * PROCESS_BYTES) as usize;
+                let c0 = (lb + PROCESS_BYTES) as usize;
+                let c2 = (c0 + 2 * PROCESS_BYTES) as usize;
+                let bf = (big + 68 * PROCESS_BYTES) as usize;
+                let bp2 = (big + 69 * PROCESS_BYTES) as usize;
+                let nf_big = (lb + 1) as usize;
+                let nf_small = (lb + 3) as usize;
+                let fp_bf = (bf / PAGE_SZ) as int;
+                let r = big / PAGE_SZ / PAGES_PER_2M;
+                let path0 = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+                let path1 = SpacePath { l4, l3: 0, l2: 0, l1: 1 };
+                let a = tree_of(&old(self).table_pages, &old(self).spaces);
+                &&& old(self).slot_holds(process, ROOT_UNTYPED_SLOT, u@, first@)
+                &&& old(self).slot_holds(process, ROOT_PROCESS_SLOT, pn@, process_of(process))
+                &&& witness_empty(*old(self), process, WITNESS_LARGE_FRAME_SLOT, nf_big)
+                &&& old(self).slot_holds(process, WITNESS_FRAME_SLOT, nf_small, crate::capability::retype::frame_of(bf))
+                &&& old(self).list.nodes@[u@ as int].depth == 1
+                &&& old(self).list.nodes@[u@ as int].depth < MAX_DEPTH
+                &&& old(self).list.nodes@[nf_small as int].depth == 2
+                &&& old(self).list.is_child(u@, nf_small)
+                &&& r * PAGES_PER_2M == big / PAGE_SZ
+                &&& old(self).list.nodes@[lb as int].live
+                &&& old(self).list.parent@[lb] == u@
+                &&& forall|y: usize| !#[trigger] old(self).list.is_child(nf_small, y)
+                &&& bp2 != process
+                &&& bf % PAGE_SZ == 0
+                &&& witness_alive(*old(self), process)
+                &&& !old(self).blocks.pages@[(c2 / PAGE_SZ) as int].dead
+                &&& old(self).spaces.roots@.contains_key(process)
+                &&& old(self).spaces.records@[process].value().kind == SpaceKind::Process
+                &&& old(self).spaces.roots@.contains_key(bp2)
+                &&& old(self).spaces.records@[bp2].value().kind == SpaceKind::Process
+                &&& walk_table(a, process, path0) == Some(c2)
+                &&& walk_table(a, process, path1) == Some(c2)
+                &&& walk(a, process, path0) is None
+                &&& walk(a, process, path1) is None
+                &&& a.entry(c2, 0).is_empty()
+                &&& a.entry(c2, 1).is_empty()
+                &&& c2 % PAGE_SZ == 0
+                &&& old(self).flush_epoch == 0
+                &&& old(self).can_retype_large(process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big, 9)
+                &&& old(self).blocks.tracks(fp_bf)
+                &&& old(self).blocks.tracks((big / PAGE_SZ) as int)
+                &&& block_ref(&old(self).blocks, fp_bf as usize) == BlockRef::Small(fp_bf as usize)
+                &&& block_refs(&old(self).blocks, BlockRef::Small(fp_bf as usize)) == 1
+                &&& !block_dead(&old(self).blocks, BlockRef::Small(fp_bf as usize))
+                &&& old(self).blocks.pages@[fp_bf].kind is Base
+                &&& old(self).blocks.pages@[fp_bf].object is Frame
+                &&& r < old(self).blocks.num_2m()
+            }),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).wf(),
+            final(self).processes == old(self).processes,
+            final(self).tables.roots@.contains_key(process),
+            final(self).root_live(process),
+            Self::same_tree(*old(self), *final(self)),
+            final(self).flush_epoch == 0,
+            final(self).cores == old(self).cores,
+            ({
+                let lb = (big + 64 * PROCESS_BYTES) as usize;
+                let c0 = (lb + PROCESS_BYTES) as usize;
+                let c2 = (c0 + 2 * PROCESS_BYTES) as usize;
+                let bf = (big + 68 * PROCESS_BYTES) as usize;
+                let bp2 = (big + 69 * PROCESS_BYTES) as usize;
+                let nf_big = (lb + 1) as usize;
+                let nf_small = (lb + 3) as usize;
+                let fp_bf = (bf / PAGE_SZ) as int;
+                let fp_big = (big / PAGE_SZ) as usize;
+                let r = big / PAGE_SZ / PAGES_PER_2M;
+                let path0 = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+                let path1 = SpacePath { l4, l3: 0, l2: 0, l1: 1 };
+                let a = tree_of(&final(self).table_pages, &final(self).spaces);
+                &&& final(self).slot_holds(process, ROOT_UNTYPED_SLOT, u@, first@)
+                &&& final(self).slot_holds(process, ROOT_PROCESS_SLOT, pn@, process_of(process))
+                &&& final(self).slot_holds(process, WITNESS_LARGE_FRAME_SLOT, nf_big, large_frame_of(big, 9))
+                &&& final(self).slot_holds(process, WITNESS_FRAME_SLOT, nf_small, crate::capability::retype::frame_of(bf))
+                &&& final(self).list.nodes@[nf_big as int].depth == 2
+                &&& final(self).list.nodes@[nf_small as int].depth == 2
+                &&& final(self).list.nodes@[lb as int].live
+                &&& final(self).list.parent@[lb] == u@
+                &&& forall|y: usize| !#[trigger] final(self).list.is_child(nf_big, y)
+                &&& forall|y: usize| !#[trigger] final(self).list.is_child(nf_small, y)
+                &&& witness_alive(*final(self), process)
+                &&& !final(self).blocks.pages@[(c2 / PAGE_SZ) as int].dead
+                &&& final(self).spaces.roots@.contains_key(process)
+                &&& final(self).spaces.records@[process].value().kind == SpaceKind::Process
+                &&& final(self).spaces.roots@.contains_key(bp2)
+                &&& final(self).spaces.records@[bp2].value().kind == SpaceKind::Process
+                &&& walk_table(a, process, path0) == Some(c2)
+                &&& walk_table(a, process, path1) == Some(c2)
+                &&& walk(a, process, path0) is None
+                &&& walk(a, process, path1) is None
+                &&& a.entry(c2, 0).is_empty()
+                &&& a.entry(c2, 1).is_empty()
+                &&& final(self).blocks.tracks(fp_bf)
+                &&& final(self).blocks.tracks(fp_big as int)
+                &&& block_ref(&final(self).blocks, fp_bf as usize) == BlockRef::Small(fp_bf as usize)
+                &&& block_refs(&final(self).blocks, BlockRef::Small(fp_bf as usize)) == 1
+                &&& !block_dead(&final(self).blocks, BlockRef::Small(fp_bf as usize))
+                &&& final(self).blocks.pages@[fp_bf].kind is Base
+                &&& final(self).blocks.pages@[fp_bf].object is Frame
+                &&& block_ref(&final(self).blocks, fp_big) == BlockRef::Two(r)
+                &&& block_typed(&final(self).blocks, BlockRef::Two(r))
+                &&& block_refs(&final(self).blocks, BlockRef::Two(r)) == 1
+                &&& !block_dead(&final(self).blocks, BlockRef::Two(r))
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s4 = *self;
+        let ghost a4 = tree_of(&s4.table_pages, &s4.spaces);
+        let lb = big + 64 * PROCESS_BYTES;
+        let ghost c2 = (lb + 3 * PROCESS_BYTES) as usize;
+        let bf = big + 68 * PROCESS_BYTES;
+        let ghost bp2 = (big + 69 * PROCESS_BYTES) as usize;
+        let ghost fp_bf = (bf / PAGE_SZ) as int;
+        let ghost fp_big = (big / PAGE_SZ) as usize;
+        let ghost r = big / PAGE_SZ / PAGES_PER_2M;
+        let ghost nf_big = (lb + 1) as usize;
+        let ghost nf_small = (lb + 3) as usize;
+        let ghost path0 = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+        let ghost path1 = SpacePath { l4, l3: 0, l2: 0, l1: 1 };
+        let ghost first = first@;
+        let ghost u = u@;
+        let ghost pn = pn@;
+        let ghost cap_small = crate::capability::retype::frame_of(bf);
+        let ghost cap_big = large_frame_of(big, 9);
+        let ghost br_big = BlockRef::Two(r);
+        let ghost br_small = BlockRef::Small(fp_bf as usize);
+
+        let (ok5, m2) = self.witness_retype_2m(process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big);
+        let ghost s5 = *self;
+        let ghost a5 = tree_of(&s5.table_pages, &s5.spaces);
+        proof {
+            let m2 = m2@;
+            assert(ok5 is Done);
+            assert(a5 == a4);
+            assert(Self::same_tree(s4, s5));
+            assert(Self::large_frame_retyped(m2, s5, process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big, 9));
+            assert(m2.wf());
+            assert(m2.list == s4.list);
+            assert(nf_small != u);
+            assert(m2.tables.has_slot(&m2.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(m2.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf_big);
+            lemma_large_retyped_slot(m2, s5, process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, nf_big, big);
+            assert(s5.slot_holds(process, WITNESS_LARGE_FRAME_SLOT, nf_big, cap_big));
+            assert(s5.list.nodes@[nf_big as int].depth == 2);
+            lemma_slot_kept_two(m2, s5, process, ROOT_UNTYPED_SLOT, nf_big, nf_big);
+            lemma_slot_kept_two(m2, s5, process, ROOT_PROCESS_SLOT, nf_big, nf_big);
+            lemma_slot_kept_two(m2, s5, process, WITNESS_FRAME_SLOT, nf_big, nf_big);
+            Self::lemma_caps_frame(m2, s5, nf_big, nf_big, u);
+            Self::lemma_caps_frame(m2, s5, nf_big, nf_big, pn);
+            Self::lemma_caps_frame(m2, s5, nf_big, nf_big, nf_small);
+            assert(s5.is_cap(u) && s5.payload_of(u) == first);
+            assert(s5.is_cap(pn) && s5.payload_of(pn) == process_of(process));
+            assert(s5.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s5.slot_holds(process, ROOT_PROCESS_SLOT, pn, process_of(process)));
+            assert(s5.slot_holds(process, WITNESS_FRAME_SLOT, nf_small, cap_small));
+            assert(s5.list.nodes@[lb as int].live);
+            assert(s5.list.parent@[lb] == u);
+            assert(s5.tables.roots@.contains_key(process));
+            assert(s5.root_live(process));
+            assert(s5.processes == s4.processes);
+            s5.lemma_process_space(pn);
+            assert(s5.spaces.records@[process].value().kind == SpaceKind::Process);
+            s5.lemma_process_spaces_wf();
+            assert(s5.spaces.roots@.contains_key(bp2));
+            assert(s5.spaces.records@[bp2].value().kind == SpaceKind::Process);
+            lemma2_to64();
+            assert(block_bytes(9) == PAGES_PER_2M * PAGE_SZ);
+            assert(bf / PAGE_SZ == big / PAGE_SZ + 68 * 8);
+            assert(fp_bf == (big / PAGE_SZ) as int + PAGES_PER_2M + 32);
+            lemma_next_2m((big / PAGE_SZ) as int, r as int, 32);
+            assert(((fp_bf as usize) / PAGES_PER_2M) as int == (r as int) + 1);
+            assert(((fp_bf as usize) / PAGES_PER_2M) as int != r as int);
+            assert(s4.blocks.kept_but_region(s5.blocks, Large::Two, r as int));
+            assert(s5.blocks.pages@ == s4.blocks.pages@);
+            assert(s5.blocks.regions_1g@ == s4.blocks.regions_1g@);
+            assert(s5.blocks.regions_2m@[((fp_bf as usize) / PAGES_PER_2M) as int]
+                == s4.blocks.regions_2m@[((fp_bf as usize) / PAGES_PER_2M) as int]);
+            assert(block_ref(&s5.blocks, fp_big) == br_big);
+            assert(block_typed(&s5.blocks, br_big));
+            assert(block_refs(&s5.blocks, br_big) == 1);
+            assert(!block_dead(&s5.blocks, br_big));
+            assert(block_ref(&s5.blocks, fp_bf as usize) == br_small);
+            assert(block_refs(&s5.blocks, br_small) == 1 && !block_dead(&s5.blocks, br_small));
+            assert(s5.blocks.pages@[fp_bf].kind is Base && s5.blocks.pages@[fp_bf].object is Frame);
+            assert(s5.list.wf() && m2.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(!m2.list.nodes@[nf_big as int].live);
+            lemma_added_children(m2.list, s5.list, nf_big, u);
+            assert forall|y: usize| !#[trigger] s5.list.is_child(nf_big, y) by {
+                if s5.list.is_child(nf_big, y) {
+                    assert(y == nf_big);
+                    assert(s5.list.parent@[nf_big] == u);
+                }
+            }
+            assert forall|y: usize| !#[trigger] s5.list.is_child(nf_small, y) by {
+                if s5.list.is_child(nf_small, y) {
+                    assert(y != nf_big);
+                    assert(m2.list.is_child(nf_small, y));
+                }
+            }
+            // The large retype says nothing of another node's depth, so the small frame's is read
+            // from its parent's, the untyped both capabilities are children of.
+            assert(s5.list.is_child(u, nf_big));
+            lemma_child_depth(s5.list, u, nf_big);
+            assert(s5.list.nodes@[u as int].depth == 1);
+            lemma_listed_live(m2.list, nf_small);
+            assert(s5.list.nodes@[nf_small as int].live);
+            lemma_child_kept(m2.list, s5.list, u, nf_small);
+            lemma_child_depth(s5.list, u, nf_small);
+            assert(s5.list.nodes@[nf_small as int].depth == 2);
+            assert(s5.flush_epoch == 0);
+            assert(s5.cores == s4.cores);
+            assert(witness_alive(s5, process));
+            s5.lemma_walk_table_facts(process, path0);
+            assert(walk_table(a5, process, path0) == Some(c2));
+            assert(walk_table(a5, process, path1) == Some(c2));
+            assert(walk(a5, process, path0) is None);
+            assert(walk(a5, process, path1) is None);
+            assert(a5.entry(c2, 0).is_empty());
+            assert(a5.entry(c2, 1).is_empty());
+            assert(!s5.blocks.pages@[(c2 / PAGE_SZ) as int].dead);
+            assert(s5.blocks.tracks(fp_bf) && s5.blocks.tracks(fp_big as int));
+        }
+    }
+
+    /// Helper for `witness_free_after_large_frame_freed`: maps `bf` and `big`, loads `process` on
+    /// core 0 and `bp2` on core 1, then unmaps `bf` (epoch 1) and `big` (epoch 2).
+    #[verifier::spinoff_prover]
+    fn witness_two_frames_map_and_unmap(
+        &mut self,
+        process: usize,
+        l4: usize,
+        big: usize,
+        first: Ghost<Payload>,
+        u: Ghost<usize>,
+        pn: Ghost<usize>,
+    )
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(process),
+            old(self).root_live(process),
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
+            big as int % block_bytes(9) == 0,
+            big < usize::MAX - 70 * PROCESS_BYTES,
+            big + 70 * PROCESS_BYTES <= NODE_SPACE,
+            ({
+                let lb = (big + 64 * PROCESS_BYTES) as usize;
+                let c0 = (lb + PROCESS_BYTES) as usize;
+                let c2 = (c0 + 2 * PROCESS_BYTES) as usize;
+                let bf = (big + 68 * PROCESS_BYTES) as usize;
+                let bp2 = (big + 69 * PROCESS_BYTES) as usize;
+                let nf_big = (lb + 1) as usize;
+                let nf_small = (lb + 3) as usize;
+                let fp_bf = (bf / PAGE_SZ) as int;
+                let fp_big = (big / PAGE_SZ) as usize;
+                let r = big / PAGE_SZ / PAGES_PER_2M;
+                let path0 = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+                let path1 = SpacePath { l4, l3: 0, l2: 0, l1: 1 };
+                let a = tree_of(&old(self).table_pages, &old(self).spaces);
+                &&& bp2 <= NODE_SPACE
+                &&& bf % PAGE_SZ == 0
+                &&& old(self).slot_holds(process, ROOT_UNTYPED_SLOT, u@, first@)
+                &&& old(self).slot_holds(process, ROOT_PROCESS_SLOT, pn@, process_of(process))
+                &&& old(self).slot_holds(process, WITNESS_LARGE_FRAME_SLOT, nf_big, large_frame_of(big, 9))
+                &&& old(self).slot_holds(process, WITNESS_FRAME_SLOT, nf_small, crate::capability::retype::frame_of(bf))
+                &&& old(self).list.nodes@[nf_big as int].depth == 2
+                &&& old(self).list.nodes@[nf_small as int].depth == 2
+                &&& old(self).list.nodes@[lb as int].live
+                &&& old(self).list.parent@[lb] == u@
+                &&& forall|y: usize| !#[trigger] old(self).list.is_child(nf_big, y)
+                &&& forall|y: usize| !#[trigger] old(self).list.is_child(nf_small, y)
+                &&& bp2 != process
+                &&& witness_alive(*old(self), process)
+                &&& !old(self).blocks.pages@[(c2 / PAGE_SZ) as int].dead
+                &&& old(self).spaces.roots@.contains_key(process)
+                &&& old(self).spaces.records@[process].value().kind == SpaceKind::Process
+                &&& old(self).spaces.roots@.contains_key(bp2)
+                &&& old(self).spaces.records@[bp2].value().kind == SpaceKind::Process
+                &&& walk_table(a, process, path0) == Some(c2)
+                &&& walk_table(a, process, path1) == Some(c2)
+                &&& walk(a, process, path0) is None
+                &&& walk(a, process, path1) is None
+                &&& a.entry(c2, 0).is_empty()
+                &&& a.entry(c2, 1).is_empty()
+                &&& c2 % PAGE_SZ == 0
+                &&& old(self).flush_epoch == 0
+                &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] old(self).cores@[c].generation == 1
+                &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] old(self).cores@[c].space is None
+                &&& forall|c: int| 0 <= c < NUM_CPUS ==> !has_loaded(#[trigger] old(self).cores@[c])
+                &&& old(self).blocks.tracks(fp_bf)
+                &&& old(self).blocks.tracks(fp_big as int)
+                &&& block_ref(&old(self).blocks, fp_bf as usize) == BlockRef::Small(fp_bf as usize)
+                &&& block_refs(&old(self).blocks, BlockRef::Small(fp_bf as usize)) == 1
+                &&& !block_dead(&old(self).blocks, BlockRef::Small(fp_bf as usize))
+                &&& old(self).blocks.pages@[fp_bf].kind is Base
+                &&& old(self).blocks.pages@[fp_bf].object is Frame
+                &&& block_ref(&old(self).blocks, fp_big) == BlockRef::Two(r)
+                &&& block_typed(&old(self).blocks, BlockRef::Two(r))
+                &&& block_refs(&old(self).blocks, BlockRef::Two(r)) == 1
+                &&& !block_dead(&old(self).blocks, BlockRef::Two(r))
+            }),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).wf(),
+            final(self).tables == old(self).tables,
+            final(self).processes == old(self).processes,
+            final(self).root_live(process),
+            final(self).tables.roots@.contains_key(process),
+            ({
+                let lb = (big + 64 * PROCESS_BYTES) as usize;
+                let bf = (big + 68 * PROCESS_BYTES) as usize;
+                let nf_big = (lb + 1) as usize;
+                let nf_small = (lb + 3) as usize;
+                let fp_bf = (bf / PAGE_SZ) as int;
+                let fp_big = (big / PAGE_SZ) as usize;
+                let r = big / PAGE_SZ / PAGES_PER_2M;
+                &&& final(self).slot_holds(process, ROOT_UNTYPED_SLOT, u@, first@)
+                &&& final(self).slot_holds(process, WITNESS_LARGE_FRAME_SLOT, nf_big, large_frame_of(big, 9))
+                &&& final(self).slot_holds(process, WITNESS_FRAME_SLOT, nf_small, crate::capability::retype::frame_of(bf))
+                &&& final(self).list.nodes@[lb as int].live
+                &&& final(self).list.parent@[lb] == u@
+                &&& forall|y: usize| !#[trigger] final(self).list.is_child(nf_big, y)
+                &&& forall|y: usize| !#[trigger] final(self).list.is_child(nf_small, y)
+                &&& final(self).blocks.tracks(fp_bf)
+                &&& block_ref(&final(self).blocks, fp_bf as usize) == BlockRef::Small(fp_bf as usize)
+                &&& block_refs(&final(self).blocks, BlockRef::Small(fp_bf as usize)) == 1
+                &&& !block_dead(&final(self).blocks, BlockRef::Small(fp_bf as usize))
+                &&& final(self).blocks.pages@[fp_bf].kind is Base
+                &&& final(self).blocks.pages@[fp_bf].object is Frame
+                &&& block_ref(&final(self).blocks, fp_big) == BlockRef::Two(r)
+                &&& block_typed(&final(self).blocks, BlockRef::Two(r))
+                &&& block_refs(&final(self).blocks, BlockRef::Two(r)) == 1
+                &&& !block_dead(&final(self).blocks, BlockRef::Two(r))
+                &&& final(self).flush_epoch == 2
+                &&& final(self).stale_epoch.two@[r as int] == 2
+                &&& final(self).stale_epoch.pages@[fp_bf] == 1
+                &&& final(self).targeted@[0] == 2
+                &&& final(self).targeted@[1] == 0
+                &&& has_loaded(final(self).cores@[0])
+                &&& has_loaded(final(self).cores@[1])
+                &&& final(self).acked(0) == 0
+                &&& final(self).acked(1) == 0
+                &&& forall|c: int| 2 <= c < NUM_CPUS ==> !has_loaded(#[trigger] final(self).cores@[c])
+            }),
+    {
+        hide(CapKernel::wf);
+        hide(entries_translatable);
+        let ghost s5 = *self;
+        let ghost a5 = tree_of(&s5.table_pages, &s5.spaces);
+        let lb = (big + 64 * PROCESS_BYTES) as usize;
+        let ghost c2 = (lb + 3 * PROCESS_BYTES) as usize;
+        let bf = (big + 68 * PROCESS_BYTES) as usize;
+        let bp2 = (big + 69 * PROCESS_BYTES) as usize;
+        let ghost fp_bf = (bf / PAGE_SZ) as int;
+        let ghost fp_big = (big / PAGE_SZ) as usize;
+        let ghost r = big / PAGE_SZ / PAGES_PER_2M;
+        let ghost nf_big = (lb + 1) as usize;
+        let ghost nf_small = (lb + 3) as usize;
+        let ghost cap_small = crate::capability::retype::frame_of(bf);
+        let ghost cap_big = large_frame_of(big, 9);
+        let ghost br_small = BlockRef::Small(fp_bf as usize);
+        let ghost br_big = BlockRef::Two(r);
+        let ghost path0 = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+        let ghost path1 = SpacePath { l4, l3: 0, l2: 0, l1: 1 };
+        let ghost m0 = mapping_node(c2, 0);
+        let ghost m1 = mapping_node(c2, 1);
+
+        proof {
+            assert(PROCESS_RIGHTS & 128 != 0) by (compute_only);
+            assert(right_bit(Right::Control) == 128) by (compute_only);
+            assert(FRAME_RIGHTS & right_bit(Right::Read) != 0) by (compute_only);
+            lemma2_to64();
+            assert(block_bytes(0) == PAGE_SZ);
+            s5.lemma_walk_table_facts(process, path0);
+            s5.lemma_process_space(pn@);
+            assert(writes_space(process_of(process)));
+            assert(!s5.cap_dead(pn@));
+            assert(crate::capability::map::frame_of(cap_small, 0) == fp_bf as usize);
+            assert(s5.can_map(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path0, WITNESS_FRAME_SLOT, 0));
+            assert((0int + 1) / NODES_PER_PAGE as int == 0 && (0int + 1) % NODES_PER_PAGE as int == 1) by (compute_only);
+            assert((1int + 1) / NODES_PER_PAGE as int == 0 && (1int + 1) % NODES_PER_PAGE as int == 2) by (compute_only);
+            assert(m0 == c2 + 1 && m1 == c2 + 2);
+            assert(block_typed(&s5.blocks, br_small));
+            assert(br_small != br_big);
+            assert(s5.blocks.tracks(fp_big as int));
+            assert(!s5.loaded(1, process)) by {
+                s5.lemma_loaded_a_space(1);
+            }
+        }
+
+        // Map `bf` at path0 `(l4, 0, 0, 0)`.
+        let ok6 = self.map(process, ROOT_PROCESS_SLOT, l4, 0, 0, 0, WITNESS_FRAME_SLOT, 0);
+        let ghost s6 = *self;
+        let ghost a6 = tree_of(&s6.table_pages, &s6.spaces);
+        proof {
+            assert(ok6);
+            assert(Self::map_done(s5, s6, process, ROOT_PROCESS_SLOT, path0, WITNESS_FRAME_SLOT, 0));
+            assert(s6.mappings@.contains_key(m0));
+            assert(s6.mappings@[m0] == (MappingRecord { table: c2, entry: 0, frame: fp_bf as usize, large: false }));
+            assert(block_ref(&s5.blocks, fp_bf as usize) == br_small);
+            assert(blocks_refs_changed(&s5.blocks, &s6.blocks, br_small, 2, false));
+            assert(s6.blocks.tracks(fp_bf) && s6.blocks.tracks(fp_big as int));
+            assert(block_ref(&s6.blocks, fp_bf as usize) == br_small);
+            assert(block_typed(&s6.blocks, br_small));
+            assert(block_refs(&s6.blocks, br_small) == 2);
+            assert(!block_dead(&s6.blocks, br_small));
+            assert(s6.blocks.pages@[fp_bf].kind is Base && s6.blocks.pages@[fp_bf].object is Frame);
+            assert(block_ref(&s6.blocks, fp_big) == br_big);
+            assert(block_typed(&s6.blocks, br_big));
+            assert(block_refs(&s6.blocks, br_big) == 1);
+            assert(!block_dead(&s6.blocks, br_big));
+            assert(walk_table(a6, process, path0) == Some(c2));
+            assert(walk_table(a6, process, path1) == Some(c2));
+            assert(s6.list.wf() && s5.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(m0 != nf_small && m0 != nf_big && m0 != u@ && m0 != pn@ && m0 != lb);
+            lemma_added_children(s5.list, s6.list, m0, nf_small);
+            assert forall|y: usize| #[trigger] s6.list.is_child(nf_small, y) implies y == m0 by {
+                if y != m0 {
+                    assert(s5.list.is_child(nf_small, y));
+                }
+            }
+            assert forall|y: usize| !#[trigger] s6.list.is_child(nf_big, y) by {
+                if s6.list.is_child(nf_big, y) {
+                    assert(y != m0);
+                    assert(s5.list.is_child(nf_big, y));
+                }
+            }
+            assert(m0 % PAGE_SZ != 0);
+            lemma_slot_kept_two(s5, s6, process, WITNESS_LARGE_FRAME_SLOT, m0, m0);
+            lemma_slot_kept_two(s5, s6, process, WITNESS_FRAME_SLOT, m0, m0);
+            lemma_slot_kept_two(s5, s6, process, ROOT_UNTYPED_SLOT, m0, m0);
+            lemma_slot_kept_two(s5, s6, process, ROOT_PROCESS_SLOT, m0, m0);
+            Self::lemma_caps_frame(s5, s6, m0, m0, nf_big);
+            Self::lemma_caps_frame(s5, s6, m0, m0, nf_small);
+            Self::lemma_caps_frame(s5, s6, m0, m0, u@);
+            Self::lemma_caps_frame(s5, s6, m0, m0, pn@);
+            assert(s6.is_cap(nf_big) && s6.payload_of(nf_big) == cap_big);
+            assert(s6.is_cap(nf_small) && s6.payload_of(nf_small) == cap_small);
+            assert(s6.is_cap(u@) && s6.payload_of(u@) == first@);
+            assert(s6.is_cap(pn@) && s6.payload_of(pn@) == process_of(process));
+            assert(s6.list.nodes@[lb as int].live);
+            assert(s6.list.parent@[lb] == u@);
+            assert(s6.root_live(process));
+            assert(s6.tables.roots@.contains_key(process));
+            s6.lemma_process_space(pn@);
+            assert(s6.spaces.roots@.contains_key(bp2));
+            assert(s6.spaces.records@[bp2].value().kind == SpaceKind::Process);
+            assert(s6.flush_epoch == 0);
+            assert(s6.cores == s5.cores);
+            assert(path1 != path0);
+            assert(!space_mapping(a6, process).contains_key(path1)) by {
+                s5.lemma_walk_table_facts(process, path1);
+            }
+            s6.lemma_walk_table_facts(process, path1);
+            assert(walk(a6, process, path1) is None);
+            s6.lemma_level1_empty(process, path1);
+            assert(block_bytes(9) == PAGES_PER_2M * PAGE_SZ);
+            assert(crate::capability::map::frame_of(cap_big, 0) == fp_big);
+            assert(s6.can_map(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path1, WITNESS_LARGE_FRAME_SLOT, 0));
+        }
+
+        // Map page 0 of `big` at path1 `(l4, 0, 0, 1)`.
+        let ok7 = self.map(process, ROOT_PROCESS_SLOT, l4, 0, 0, 1, WITNESS_LARGE_FRAME_SLOT, 0);
+        let ghost s7 = *self;
+        let ghost a7 = tree_of(&s7.table_pages, &s7.spaces);
+        proof {
+            assert(ok7);
+            assert(Self::map_done(s6, s7, process, ROOT_PROCESS_SLOT, path1, WITNESS_LARGE_FRAME_SLOT, 0));
+            assert(s7.mappings@.contains_key(m0) && s7.mappings@.contains_key(m1));
+            assert(s7.mappings@[m0] == (MappingRecord { table: c2, entry: 0, frame: fp_bf as usize, large: false }));
+            assert(s7.mappings@[m1] == (MappingRecord { table: c2, entry: 1, frame: fp_big, large: false }));
+            assert(block_ref(&s6.blocks, fp_big) == br_big);
+            assert(blocks_refs_changed(&s6.blocks, &s7.blocks, br_big, 2, false));
+            assert(s7.blocks.tracks(fp_bf) && s7.blocks.tracks(fp_big as int));
+            assert(block_ref(&s7.blocks, fp_big) == br_big);
+            assert(block_typed(&s7.blocks, br_big));
+            assert(block_refs(&s7.blocks, br_big) == 2);
+            assert(!block_dead(&s7.blocks, br_big));
+            assert(block_ref(&s7.blocks, fp_bf as usize) == br_small);
+            assert(block_typed(&s7.blocks, br_small));
+            assert(block_refs(&s7.blocks, br_small) == 2);
+            assert(!block_dead(&s7.blocks, br_small));
+            assert(s7.blocks.pages@[fp_bf].kind is Base && s7.blocks.pages@[fp_bf].object is Frame);
+            assert(walk_table(a7, process, path0) == Some(c2));
+            assert(walk_table(a7, process, path1) == Some(c2));
+            assert(space_mapping(a7, process).contains_key(path0));
+            assert(space_mapping(a7, process).contains_key(path1));
+            assert(walk(a7, process, path0) is Some && walk(a7, process, path1) is Some);
+            assert(s7.list.wf() && s6.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(m1 != m0 && m1 != nf_small && m1 != nf_big && m1 != u@ && m1 != pn@ && m1 != lb);
+            lemma_added_children(s6.list, s7.list, m1, nf_big);
+            assert forall|y: usize| #[trigger] s7.list.is_child(nf_big, y) implies y == m1 by {
+                if y != m1 {
+                    assert(s6.list.is_child(nf_big, y));
+                }
+            }
+            assert forall|y: usize| #[trigger] s7.list.is_child(nf_small, y) implies y == m0 by {
+                if y != m1 {
+                    assert(s6.list.is_child(nf_small, y));
+                }
+            }
+            assert(m1 % PAGE_SZ != 0);
+            lemma_slot_kept_two(s6, s7, process, WITNESS_LARGE_FRAME_SLOT, m1, m1);
+            lemma_slot_kept_two(s6, s7, process, WITNESS_FRAME_SLOT, m1, m1);
+            lemma_slot_kept_two(s6, s7, process, ROOT_UNTYPED_SLOT, m1, m1);
+            lemma_slot_kept_two(s6, s7, process, ROOT_PROCESS_SLOT, m1, m1);
+            Self::lemma_caps_frame(s6, s7, m1, m1, nf_big);
+            Self::lemma_caps_frame(s6, s7, m1, m1, nf_small);
+            Self::lemma_caps_frame(s6, s7, m1, m1, u@);
+            Self::lemma_caps_frame(s6, s7, m1, m1, pn@);
+            assert(s7.is_cap(nf_big) && s7.payload_of(nf_big) == cap_big);
+            assert(s7.is_cap(nf_small) && s7.payload_of(nf_small) == cap_small);
+            assert(s7.is_cap(u@) && s7.payload_of(u@) == first@);
+            assert(s7.is_cap(pn@) && s7.payload_of(pn@) == process_of(process));
+            assert(s7.list.nodes@[lb as int].live);
+            assert(s7.list.parent@[lb] == u@);
+            assert(s7.root_live(process));
+            assert(s7.tables.roots@.contains_key(process));
+            assert(s7.flush_epoch == 0);
+            assert(s7.cores == s5.cores);
+            assert(s7.spaces.roots@.contains_key(process) && s7.spaces.records@[process].value().kind == SpaceKind::Process);
+            assert(s7.spaces.roots@.contains_key(bp2) && s7.spaces.records@[bp2].value().kind == SpaceKind::Process);
+            assert(!s7.loaded(1, process)) by {
+                s7.lemma_loaded_a_space(1);
+            }
+        }
+
+        // Core 0 loads `process`; Core 1 loads `bp2` (so core 1 does not load `process`).
+        let tracked mut steps = Steps::fresh();
+        self.load_space(0, process, Tracked(&mut steps));
+        let ghost s8 = *self;
+        proof {
+            s8.lemma_loaded_a_space(0);
+            assert(has_loaded(s8.cores@[0]));
+            assert(s8.cores@[1] == s7.cores@[1]);
+            assert(!s8.loaded(1, process));
+            assert(s8.loaded(0, process));
+            assert(s8.spaces.roots@.contains_key(bp2) && s8.spaces.records@[bp2].value().kind == SpaceKind::Process);
+            assert(s8.flush_epoch == 0);
+            assert(s8.blocks == s7.blocks && s8.mappings == s7.mappings && s8.tables == s7.tables && s8.list == s7.list
+                && s8.processes == s7.processes && s8.stale_epoch == s7.stale_epoch && s8.targeted == s7.targeted
+                && s8.table_pages == s7.table_pages && s8.spaces.records == s7.spaces.records && s8.spaces.roots == s7.spaces.roots);
+        }
+        let tracked mut steps = Steps::fresh();
+        self.load_space(1, bp2, Tracked(&mut steps));
+        let ghost s9 = *self;
+        let ghost a9 = tree_of(&s9.table_pages, &s9.spaces);
+        proof {
+            s9.lemma_loaded_a_space(1);
+            assert(has_loaded(s9.cores@[1]));
+            assert(s9.loaded(1, bp2));
+            assert(s9.loaded(0, process));
+            assert(!s9.loaded(1, process));
+            assert(forall|d: int| 2 <= d < NUM_CPUS ==> !has_loaded(#[trigger] s9.cores@[d]));
+            assert(s9.flush_epoch == 0);
+            assert(s9.tlb_wf() && s9.targets_wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s9.acked(0) == 0 && s9.acked(1) == 0);
+            assert(s9.targeted@[0] == 0 && s9.targeted@[1] == 0);
+            assert(s9.blocks == s8.blocks && s9.mappings == s8.mappings && s9.tables == s8.tables && s9.list == s8.list
+                && s9.processes == s8.processes && s9.stale_epoch == s8.stale_epoch && s9.targeted == s8.targeted
+                && s9.table_pages == s8.table_pages && s9.spaces.records == s8.spaces.records && s9.spaces.roots == s8.spaces.roots);
+            assert(a9 == a7);
+            assert(s9.mappings@[m0] == (MappingRecord { table: c2, entry: 0, frame: fp_bf as usize, large: false }));
+            assert(s9.mappings@[m1] == (MappingRecord { table: c2, entry: 1, frame: fp_big, large: false }));
+            assert(walk_table(a9, process, path0) == Some(c2));
+            assert(walk_table(a9, process, path1) == Some(c2));
+            s9.lemma_walk_table_facts(process, path0);
+            assert(ends_at(a9, process, path0, c2, 0));
+            s9.lemma_ends_in_space(process, path0, c2, 0);
+            assert(a9.record(c2).space == Some(process));
+            assert(s9.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path0));
+        }
+
+        // Unmap `bf` at path0 (epoch 1).
+        let tracked mut steps = Steps::fresh();
+        let ok_unmap0 = self.unmap(process, ROOT_PROCESS_SLOT, l4, 0, 0, 0, Tracked(&mut steps));
+        let ghost s10 = *self;
+        let ghost a10 = tree_of(&s10.table_pages, &s10.spaces);
+        proof {
+            assert(ok_unmap0 is Some);
+            assert(Self::unmap_done(s9, s10, process, ROOT_PROCESS_SLOT, path0));
+            assert(Self::entry_unmapped(s9, s10, process, ROOT_PROCESS_SLOT, path0));
+            assert(Self::mapping_unlinked(s9, s10, m0));
+            assert(Self::mapping_stale_noted(s9, s10, m0));
+            assert(s9.mappings@[m0].table == c2);
+            assert(a9.record(c2).space == Some(process));
+            lemma_map_pages(fp_bf as usize, false);
+            assert(record_pages(s9.mappings@[m0]).contains(fp_bf as usize));
+            assert(s10.flush_epoch == 1);
+            assert(s10.stale_epoch.pages@[fp_bf] == 1);
+            assert(s10.targeted@[0] == 1);
+            assert(s10.targeted@[1] == 0);
+            assert(s10.cores == s9.cores);
+            assert(s9.mappings@[m0].frame == fp_bf as usize);
+            assert(block_ref(&s9.blocks, fp_bf as usize) == br_small);
+            assert(blocks_refs_changed(&s9.blocks, &s10.blocks, br_small, 1, false));
+            assert(s10.blocks.tracks(fp_bf) && s10.blocks.tracks(fp_big as int));
+            assert(block_ref(&s10.blocks, fp_bf as usize) == br_small);
+            assert(block_typed(&s10.blocks, br_small));
+            assert(block_refs(&s10.blocks, br_small) == 1);
+            assert(!block_dead(&s10.blocks, br_small));
+            assert(s10.blocks.pages@[fp_bf].kind is Base && s10.blocks.pages@[fp_bf].object is Frame);
+            assert(block_ref(&s10.blocks, fp_big) == br_big);
+            assert(block_typed(&s10.blocks, br_big));
+            assert(block_refs(&s10.blocks, br_big) == 2);
+            assert(!block_dead(&s10.blocks, br_big));
+            assert(!s10.mappings@.contains_key(m0));
+            assert(s10.mappings@.contains_key(m1));
+            assert(s10.mappings@[m1] == s9.mappings@[m1]);
+            assert(walk_table(a10, process, path1) == Some(c2));
+            s10.lemma_walk_table_facts(process, path1);
+            assert(ends_at(a10, process, path1, c2, 1));
+            s10.lemma_ends_in_space(process, path1, c2, 1);
+            assert(a10.record(c2).space == Some(process));
+            // The unmap says nothing of another entry, so the second mapping's is read from its record.
+            assert(mapping_wf(&s10.list, &s10.tables, a10, &s10.blocks, s10.holders@, s10.mappings@, m1)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(a10.is_page(c2) && a10.record(c2).level == 1);
+            assert(a10.entry(c2, 1).perm.present);
+            assert(frame_entry(a10, c2, 1) is Some);
+            assert(walk(a10, process, path1) is Some);
+            assert(space_mapping(a10, process).contains_key(path1));
+            assert(s10.list.wf() && s9.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s10.tables == s9.tables);
+            assert(s10.processes == s9.processes);
+            assert(!s10.list.nodes@[m0 as int].live);
+            assert(m0 != lb);
+            assert(s10.root_live(process));
+            assert(s10.tables.roots@.contains_key(process));
+            assert(s10.list.nodes@[lb as int].live && s10.list.parent@[lb] == u@);
+            lemma_slot_kept_two(s9, s10, process, WITNESS_LARGE_FRAME_SLOT, m0, m0);
+            lemma_slot_kept_two(s9, s10, process, WITNESS_FRAME_SLOT, m0, m0);
+            lemma_slot_kept_two(s9, s10, process, ROOT_UNTYPED_SLOT, m0, m0);
+            lemma_slot_kept_two(s9, s10, process, ROOT_PROCESS_SLOT, m0, m0);
+            Self::lemma_caps_frame(s9, s10, m0, m0, nf_big);
+            Self::lemma_caps_frame(s9, s10, m0, m0, nf_small);
+            Self::lemma_caps_frame(s9, s10, m0, m0, u@);
+            Self::lemma_caps_frame(s9, s10, m0, m0, pn@);
+            assert(s10.loaded(0, process) && !s10.loaded(1, process));
+            assert(s10.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path1));
+            lemma_children_back(s9.list, s10.list, nf_small);
+            assert forall|y: usize| !#[trigger] s10.list.is_child(nf_small, y) by {
+                if s10.list.is_child(nf_small, y) {
+                    lemma_listed_live(s10.list, y);
+                    assert(y != m0);
+                    assert(s9.list.is_child(nf_small, y));
+                }
+            }
+            lemma_children_back(s9.list, s10.list, nf_big);
+            assert forall|y: usize| #[trigger] s10.list.is_child(nf_big, y) implies y == m1 by {
+                if y != m1 {
+                    assert(s9.list.is_child(nf_big, y));
+                }
+            }
+        }
+
+        // Unmap page 0 of `big` at path1 (epoch 2). `bf` keeps epoch 1.
+        let tracked mut steps = Steps::fresh();
+        let ok_unmap1 = self.unmap(process, ROOT_PROCESS_SLOT, l4, 0, 0, 1, Tracked(&mut steps));
+        let ghost s11 = *self;
+        proof {
+            assert(ok_unmap1 is Some);
+            assert(Self::unmap_done(s10, s11, process, ROOT_PROCESS_SLOT, path1));
+            assert(Self::entry_unmapped(s10, s11, process, ROOT_PROCESS_SLOT, path1));
+            assert(Self::mapping_unlinked(s10, s11, m1));
+            assert(Self::mapping_stale_noted(s10, s11, m1));
+            assert(s10.mappings@[m1].table == c2);
+            assert(a10.record(c2).space == Some(process));
+            lemma_map_pages(fp_big, false);
+            assert(record_pages(s10.mappings@[m1]).contains(fp_big));
+            assert(fp_bf != fp_big);
+            assert(!record_pages(s10.mappings@[m1]).contains(fp_bf as usize));
+            assert(s10.blocks.tracks(fp_bf));
+            assert(fp_big / PAGES_PER_2M == r);
+            assert(s11.flush_epoch == 2);
+            assert(s11.stale_epoch.written(2, fp_big));
+            assert(s11.stale_epoch.two@[r as int] == 2);
+            assert(s11.stale_epoch.pages@[fp_bf] == 1);
+            assert(s11.targeted@[0] == 2);
+            assert(s11.targeted@[1] == 0);
+            assert(s11.cores == s10.cores);
+            assert(has_loaded(s11.cores@[0]));
+            assert(has_loaded(s11.cores@[1]));
+            assert(s11.acked(0) == 0);
+            assert(s11.acked(1) == 0);
+            assert(forall|c: int| 2 <= c < NUM_CPUS ==> !has_loaded(#[trigger] s11.cores@[c]));
+            assert(s10.mappings@[m1].frame == fp_big);
+            assert(block_ref(&s10.blocks, fp_big) == br_big);
+            assert(blocks_refs_changed(&s10.blocks, &s11.blocks, br_big, 1, false));
+            assert(s11.blocks.tracks(fp_bf) && s11.blocks.tracks(fp_big as int));
+            assert(block_ref(&s11.blocks, fp_big) == br_big);
+            assert(block_typed(&s11.blocks, br_big));
+            assert(block_refs(&s11.blocks, br_big) == 1);
+            assert(!block_dead(&s11.blocks, br_big));
+            assert(block_ref(&s11.blocks, fp_bf as usize) == br_small);
+            assert(block_typed(&s11.blocks, br_small));
+            assert(block_refs(&s11.blocks, br_small) == 1);
+            assert(!block_dead(&s11.blocks, br_small));
+            assert(s11.blocks.pages@[fp_bf].kind is Base && s11.blocks.pages@[fp_bf].object is Frame);
+            assert(s11.tables == s10.tables);
+            assert(s11.processes == s10.processes);
+            assert(!s11.list.nodes@[m1 as int].live);
+            assert(m1 != lb);
+            assert(s11.root_live(process));
+            assert(s11.tables.roots@.contains_key(process));
+            assert(s11.list.nodes@[lb as int].live && s11.list.parent@[lb] == u@);
+            lemma_slot_kept_two(s10, s11, process, WITNESS_LARGE_FRAME_SLOT, m1, m1);
+            lemma_slot_kept_two(s10, s11, process, WITNESS_FRAME_SLOT, m1, m1);
+            lemma_slot_kept_two(s10, s11, process, ROOT_UNTYPED_SLOT, m1, m1);
+            Self::lemma_caps_frame(s10, s11, m1, m1, nf_big);
+            Self::lemma_caps_frame(s10, s11, m1, m1, nf_small);
+            Self::lemma_caps_frame(s10, s11, m1, m1, u@);
+            assert(s11.slot_holds(process, WITNESS_LARGE_FRAME_SLOT, nf_big, cap_big));
+            assert(s11.slot_holds(process, WITNESS_FRAME_SLOT, nf_small, cap_small));
+            assert(s11.slot_holds(process, ROOT_UNTYPED_SLOT, u@, first@));
+            assert(!s11.mappings@.contains_key(m1));
+            assert(s11.list.wf() && s10.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_children_back(s10.list, s11.list, nf_big);
+            assert forall|y: usize| !#[trigger] s11.list.is_child(nf_big, y) by {
+                if s11.list.is_child(nf_big, y) {
+                    lemma_listed_live(s11.list, y);
+                    assert(y != m1);
+                    assert(s10.list.is_child(nf_big, y));
+                }
+            }
+            lemma_children_back(s10.list, s11.list, nf_small);
+            assert forall|y: usize| !#[trigger] s11.list.is_child(nf_small, y) by {
+                if s11.list.is_child(nf_small, y) {
+                    lemma_listed_live(s11.list, y);
+                    assert(s10.list.is_child(nf_small, y));
+                }
+            }
+            assert(s11.wf() && s11.blocks.tracks(fp_bf));
+        }
+    }
+
+    /// From the state boot leaves, reach a 2M large-frame free followed by a 4K frame free where core 1
+    /// has loaded another space (`bp2`) at epoch 0 (`acked(1) == 0`) below the 4K frame's stale epoch
+    /// (`1`) and does not owe a flush (`!owes(1)`): carrying `flush_epoch`, `targeted` and `owes`
+    /// across `large_frame_freed` lets `reclaim_frame` succeed without waiting on core 1. See
+    /// design/flush-without-waiting/ and design/witness-per-way-an-operation-succeeds/.
+    #[verifier::spinoff_prover]
+    pub fn witness_free_after_large_frame_freed(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        big: usize,
+        jb: Ghost<int>,
+        l4: usize,
+    ) -> (ret: (FrameReclaimStep, FrameReclaimStep, Ghost<(CapKernel, CapKernel, CapKernel)>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) <= jb@,
+            jb@ + 70 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            big == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, jb@),
+            big as int % block_bytes(9) == 0,
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
+            !image_l4(image@, l4),
+        ensures
+            ret.0 is Freed,
+            ret.1 is Freed,
+            ({
+                let (s_pre, s_post, s_end) = ret.2@;
+                let bf = (big + 68 * PROCESS_BYTES) as usize;
+                let fp_bf = (bf / PAGE_SZ) as int;
+                &&& s_pre.large_frame_freed(s_post, 0, process, ROOT_UNTYPED_SLOT, big, 9)
+                &&& s_post.flush_epoch == s_pre.flush_epoch
+                &&& s_post.targeted == s_pre.targeted
+                &&& !s_pre.owes(0)
+                &&& !s_pre.owes(1)
+                &&& s_post.owes(0) == s_pre.owes(0)
+                &&& s_post.owes(1) == s_pre.owes(1)
+                &&& has_loaded(s_post.cores@[1])
+                &&& s_post.acked(1) < s_post.stale_epoch.pages@[fp_bf]
+                &&& s_post.acknowledged(fp_bf as usize)
+                &&& s_post.frame_freed(s_end, 0, process, ROOT_UNTYPED_SLOT, bf)
+            }),
+            final(self).wf(),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let ghost pn = (leaf@ + 1) as usize;
+        let ghost fp_big = (big / PAGE_SZ) as usize;
+        let ghost r = big / PAGE_SZ / PAGES_PER_2M;
+        let ghost br_big = BlockRef::Two(r);
+
+        self.witness_two_frames_setup_space(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, big, jb, l4);
+        self.witness_two_frames_retype_small(process, big, Ghost(first), Ghost(u), Ghost(pn));
+        self.witness_two_frames_retype_large(process, big, l4, Ghost(first), Ghost(u), Ghost(pn));
+        self.witness_two_frames_map_and_unmap(process, l4, big, Ghost(first), Ghost(u), Ghost(pn));
+
+        let lb = big + 64 * PROCESS_BYTES;
+        let bf = big + 68 * PROCESS_BYTES;
+        let ghost fp_bf = (bf / PAGE_SZ) as int;
+        let ghost nf_big = (lb + 1) as usize;
+        let ghost nf_small = (lb + 3) as usize;
+        let ghost br_small = BlockRef::Small(fp_bf as usize);
+
+        let ghost s11 = *self;
+        proof {
+            assert(s11.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            if !s11.list.childless(nf_big) {
+                s11.list.lemma_next_is_child(nf_big);
+            }
+            if !s11.list.childless(nf_small) {
+                s11.list.lemma_next_is_child(nf_small);
+            }
+            assert(page_of(nf_big) == lb && page_of(nf_small) == lb);
+            assert(s11.tables.has_slot(&s11.list, process, WITNESS_FRAME_SLOT));
+            assert(s11.tables.owner@.contains_key(lb)) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_owned_listed(s11, nf_big);
+            lemma_owned_listed(s11, nf_small);
+            assert(s11.can_delete_at(process, Position { through: None, index: WITNESS_LARGE_FRAME_SLOT }));
+            assert(s11.can_delete_at(process, Position { through: None, index: WITNESS_FRAME_SLOT }));
+        }
+
+        // Delete both frame capabilities, leaving both dead.
+        let at_big = Position { through: None, index: WITNESS_LARGE_FRAME_SLOT };
+        let at_small = Position { through: None, index: WITNESS_FRAME_SLOT };
+        let ok_del_big = self.delete(process, at_big);
+        let ghost s12 = *self;
+        proof {
+            assert(ok_del_big is Some);
+            assert(Self::cap_deleted_at(s11, s12, process, at_big));
+            assert(Self::object_dropped(s11, s12, nf_big));
+            assert(s11.payload_of(nf_big).kind is Frame);
+            assert(s11.payload_of(nf_big).base / PAGE_SZ == fp_big);
+            assert(block_ref(&s11.blocks, fp_big) == br_big);
+            assert(block_typed(&s12.blocks, br_big));
+            assert(block_refs(&s12.blocks, br_big) == 0);
+            assert(block_dead(&s12.blocks, br_big));
+            assert(s12.region_is_dead(Large::Two, r));
+            lemma_slot_kept_but(s11, s12, process, ROOT_UNTYPED_SLOT, nf_big);
+            lemma_slot_kept_but(s11, s12, process, WITNESS_FRAME_SLOT, nf_big);
+            Self::lemma_caps_frame(s11, s12, nf_big, nf_big, u);
+            Self::lemma_caps_frame(s11, s12, nf_big, nf_big, nf_small);
+            assert(s12.list.nodes@[lb as int].live && s12.list.parent@[lb] == u);
+            assert(s12.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            lemma_children_back(s11.list, s12.list, nf_small);
+            assert forall|y: usize| !#[trigger] s12.list.is_child(nf_small, y) by {
+                if s12.list.is_child(nf_small, y) {
+                    lemma_listed_live(s12.list, y);
+                    assert(s11.list.is_child(nf_small, y));
+                }
+            }
+            if !s12.list.childless(nf_small) {
+                s12.list.lemma_next_is_child(nf_small);
+            }
+            lemma_owned_listed(s12, nf_small);
+            assert(s12.can_delete_at(process, at_small));
+            assert(s12.wf() && s12.blocks.tracks(fp_bf));
+            assert(s12.blocks.pages@[fp_bf].kind is Base && s12.blocks.pages@[fp_bf].object is Frame) by {
+                reveal(CapKernel::wf);
+                assert(holders_wf(&s12.list, &s12.tables, &s12.blocks, &s12.zeroing, s12.holders@));
+                assert(s12.holders@.contains_key(br_small));
+            }
+        }
+        let ok_del_small = self.delete(process, at_small);
+        let ghost s13 = *self;
+        proof {
+            assert(ok_del_small is Some);
+            assert(Self::cap_deleted_at(s12, s13, process, at_small));
+            assert(Self::object_dropped(s12, s13, nf_small));
+            assert(s12.payload_of(nf_small).kind is Frame);
+            assert(s12.payload_of(nf_small).base / PAGE_SZ == fp_bf as usize);
+            assert(block_ref(&s12.blocks, fp_bf as usize) == br_small);
+            assert(br_small != br_big);
+            assert(block_dead(&s13.blocks, br_small));
+            assert(s13.frame_is_dead(fp_bf as usize));
+            assert(block_typed(&s13.blocks, br_big));
+            assert(block_refs(&s13.blocks, br_big) == 0);
+            assert(block_dead(&s13.blocks, br_big));
+            assert(s13.region_is_dead(Large::Two, r));
+            lemma_slot_kept_but(s12, s13, process, ROOT_UNTYPED_SLOT, nf_small);
+            Self::lemma_caps_frame(s12, s13, nf_small, nf_small, u);
+            assert(s13.list.nodes@[lb as int].live && s13.list.parent@[lb] == u);
+            lemma_owned_listed(s13, lb);
+            assert(UNTYPED_RIGHTS & right_bit(Right::Retype) != 0) by (compute_only);
+            assert(s13.list.nodes@[u as int].depth < MAX_DEPTH);
+            assert(s13.can_retype_under(process, ROOT_UNTYPED_SLOT, big, 9));
+            assert(s13.can_retype_under(process, ROOT_UNTYPED_SLOT, bf, 0));
+            assert(s13.flush_epoch == 2);
+            assert(s13.stale_epoch.two@[r as int] == 2);
+            assert(s13.stale_epoch.pages@[fp_bf] == 1);
+            assert(s13.targeted@[0] == 2 && s13.targeted@[1] == 0);
+            assert(s13.cores == s11.cores);
+        }
+
+        // Only core 0 acknowledges and present IOMMUs flush; core 1 remains at acked 0.
+        let tracked mut steps = Steps::fresh();
+        self.acknowledge(0, Tracked(&mut steps));
+        let ghost s14 = *self;
+        proof {
+            assert(s14.acked(0) == 2);
+            assert(s14.cores@[1] == s13.cores@[1]);
+            assert(s14.targeted == s13.targeted);
+            assert(s14.flush_epoch == 2);
+            assert(s14.stale_epoch == s13.stale_epoch);
+            assert(s14.blocks == s13.blocks && s14.tables == s13.tables && s14.list == s13.list);
+        }
+        self.witness_acknowledge_iommus();
+        let ghost s_pre = *self;
+        proof {
+            assert(s_pre.flush_epoch == 2);
+            assert(s_pre.targeted == s14.targeted);
+            assert(s_pre.cores == s14.cores);
+            assert(s_pre.stale_epoch == s14.stale_epoch);
+            assert(s_pre.blocks == s14.blocks && s_pre.tables == s14.tables && s_pre.list == s14.list);
+            assert(s_pre.processes == s14.processes);
+            assert(!s_pre.owes(0) && !s_pre.owes(1));
+            assert(forall|c: int| 2 <= c < NUM_CPUS ==> !has_loaded(#[trigger] s_pre.cores@[c]));
+            assert(s_pre.all_acknowledged(2)) by {
+                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(s_pre.cores@[c]) && s_pre.owes(c) implies 2 <= #[trigger] s_pre.acked(c) by {}
+                assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] s_pre.iommu_present(i) implies 2 <= s_pre.iommu_acked(i) by {}
+            }
+            assert(s_pre.region_acknowledged(Large::Two, r));
+            assert(s_pre.can_reclaim_large(process, ROOT_UNTYPED_SLOT, big, 9));
+        }
+
+        // First free (`reclaim_large_frame` frees `big`).
+        let tracked mut steps = Steps::fresh();
+        let r1 = self.reclaim_large_frame(0, process, ROOT_UNTYPED_SLOT, big, 9, Tracked(&mut steps));
+        let ghost s_post = *self;
+        proof {
+            assert(r1 is Freed);
+            assert(s_pre.large_frame_freed(s_post, 0, process, ROOT_UNTYPED_SLOT, big, 9));
+            assert(s_post.flush_epoch == s_pre.flush_epoch);
+            assert(s_post.targeted == s_pre.targeted);
+            assert(s_post.cores == s_pre.cores);
+            assert(s_post.iommus == s_pre.iommus);
+            assert(s_post.stale_epoch == s_pre.stale_epoch);
+            assert(s_post.owes(0) == s_pre.owes(0));
+            assert(s_post.owes(1) == s_pre.owes(1));
+            assert(has_loaded(s_post.cores@[1]));
+            assert(s_post.acked(1) < s_post.stale_epoch.pages@[fp_bf]);
+            assert(s_post.all_acknowledged(1)) by {
+                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(s_post.cores@[c]) && s_post.owes(c) implies 1 <= #[trigger] s_post.acked(c) by {}
+                assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] s_post.iommu_present(i) implies 1 <= s_post.iommu_acked(i) by {
+                    assert(s_pre.iommu_present(i));
+                    assert(2 <= s_pre.iommu_acked(i));
+                }
+            }
+            assert(s_post.acknowledged(fp_bf as usize));
+            assert(s_post.tables == s_pre.tables && s_post.list == s_pre.list && s_post.processes == s_pre.processes);
+            assert(s_post.blocks.pages@[fp_bf] == s_pre.blocks.pages@[fp_bf]) by {
+                assert(!block_has_page(level_ref(Large::Two, r), fp_bf as usize));
+            }
+            assert(s_post.frame_is_dead(fp_bf as usize));
+            assert(s_post.can_retype_under(process, ROOT_UNTYPED_SLOT, bf, 0));
+        }
+
+        // Second free (`reclaim_frame` frees `bf`) reading `owes(1)` as false across `large_frame_freed`.
+        let tracked mut steps = Steps::fresh();
+        let r2 = self.reclaim_frame(0, process, ROOT_UNTYPED_SLOT, bf, Tracked(&mut steps));
+        let ghost s_end = *self;
+        proof {
+            assert(r2 is Freed);
+            assert(s_post.frame_freed(s_end, 0, process, ROOT_UNTYPED_SLOT, bf));
+        }
+        (r1, r2, Ghost((s_pre, s_post, s_end)))
     }
 
     /// From the state boot leaves, the root prints five words through its console capability in

@@ -21,6 +21,7 @@ pub mod dead_table_page_freed;
 pub mod destroyed_thread_freed;
 pub mod device_frame_reused_after_iommu_flush;
 pub mod free_after_cut_skips_unlisted_core;
+pub mod free_after_large_frame_freed;
 pub mod inspect;
 pub mod kernel_init;
 pub mod nested_frame_mapped;
