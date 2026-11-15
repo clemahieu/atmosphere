@@ -88,16 +88,15 @@ pub trait Combinator<'a> {
     spec fn c(&self) -> nat;
 
     /// A parse consumes at most its input, gives a value the format can carry, and serialising
-    /// that value gives back exactly the bytes consumed.
+    /// that value gives back exactly the bytes consumed. Each is its own clause, so a proof that
+    /// fails one is refused at that one.
     proof fn lemma_parse_serialize(&self, s: Seq<u8>)
         requires
             self.wf(),
         ensures
-            self.spec_parse(s) matches Some((n, v)) ==> {
-                &&& n <= s.len()
-                &&& self.valid(v)
-                &&& self.spec_serialize(v) == s.take(n as int)
-            },
+            self.spec_parse(s) matches Some((n, v)) ==> n <= s.len(),
+            self.spec_parse(s) matches Some((n, v)) ==> self.valid(v),
+            self.spec_parse(s) matches Some((n, v)) ==> self.spec_serialize(v) == s.take(n as int),
     ;
 
     /// A serialised value parses back to itself, whatever follows it.
