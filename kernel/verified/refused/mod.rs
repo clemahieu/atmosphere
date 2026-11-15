@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MIT
 
 //! False claims for the caller's-view contracts, for the operation ways whose contracts admit an
-//! unchanged table view, and for the queue lock. An unchanged kernel meets no ok or again arm whose
-//! specification does not admit it, and no success ensures of destroy, place, start, suspend, unmap
-//! or the register operations. No contract lets a slot it does not name change. QueueLock::new's
-//! ensures fails for a lock that is not well-formed, and acquire's and release's ensures fail for an
-//! unchanged core on the lock the operation borrows.
+//! unchanged table view, for the queue lock, and for boot, charge, notification, print, power,
+//! inspect and enter_flush. An unchanged kernel meets no ok or again arm whose specification does
+//! not admit it, and no success ensures of destroy, place, start, suspend, unmap or the register
+//! operations. No contract lets a slot it does not name change. QueueLock::new's ensures fails for
+//! a lock that is not well-formed, and acquire's and release's ensures fail for an unchanged core
+//! on the lock the operation borrows. kernel_init's Some at an unchanged kernel is not the booted
+//! state, charge does not leave the counter it was given, signal and wait do not write the
+//! notification word, print and power_off at the other bool are not what the slot holds, inspect's
+//! Some is not the slot's payload, and enter_flush does not bring a core that is behind the epoch
+//! up to it.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -53,6 +58,14 @@ pub mod unnamed_move;
 pub mod queue_lock_new;
 pub mod queue_lock_acquire;
 pub mod queue_lock_release;
+pub mod kernel_init_some;
+pub mod charge_returns;
+pub mod signal_ok;
+pub mod wait_some;
+pub mod print_false;
+pub mod power_off_false;
+pub mod inspect_other;
+pub mod enter_flush_returns;
 
 use vstd::prelude::*;
 
@@ -62,7 +75,13 @@ use crate::arch::{user_rip, Registers};
 use crate::capability::thread::SuspendStep;
 use crate::capability::unmap::Unmapped;
 use crate::define::NUM_CPUS;
+use crate::capability::boot_image::{image_blocks, ImageRun, ROOT_FRAME_SLOTS};
+use crate::capability::boot_memory::{runs_blocks, ROOT_UNTYPED_SLOTS};
+use crate::capability::boot_table::{image_tables_bound, image_virt_wf, untyped_tables};
+use crate::capability::decompose::page_block_payload;
 use crate::capability::kernel::CapKernel;
+use crate::capability::reach::{discharges, Effect};
+use crate::capability::table::{Payload, MAX_ORDER};
 use crate::queue_lock::{Core, QueueLock};
 use crate::capability::operation::*;
 use crate::capability::position::{Position, spec_position};
@@ -532,6 +551,194 @@ pub trait QueueLockRelease {
             post_core.idle(),
             post_core.cpu == cpu,
             post_core.for_lock(*lock),
+    ;
+}
+
+/// `kernel_init`'s Some at an unchanged kernel. The free runs and the image are a success case, so
+/// the refusal biconditional holds, and the returned counts are not a booted kernel's.
+pub trait KernelInitSome {
+    proof fn unchanged(
+        pre: CapKernel,
+        post: CapKernel,
+        root: usize,
+        process: usize,
+        leaf: usize,
+        frames: usize,
+        t: usize,
+        free: Seq<(usize, usize)>,
+        image: Seq<ImageRun>,
+        present: Seq<bool>,
+        kernel_root: usize,
+        ret: Option<(usize, usize)>,
+    )
+        requires
+            post == pre,
+            ret is Some,
+            ({
+                let bs = runs_blocks(free, MAX_ORDER as nat);
+                &&& bs.len() != 0
+                &&& bs.len() <= ROOT_UNTYPED_SLOTS
+                &&& image_blocks(image).len() <= ROOT_FRAME_SLOTS
+                &&& image_virt_wf(image)
+                &&& image_tables_bound(image) <= untyped_tables(page_block_payload(bs[0]))
+            }),
+            match ret {
+                Some((untyped, frame)) => !post.booted(
+                    root,
+                    process,
+                    leaf,
+                    frames,
+                    t,
+                    free,
+                    image,
+                    untyped,
+                    frame,
+                    present,
+                    kernel_root,
+                ),
+                None => false,
+            },
+        ensures
+            ret is None <==> ({
+                let bs = runs_blocks(free, MAX_ORDER as nat);
+                ||| bs.len() > ROOT_UNTYPED_SLOTS
+                ||| bs.len() == 0
+                ||| image_blocks(image).len() > ROOT_FRAME_SLOTS
+                ||| !image_virt_wf(image)
+                ||| image_tables_bound(image) > untyped_tables(page_block_payload(bs[0]))
+            }),
+            ret matches Some((untyped, frame)) ==> post.booted(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root),
+    ;
+}
+
+/// `charge` where the counter moved and the kernel did not. The entry's since is not the reading it
+/// was given.
+pub trait ChargeReturns {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, now: u64)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            post == pre,
+            pre.cores@[c as int].since != now,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            CapKernel::step_ok(pre, post, c as int),
+            CapKernel::charged_entry(pre, post, c as int, now),
+            post.view() == pre.view(),
+    ;
+}
+
+/// `signal`'s success where the badge sets a bit and the kernel does not take it.
+pub trait SignalOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, i: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_signal(root, i),
+            post == pre,
+            ret,
+            ({
+                let w = pre.notification_record(root, i).word;
+                let b = pre.payload_of(pre.tables.node_of(root, i)).badge as u64;
+                (w | b) != w
+            }),
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            ret == pre.can_signal(root, i),
+            !ret ==> post == pre,
+            ret ==> CapKernel::signalled(pre, post, root, i),
+    ;
+}
+
+/// `wait`'s Some where the word has a signalled bit and the kernel does not clear it.
+pub trait WaitSome {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, i: usize, ret: Option<u64>)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_wait(root, i),
+            post == pre,
+            ret is Some,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            ret is Some == pre.can_wait(root, i),
+            ret is None ==> post == pre,
+            ret is Some ==> CapKernel::waited(pre, post, root, i, ret->0),
+    ;
+}
+
+/// `print`'s true at a slot that holds the console, claimed false.
+pub trait PrintFalse {
+    proof fn wrong(pre: CapKernel, post: CapKernel, root: usize, i: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.holds_console(root, i),
+            post == pre,
+            !ret,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post == pre,
+            ret == pre.holds_console(root, i),
+            discharges(pre.view(), post.view(), root, Effect::Local),
+    ;
+}
+
+/// `power_off`'s true at a slot that holds power, claimed false.
+pub trait PowerOffFalse {
+    proof fn wrong(kernel: CapKernel, root: usize, i: usize, ret: bool)
+        requires
+            kernel.wf(),
+            kernel.tables.roots@.contains_key(root),
+            kernel.root_live(root),
+            kernel.holds_power(root, i),
+            !ret,
+        ensures
+            ret == kernel.holds_power(root, i),
+            discharges(kernel.view(), kernel.view(), root, Effect::Local),
+    ;
+}
+
+/// `inspect`'s Some of a payload other than the one the slot holds.
+pub trait InspectOther {
+    proof fn wrong(kernel: CapKernel, root: usize, at: Position, ret: Option<(Payload, u64)>)
+        requires
+            kernel.wf(),
+            kernel.tables.roots@.contains_key(root),
+            kernel.root_live(root),
+            kernel.cap_at(root, at) is Some,
+            ret is Some,
+            match (ret, kernel.cap_at(root, at)) {
+                (Some((payload, _)), Some(n)) => payload != kernel.payload_of(n),
+                _ => false,
+            },
+        ensures
+            kernel.inspect_found(root, at, ret),
+            kernel.inspect_reads(root, at, ret),
+            discharges(kernel.view(), kernel.view(), root, Effect::Local),
+    ;
+}
+
+/// `enter_flush` at an unchanged kernel whose core is behind the epoch. The requires are the
+/// operation's plus that unchanged kernel; nothing says the core is already caught up.
+pub trait EnterFlushReturns {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            post == pre,
+            pre.acked(c as int) < pre.flush_epoch,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            CapKernel::step_ok(pre, post, c as int),
+            CapKernel::only_core_changed(pre, post, c as int),
+            post.acked(c as int) == post.flush_epoch,
+            pre.acked(c as int) == pre.flush_epoch ==> post == pre,
     ;
 }
 

@@ -7,9 +7,6 @@
 # that adds one unless --approve names it, as path:operation:way.
 # Fields, separated by tabs: path from the repository root, operation, way.
 #
-kernel/verified/capability/boot_kernel.rs	kernel_init	Some
-kernel/verified/capability/charge.rs	charge	returns
-kernel/verified/capability/console.rs	print	true
 kernel/verified/capability/delete.rs	delete	Some
 kernel/verified/capability/derive.rs	derive	true
 kernel/verified/capability/device.rs	add_devices	true
@@ -19,7 +16,6 @@ kernel/verified/capability/device_space.rs	map_device	true
 kernel/verified/capability/endpoint.rs	retype_endpoint	true
 kernel/verified/capability/endpoint.rs	retype_notification	true
 kernel/verified/capability/guest_space.rs	map_nested	true
-kernel/verified/capability/inspect.rs	inspect	Some
 kernel/verified/capability/kernel.rs	flush_iommu	returns
 kernel/verified/capability/kernel.rs	acknowledge	returns
 kernel/verified/capability/map.rs	link_at	true
@@ -27,12 +23,8 @@ kernel/verified/capability/map.rs	map_at	true
 kernel/verified/capability/mapping.rs	load_space	returns
 kernel/verified/capability/mapping.rs	switch_space	returns
 kernel/verified/capability/moving.rs	move_cap	true
-kernel/verified/capability/notification.rs	signal	true
-kernel/verified/capability/notification.rs	wait	Some
 kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some
-kernel/verified/capability/operation.rs	enter_flush	returns
-kernel/verified/capability/power.rs	power_off	true
 kernel/verified/capability/probe.rs	probe_at	Some
 kernel/verified/capability/process.rs	retype_process	true
 kernel/verified/capability/reclaim.rs	reclaim	Freed
@@ -171,7 +163,6 @@ acall/src/capability.rs	delete	OPERATION_DELETE=5
 acall/src/capability.rs	revoke	OPERATION_REVOKE=6
 acall/src/memory.rs	retype	OPERATION_RETYPE=1
 acall/src/memory.rs	derive	OPERATION_DERIVE=2
-acall/src/memory.rs	inspect	OPERATION_INSPECT=15
 acall/src/memory.rs	link	OPERATION_LINK=16
 acall/src/memory.rs	map	OPERATION_MAP=7
 acall/src/memory.rs	map_own	OPERATION_MAP=7
