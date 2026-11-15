@@ -7,5 +7,6 @@ Each explainer answers one question about the design, cites the design record an
 - [How does boot cover all free memory in a bounded number of untyped capabilities?](./boot-covers-all-memory.md)
 - [How one frame capability backs many mappings](./frame-backs-many-mappings.md)
 - [Growing the capability table, and what each way costs](./growing-the-table.md)
+- [How one capability slot names a block of pages](./slot-names-a-block.md)
 - [What actually consumes capability slots](./what-consumes-slots.md)
 - [Where a process's slot budget runs out](./where-the-budget-runs-out.md)

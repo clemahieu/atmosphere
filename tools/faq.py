@@ -240,12 +240,22 @@ def big_nodes(constants):
     return (constants["SIZE_2M"] // constants["PAGE_SZ"]) * constants["NODES_PER_PAGE"]
 
 
+def entry_bytes(constants):
+    """Bytes of one node and of one payload. The entries fill the page."""
+    page, count = constants["PAGE_SZ"], constants["NODES_PER_PAGE"]
+    if count <= 0 or page % count:
+        raise Refused(f"PAGE_SZ is {page} bytes, not {count} entries")
+    return page // count
+
+
 # Each number a template may name that no single constant holds.
 DERIVED = {
     "BLOCKS_PER_RUN": lambda c: 2 * (c["MAX_ORDER"] + 1),
     "UNTYPED_LAST_SLOT": lambda c: c["ROOT_UNTYPED_SLOT"] + c["ROOT_UNTYPED_SLOTS"] - 1,
     "FRAME_LAST_SLOT": lambda c: c["ROOT_FRAME_SLOT"] + c["ROOT_FRAME_SLOTS"] - 1,
     "LEAF_SLOTS": lambda c: c["NODES_PER_PAGE"] - 1,
+    # One node, and one payload: the entries fill the page, which the layout claim sizes at one page.
+    "ENTRY_BYTES": entry_bytes,
     # One leaf's slots at every root entry. The larger frame order is twice the shift of a 2M block.
     "TABLE_SLOTS": lambda c: c["ROOT_ENTRIES"] * (c["NODES_PER_PAGE"] - 1),
     "ONE_G_ORDER": lambda c: 2 * c["INDEX_BITS"],
@@ -1101,6 +1111,59 @@ class Tests(unittest.TestCase):
             space)
         self.assertIn("assert(block_bytes(3) == TABLE_PAGE_BYTES);", space)
         self.assertIn("How one frame capability backs many mappings", out["README.md"])
+
+    def test_the_block_explainer_types_no_number_and_names_one_slot(self):
+        text = (REPO / SOURCES / "slot-names-a-block.md").read_text(encoding="utf-8")
+        # A digit inside an item's name, such as SIZE_2M, is the name. A typed number stands alone.
+        self.assertIsNone(re.search(r"(?<![A-Za-z0-9_])\d", PLACEHOLDER.sub("", text)))
+        v = values(REPO)
+        self.assertEqual(v["PAGE_SZ"] % v["NODES_PER_PAGE"], 0)
+        self.assertEqual(v["ENTRY_BYTES"], v["PAGE_SZ"] // v["NODES_PER_PAGE"])
+        self.assertEqual(v["ENTRY_BYTES"] * v["NODES_PER_PAGE"], v["PAGE_SZ"])
+        self.assertEqual(v["PAGE_SZ"] << v["MAX_ORDER"], v["NODE_SPACE"])
+        self.assertEqual(v["TABLE_SLOTS"], v["ROOT_ENTRIES"] * v["LEAF_SLOTS"])
+        self.assertEqual(v["TABLE_INDICES"], v["ROOT_ENTRIES"] * v["NODES_PER_PAGE"])
+        out = outputs(REPO)
+        page = out["slot-names-a-block.md"]
+        for name, spec in PLACEHOLDER.findall(text):
+            self.assertIn(format(v[name], spec or ""), page)
+        for name in ("TABLE_SLOTS", "TABLE_INDICES", "LEAF_BYTES", "PAGE_SZ", "SIZE_2M", "SIZE_1G", "NODE_SPACE"):
+            self.assertIn(f"{v[name]:,}", page)
+        for name in ("ENTRY_BYTES", "LEAF_SLOTS", "NODES_PER_PAGE", "ROOT_ENTRIES", "LEAF_PAGES",
+                     "MAX_ORDER", "INDEX_BITS", "ONE_G_ORDER", "ADDRESS_BITS"):
+            self.assertIn(str(v[name]), page)
+        self.assertIn("```mermaid", page)
+        self.assertIn("flowchart TD", page)
+        self.assertNotRegex(page, r"<\s*/?\s*(svg|script|html|iframe|style)\b")
+        for cite in ("design/process-holds-capabilities/", "design/capability-names-a-block/",
+                     "design/teardown-driven-by-retype/", "design/revoke-by-depth-first-list/"):
+            self.assertIn(cite, text)
+        table = (REPO / "kernel/verified/capability/table.rs").read_text(encoding="utf-8")
+        self.assertIn(f"pub const MAX_ORDER: u8 = {v['MAX_ORDER']};", table)
+        self.assertIn("p.order <= MAX_ORDER", table)
+        self.assertIn("!(k is Device) && !(k is Console) && !(k is Power) && !(k is Core)", table)
+        self.assertIn("Some((leaf + slot, *payloads.entries.get(slot)))", table)
+        self.assertIn("PPtr::<PayloadPage>::from_usize(leaf + PAGE_SZ)", table)
+        self.assertIn("final(self).leaf(root, r) == NO_LEAF", table)
+        layouts = (REPO / "kernel/verified/layouts.rs").read_text(encoding="utf-8")
+        self.assertIn(f"global layout NodePage is size == {v['PAGE_SZ']}, align == 8;", layouts)
+        self.assertIn(f"global layout PayloadPage is size == {v['PAGE_SZ']}, align == 8;", layouts)
+        retype = (REPO / "kernel/verified/capability/retype.rs").read_text(encoding="utf-8")
+        self.assertIn("self.can_retype_block(root, from, to, base, 0)", retype)
+        self.assertIn(f"order == {v['INDEX_BITS']} || order == {v['ONE_G_ORDER']}", retype)
+        operation = (REPO / "kernel/verified/capability/operation.rs").read_text(encoding="utf-8")
+        self.assertIn(
+            "||| frame.argument(1) == RETYPE_LARGE_FRAME && self.can_retype_large("
+            f"root, from, frame.argument(3) as usize, base, {v['INDEX_BITS']})",
+            operation)
+        self.assertIn(
+            "self.retype_large_frame(root, frame.slot() as usize, frame.argument(3) as usize, "
+            f"frame.argument(2) as usize, {v['INDEX_BITS']}, Tracked(steps))",
+            operation)
+        derive = (REPO / "kernel/verified/capability/derive.rs").read_text(encoding="utf-8")
+        self.assertIn("order <= parent.order", derive)
+        self.assertIn("parent.kind is Untyped || parent.kind is Frame", derive)
+        self.assertIn("How one capability slot names a block of pages", out["README.md"])
 
 
 def main(arguments):
