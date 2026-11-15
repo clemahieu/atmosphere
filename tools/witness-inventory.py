@@ -16,7 +16,8 @@ kernel/verified/queue_lock.rs, which CapKernel does not call: every exec `pub fn
 function of a trait the component implements for a struct or enum it declares, which another crate
 can call as it can a `pub fn`. A `pub(crate)` or private function is a step and is not listed. The
 rest of kernel/verified outside capability holds no component, for the reasons
-design/witness-per-way-an-operation-succeeds/ point 2 gives, and is not read. A file named `witness.rs`, a `witness` or `throwaway` directory and a
+design/witness-per-way-an-operation-succeeds/ point 2 gives, and is not read. A file named `witness.rs`, a `witness` or `throwaway` directory, a
+`refused` directory, whose false claims tools/check-refused.py holds to Verus's refusal, and a
 function named `witness_` hold no operation.
 
 The ways, from the operation's result type:
@@ -124,6 +125,8 @@ def load(name):
 
 
 throwaways = load("check-throwaways")
+# The directory of a crate's false claims, which hold no operation.
+REFUSED = "refused"
 
 
 def blank(text):
@@ -769,10 +772,11 @@ def wrapper_rows(kernel_texts, texts):
 
 
 def read(root, directory):
-    """The Rust files under a directory of the tree, outside its throwaway modules, as {path: text}."""
+    """The Rust files under a directory of the tree, outside its throwaway and refused modules, as
+    {path: text}."""
     base = root / directory
     return {str(path.relative_to(root)): path.read_text(encoding="utf-8") for path in sorted(base.rglob("*.rs"))
-            if throwaways.THROWAWAY not in path.relative_to(base).parts}
+            if not {throwaways.THROWAWAY, REFUSED} & set(path.relative_to(base).parts)}
 
 
 def marked_users(root):
@@ -1500,6 +1504,23 @@ class Tree(unittest.TestCase):
             ("kernel/verified/queue_lock.rs", "QueueLock::acquire", "returns", "witness_queue_lock"),
             ("kernel/verified/queue_lock.rs", "QueueLock::release", "returns", "witness_queue_lock"),
             ("aone/src/lib.rs", "fits", "true", None)])
+
+    def test_a_throwaway_or_refused_module_holds_no_operation(self):
+        files = {
+            "Cargo.toml": "[workspace]\n" + self.workspace(["kernel/verified", "acall", "aone"]),
+            "kernel/verified/Cargo.toml": crate("verified", lib="lib.rs"),
+            "kernel/verified/queue_lock.rs": QUEUE,
+            "acall/Cargo.toml": crate("acall"),
+            "acall/src/lib.rs": "verus! {\n}\n",
+            "aone/Cargo.toml": crate("aone"),
+            "aone/src/lib.rs": "verus! {\npub fn fits(size: usize) -> (r: bool) { size < 10 }\n}\n",
+        }
+        for directory in ("throwaway", "refused"):
+            files[f"aone/src/{directory}/false_claim.rs"] = "verus! {\npub fn wrong(size: usize) -> (r: bool) { size < 5 }\n}\n"
+        files.update(kernel())
+        rows = tree_rows(self.make(files))
+        self.assertEqual([tuple(row[:3]) for row in rows if row[0].startswith("aone/")],
+                         [("aone/src/lib.rs", "fits", "true")])
 
     def test_queue_lock_s_witness_is_no_root_when_it_takes_a_type_the_kernel_s_crate_declares(self):
         taking = QUEUE.replace("witness_queue_lock(cpu: usize)", "witness_queue_lock(cpu: usize, o: Outcome)")
