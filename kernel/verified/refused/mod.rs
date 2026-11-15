@@ -17,6 +17,9 @@
 //! is MovedOff. map_nested, load_space, switch_space, flush_iommu and acknowledge meet no unchanged
 //! kernel. probe_at's Some clears accessed and dirty bits in the level 1 table's words and leaves the
 //! view as it was, so the unchanged kernel includes those words and the probed prefix does not hold.
+//! add_devices does not record the devices, bind_device does not make the binding node a child of the
+//! space, unbind_device_at does not advance the flush epoch or drop the device from the view's binds,
+//! and map_device writes neither a page nor a large page into the device space.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -85,6 +88,10 @@ pub mod switch_space_returns;
 pub mod flush_iommu_returns;
 pub mod acknowledge_returns;
 pub mod probe_at_some;
+pub mod add_devices_ok;
+pub mod bind_device_ok;
+pub mod unbind_device_ok;
+pub mod map_device_ok;
 
 use vstd::prelude::*;
 
@@ -99,8 +106,13 @@ use crate::capability::boot_image::{image_blocks, ImageRun, ROOT_FRAME_SLOTS};
 use crate::capability::boot_memory::{runs_blocks, ROOT_UNTYPED_SLOTS};
 use crate::capability::boot_table::{image_tables_bound, image_virt_wf, untyped_tables};
 use crate::capability::decompose::page_block_payload;
+use crate::array::Array;
 use crate::capability::kernel::{CapKernel, holds_id, id_pcid, ID_GENERATION_MAX, KERNEL_TAG, TlbEntry};
+use crate::capability::device::{DeviceInfo, MAX_DEVICES, binding_node, device_of, device_payload, unbound_record};
+use crate::capability::device_space::DeviceRange;
 use crate::capability::guest_space::GuestPhysRange;
+use crate::capability::list::NODE_SPACE;
+use crate::capability::revoke::UNLINK_ARM_STEPS;
 use crate::capability::link::tree_of;
 use crate::capability::mapping::space_says;
 use crate::capability::probe::Probed;
@@ -1342,6 +1354,154 @@ pub trait ProbeAtSome {
             ret is Some ==> CapKernel::probe_done(pre, post, root, slot, va, count, ret->0),
             discharges(pre.view(), post.view(), root, Effect::Local),
             CapKernel::threads_bound_kept(pre, post),
+    ;
+}
+
+/// `add_devices`'s success at an unchanged kernel. The call is allowed, the device table was empty, and
+/// boot gave at least one device: an empty list is a success that writes nothing, and this is the
+/// success that records a device. The step counter is unchanged, so the operation's bound on it holds.
+/// An unchanged table keeps the count it had, and the free slots stay free.
+pub trait AddDevicesOk {
+    proof fn unchanged(
+        pre: CapKernel,
+        post: CapKernel,
+        first: usize,
+        root: usize,
+        slot: usize,
+        devices: &Array<DeviceInfo, MAX_DEVICES>,
+        count: usize,
+        pre_steps: nat,
+        post_steps: nat,
+        ret: bool,
+    )
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            first == pre.list.seq@[0],
+            pre.devices.count == 0,
+            devices.wf(),
+            0 < count <= MAX_DEVICES,
+            slot + count <= usize::MAX,
+            post == pre,
+            post_steps == pre_steps,
+            pre.can_add_devices(root, slot, devices@, count),
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post_steps <= pre_steps + MAX_DEVICES * (MAX_DEVICES + 1),
+            post.wf(),
+            ret == pre.can_add_devices(root, slot, devices@, count),
+            post.tables.roots == pre.tables.roots,
+            post.tables.owner == pre.tables.owner,
+            post.list.seq@[0] == pre.list.seq@[0],
+            post.blocks == pre.blocks,
+            post.iommus == pre.iommus,
+            post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
+            post.spaces == pre.spaces,
+            post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
+            ret ==> post.devices.count == count,
+            ret ==> forall|k: int| 0 <= k < count ==> #[trigger] post.devices.records@[k] == unbound_record(devices@[k]),
+            ret ==> forall|k: int| 0 <= k < count ==> post.slot_holds(root, (slot + k) as usize, pre.tables.node_of(root, (slot + k) as usize), device_payload(k)),
+            ret ==> forall|k: int| 0 <= k < count ==> #[trigger] post.list.is_child(first, pre.tables.node_of(root, (slot + k) as usize)),
+            ret ==> post.devices.records@.len() == pre.devices.records@.len(),
+            ret ==> forall|k: int| count <= k < pre.devices.records@.len() ==> #[trigger] post.devices.records@[k] == pre.devices.records@[k],
+            ret ==> forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && pre.apart_from_devices(root, slot, count as int, i) ==> post.list.nodes@[i].live == pre.list.nodes@[i].live && post.list.nodes@[i].kind == pre.list.nodes@[i].kind && post.list.nodes@[i].depth == pre.list.nodes@[i].depth,
+            ret ==> forall|x: usize| #![trigger post.list.parent@.contains_key(x)] pre.apart_from_devices(root, slot, count as int, x as int) ==> post.list.parent@.contains_key(x) == pre.list.parent@.contains_key(x) && (pre.list.parent@.contains_key(x) ==> post.list.parent@[x] == pre.list.parent@[x]),
+            ret ==> forall|x: usize| #![trigger post.is_cap(x)] #![trigger pre.is_cap(x)] pre.apart_from_devices(root, slot, count as int, x as int) ==> post.is_cap(x) == pre.is_cap(x) && (pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)),
+    ;
+}
+
+/// `bind_device`'s success at an unchanged kernel. The call is allowed, and the binding node did not
+/// become a child of the space, so the view's binds did not gain the device.
+pub trait BindDeviceOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, i: usize, j: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_bind_device(root, i, j),
+            post == pre,
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            ret == pre.can_bind_device(root, i, j),
+            !ret ==> post == pre,
+            ret ==> CapKernel::device_bound(pre, post, pre.tables.node_of(root, j), device_of(pre.payload_of(pre.tables.node_of(root, i)).base)),
+            ret ==> post.view().binds == pre.view().binds.insert(pre.payload_of(pre.tables.node_of(root, i)).base, pre.payload_of(pre.tables.node_of(root, j)).base),
+            discharges(pre.view(), post.view(), root, Effect::Local),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+    ;
+}
+
+/// `unbind_device_at`'s success at an unchanged kernel. The call is allowed. The step counter is
+/// unchanged, so the operation's bound on it holds. The flush epoch did not advance and the binding
+/// node is still live, so the device did not leave the view's binds.
+pub trait UnbindDeviceOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, i: usize, pre_steps: nat, post_steps: nat, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_unbind_device(root, i),
+            post == pre,
+            post_steps == pre_steps,
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            post_steps <= pre_steps + UNLINK_ARM_STEPS,
+            ret == pre.can_unbind_device(root, i),
+            !ret ==> post == pre,
+            ret ==> CapKernel::device_unbound(pre, post, binding_node(&pre.devices, device_of(pre.payload_of(pre.tables.node_of(root, i)).base))),
+            ret ==> !post.list.nodes@[binding_node(&pre.devices, device_of(pre.payload_of(pre.tables.node_of(root, i)).base)) as int].live,
+            ret ==> forall|y: int| #![trigger post.list.nodes@[y]] 0 <= y < NODE_SPACE && y != binding_node(&pre.devices, device_of(pre.payload_of(pre.tables.node_of(root, i)).base)) as int ==> post.list.nodes@[y].live == pre.list.nodes@[y].live && post.list.nodes@[y].kind == pre.list.nodes@[y].kind && post.list.nodes@[y].depth == pre.list.nodes@[y].depth,
+            ret ==> post.list.parent == pre.list.parent,
+            ret ==> post.tables == pre.tables,
+            ret ==> post.table_pages == pre.table_pages,
+            ret ==> post.mappings == pre.mappings,
+            ret ==> post.threads == pre.threads,
+            ret ==> post.processes == pre.processes,
+            ret ==> post.endpoints == pre.endpoints,
+            ret ==> post.replies == pre.replies,
+            ret ==> post.holders == pre.holders,
+            ret ==> post.iommus == pre.iommus,
+            ret ==> post.cores == pre.cores,
+            ret ==> post.view().binds == pre.view().binds.remove(pre.payload_of(pre.tables.node_of(root, i)).base),
+            ret ==> forall|q: usize, a: usize, b: usize| device_of(post.payload_of(post.tables.node_of(q, a)).base) == device_of(pre.payload_of(pre.tables.node_of(root, i)).base) ==> !#[trigger] post.can_bind_device(q, a, b),
+            discharges(pre.view(), post.view(), root, Effect::Local),
+    ;
+}
+
+/// `map_device`'s success at an unchanged kernel. The call is allowed and nothing was written, so
+/// neither a page nor a large page was mapped into the device space.
+pub trait MapDeviceOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, slot: usize, r: DeviceRange, from: usize, page: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_map_device(root, slot, r, from, page),
+            post == pre,
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
+            post.stale_epoch == pre.stale_epoch,
+            post.cores == pre.cores,
+            post.iommus.present == pre.iommus.present,
+            ret == pre.can_map_device(root, slot, r, from, page),
+            post.spaces.loaded == pre.spaces.loaded,
+            !ret ==> post == pre,
+            ret && r.large() ==> CapKernel::map_large_done(pre, post, root, slot, r.path(), from, page),
+            ret && !r.large() ==> CapKernel::map_done(pre, post, root, slot, r.path(), from, page),
+            ret ==> discharges(pre.view(), post.view(), root, Effect::Share { space: pre.tables.node_of(root, slot), from: pre.tables.node_of(root, from) }),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
     ;
 }
 

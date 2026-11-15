@@ -9,10 +9,6 @@
 #
 kernel/verified/capability/delete.rs	delete	Some
 kernel/verified/capability/derive.rs	derive	true
-kernel/verified/capability/device.rs	add_devices	true
-kernel/verified/capability/device.rs	bind_device	true
-kernel/verified/capability/device.rs	unbind_device_at	true
-kernel/verified/capability/device_space.rs	map_device	true
 kernel/verified/capability/endpoint.rs	retype_endpoint	true
 kernel/verified/capability/endpoint.rs	retype_notification	true
 kernel/verified/capability/map.rs	link_at	true
