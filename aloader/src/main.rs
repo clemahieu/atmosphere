@@ -106,6 +106,11 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
             .0
     };
     let stack_base = guard_base + KERNEL_STACK_GUARD_SIZE;
+    // The stack's frames hold what the firmware left in them. The kernel starts on zeroes, so
+    // tools/check-boot-stack.py reads its depth from what the kernel wrote.
+    unsafe {
+        core::ptr::write_bytes(stack_base as *mut u8, 0, KERNEL_STACK_SIZE as usize);
+    }
     // The image is everything the window holds below the guard. The kernel changes the protection
     // of single pages of its image (write_protect.rs in the kernel's arch module), and the 1 MiB guard is
     // less than a 2M stretch.
