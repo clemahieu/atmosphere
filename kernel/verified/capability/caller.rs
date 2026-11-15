@@ -553,10 +553,12 @@ impl CapKernel {
 
     /// Revoke's contract over the caller's view, for the position word decoded to at: refused, with every
     /// table's view as it was, exactly when revoke_allowed fails. Otherwise the capability c at the
-    /// position lost some of its run: only slots revokes_slot names left any table, every other slot
-    /// says what it said, and c's own slot stays unless the leaf holding it was in the run. Then refused
-    /// with the flush epoch at its limit, and only from an epoch within REVOKE_BUDGET of it, as
-    /// spec_revoked refuses, again with some of the run left, or ok with c childless.
+    /// position lost some of its run: only nodes of c's run left the list, only slots revokes_slot names
+    /// left any table, every other slot says what it said, and c's own slot stays unless the leaf holding
+    /// it was in the run. Then refused with the flush epoch at its limit, and only from an epoch within
+    /// REVOKE_BUDGET of it, as spec_revoked refuses, again with exactly REVOKE_BUDGET nodes of the run
+    /// taken and some left, so a caller repeating on again sees the list shrink each time, or ok with c
+    /// childless.
     /// Whichever, every frame capability's block is the one it was at a count no higher: a revoke takes
     /// holders and adds none. A refused revoke that took nothing leaves the block table as it was.
     /// The epoch and c's run read the kernel outside the view.
@@ -573,6 +575,7 @@ impl CapKernel {
             let c = pre.tables.node_of(table, i);
             &&& pre.revoke_allowed(root, at)
             &&& Self::revoke_kept(pre, post, c)
+            &&& run_shrunk(pre.list, post.list, c)
             &&& Self::frame_blocks_lowered(pre, post)
             &&& !pre.list.in_run(c, pre.tables.leaf(table, index_entry(i))) ==> post.table_view(table).contains_key(i)
             &&& {
@@ -581,7 +584,11 @@ impl CapKernel {
                     &&& pre.flush_epoch + REVOKE_BUDGET >= usize::MAX
                     &&& post.flush_epoch == usize::MAX
                 }
-                ||| out == status_only(STATUS_AGAIN) && !post.list.childless(c)
+                ||| {
+                    &&& out == status_only(STATUS_AGAIN)
+                    &&& !post.list.childless(c)
+                    &&& pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET
+                }
                 ||| {
                     &&& out == status_only(STATUS_OK)
                     &&& post.list.childless(c)
