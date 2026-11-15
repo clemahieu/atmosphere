@@ -5,6 +5,7 @@
 //! compiled only under cfg(throwaway). design/witness-per-way-an-operation-succeeds/.
 pub mod bytes;
 pub mod pair;
+pub mod tag;
 pub mod u16_be;
 pub mod u16_le;
 pub mod u32_be;

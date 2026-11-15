@@ -203,4 +203,29 @@ pub fn witness_pair<'a>(input: &'a [u8], out: &mut [u8]) -> (r: (Option<(usize, 
     (parsed, wrote, room)
 }
 
+/// Reads the IPv4 ethertype, 0x0800, as a tag and writes it back.
+pub fn witness_tag(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, ())>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 2,
+        input@[0] == 0x08,
+        input@[1] == 0x00,
+        old(out).len() >= 2,
+    ensures
+        r.0 is Some,
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(2) == input@.take(2),
+{
+    let ipv4: [u8; 2] = [0x08, 0x00];
+    let c: Tag = Tag { bytes: &ipv4 };
+    assert(c.bytes@ =~= input@.take(2));
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let (_, v) = parsed.unwrap();
+    let room = c.length(&v, out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(&v, out, 0, Tracked(&mut steps));
+    assert(out@.take(2) =~= input@.take(2));
+    (parsed, wrote, room)
+}
+
 } // verus!
