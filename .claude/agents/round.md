@@ -132,7 +132,9 @@ The question's options are to go on, with the leaves as filed; to reword the cri
 
 A leaf labelled `refuted` answers a refutation and is meant to be one correction. When a round would split it into more than three pieces, the epic it became would need a review of its own (above), over criteria a pass wrote. Do not split it: file the decision by section 5 under the leaf's parent, with the pieces you would have written, the assessment and the same options, and depend the leaf on it.
 
-## 7. Epic rounds (no ready leaf)
+## 7. Epic rounds
+
+The loop dispatches a P0 epic round, split or close, ahead of any non-P0 leaf (`design/p0-is-the-path-to-the-target/`). P0 is that path, recomputed before the dispatch. The prompt then says `Epic round only`, and this section is where the round goes: it does not claim the leaf it was placed ahead of. When `bd ready` has no leaf, an epic round runs the same way.
 
 Consider the epics of status open other than the star; an epic in progress is held by another loop that is writing its review or its leaves. A finished epic is one with at least one child, no open child, no child in progress, and no child of status blocked, nor any such issue below a closed child. Closing finished epics comes before any split: a finished epic is work whose closing releases the leaves that depend on it, however low its priority, while a split adds work. Among the epics eligible for the same kind of round, take the highest priority first and, among equals, the deepest: a deep epic is closest to finished, while a shallow epic without children is future work that splitting early only inflates. Depth is as section 6 counts it.
 

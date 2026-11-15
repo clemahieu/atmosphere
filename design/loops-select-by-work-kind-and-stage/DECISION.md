@@ -10,7 +10,7 @@ confidence: "Measured over five days of token-ledger history (774M weighted toke
 
 ## Decision
 
-One driver script, `tools/loop.py`, inspects Beads in Python at zero token cost and dispatches sessions across harnesses (`claude`, `agy` and `grok`) and model difficulties from `loop.toml` at the project root.
+One driver script, `tools/loop.py`, inspects Beads in Python at zero token cost and dispatches sessions across harnesses (`claude`, `agy` and `grok`) and model difficulties from `loop.toml` at the project root. Which ready issue is taken first is not a route: P0 is the path to the one epic labelled `target`, recomputed before each dispatch (`design/p0-is-the-path-to-the-target/`).
 
 One invocation is a pool. The pool process runs no session; it keeps `[pool] jobs` worker loops running, each a `tools/loop.py --worker <pool pid>` process, and re-reads the number every few seconds, so concurrency is changed by editing `loop.toml` rather than by opening or closing terminals. Each worker is a whole loop as before: its own Beads actor `loop-<pid>`, its own pid file under `logs/loop/` naming its pool, and the same claim, recovery and wait rules toward its siblings as toward any other loop. The pool passes stop, stop-now and reload on to its workers, stops them all when one finds nothing left but questions, and does not replace a worker that failed until the number changes.
 

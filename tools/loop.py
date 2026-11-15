@@ -59,6 +59,19 @@ left out too. A candidate that is not under `[offerings]` is an error. When noth
 session is started: the loop waits if another loop or actor is active, and stops otherwise. Without
 `[routes]`, the loop runs plain rounds on Claude with the top-level tables' flags.
 
+P0 is the path to the target (`design/p0-is-the-path-to-the-target/`). Before each dispatch the
+pre-check finds the one open epic labelled `target` and every open issue it transitively waits on:
+its blocks-dependencies, its children (through a closed child to an open descendant), and the
+blockers of any ancestor, because a blocked ancestor hides its children from ready. It sets those to
+P0, and every epic that holds one, up to but not including the root, which is never a split or a
+close round. Every other open, in-progress or blocked P0 becomes P1, except an issue whose title or
+a label marks main failing the gate by itself, which stays P0. When that path has no ready leaf,
+nothing in progress and no epic a split or close round would take, the pre-check files one issue
+under the target, once while one is open, titled `No progress possible toward <id>`, naming the
+cycle over blocks and parent edges or the blocking issues. A P0 epic round, split or close, is
+dispatched ahead of any non-P0 leaf. `--check` prints the target, the path size, the priority
+changes and the stall state, and changes nothing.
+
 Pacing (`[meters.<name>]`, with `target` and `window`, the length of the meter's window in hours). Each
 paced meter is a token bucket. Its line climbs from 0% at the window's opening, `window` hours before
 the reset, to the target at the reset, refilling target / window percent an hour, and what lies between
@@ -177,7 +190,7 @@ same, and its failure counts the same.
 
 usage: tools/loop.py [--wait SECONDS]                             run a pool of loops until it stops
        tools/loop.py --once                                       run one round in this process
-       tools/loop.py --check                                      show matching ready work (0 tokens)
+       tools/loop.py --check                                      show matching ready work and the path to the target (0 tokens)
        tools/loop.py --list-profiles                              list the offerings and routes in loop.toml
        tools/loop.py --stop [--now] [PID...]                      stop running loops, after their run in flight
        tools/loop.py --reload [PID...]                            re-execute running loops, after their run in flight
@@ -262,6 +275,13 @@ STAGE_ROUTE = {
     "needs-land": "needs-land",
 }
 ISSUE = r"[a-z][a-z0-9]*-[a-z0-9]+(?:\.[0-9]+)*"
+# Priorities the pre-check rewrites. Closed and deferred issues stay as they are.
+PRIORITY_STATUS = ("open", "in_progress", "blocked")
+# An issue whose title or a label contains this stays P0 off the path: it blocks every landing.
+GATE_MARK = "fails the gate by itself"
+STALL_PREFIX = "No progress possible toward "
+EPIC_SPLIT_PROMPT = ("Run one round. Epic round only: a P0 epic split is ahead of any non-P0 leaf. "
+                     "Do not claim a leaf from bd ready.")
 KEY = re.compile(rf"^(Loop|Prover|Skeptic|Retry|Notify):\s*(.*)$")
 LIMIT_RE = re.compile(r"usage limit|limit reached|rate limit|quota|resource[ _]exhausted", re.I)
 DECORATION = "-*`> \t"
@@ -703,6 +723,245 @@ def classify_issue(issue, by_id=None):
 def issue_stages(issue):
     """The stage:<name> suffixes carried by an issue."""
     return [lbl[6:] for lbl in (issue.get("labels") or []) if lbl.startswith("stage:") and lbl[6:] in STAGE_NAMES]
+
+
+def dependency_links(issue):
+    """`(kind, other id)` for each dependency. `bd list` names `type` and `depends_on_id`; `bd show` names
+    `dependency_type` and `id`."""
+    links = []
+    for dep in issue.get("dependencies") or []:
+        kind = dep.get("type") or dep.get("dependency_type")
+        other = dep.get("depends_on_id") or dep.get("id")
+        if kind and other:
+            links.append((kind, other))
+    return links
+
+
+def children_by_parent(issues):
+    kids = {issue["id"]: [] for issue in issues}
+    for issue in issues:
+        parent = issue.get("parent")
+        if parent in kids:
+            kids[parent].append(issue)
+    return kids
+
+
+def gate_failure(issue):
+    """Whether the issue's title or a label marks main failing the gate by itself."""
+    if GATE_MARK in (issue.get("title") or ""):
+        return True
+    return any(GATE_MARK in label for label in (issue.get("labels") or []))
+
+
+def finished_epic(line):
+    """The epic id in a tools/reviews.py line, `close <id>:` or `review <id>:`."""
+    parts = line.split()
+    if len(parts) < 2 or parts[0] not in ("close", "review"):
+        return None
+    return parts[1].removesuffix(":")
+
+
+@dataclass
+class TargetPlan:
+    """What the pre-check would do to priorities, and whether the path is stalled. Computed, not applied."""
+
+    target_id: str | None = None
+    ambiguous: tuple = ()
+    path: frozenset = frozenset()
+    holding: frozenset = frozenset()
+    promote: tuple = ()
+    demote: tuple = ()
+    stalled: bool = False
+    stall_text: str = "none"
+    stall_issue: str | None = None
+    cycle: tuple = ()
+    blockers: tuple = ()
+
+
+def path_and_holding(target_id, by_id, kids):
+    """The open issues `target_id` waits on, and the epics that hold one, excluding the root.
+
+    Waits-on follows blocks-dependencies, children (a closed child is walked so an open descendant is
+    reached), and the blockers of every ancestor. A blocked ancestor hides its children from ready, so
+    those blockers are on the path even when the ancestor itself is not. Holding is the ancestors of
+    the path, up to but not including the root, so their close and split rounds stay at P0."""
+    path, seen, queue = set(), set(), [target_id]
+    while queue:
+        iid = queue.pop()
+        if iid in seen or iid not in by_id:
+            continue
+        seen.add(iid)
+        issue = by_id[iid]
+        if issue.get("status") != "closed":
+            path.add(iid)
+            for kind, other in dependency_links(issue):
+                if kind == "blocks":
+                    queue.append(other)
+            anc, walked = issue.get("parent"), set()
+            while anc and anc not in walked and anc in by_id:
+                walked.add(anc)
+                ancestor = by_id[anc]
+                if ancestor.get("status") != "closed":
+                    for kind, other in dependency_links(ancestor):
+                        if kind == "blocks":
+                            queue.append(other)
+                anc = ancestor.get("parent")
+        for child in kids.get(iid, []):
+            queue.append(child["id"])
+    holding = set()
+    for iid in path:
+        anc, walked = by_id[iid].get("parent"), set()
+        while anc and anc not in walked and anc in by_id:
+            walked.add(anc)
+            if not by_id[anc].get("parent"):
+                break
+            holding.add(anc)
+            anc = by_id[anc].get("parent")
+    return path, holding - path
+
+
+def wait_edges(issues, by_id):
+    """Edges of 'waits on' over live issues: a blocks-dependency, and a child to its parent."""
+    edges = {}
+    for issue in issues:
+        if issue.get("status") == "closed":
+            continue
+        nxt, seen = [], set()
+
+        def add(other):
+            if other and other not in seen and other in by_id and by_id[other].get("status") != "closed":
+                seen.add(other)
+                nxt.append(other)
+
+        for kind, other in dependency_links(issue):
+            if kind == "blocks":
+                add(other)
+        add(issue.get("parent"))
+        edges[issue["id"]] = nxt
+    return edges
+
+
+def wait_cycle(issues, must_touch):
+    """One cycle of blocks and parent edges that touches `must_touch`, closed by repeating its start, or None."""
+    edges = wait_edges(issues, {issue["id"]: issue for issue in issues})
+    color, stack, found = {}, [], []
+
+    def dfs(node):
+        color[node] = 1
+        stack.append(node)
+        for nxt in edges.get(node, []):
+            state = color.get(nxt, 0)
+            if state == 1:
+                cycle = stack[stack.index(nxt):] + [nxt]
+                if must_touch.intersection(cycle):
+                    found.append(cycle)
+                    return True
+            elif state == 0 and dfs(nxt):
+                return True
+        stack.pop()
+        color[node] = 2
+        return False
+
+    for node in edges:
+        if color.get(node, 0) == 0 and dfs(node):
+            break
+    return found[0] if found else None
+
+
+def priority_edits(issues, p0_ids, target_id):
+    """Ids to set to P0 and ids to set to P1. The root is left alone: it is never a split or a close round.
+    A gate-failure issue stays P0 wherever it sits."""
+    promote, demote = [], []
+    for issue in issues:
+        if issue.get("status") not in PRIORITY_STATUS:
+            continue
+        iid = issue["id"]
+        if not issue.get("parent") and iid != target_id:
+            continue
+        pri = issue.get("priority")
+        if iid in p0_ids:
+            if pri != 0:
+                promote.append(iid)
+        elif pri == 0 and not gate_failure(issue):
+            demote.append(iid)
+    return tuple(sorted(promote)), tuple(sorted(demote))
+
+
+def blocker_ids(path, by_id):
+    """Path issues that another path issue waits on through a blocks-dependency."""
+    found = set()
+    for iid in path:
+        issue = by_id.get(iid)
+        if issue is None:
+            continue
+        for kind, other in dependency_links(issue):
+            if kind == "blocks" and other in path:
+                found.add(other)
+    return tuple(sorted(found))
+
+
+def existing_stall(issues, target_id):
+    """The open stall issue already filed under the target, if there is one."""
+    title = f"{STALL_PREFIX}{target_id}"
+    for issue in issues:
+        if (issue.get("parent") == target_id and (issue.get("title") or "").startswith(title)
+                and issue.get("status") not in ("closed", "deferred")):
+            return issue["id"]
+    return None
+
+
+def stall_description(plan):
+    """What the filed stall issue says is stuck, and that a round takes it next."""
+    if plan.cycle:
+        named = f"Cycle over blocks and parent edges: {' -> '.join(plan.cycle)}."
+    else:
+        named = "Blocking issues: " + (", ".join(plan.blockers) or "none") + "."
+    return (f"{named} Nothing on the path to {plan.target_id} is a ready leaf, in progress, "
+            "or an epic a split or close round would take. A round takes this issue next and "
+            "resolves it. Only a stall a round cannot resolve becomes a question to the human.")
+
+
+def target_plan(issues, ready_ids=(), splittable_ids=(), finished_ids=()):
+    """The path to the one epic labelled `target`, the priority edits, and the stall state.
+
+    No label, or more than one, changes nothing: an empty plan, or `ambiguous` naming them. A stall is
+    a non-empty path with no ready leaf, nothing in progress on it or on an epic that holds it, and no
+    epic there that a split or close round would take."""
+    marked = [issue for issue in issues if "target" in (issue.get("labels") or [])
+              and issue.get("issue_type") == "epic" and issue.get("status") in PRIORITY_STATUS]
+    if len(marked) != 1:
+        return TargetPlan(ambiguous=tuple(sorted(issue["id"] for issue in marked)))
+    target = marked[0]
+    by_id = {issue["id"]: issue for issue in issues}
+    path, holding = path_and_holding(target["id"], by_id, children_by_parent(issues))
+    promote, demote = priority_edits(issues, path | holding, target["id"])
+    ready_ids, splittable_ids, finished_ids = set(ready_ids), set(splittable_ids), set(finished_ids)
+    scope = path | holding
+    in_progress = any(by_id[iid].get("status") == "in_progress" for iid in scope if iid in by_id)
+    stalled = bool(path) and not (ready_ids & path) and not in_progress and not (finished_ids & scope) and not (splittable_ids & scope)
+    cycle = tuple(wait_cycle(issues, path) or ())
+    blockers = blocker_ids(path, by_id)
+    if not stalled:
+        stall_text = "none"
+    elif cycle:
+        stall_text = "cycle: " + " -> ".join(cycle)
+    else:
+        named = blockers or tuple(sorted(path - {target["id"]}))
+        stall_text = "blocking: " + ", ".join(named)
+    return TargetPlan(target_id=target["id"], path=frozenset(path), holding=frozenset(holding),
+                      promote=promote, demote=demote, stalled=stalled, stall_text=stall_text,
+                      stall_issue=existing_stall(issues, target["id"]), cycle=cycle, blockers=blockers)
+
+
+def patch_priority(lists, promote, demote):
+    """Write the planned priorities into the issue dicts the dispatch is about to read."""
+    promote, demote = set(promote), set(demote)
+    for items in lists:
+        for issue in items:
+            if issue.get("id") in promote:
+                issue["priority"] = 0
+            elif issue.get("id") in demote:
+                issue["priority"] = 1
 
 
 def agent_body(cwd, kind):
@@ -1517,35 +1776,73 @@ class Loop:
                 return True
         return False
 
+    def file_stall(self, plan):
+        """File the one stall issue under the target, unless a re-read shows one already open. The id, or None.
+
+        The lock makes the re-read and the create one step, so two workers do not file two. It is not held
+        across the claim: the claim takes the same lock."""
+        self.pids.mkdir(parents=True, exist_ok=True)
+        with open(self.pids / CLAIM_LOCK, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            fresh = self.beads_json("list", "--all", "--json", "--limit", "0")
+            existing = existing_stall(fresh, plan.target_id)
+            if existing:
+                return existing
+            title = f"{STALL_PREFIX}{plan.target_id}"
+            acceptance = ("The cycle or the blocking issues named here no longer stop the path, "
+                          "and this issue is closed with what was done. A stall a round cannot "
+                          "resolve is a question to the human.")
+            ok, out = self.beads_run(
+                "create", title, "-t", "task", "--parent", plan.target_id, "--no-inherit-labels",
+                "-l", "kind:tool", "-p", "0", "-d", stall_description(plan), "--acceptance", acceptance,
+                "--silent")
+            if not ok:
+                return None
+            return out.strip() or None
+
     def inspect_work(self, claim=False):
         """Inspect Beads at zero token cost for the routes of loop.toml.
 
         When claim=True, claims the first matching stage or leaf under the claim lock. A worker whose
         claim does not hold the leaf, or that finds it already in progress under another live actor,
-        starts no session on it.
+        starts no session on it. A routed claim first sets P0 to the path to the epic labelled target
+        (`design/p0-is-the-path-to-the-target/`). A P0 epic round is taken ahead of any non-P0 leaf,
+        and a stalled path is taken ahead of those by the one issue filed under the target.
         Returns (action, payload, summary_dict).
         """
         self.tune()
         recovered, other_live = self.recover_abandoned(dry_run=not claim)
+        listed = self.beads_json("list", "--all", "--json", "--limit", "0")
+        all_issues = listed if isinstance(listed, list) else []
+        by_id = {item["id"]: item for item in all_issues}
         ready = self.beads_json("ready", "--exclude-type=epic", "--json", "--limit", "0")
-        all_issues = None
-        by_id = None
-
-        def ensure_all():
-            nonlocal all_issues, by_id
-            if all_issues is None:
-                all_issues = self.beads_json("list", "--all", "--json", "--limit", "0")
-                by_id = {item["id"]: item for item in all_issues}
-            return all_issues, by_id
+        if not isinstance(ready, list):
+            ready = []
+        ready_epics = self.beads_json("ready", "-t", "epic", "--json", "--limit", "0")
+        if not isinstance(ready_epics, list):
+            ready_epics = []
+        finished_lines = reviews_mod.finished(all_issues) if all_issues else []
+        finished_ids = {epic for epic in (finished_epic(line) for line in finished_lines) if epic}
+        has_child = {item.get("parent") for item in all_issues if item.get("parent")}
+        all_splittable = [ep for ep in ready_epics if ep.get("parent") and ep["id"] not in has_child]
+        plan = target_plan(all_issues, ready_ids={item["id"] for item in ready},
+                           splittable_ids={ep["id"] for ep in all_splittable}, finished_ids=finished_ids)
+        if claim and self.dispatch.routed and plan.target_id and (plan.promote or plan.demote):
+            for iid in plan.promote:
+                self.beads("update", iid, "-p", "0")
+            for iid in plan.demote:
+                self.beads("update", iid, "-p", "1")
+            patch_priority((all_issues, ready, ready_epics), plan.promote, plan.demote)
+        p0_finished = [line for line in finished_lines if by_id.get(finished_epic(line), {}).get("priority") == 0]
+        p0_split = [ep for ep in all_splittable if by_id.get(ep["id"], ep).get("priority") == 0]
+        split_epics = [ep["id"] for ep in all_splittable] if not finished_lines and not ready else []
 
         matched_stages = []
         matched_leaves = []
         cooled = []
 
-        # 1. Queued stage hand-offs in priority order.
-        for leaf in ready:
-            stages = issue_stages(leaf)
-            for sname in stages:
+        def consider_stages(leaf):
+            for sname in issue_stages(leaf):
                 rkey = STAGE_ROUTE[sname]
                 spec, waits = self.choose(rkey)
                 if spec is None:
@@ -1555,44 +1852,77 @@ class Loop:
                 matched_stages.append((sname, leaf["id"], leaf.get("title", ""), spec))
                 if claim and self.claim_leaf(leaf["id"]):
                     self.kinds[leaf["id"]] = classify_issue(leaf, by_id)
-                    return f"stage:{sname}", (leaf["id"], rkey, spec), {}
-                break
+                    return f"stage:{sname}", (leaf["id"], rkey, spec)
+                return None
+            return None
 
-        # 2. Plain ready leaves whose kind has a route (skipping leaves waiting on another stage).
-        for leaf in ready:
+        def consider_leaf(leaf):
             if issue_stages(leaf):
-                continue
-            labels = set(leaf.get("labels") or [])
-            has_explicit = any(lbl.startswith("kind:") or lbl == "review" for lbl in labels)
-            if not has_explicit:
-                ensure_all()
+                return None
             kind = classify_issue(leaf, by_id)
             spec, waits = self.choose(kind)
             if spec is None:
                 if waits:
                     cooled.append((kind, leaf["id"], waits))
-                continue
+                return None
             matched_leaves.append((kind, leaf["id"], leaf.get("title", ""), spec))
             if claim and self.claim_leaf(leaf["id"]):
                 self.kinds[leaf["id"]] = kind
-                return "leaf", (leaf["id"], kind, spec), {}
+                return "leaf", (leaf["id"], kind, spec)
+            return None
 
-        # 3. Epic rounds (finished epics first via tools/reviews.py, then childless ready epics).
-        all_list, _ = ensure_all()
-        finished_lines = reviews_mod.finished(all_list) if all_list else []
-        split_epics = []
-        if not finished_lines and not ready:
-            ready_epics = self.beads_json("ready", "-t", "epic", "--json", "--limit", "0")
-            has_child = {item.get("parent") for item in all_list if item.get("parent")}
-            split_epics = [ep["id"] for ep in ready_epics if ep.get("parent") and ep["id"] not in has_child]
+        # 1. Queued stage hand-offs in priority order.
+        for leaf in ready:
+            hit = consider_stages(leaf)
+            if hit:
+                return *hit, {}
+
+        # 2. P0 leaves, then a stalled path, then a P0 epic round, ahead of any non-P0 leaf.
+        for leaf in ready:
+            if leaf.get("priority") != 0:
+                continue
+            hit = consider_leaf(leaf)
+            if hit:
+                return *hit, {}
+        if claim and self.dispatch.routed and plan.stalled and plan.target_id:
+            stall_id = plan.stall_issue or self.file_stall(plan)
+            status = next((item.get("status") for item in all_issues if item.get("id") == stall_id), None)
+            if stall_id and status in (None, "open"):
+                spec, waits = self.choose("tool")
+                if spec is not None and self.claim_leaf(stall_id):
+                    self.kinds[stall_id] = "tool"
+                    return "leaf", (stall_id, "tool", spec), {}
+                if spec is None and waits:
+                    cooled.append(("tool", stall_id, waits))
 
         close_route = self.candidates("epic-close")
         split_route = self.candidates("epic-split")
-        close_spec = split_spec = None
+        close_spec = close_waits = None
         if finished_lines and close_route is not None:
-            close_spec, waits = self.choose("epic-close")
-            if close_spec is None:
-                cooled.append(("epic-close", "epics", waits))
+            close_spec, close_waits = self.choose("epic-close")
+        # A finished epic is closed before a split. One at P0, or any finished epic when a P0 split is
+        # what would otherwise run, is dispatched while non-P0 leaves are still ready.
+        if claim and ready and close_spec is not None and (p0_finished or (p0_split and finished_lines)):
+            return "epic_finished", ("epic-close", close_spec), {}
+        if ready and p0_split and not finished_lines and split_route is not None:
+            spec, waits = self.choose("epic-split")
+            if claim and spec is not None:
+                return "epic_split", ("epic-split", spec), {}
+            if spec is None and waits:
+                cooled.append(("epic-split", p0_split[0]["id"], waits))
+
+        # 3. Non-P0 leaves.
+        for leaf in ready:
+            if leaf.get("priority") == 0:
+                continue
+            hit = consider_leaf(leaf)
+            if hit:
+                return *hit, {}
+
+        # 4. Epic rounds once no leaf was claimed: close, then a split when nothing is ready.
+        split_spec = None
+        if finished_lines and close_route is not None and close_spec is None:
+            cooled.append(("epic-close", "epics", close_waits))
         if split_epics and not ready and split_route is not None:
             split_spec, waits = self.choose("epic-split")
             if split_spec is None:
@@ -1608,6 +1938,8 @@ class Loop:
             "close_route": close_route,
             "split_route": split_route,
             "cooled": cooled,
+            "target": {"id": plan.target_id, "ambiguous": list(plan.ambiguous), "path_size": len(plan.path),
+                       "promote": list(plan.promote), "demote": list(plan.demote), "stall": plan.stall_text},
         }
         if claim:
             if close_spec is not None:
@@ -1769,7 +2101,7 @@ class Loop:
             return self.finish_round_report(run)
         if action == "epic_split":
             _, spec = payload
-            run = self.agent("round", "Run one round.", spec=spec, route="epic-split")
+            run = self.agent("round", EPIC_SPLIT_PROMPT, spec=spec, route="epic-split")
             if run.limited:
                 return "cooldown", run
             return self.finish_round_report(run)
@@ -2057,6 +2389,17 @@ def check(config=CONFIG, out=sys.stdout, loop=None):
     _, _, summary = loop.inspect_work(claim=False)
     tag = "auto-routed [routes]" if loop.dispatch.routed else "unrouted"
     print(f"=== {tag} ===", file=out)
+    target = summary.get("target") or {}
+    if target.get("ambiguous"):
+        print(f"target: ambiguous ({', '.join(target['ambiguous'])})", file=out)
+    elif not target.get("id"):
+        print("target: none", file=out)
+    else:
+        promote, demote = target.get("promote") or [], target.get("demote") or []
+        print(f"target: {target['id']} (path {target['path_size']})", file=out)
+        print(f"p0 promote ({len(promote)}): {', '.join(promote) or 'none'}", file=out)
+        print(f"p0 demote ({len(demote)}): {', '.join(demote) or 'none'}", file=out)
+        print(f"stall: {target.get('stall', 'none')}", file=out)
     print(f"abandoned recoverable: {summary['recovered'] or 'none'} (other live actors: {summary['other_live']})", file=out)
     print(f"matching stages ({len(summary['stages'])}): "
           + (", ".join(f"{i} [{s} -> {fmt_spec(sp)}]" for s, i, _, sp in summary["stages"]) or "none"), file=out)
@@ -2294,6 +2637,8 @@ class Tests(unittest.TestCase):
             emit("all.json")
         elif args[:1] == ["show"] and "--json" in args:
             emit(f"issue-{args[1]}.json")
+        elif args[:1] == ["create"]:
+            emit("created.txt", fallback="")
         """)
 
     def driver(self, folder, *replies, **given):
@@ -4183,10 +4528,201 @@ class Tests(unittest.TestCase):
             pool.step()
             self.assertIn("admits 1", lines()[-1])
 
+    def bead(self, iid, parent=None, status="open", priority=2, kind="task", labels=None, title="", deps=None):
+        """One issue dict, with `deps` as `(kind, other, show-style)` blocks or parent-child links."""
+        item = {"id": iid, "status": status, "priority": priority, "issue_type": kind,
+                "labels": list(labels or []), "title": title, "dependencies": []}
+        if parent:
+            item["parent"] = parent
+        for kind, other, show in deps or []:
+            if show:
+                item["dependencies"].append({"dependency_type": kind, "id": other})
+            else:
+                item["dependencies"].append({"type": kind, "depends_on_id": other})
+        return item
+
+    def path_tree(self):
+        """The shape the path is defined on: a target, a holder, a parent-edge cycle, a closed child
+        with an open grandchild, a closed blocker, and the priorities the edits must keep or move."""
+        gate = "main at abcdef123456 fails the gate by itself"
+        return [
+            self.bead("atmo-star", kind="epic", priority=0, title="Star"),
+            self.bead("atmo-hold", parent="atmo-star", kind="epic", title="Holder",
+                      deps=[("blocks", "atmo-b", False)]),
+            self.bead("atmo-t", parent="atmo-star", kind="epic", priority=3, labels=["target"], title="Target",
+                      deps=[("blocks", "atmo-c", True), ("blocks", "atmo-z", False),
+                            ("parent-child", "atmo-q", False)]),
+            self.bead("atmo-c", parent="atmo-hold", kind="epic", title="Child epic"),
+            self.bead("atmo-x", parent="atmo-t", status="closed", priority=0, title="Closed child"),
+            self.bead("atmo-g", parent="atmo-x", title="Open grandchild"),
+            self.bead("atmo-d", parent="atmo-c", priority=1, title="Descendant"),
+            self.bead("atmo-b", parent="atmo-star", priority=0, title="Ancestor blocker",
+                      deps=[("blocks", "atmo-d", False)]),
+            self.bead("atmo-z", parent="atmo-star", status="closed", priority=0, title="Closed blocker",
+                      deps=[("blocks", "atmo-q", False)]),
+            self.bead("atmo-q", parent="atmo-star", priority=0, title="Off the path"),
+            self.bead("atmo-off", parent="atmo-star", priority=0, title=gate),
+            self.bead("atmo-lab", parent="atmo-star", priority=2, labels=["fails the gate by itself"],
+                      title="Labelled off the path"),
+            self.bead("atmo-old", parent="atmo-star", status="closed", priority=0, title="Closed P0"),
+            self.bead("atmo-gate", parent="atmo-t", priority=2, title=gate),
+        ]
+
+    def test_the_path_follows_blocks_children_and_the_blockers_of_an_ancestor(self):
+        issues = self.path_tree()
+        plan = target_plan(issues)
+        self.assertEqual(plan.target_id, "atmo-t")
+        self.assertEqual(plan.path, {"atmo-t", "atmo-c", "atmo-g", "atmo-d", "atmo-b", "atmo-gate"})
+        self.assertIn("atmo-hold", plan.holding)
+        self.assertNotIn("atmo-hold", plan.path)
+        self.assertNotIn("atmo-star", plan.path | plan.holding)
+        for left_out in ("atmo-x", "atmo-z", "atmo-q", "atmo-off", "atmo-lab", "atmo-old"):
+            self.assertNotIn(left_out, plan.path)
+        # No label, and more than one, each leave every priority where it stands.
+        unmarked = [{**item, "labels": []} for item in issues]
+        bare = target_plan(unmarked)
+        self.assertIsNone(bare.target_id)
+        self.assertEqual((bare.promote, bare.demote), ((), ()))
+        extra = self.bead("atmo-u", parent="atmo-star", kind="epic", labels=["target"])
+        two = target_plan(issues + [extra])
+        self.assertEqual(two.ambiguous, ("atmo-t", "atmo-u"))
+        self.assertEqual((two.promote, two.demote), ((), ()))
+
+    def test_promotion_and_demotion_keep_a_gate_failure_and_the_root(self):
+        plan = target_plan(self.path_tree())
+        self.assertEqual(plan.promote, ("atmo-c", "atmo-d", "atmo-g", "atmo-gate", "atmo-hold", "atmo-t"))
+        self.assertEqual(plan.demote, ("atmo-q",))
+        self.assertNotIn("atmo-star", plan.demote)
+        self.assertNotIn("atmo-off", plan.demote)
+        self.assertNotIn("atmo-lab", plan.promote + plan.demote)
+        self.assertNotIn("atmo-old", plan.promote + plan.demote)
+        self.assertNotIn("atmo-b", plan.promote)
+
+    def test_a_parent_edge_cycle_stalls_and_the_stall_issue_is_recorded_once(self):
+        issues = self.path_tree()
+        plan = target_plan(issues)
+        self.assertTrue(plan.stalled)
+        self.assertIsNone(plan.stall_issue)
+        self.assertEqual(plan.cycle[0], plan.cycle[-1])
+        self.assertEqual(set(plan.cycle), {"atmo-c", "atmo-hold", "atmo-b", "atmo-d"})
+        self.assertEqual(plan.stall_text, "cycle: " + " -> ".join(plan.cycle))
+        filed = self.bead("atmo-s", parent="atmo-t", priority=0,
+                          title="No progress possible toward atmo-t")
+        again = target_plan(issues + [filed])
+        self.assertEqual(again.stall_issue, "atmo-s")
+        self.assertTrue(again.stalled)
+        self.assertFalse(target_plan(issues, ready_ids={"atmo-d"}).stalled)
+        held = [dict(item, status="in_progress") if item["id"] == "atmo-hold" else item for item in issues]
+        self.assertFalse(target_plan(held).stalled)
+        self.assertFalse(target_plan(issues, splittable_ids={"atmo-hold"}).stalled)
+        self.assertFalse(target_plan(issues, finished_ids={"atmo-t"}).stalled)
+
+        # No cycle: a deferred blocker is on the path, is not rewritten, and is what the stall names.
+        deferred = [
+            self.bead("atmo-star", kind="epic", priority=0),
+            self.bead("atmo-t", parent="atmo-star", kind="epic", priority=3, labels=["target"],
+                      deps=[("blocks", "atmo-f", False)]),
+            self.bead("atmo-f", parent="atmo-star", status="deferred", priority=2, title="Not yet"),
+        ]
+        waiting = target_plan(deferred)
+        self.assertEqual(waiting.path, {"atmo-t", "atmo-f"})
+        self.assertNotIn("atmo-f", waiting.promote)
+        self.assertEqual(waiting.stall_text, "blocking: atmo-f")
+        self.assertFalse(target_plan(deferred, ready_ids={"atmo-f"}).stalled)
+
+    def test_a_stalled_path_is_claimed_ahead_of_an_off_path_leaf_and_filed_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder, "Loop: continue\n", "Loop: continue\n")
+            (folder / "loop.toml").write_text(self.OFFERINGS + '[routes.tool]\ncandidates = ["sonnet"]\n')
+            issues = self.path_tree()
+            off = self.bead("atmo-offpath", parent="atmo-star", priority=3, labels=["kind:tool"],
+                            title="Unrelated leaf")
+            (folder / "all.json").write_text(json.dumps(issues + [off]))
+            (folder / "ready.json").write_text(json.dumps([off]))
+            (folder / "ready_epics.json").write_text("[]")
+            (folder / "created.txt").write_text("atmo-s\n")
+            self.assertEqual(loop.drive(once=True), 0)
+            creates = [call for call in self.log(folder, "bd") if call[:1] == ["create"]]
+            self.assertEqual(len(creates), 1)
+            self.assertTrue(creates[0][1].startswith("No progress possible toward atmo-t"))
+            self.assertIn("--no-inherit-labels", creates[0])
+            self.assertEqual(creates[0][creates[0].index("--parent") + 1], "atmo-t")
+            self.assertIn("kind:tool", creates[0])
+            prompt = self.log(folder, "claude")[0][-2]
+            self.assertIn("Issue atmo-s is yours", prompt)
+            self.assertNotIn("atmo-offpath", prompt)
+
+            filed = self.bead("atmo-s", parent="atmo-t", priority=0, labels=["kind:tool"],
+                              title="No progress possible toward atmo-t")
+            (folder / "all.json").write_text(json.dumps(issues + [off, filed]))
+            self.assertEqual(loop.drive(once=True), 0)
+            creates = [call for call in self.log(folder, "bd") if call[:1] == ["create"]]
+            self.assertEqual(len(creates), 1)
+            self.assertIn("Issue atmo-s is yours", self.log(folder, "claude")[1][-2])
+            self.assertNotIn(["update", "atmo-offpath", "--claim"], self.log(folder, "bd"))
+
+    def test_a_p0_epic_split_is_dispatched_ahead_of_a_p3_leaf(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder, "Loop: continue\n", "Loop: continue\n")
+            (folder / "loop.toml").write_text(
+                self.OFFERINGS + '[routes.tool]\ncandidates = ["sonnet"]\n'
+                '[routes.epic-split]\ncandidates = ["sonnet"]\n')
+            root = self.bead("atmo-r", kind="epic", priority=0, title="Star")
+            epic = self.bead("atmo-e", parent="atmo-r", kind="epic", priority=0, title="Empty epic")
+            leaf = self.bead("atmo-p0", parent="atmo-r", priority=0, labels=["kind:tool"], title="P0 leaf")
+            other = self.bead("atmo-p3", parent="atmo-r", priority=3, labels=["kind:tool"], title="P3 leaf")
+            (folder / "all.json").write_text(json.dumps([root, epic, leaf, other]))
+            (folder / "ready_epics.json").write_text(json.dumps([epic]))
+            (folder / "ready.json").write_text(json.dumps([other, leaf]))
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertIn("Issue atmo-p0 is yours", self.log(folder, "claude")[0][-2])
+            self.assertNotIn("Epic round only", self.log(folder, "claude")[0][-2])
+
+            (folder / "ready.json").write_text(json.dumps([other]))
+            self.assertEqual(loop.drive(once=True), 0)
+            prompt = self.log(folder, "claude")[1][-2]
+            self.assertIn("Epic round only", prompt)
+            self.assertNotIn("atmo-p3", prompt)
+            self.assertNotIn(["update", "atmo-p3", "--claim"], self.log(folder, "bd"))
+
+    def test_check_prints_the_target_and_the_priority_changes_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder)
+            (folder / "loop.toml").write_text(self.OFFERINGS + '[routes.tool]\ncandidates = ["sonnet"]\n')
+            (folder / "all.json").write_text(json.dumps(self.path_tree()))
+            (folder / "ready.json").write_text("[]")
+            (folder / "ready_epics.json").write_text("[]")
+            shown = io.StringIO()
+            self.assertEqual(check(config=folder / "loop.toml", out=shown, loop=loop), 0)
+            text = shown.getvalue()
+            self.assertIn("target: atmo-t (path 6)", text)
+            self.assertIn("p0 promote (6): atmo-c, atmo-d, atmo-g, atmo-gate, atmo-hold, atmo-t", text)
+            self.assertIn("p0 demote (1): atmo-q", text)
+            self.assertIn("stall: cycle:", text)
+            self.assertEqual([call for call in self.log(folder, "bd") if call[:1] in (["update"], ["create"])], [])
+
+            (folder / "all.json").write_text(json.dumps([
+                self.bead("atmo-star", kind="epic", priority=0),
+                self.bead("atmo-a", parent="atmo-star", kind="epic", labels=["target"]),
+                self.bead("atmo-b", parent="atmo-star", kind="epic", labels=["target"]),
+            ]))
+            shown = io.StringIO()
+            check(config=folder / "loop.toml", out=shown, loop=loop)
+            self.assertIn("target: ambiguous (atmo-a, atmo-b)", shown.getvalue())
+            (folder / "all.json").write_text("[]")
+            shown = io.StringIO()
+            check(config=folder / "loop.toml", out=shown, loop=loop)
+            self.assertIn("target: none", shown.getvalue())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--list-profiles", action="store_true", help="list the offerings and routes in loop.toml and exit")
-    parser.add_argument("--check", action="store_true", help="show matching ready work at zero token cost and exit")
+    parser.add_argument("--check", action="store_true",
+                        help="show matching ready work and the path to the target at zero token cost, and exit")
     parser.add_argument("--once", action="store_true", help="run one round and its hand-off, then stop")
     parser.add_argument("--wait", type=float, default=WAIT, help="seconds to wait on 'Loop: wait'")
     parser.add_argument("--stop", action="store_true", help="stop running loops after their run in flight")
