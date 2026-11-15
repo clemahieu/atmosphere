@@ -129,10 +129,12 @@
 //! `svc #1` returns unknown and prints nothing.
 //!
 //! dom0 invokes retype, derive, inspect, move, delete, revoke, destroy, read registers, write registers,
-//! place, start, suspend, link and map through acall's wrappers,
+//! place, start, suspend and link, and map and unmap in a child's space, through acall's wrappers,
 //! whose ensures are the kernel's proven contracts, so the code those proofs speak of is the code that
 //! boots. dom0 is not verified: the caller token it threads through them erases in its build, and
-//! nothing here checks the wrappers' requires.
+//! nothing here checks the wrappers' requires. It maps and unmaps in its own space through asys's raw
+//! calls: acall maps there only against a page token, and a token dom0 made for itself would vouch for
+//! nothing (design/boundary-into-verified-code-counted/).
 
 #![no_std]
 #![no_main]
@@ -344,8 +346,8 @@ const MAPPED_WORD: u64 = 0x6174_6d6f_7370_6865;
 /// table the path holds, and reads back a word written through the mapping: a map at a kernel-half and at
 /// a non-canonical address is refused, the map at `PATH_ADDRESS` is accepted, and a second map at the
 /// entry it took is refused.
-fn mapped_frame_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
-    let mut map_at = |address: u64| map(caller, operation::ROOT_PROCESS_SLOT, address, 1, frame, 0).status;
+fn mapped_frame_held(frame: u64) -> bool {
+    let map_at = |address: u64| operation::map(operation::ROOT_PROCESS_SLOT, address, 1, frame, 0);
     if map_at(KERNEL_HALF_ADDRESS) != operation::STATUS_REFUSED
         || map_at(NON_CANONICAL_ADDRESS) != operation::STATUS_REFUSED
         || map_at(PATH_ADDRESS) != operation::STATUS_OK
@@ -365,7 +367,7 @@ fn mapped_frame_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
 /// an unmap at a kernel-half address, at the empty entry after `PATH_ADDRESS` and at level 2 is refused,
 /// the unmap at `PATH_ADDRESS` is accepted and a second one refused, and a map of the frame there is
 /// accepted again and reads back the word written through the first mapping.
-fn remapped_frame_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
+fn remapped_frame_held(frame: u64) -> bool {
     // Nothing dom0 uses is at these addresses but the word at PATH_ADDRESS, which it reads only after the
     // map that follows the unmap.
     let refused = |address: u64, level: u64| {
@@ -379,7 +381,7 @@ fn remapped_frame_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
         || !refused(PATH_ADDRESS, 2)
         || unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1) }.is_err()
         || !refused(PATH_ADDRESS, 1)
-        || map(caller, operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, frame, 0).status != operation::STATUS_OK
+        || operation::map(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, frame, 0) != operation::STATUS_OK
     {
         return false;
     }
@@ -398,9 +400,7 @@ fn moved_frame_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
         Ok(capability) => capability.base,
         Err(_) => return false,
     };
-    let map_from = |caller: &mut Tracked<Caller>, slot: u64| {
-        map(caller, operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, slot, 0).status
-    };
+    let map_from = |slot: u64| operation::map(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, slot, 0);
     let held = move_cap(caller, moved, moved).status == operation::STATUS_REFUSED
         && move_cap(caller, frame, operation::ROOT_CONSOLE_SLOT).status == operation::STATUS_REFUSED
         && move_cap(caller, frame, moved).status == operation::STATUS_OK
@@ -411,8 +411,8 @@ fn moved_frame_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
         )
         // Nothing dom0 uses is at PATH_ADDRESS but the word, which it reads only after the map that follows.
         && unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1) }.is_ok()
-        && map_from(caller, frame) == operation::STATUS_REFUSED
-        && map_from(caller, moved) == operation::STATUS_OK;
+        && map_from(frame) == operation::STATUS_REFUSED
+        && map_from(moved) == operation::STATUS_OK;
     // The map just made the page at PATH_ADDRESS the moved frame's, which kept the word.
     held && unsafe { (PATH_ADDRESS as *const u64).read_volatile() == MAPPED_WORD }
 }
@@ -573,7 +573,7 @@ const _: () = assert!(TIMED_MAPS == 64);
 /// beside its before number, then what the performance counters counted over each, where there are
 /// any. The counts are not checked against those numbers. The timed maps start at the page after
 /// PATH_ADDRESS, which already holds `frame`.
-fn timed_beside_before(caller: &mut Tracked<Caller>, frame: u64) -> bool {
+fn timed_beside_before(frame: u64) -> bool {
     let null_before = counters();
     let start = rdtsc();
     let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
@@ -586,7 +586,7 @@ fn timed_beside_before(caller: &mut Tracked<Caller>, frame: u64) -> bool {
     let start = rdtsc();
     for k in 1..=TIMED_MAPS {
         let address = PATH_ADDRESS + 4096 * k;
-        if map(caller, operation::ROOT_PROCESS_SLOT, address, 1, frame, 0).status != operation::STATUS_OK {
+        if operation::map(operation::ROOT_PROCESS_SLOT, address, 1, frame, 0) != operation::STATUS_OK {
             return false;
         }
     }
@@ -699,9 +699,9 @@ fn probe_refused(first: u64, count: u64, what: &[u8]) -> bool {
 /// through the entry and by no speculative one (Arm ARM D8.5.2.1, RRNMLQ and RDYCFD; AMD APM volume 2,
 /// 5.4.2), so the steps expect it exactly. A write sets dirty even through a translation cached with
 /// dirty clear, since the processor walks to set it, so that step does not depend on the TLB.
-fn probed_bits_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
+fn probed_bits_held(frame: u64) -> bool {
     let page = entry_address(PROBED_ENTRY) as *mut u64;
-    if map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0).status != operation::STATUS_OK {
+    if operation::map(operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0) != operation::STATUS_OK {
         return false;
     }
     // The map just made the page the frame's, writable; the frame holds MAPPED_WORD, which the write puts
@@ -725,9 +725,9 @@ const UNMAPPED_ENTRY: u64 = PROBED_ENTRY + 1;
 /// UNMAPPED_ENTRY from `frame`, writes it and unmaps it, and the unmap finds accessed and dirty set, with
 /// both maintained; it prints the two bits. The entry was never mapped before, so no translation of it was
 /// cached and the write walks to it and sets both.
-fn unmapped_bits_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
+fn unmapped_bits_held(frame: u64) -> bool {
     let page = entry_address(UNMAPPED_ENTRY) as *mut u64;
-    if map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0).status != operation::STATUS_OK {
+    if operation::map(operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0) != operation::STATUS_OK {
         return false;
     }
     // The map just made the page the frame's, writable; the frame holds MAPPED_WORD, which the write puts
@@ -774,13 +774,13 @@ fn remapped_other_frame_held(caller: &mut Tracked<Caller>, untyped: u64, other: 
     let beside = entry_address(UNMAPPED_ENTRY + 1) as *mut u64;
     let page = entry_address(UNMAPPED_ENTRY) as *const u64;
     if retype(caller, untyped, operation::RETYPE_FRAME, base, other, 0).status != operation::STATUS_OK
-        || map(caller, operation::ROOT_PROCESS_SLOT, beside as u64, 1, other, 0).status != operation::STATUS_OK
+        || operation::map(operation::ROOT_PROCESS_SLOT, beside as u64, 1, other, 0) != operation::STATUS_OK
     {
         return false;
     }
     // The map just made the page beside the new frame's, writable, and nothing else names it.
     unsafe { beside.write_volatile(OTHER_WORD) };
-    if map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, other, 0).status != operation::STATUS_OK {
+    if operation::map(operation::ROOT_PROCESS_SLOT, page as u64, 1, other, 0) != operation::STATUS_OK {
         return false;
     }
     // The map just made the page the new frame's, which holds OTHER_WORD.
@@ -824,10 +824,8 @@ fn freed_frame_retyped(caller: &mut Tracked<Caller>, untyped: u64, slot: u64) ->
         retype(caller, untyped, operation::RETYPE_FRAME, base, slot, 0).status
     };
     let free = |caller: &mut Tracked<Caller>| retype(caller, untyped, operation::RETYPE_FREE, base, 0, 0).status;
-    let map_page = |caller: &mut Tracked<Caller>| {
-        map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, slot, 0).status
-    };
-    if retype_frame(caller) != operation::STATUS_OK || map_page(caller) != operation::STATUS_OK {
+    let map_page = || operation::map(operation::ROOT_PROCESS_SLOT, page as u64, 1, slot, 0);
+    if retype_frame(caller) != operation::STATUS_OK || map_page() != operation::STATUS_OK {
         return false;
     }
     // The map just made the page the frame's, writable, and nothing else names it.
@@ -855,7 +853,7 @@ fn freed_frame_retyped(caller: &mut Tracked<Caller>, untyped: u64, slot: u64) ->
             inspect(caller, slot),
             Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 0
         )
-        && map_page(caller) == operation::STATUS_OK
+        && map_page() == operation::STATUS_OK
         // The map just made the page the frame's, which the retype zeroed.
         && unsafe { page.read_volatile() } == 0
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, FREED_HELD) } == operation::STATUS_OK
@@ -1262,7 +1260,7 @@ fn image_page(caller: &mut Tracked<Caller>, page: u64) -> Option<(u64, u64)> {
         }
         if frame.rights & RIGHT_EXECUTE != 0 {
             for k in 0..1u64 << frame.order {
-                if map(caller, operation::ROOT_PROCESS_SLOT, scan, 1, slot, k).status != operation::STATUS_OK {
+                if operation::map(operation::ROOT_PROCESS_SLOT, scan, 1, slot, k) != operation::STATUS_OK {
                     return None;
                 }
                 // The map just made the page at `scan` page k of the frame, readable; `page` is a page
@@ -1270,7 +1268,8 @@ fn image_page(caller: &mut Tracked<Caller>, page: u64) -> Option<(u64, u64)> {
                 let same = unsafe {
                     core::slice::from_raw_parts(scan as *const u8, 4096) == core::slice::from_raw_parts(page as *const u8, 4096)
                 };
-                if unmap(caller, operation::ROOT_PROCESS_SLOT, scan, 1).status != operation::STATUS_OK {
+                // dom0 uses nothing at `scan` after the comparison above.
+                if unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, scan, 1) }.is_err() {
                     return None;
                 }
                 if same {
@@ -1319,7 +1318,7 @@ fn switched_thread_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, 
     let arguments = [CHILD_DATA_ADDRESS, SWITCHED_WORD, own];
     linked
         && retype(caller, untyped, operation::RETYPE_FRAME, frame, shared, 0).status == operation::STATUS_OK
-        && map(caller, operation::ROOT_PROCESS_SLOT, word as u64, 1, shared, 0).status == operation::STATUS_OK
+        && operation::map(operation::ROOT_PROCESS_SLOT, word as u64, 1, shared, 0) == operation::STATUS_OK
         && map(caller, process, CHILD_DATA_ADDRESS, 1, shared, 0).status == operation::STATUS_OK
         && map(caller, process, CHILD_CODE_ADDRESS, 1, image, page).status == operation::STATUS_OK
         && retype(caller, untyped, operation::RETYPE_LEAF, leaf, operation::through(process, CHILD_OWN_ENTRY), 0).status
@@ -1843,10 +1842,8 @@ const REVOKED_MAPPINGS: u64 = 64;
 /// and fails.
 fn revoked_frame_held(caller: &mut Tracked<Caller>, large: u64, empty: u64, child: u64) -> bool {
     let address = |k: u64| PATH_ADDRESS + 4096 * k;
-    let map_child = |caller: &mut Tracked<Caller>, k: u64| {
-        map(caller, operation::ROOT_PROCESS_SLOT, address(k), 1, child, 0).status
-    };
-    if !(1..=REVOKED_MAPPINGS).all(|k| map_child(caller, k) == operation::STATUS_OK) {
+    let map_child = |k: u64| operation::map(operation::ROOT_PROCESS_SLOT, address(k), 1, child, 0);
+    if !(1..=REVOKED_MAPPINGS).all(|k| map_child(k) == operation::STATUS_OK) {
         return false;
     }
     // The map just made the page at address(1) the child's, readable, and the 2M retype zeroed it.
@@ -1872,7 +1869,7 @@ fn revoked_frame_held(caller: &mut Tracked<Caller>, large: u64, empty: u64, chil
     let held = status == operation::STATUS_OK
         && again > 0
         && matches!(inspect(caller, child), Err(operation::STATUS_REFUSED))
-        && map_child(caller, 1) == operation::STATUS_REFUSED
+        && map_child(1) == operation::STATUS_REFUSED
         && matches!(unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, address(1), 1) }, Err(operation::STATUS_REFUSED))
         && matches!(inspect(caller, large), Ok(frame) if frame.kind == operation::KIND_FRAME && frame.order == 9);
     held && print_done_after(REVOKE_HEAD, again) == operation::STATUS_OK
@@ -2248,17 +2245,17 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                     && retyped_table_pages(caller, empty)
                         .is_some_and(|(untyped, tables)| {
                             linked_path_held(caller, untyped, tables)
-                                && mapped_frame_held(caller, empty)
-                                && remapped_frame_held(caller, empty)
+                                && mapped_frame_held(empty)
+                                && remapped_frame_held(empty)
                                 && moved_frame_held(caller, empty)
                                 && retyped_large_frame_held(caller, empty, empty + 2)
                                 && derived_frame_held(caller, empty + 2, empty, empty + 1, empty + 3)
                                 && revoked_frame_held(caller, empty + 2, empty, empty + 3)
                                 && deleted_frames_held(caller, empty + 2, empty + 3)
                                 && derived_power_held(caller, empty + 2)
-                                && timed_beside_before(caller, empty + 1)
-                                && probed_bits_held(caller, empty + 1)
-                                && unmapped_bits_held(caller, empty + 1)
+                                && timed_beside_before(empty + 1)
+                                && probed_bits_held(empty + 1)
+                                && unmapped_bits_held(empty + 1)
                                 && remapped_other_frame_held(caller, untyped, empty + 2)
                                 && freed_frame_retyped(caller, untyped, empty + 3)
                                 && retyped_process_held(caller, untyped, tables[0], empty + 4)
