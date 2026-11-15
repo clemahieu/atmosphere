@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
-line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line and the segments line, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -100,6 +100,10 @@ THREAD_POINTER_LINE = "dom0 tpidr_el0 not passed on"
 # The line dom0 prints on x86_64 once it made a system call and was taken off core 0 by the timer with GS loaded
 # with its own data selector, whose base is 0: the kernel found its core's block without the GS base a process sets.
 GS_LOADED_LINE = "dom0 gs loaded across entries"
+
+# The line dom0 prints on x86_64 once a thread of its child, resumed on core 0 after dom0 loaded FS, DS and ES with
+# its own data selector, found all three null and an FS base of 0: a core does not pass them from one thread to the next.
+SEGMENTS_LINE = "dom0 segments not passed on"
 
 # The line dom0 prints once it suspended the thread it started, twice, and started it again, after the
 # suspends a slot without a thread and a copy without control must refuse were refused.
@@ -285,6 +289,8 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused(f'the serial log does not show a thread finding TPIDR_EL0 0 after dom0 wrote it: "{THREAD_POINTER_LINE}"')
     if arch == "x86_64" and not line_printed(serial, GS_LOADED_LINE):
         raise Refused(f'the serial log does not show dom0 entering the kernel with GS loaded: "{GS_LOADED_LINE}"')
+    if arch == "x86_64" and not line_printed(serial, SEGMENTS_LINE):
+        raise Refused(f'the serial log does not show a thread finding null segments after dom0 loaded them: "{SEGMENTS_LINE}"')
     if not line_printed(serial, SUSPENDED_LINE):
         raise Refused(f'the serial log does not show dom0 suspending a thread: "{SUSPENDED_LINE}"')
     if not line_printed(serial, DESTROYED_LINE):
@@ -303,7 +309,7 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
             f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
-            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, ' if arch == 'x86_64' else ''}suspended thread line, killed thread line and its lag, destroyed process line, "
+            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}suspended thread line, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
@@ -364,6 +370,7 @@ def boot_log():
             "thread counted 39000000 in 3 turns\n"
             "dom0 tpidr_el0 not passed on\n"
             "dom0 gs loaded across entries\n"
+            "dom0 segments not passed on\n"
             "dom0 thread suspended\n"
             "dom0 thread killed on core 1\n"
             "core 1 lag 2000 counts\n"
@@ -413,6 +420,7 @@ class Tests(unittest.TestCase):
             ("dom0 counted 41000000 in 3 turns\n", "both counting"),
             ("thread counted 39000000 in 3 turns\n", "both counting"),
             ("dom0 gs loaded across entries\n", "GS loaded"),
+            ("dom0 segments not passed on\n", "null segments"),
             ("dom0 thread suspended\n", "suspending a thread"),
             ("dom0 thread killed on core 1\n", "stopped by the destroy"),
             ("core 1 lag 2000 counts\n", "past the destroy"),
@@ -436,11 +444,15 @@ class Tests(unittest.TestCase):
         held = boot_log_accepted(boot_log().replace(without, ""), "x86_64")
         self.assertNotIn("thread pointer line", held)
 
-    def test_the_gs_line_is_asked_only_on_x86_64(self):
+    def test_the_gs_and_segments_lines_are_asked_only_on_x86_64(self):
         virt = boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
-        without = virt.replace("dom0 gs loaded across entries\n", "")
-        self.assertNotIn("GS line", boot_log_accepted(without, "aarch64"))
-        self.assertIn("GS line", boot_log_accepted(boot_log(), "x86_64"))
+        without = virt.replace("dom0 gs loaded across entries\n", "").replace("dom0 segments not passed on\n", "")
+        held = boot_log_accepted(without, "aarch64")
+        self.assertNotIn("GS line", held)
+        self.assertNotIn("segments line", held)
+        held = boot_log_accepted(boot_log(), "x86_64")
+        self.assertIn("GS line", held)
+        self.assertIn("segments line", held)
 
     def test_the_eager_line_names_forty_pages(self):
         self.assertIn("eager source", self.refused(boot_log().replace("backed 40\n", "backed 39\n")))

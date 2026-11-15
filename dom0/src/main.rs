@@ -1125,7 +1125,11 @@ const SWITCH_READS: u64 = 1 << 24;
 // dom0_child_count it adds one to the word at its first argument, for good, and enters the kernel only
 // when the timer takes the core from it; from dom0_child_count_thread_pointer, on aarch64, it does the
 // same and after each count stores the TPIDR_EL0 it finds in the word four after its first argument;
-// from dom0_child_invoke it inspects the capability at the slot its third argument names and adds one to the word at its first after each inspect accepted, until that word
+// from dom0_child_count_segments, on x86_64, it does the same and after each count stores the FS, DS and
+// ES selectors it finds, packed as ES, DS, FS from the high bits, in the word four after its first
+// argument, and what FS's base adds to its first argument, read as the word through FS less the word
+// itself, in the word five after it; from dom0_child_invoke it inspects the capability at the slot its
+// third argument names and adds one to the word at its first after each inspect accepted, until that word
 // reaches its second argument or an inspect is refused, then suspends its own thread through that slot;
 // from dom0_child_hold it stores its second argument at its first, then its first at its second, waits
 // until the word at its second no longer holds its first, and suspends its own thread through the slot
@@ -1145,6 +1149,21 @@ core::arch::global_asm!(
     "dom0_child_count:",
     "inc qword ptr [rdi]",
     "jmp dom0_child_count",
+    ".global dom0_child_count_segments",
+    "dom0_child_count_segments:",
+    "inc qword ptr [rdi]",
+    "mov rax, es",
+    "shl rax, 16",
+    "mov rcx, ds",
+    "or rax, rcx",
+    "shl rax, 16",
+    "mov rcx, fs",
+    "or rax, rcx",
+    "mov [rdi + {segments}], rax",
+    "mov rax, fs:[rdi]",
+    "sub rax, [rdi]",
+    "mov [rdi + {fs_read}], rax",
+    "jmp dom0_child_count_segments",
     ".global dom0_child_invoke",
     "dom0_child_invoke:",
     "mov r12, rdi",
@@ -1176,6 +1195,8 @@ core::arch::global_asm!(
     "7: jmp 7b",
     inspect = const operation::INSPECT,
     suspend = const operation::SUSPEND,
+    segments = const CHILD_SEGMENTS_ADDRESS - CHILD_COUNT_ADDRESS,
+    fs_read = const CHILD_FS_READ_ADDRESS - CHILD_COUNT_ADDRESS,
 );
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
@@ -1246,6 +1267,9 @@ unsafe extern "C" {
     /// The first instruction of the child's code above that counts and stores the TPIDR_EL0 it finds.
     #[cfg(target_arch = "aarch64")]
     fn dom0_child_count_thread_pointer();
+    /// The first instruction of the child's code above that counts and stores the data segments it finds.
+    #[cfg(target_arch = "x86_64")]
+    fn dom0_child_count_segments();
     /// The first instruction of the child's code above that invokes and counts its invocations.
     fn dom0_child_invoke();
     /// The first instruction of the child's code above that writes a page and waits for dom0.
@@ -1548,6 +1572,14 @@ const CHILD_HOLD_ADDRESS: u64 = CHILD_INVOKED_ADDRESS + 8;
 #[cfg(target_arch = "aarch64")]
 const CHILD_THREAD_POINTER_ADDRESS: u64 = CHILD_HOLD_ADDRESS + 8;
 
+/// Where the thread started_thread_held starts stores, on x86_64, the FS, DS and ES selectors it finds
+/// and what FS's base adds to an address: the seventh and eighth words of the frame both spaces map,
+/// after CHILD_HOLD_ADDRESS's.
+#[cfg(target_arch = "x86_64")]
+const CHILD_SEGMENTS_ADDRESS: u64 = CHILD_HOLD_ADDRESS + 8;
+#[cfg(target_arch = "x86_64")]
+const CHILD_FS_READ_ADDRESS: u64 = CHILD_SEGMENTS_ADDRESS + 8;
+
 /// How far below the top of the gigabyte untyped the frame the thread on core 1 writes is: the page after
 /// the switch check's table leaf, below CHILD_LEAF_BELOW_TOP, where nothing else retypes.
 const CORE_1_FRAME_BELOW_TOP: u64 = SWITCH_BELOW_TOP - 3 * TABLE_PAGE_BYTES - 2 * LEAF_BYTES;
@@ -1637,8 +1669,9 @@ const STARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread started\n");
 
 /// Whether dom0 starts the thread the place check placed on core 0 at dom0's own priority, 0, so that
 /// thread is Runnable behind dom0, which outranks it in nothing, and the core gets no reschedule IPI.
-/// First its frame gets the entry dom0_child_count in the child's space, dom0_child_count_thread_pointer
-/// on aarch64, where switched_thread_held mapped dom0's code and the shared frame, and CHILD_COUNT_ADDRESS
+/// First its frame gets the entry dom0_child_count_segments in the child's space on x86_64,
+/// dom0_child_count_thread_pointer on aarch64, where switched_thread_held mapped dom0's code and the
+/// shared frame, and CHILD_COUNT_ADDRESS
 /// as its first argument, so it counts whenever the timer gives it the core. A start of the console slot, which holds no thread, is refused,
 /// and so is one of the second thread the thread check retyped, which is not placed. The start is
 /// accepted and a second refused, the thread being Runnable. dom0 then places the third thread on core
@@ -1647,7 +1680,7 @@ const STARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread started\n");
 fn started_thread_held(caller: &mut Tracked<Caller>) -> bool {
     let thread = first_slot(FIRST_EMPTY_ENTRY) + 1;
     #[cfg(target_arch = "x86_64")]
-    let count = dom0_child_count as *const () as u64;
+    let count = dom0_child_count_segments as *const () as u64;
     #[cfg(target_arch = "aarch64")]
     let count = dom0_child_count_thread_pointer as *const () as u64;
     let entry = dom0_child_entry as *const () as u64;
@@ -1794,6 +1827,80 @@ fn gs_loaded_held() -> bool {
         printed == operation::STATUS_OK
             && ticked
             && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, GS_LOADED_HELD) } == operation::STATUS_OK
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        true
+    }
+}
+
+/// What dom0 prints once a thread of its child, resumed on core 0 after dom0 loaded FS, DS and ES with
+/// its data selector, found them null with an FS base of 0, which the gate looks for on x86_64.
+#[cfg(target_arch = "x86_64")]
+const SEGMENTS_CLEARED_HELD: [u64; 5] = operation::print_words(b"dom0 segments not passed on\n");
+
+/// What dom0 writes over the thread's two words before it waits for the thread to store them again: no
+/// three selectors packed in 48 bits are all ones.
+#[cfg(target_arch = "x86_64")]
+const SEGMENTS_UNSEEN: u64 = u64::MAX;
+
+/// Whether a process's FS, DS and ES end with its thread's turn at a core, on x86_64. dom0 loads all
+/// three with its data selector, which the next thread the core resumes must not see
+/// (design/gs-base-swapped-at-ring-3/). It then writes SEGMENTS_UNSEEN over the two words the thread
+/// started_thread_held started stores, and counts until the thread stored both again, which it does
+/// only while the timer has taken core 0 from dom0; twice, since the thread may store at the start of a
+/// turn what it read before dom0's load, but not at the start of the next. The thread is of dom0's
+/// child, so each of its turns follows a switch between processes, and it must have found null
+/// selectors and an FS base of 0. dom0 then loads null selectors itself and prints that it held, or
+/// what the thread found. aarch64 has no segment registers, so there is nothing to load.
+fn segments_cleared_held() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let shared = entry_address(SHARED_ENTRY);
+        let segments = (shared + (CHILD_SEGMENTS_ADDRESS - CHILD_DATA_ADDRESS)) as *mut u64;
+        let fs_read = (shared + (CHILD_FS_READ_ADDRESS - CHILD_DATA_ADDRESS)) as *mut u64;
+        unsafe {
+            core::arch::asm!(
+                "mov ds, {0:x}",
+                "mov es, {0:x}",
+                "mov fs, {0:x}",
+                in(reg) USER_DATA_SELECTOR,
+                options(nostack, preserves_flags),
+            );
+        }
+        // switched_thread_held mapped the shared frame at SHARED_ENTRY; the thread is its only other writer.
+        let stored = (0..2).all(|_| {
+            unsafe {
+                segments.write_volatile(SEGMENTS_UNSEEN);
+                fs_read.write_volatile(SEGMENTS_UNSEEN);
+            }
+            let mut ours = 0;
+            while ours < PREEMPT_COUNTS
+                && (unsafe { segments.read_volatile() } == SEGMENTS_UNSEEN
+                    || unsafe { fs_read.read_volatile() } == SEGMENTS_UNSEEN)
+            {
+                ours += 1;
+            }
+            ours < PREEMPT_COUNTS
+        });
+        let (found, read) = unsafe { (segments.read_volatile(), fs_read.read_volatile()) };
+        unsafe {
+            core::arch::asm!(
+                "mov ds, {0:x}",
+                "mov es, {0:x}",
+                "mov fs, {0:x}",
+                in(reg) 0u16,
+                options(nostack, preserves_flags),
+            );
+        }
+        if stored && (found != 0 || read != 0) {
+            print_count(b"thread found segments ", found, b"\n");
+            print_count(b"thread found fs adding ", read, b"\n");
+        }
+        stored
+            && found == 0
+            && read == 0
+            && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, SEGMENTS_CLEARED_HELD) } == operation::STATUS_OK
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -2395,6 +2502,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && preempted_thread_held()
                                 && thread_pointer_cleared_held()
                                 && gs_loaded_held()
+                                && segments_cleared_held()
                                 && suspended_thread_held(caller, empty + 5)
                                 && core_1_counting_held(caller)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)

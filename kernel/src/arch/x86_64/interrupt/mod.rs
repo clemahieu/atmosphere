@@ -318,7 +318,7 @@ unsafe fn resume_selected(regs: &mut Registers) {
     match handle_selection(regs, from_process(regs)) {
         Resume::Interrupted => {},
         Resume::Thread(resumed) => {
-            crate::arch::clear_process_gs();
+            crate::arch::clear_process_segments();
             *regs = resumed;
         },
         Resume::Idle => crate::arch::idle_on(crate::cpu::get_current().syscall_sp),

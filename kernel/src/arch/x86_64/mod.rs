@@ -17,7 +17,7 @@ mod this_core;
 pub mod write_protect;
 
 pub use this_core::{
-    clear_process_gs, core_pointer, counters, init_boot_core, init_core, set_core_pointer, translation_root,
+    clear_process_segments, core_pointer, counters, init_boot_core, init_core, set_core_pointer, translation_root,
     CoreState,
 };
 
@@ -245,13 +245,14 @@ const RFLAGS_RESERVED_ONE: u64 = 1 << 1;
 
 /// Enters user code at `pc` with stack `sp` and two entry arguments, which it finds in `rdi` and `rsi`,
 /// and with interrupts unmasked, which the kernel kept masked: SYSRET loads RFLAGS from r11 (APM 3,
-/// SYSRET), so the process starts with IF set and no other flag. The process starts with a null GS of
-/// base 0, and the core's block waits in KERNEL_GS_BASE for the next entry's SWAPGS.
+/// SYSRET), so the process starts with IF set and no other flag. The process starts with null data
+/// segments, FS and GS of base 0, and the core's block waits in KERNEL_GS_BASE for the next entry's
+/// SWAPGS.
 pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi: u64) -> ! {
     #[cfg(feature = "stray_timer")]
     crate::machine::set_timer(crate::STRAY_TIMER_TICKS);
     log::info!("Going to sysret into {:x?}", pc);
-    clear_process_gs();
+    clear_process_segments();
     asm!(
         "mov rsp, {sp}",
         // dom0 gets its entry arguments in rdi and rsi and no kernel values.
@@ -292,6 +293,8 @@ pub mod msr {
     pub const LSTAR: u32 = 0xC000_0082;
     pub const CSTAR: u32 = 0xC000_0083;
     pub const SF_MASK: u32 = 0xC000_0084;
+    /// APM 2 §4.5.3.
+    pub const FS_BASE: u32 = 0xC000_0100;
     /// APM 2 §4.5.3.
     pub const GS_BASE: u32 = 0xC000_0101;
     /// The value SWAPGS exchanges with the GS base. APM 2 §4.5.3, and APM 3, SWAPGS.
