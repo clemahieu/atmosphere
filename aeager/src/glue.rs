@@ -907,13 +907,23 @@ pub(crate) proof fn claim_window(tracked caller: &mut Caller, window: usize, n: 
     } else {
         let ghost pre = *caller;
         let tracked mut tokens = claim_window(caller, window, n - 1);
+        let ghost mid = *caller;
         let a = window + (n - 1) * PAGE_BYTES;
         lemma_window_page_path(window, n - 1);
+        lemma_window_page_path(window, 0);
         let p = address_path(a as u64);
         assert(window_page(window, a));
+        assert(!window_path_below(window, p, n - 1));
         assert(!caller.pages().contains_key(p));
         let tracked token = claim(caller, p);
         tokens.tracked_insert(a, token);
+        assert(caller.pages() == mid.pages().insert(p, None));
+        assert forall|q: SpacePath| #[trigger] caller.pages().contains_key(q) implies (old(caller).pages().contains_key(q)
+            || window_path_below(window, q, n)) by {
+            if q != p {
+                assert(mid.pages().contains_key(q));
+            }
+        }
         assert forall|b: int| #[trigger] window_page(window, b) && b < window + n * PAGE_BYTES implies {
             &&& tokens.contains_key(b)
             &&& tokens[b].id() == caller.pages_id()
@@ -921,15 +931,46 @@ pub(crate) proof fn claim_window(tracked caller: &mut Caller, window: usize, n: 
             &&& tokens[b].frame() is None
         } by {
             if b != a {
-                use vstd::arithmetic::div_mod::lemma_fundamental_div_mod;
-                lemma_window_page_path(window, 0);
-                lemma_fundamental_div_mod(b, PAGE_BYTES as int);
-                lemma_fundamental_div_mod(window as int, PAGE_BYTES as int);
-                assert(b < window + (n - 1) * PAGE_BYTES);
+                lemma_window_page_before(window, n, b);
             }
         }
         tokens
     }
+}
+
+/// A page of the window below its `n`th that is not its `n - 1`th is below that one: pages are
+/// whole multiples of a page apart.
+proof fn lemma_window_page_before(window: usize, n: int, b: int)
+    requires
+        window as int % PAGE_BYTES as int == 0,
+        window_page(window, b),
+        b < window + n * PAGE_BYTES,
+        b != window + (n - 1) * PAGE_BYTES,
+    ensures
+        b < window + (n - 1) * PAGE_BYTES,
+{
+    use vstd::arithmetic::div_mod::lemma_fundamental_div_mod;
+    let pg = PAGE_BYTES as int;
+    let d = b - window;
+    lemma_fundamental_div_mod(b, pg);
+    lemma_fundamental_div_mod(window as int, pg);
+    let k = b / pg - window as int / pg;
+    assert(d == pg * k) by (nonlinear_arith)
+        requires
+            b == pg * (b / pg) + b % pg,
+            window as int == pg * (window as int / pg) + window as int % pg,
+            b % pg == 0,
+            window as int % pg == 0,
+            d == b - window,
+            k == b / pg - window as int / pg,
+    ;
+    assert(d < pg * (n - 1)) by (nonlinear_arith)
+        requires
+            pg > 0,
+            d == pg * k,
+            d < pg * n,
+            d != pg * (n - 1),
+    ;
 }
 
 /// The page a frame capability in a table's view holds first is a page the block table tracks, in a
