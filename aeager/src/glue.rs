@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 //! The system calls the eager source makes, each a verified call of acall's kernel step, threading the
-//! process's ghost of the kernel from one call to the next. Retype, link, map and unmap go through
-//! acall's wrappers, whose ensures are their proven caller's-view contracts, and unmap takes the
+//! process's ghost of the kernel from one call to the next. Retype and link go through acall's
+//! wrappers, and map and unmap through its calls on the caller's own space, which take the page token
+//! of the address; their ensures are their proven caller's-view contracts. Unmap takes the
 //! permission to the page's bytes so that nothing the source's caller holds is in the page it unmaps. The one trusted item is `page_permission`: a map the
 //! kernel accepted puts the frame's page at the address in the space's tables, as the map contract
 //! says, and only this item turns that into the permission to the page's bytes. The tables are what the
@@ -78,7 +79,7 @@ use verified::capability::position::POSITION_INDEX_MASK;
 #[cfg(verus_keep_ghost)]
 use crate::eager::{
     frame_slot, lemma_frame_slot, occupied, untyped_page, window_block, FREE, HELD, LEAF_INDICES,
-    MAPPED, MAX_PAGES, PARKED, REGION_BYTES, TABLE_PAGES, TAKEN, WINDOW_BLOCKS, WINDOW_BYTES,
+    MAPPED, MAX_PAGES, PARKED, REGION_BYTES, TABLE_PAGES, TAKEN, WINDOW_BLOCKS, WINDOW_BYTES, window_page,
 };
 
 verus! {
@@ -179,6 +180,21 @@ pub proof fn lemma_acall_steps_none(c: Caller)
 {
     reveal(acall_steps);
     assert(c.history().take(c.history().len() as int) =~= c.history());
+}
+
+/// A caller token `b` with the root, the history and the kernel state of `a`, as one that has only
+/// claimed page tokens since `a` has, takes to `c` the steps `a` takes there, alone when `a` is.
+pub proof fn lemma_acall_steps_claimed(a: Caller, b: Caller, c: Caller, steps: Seq<AcallStep>)
+    requires
+        b.root() == a.root(),
+        b.history() == a.history(),
+        b.kernel() == a.kernel(),
+        acall_steps(b, c, steps),
+    ensures
+        acall_steps(a, c, steps),
+        caller_alone(a, c) == caller_alone(b, c),
+{
+    reveal(acall_steps);
 }
 
 /// One valid step of `pre`'s process, entering from a state the rely relates to `pre`'s kernel and
@@ -602,6 +618,236 @@ pub open spec fn keeps_own_space(pre: Caller, post: Caller) -> bool {
     forall|space: u64| #[trigger] names_own_space(pre, space) ==> names_own_space(post, space)
 }
 
+/// The page tokens' authority, and the state the process was handed, are as they were from `pre` to
+/// `post`, and the caller's space agrees with every page token in `post` whenever it did in `pre`.
+pub open spec fn keeps_pages(pre: Caller, post: Caller) -> bool {
+    &&& post.start() == pre.start()
+    &&& post.pages_id() == pre.pages_id()
+    &&& pre.pages_wf() ==> post.pages_wf()
+}
+
+/// No page of the window at `window` has a token yet, nor an entry, or a large one over it, in the
+/// caller's space as the process was handed it or as it is now: what `claim` asks of each.
+pub open spec fn window_unclaimed(caller: Caller, window: usize) -> bool {
+    forall|a: int| #[trigger] window_page(window, a) ==> {
+        &&& !caller.pages().contains_key(address_path(a as u64))
+        &&& page_agrees(
+            space_mapping(tree_of(&caller.start().table_pages, &caller.start().spaces), caller.root()),
+            address_path(a as u64),
+            None,
+        )
+        &&& page_agrees(
+            space_mapping(tree_of(&caller.kernel().table_pages, &caller.kernel().spaces), caller.root()),
+            address_path(a as u64),
+            None,
+        )
+    }
+}
+
+/// The path of the page `k` pages into a region-aligned window: the window's level-4 and level-3
+/// entries, with `k` spread across the level-2 and level-1 ones.
+pub(crate) proof fn lemma_window_page_path(window: usize, k: int)
+    requires
+        window as int % REGION_BYTES as int == 0,
+        window + WINDOW_BYTES <= usize::MAX,
+        0 <= k < (WINDOW_BYTES / PAGE_BYTES) as int,
+    ensures
+        window_page(window, window + k * PAGE_BYTES),
+        address_path((window + k * PAGE_BYTES) as u64).l4 == address_path(window as u64).l4,
+        address_path((window + k * PAGE_BYTES) as u64).l3 == address_path(window as u64).l3,
+        address_path((window + k * PAGE_BYTES) as u64).l2 as int * ENTRIES as int + address_path(
+            (window + k * PAGE_BYTES) as u64,
+        ).l1 as int == k,
+{
+    use vstd::arithmetic::div_mod::*;
+    // The sizes by name alone: p a page, n the entries a level, b, g and t the 2M, 1G and 512G regions.
+    let p = PAGE_SZ as int;
+    let n = ENTRIES as int;
+    let b = SIZE_2M as int;
+    let g = SIZE_1G as int;
+    let t = SIZE_512G as int;
+    let c = WINDOW_BLOCKS as int;
+    assert(PAGE_BYTES == PAGE_SZ);
+    assert(b == p * n);
+    assert(g == b * n);
+    assert(t == g * n);
+    assert(REGION_BYTES == SIZE_1G);
+    assert(WINDOW_BYTES as int == c * b);
+    assert(0 < c <= n);
+    assert(p > 0 && n > 0);
+    let w = window as int;
+    let va = w + k * p;
+    let q = w / g;
+    lemma_fundamental_div_mod(w, g);
+    assert(w == g * q);
+    assert(q >= 0) by (nonlinear_arith)
+        requires
+            w == g * q,
+            w >= 0,
+            g > 0,
+    ;
+    assert((WINDOW_BYTES / PAGE_BYTES) as int == c * n);
+    assert(WINDOW_BYTES <= SIZE_1G);
+    assert(0 <= k < c * n);
+    let hi = k / n;
+    let lo = k % n;
+    lemma_fundamental_div_mod(k, n);
+    assert(0 <= hi < c) by (nonlinear_arith)
+        requires
+            0 <= k < c * n,
+            k == n * hi + lo,
+            0 <= lo < n,
+            n > 0,
+    ;
+    assert(0 <= lo < n);
+    assert(0 <= k * p < c * b) by (nonlinear_arith)
+        requires
+            0 <= k < c * n,
+            b == p * n,
+            p > 0,
+    ;
+    assert(c * b <= g);
+    let m = q * (n * n) + k;
+    assert(va == p * m) by (nonlinear_arith)
+        requires
+            w == g * q,
+            g == b * n,
+            b == p * n,
+            va == w + k * p,
+            m == q * (n * n) + k,
+    ;
+    assert(window_page(window, va)) by {
+        assert(va % p == 0) by {
+            lemma_mod_multiples_basic(m, p);
+            assert(m * p == p * m) by (nonlinear_arith);
+        }
+    }
+    // Level 1: the page number's low entries.
+    lemma_fundamental_div_mod_converse(va, p, m, 0);
+    assert(m == n * (q * n + hi) + lo) by (nonlinear_arith)
+        requires
+            m == q * (n * n) + k,
+            k == n * hi + lo,
+    ;
+    lemma_fundamental_div_mod_converse(m, n, q * n + hi, lo);
+    // Level 2: the block within the region.
+    assert(va == b * (q * n + hi) + lo * p) by (nonlinear_arith)
+        requires
+            w == g * q,
+            g == b * n,
+            b == p * n,
+            va == w + k * p,
+            k == n * hi + lo,
+    ;
+    assert(0 <= lo * p < b) by (nonlinear_arith)
+        requires
+            0 <= lo < n,
+            b == p * n,
+            p > 0,
+    ;
+    lemma_fundamental_div_mod_converse(va, b, q * n + hi, lo * p);
+    lemma_fundamental_div_mod_converse(q * n + hi, n, q, hi);
+    // Level 3: the region, the window's.
+    assert(va == g * q + k * p);
+    lemma_fundamental_div_mod_converse(va, g, q, k * p);
+    lemma_fundamental_div_mod_converse(w, g, q, 0);
+    // Level 4: the window's.
+    let qh = q / n;
+    let ql = q % n;
+    lemma_fundamental_div_mod(q, n);
+    assert(0 <= g * ql <= g * (n - 1)) by (nonlinear_arith)
+        requires
+            0 <= ql < n,
+            g > 0,
+    ;
+    assert(w == t * qh + g * ql) by (nonlinear_arith)
+        requires
+            w == g * q,
+            q == n * qh + ql,
+            t == g * n,
+    ;
+    assert(g * (n - 1) + g == t) by (nonlinear_arith)
+        requires
+            t == g * n,
+    ;
+    assert(va == t * qh + (g * ql + k * p));
+    lemma_fundamental_div_mod_converse(va, t, qh, g * ql + k * p);
+    lemma_fundamental_div_mod_converse(w, t, qh, g * ql);
+    assert(va <= usize::MAX);
+    assert((va as u64) as int == va);
+    assert((w as u64) as int == w);
+}
+
+/// `p` is the path of one of the first `n` pages of the region-aligned window at `window`.
+pub open spec fn window_path_below(window: usize, p: SpacePath, n: int) -> bool {
+    &&& p.l4 == address_path(window as u64).l4
+    &&& p.l3 == address_path(window as u64).l3
+    &&& (p.l2 as int * ENTRIES as int + p.l1 as int) < n
+}
+
+/// Claims the token of each of the first `n` pages of the window at `window`, by address, each saying
+/// no frame is mapped there. The caller gains the tokens of those pages' paths and no others.
+pub(crate) proof fn claim_window(tracked caller: &mut Caller, window: usize, n: int) -> (tracked tokens: Map<
+    int,
+    PageToken,
+>)
+    requires
+        old(caller).pages_wf(),
+        window_unclaimed(*old(caller), window),
+        window as int % REGION_BYTES as int == 0,
+        window + WINDOW_BYTES <= usize::MAX,
+        0 <= n <= (WINDOW_BYTES / PAGE_BYTES) as int,
+    ensures
+        final(caller).kernel() == old(caller).kernel(),
+        final(caller).entry() == old(caller).entry(),
+        final(caller).root() == old(caller).root(),
+        final(caller).history() == old(caller).history(),
+        final(caller).start() == old(caller).start(),
+        final(caller).pages_id() == old(caller).pages_id(),
+        final(caller).pages_wf(),
+        forall|p: SpacePath| #[trigger]
+            final(caller).pages().contains_key(p) ==> (old(caller).pages().contains_key(p) || window_path_below(window, p, n)),
+        forall|a: int| #[trigger] tokens.contains_key(a) ==> window_page(window, a) && a < window + n * PAGE_BYTES,
+        forall|a: int| #[trigger] window_page(window, a) && a < window + n * PAGE_BYTES ==> {
+            &&& tokens.contains_key(a)
+            &&& tokens[a].id() == final(caller).pages_id()
+            &&& tokens[a].path() == address_path(a as u64)
+            &&& tokens[a].frame() is None
+        },
+    decreases n,
+{
+    if n == 0 {
+        let tracked tokens = Map::tracked_empty();
+        assert forall|a: int| #[trigger] window_page(window, a) implies !(a < window + n * PAGE_BYTES) by {}
+        tokens
+    } else {
+        let ghost pre = *caller;
+        let tracked mut tokens = claim_window(caller, window, n - 1);
+        let a = window + (n - 1) * PAGE_BYTES;
+        lemma_window_page_path(window, n - 1);
+        let p = address_path(a as u64);
+        assert(window_page(window, a));
+        assert(!caller.pages().contains_key(p));
+        let tracked token = claim(caller, p);
+        tokens.tracked_insert(a, token);
+        assert forall|b: int| #[trigger] window_page(window, b) && b < window + n * PAGE_BYTES implies {
+            &&& tokens.contains_key(b)
+            &&& tokens[b].id() == caller.pages_id()
+            &&& tokens[b].path() == address_path(b as u64)
+            &&& tokens[b].frame() is None
+        } by {
+            if b != a {
+                use vstd::arithmetic::div_mod::lemma_fundamental_div_mod;
+                lemma_window_page_path(window, 0);
+                lemma_fundamental_div_mod(b, PAGE_BYTES as int);
+                lemma_fundamental_div_mod(window as int, PAGE_BYTES as int);
+                assert(b < window + (n - 1) * PAGE_BYTES);
+            }
+        }
+        tokens
+    }
+}
+
 /// The page a frame capability in a table's view holds first is a page the block table tracks, in a
 /// typed block counted at least once, at the capability's base.
 pub proof fn lemma_slot_page(k: CapKernel, root: usize, slot: usize)
@@ -817,23 +1063,6 @@ pub proof fn lemma_frames_kept(pre: CapKernel, post: CapKernel, root: usize, fra
     lemma_frame_blocks_keep_count(pre, post, root);
     assert(post.table_view(root) == pre.table_view(root));
     lemma_frames_shrunk(pre, post, root, frames);
-}
-
-/// Dropping a frame keeps the rest held.
-pub proof fn lemma_frames_drop(k: CapKernel, root: usize, frames: Map<int, (usize, Option<usize>)>, key: int)
-    requires
-        frames_held(k, root, frames),
-    ensures
-        frames_held(k, root, frames.remove(key)),
-{
-    let f = frames.remove(key);
-    assert forall|i: int| #[trigger] f.contains_key(i) implies frames.contains_key(i) && f[i] == frames[i] by {}
-    assert forall|i: int, j: int|
-        f.contains_key(i) && f.contains_key(j) && i != j
-            && k.table_view(root).contains_key(#[trigger] f[i].0) && k.table_view(root).contains_key(#[trigger] f[j].0)
-            implies block_ref(&k.blocks, slot_page(k, root, f[i].0)) != block_ref(&k.blocks, slot_page(k, root, f[j].0)) by {
-        assert(frames[i] == f[i] && frames[j] == f[j]);
-    }
 }
 
 /// The frame held under `key`, whose block counts at most its capability while the table holds it,
@@ -1116,7 +1345,7 @@ proof fn lemma_frames_unmapped(
 }
 
 /// The level whose entry maps one page.
-pub const PAGE_LEVEL: u64 = 1;
+pub spec const PAGE_LEVEL: u64 = 1;
 
 /// The write right's bit, as inspect returns rights.
 const RIGHT_WRITE: u64 = 2;
@@ -1144,6 +1373,7 @@ pub(crate) fn retype_frame(
         final(caller)@.root() == old(caller)@.root(),
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
+        keeps_pages(old(caller)@, final(caller)@),
         r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.insert(key@, (destination as usize, None))),
         !r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
         acall_steps(old(caller)@, final(caller)@, seq![r.1@]),
@@ -1202,6 +1432,7 @@ pub(crate) fn retype_table_page(
         final(caller)@.root() == old(caller)@.root(),
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
+        keeps_pages(old(caller)@, final(caller)@),
         frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
         acall_steps(old(caller)@, final(caller)@, seq![r.1@]),
         r.1@.call == (AcallCall::Retype { untyped, kind: RETYPE_TABLE_PAGE, base, word: 0, level }),
@@ -1259,6 +1490,7 @@ pub(crate) fn link(
         final(caller)@.root() == old(caller)@.root(),
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
+        keeps_pages(old(caller)@, final(caller)@),
         frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
         acall_steps(old(caller)@, final(caller)@, seq![r.1@]),
         r.1@.call == (AcallCall::Link { slot: space, va: address as u64, level, from: untyped, child: table }),
@@ -1301,9 +1533,12 @@ pub(crate) fn link(
 /// source holds has the write right. Also returns the steps it took: the inspect, and the map when the
 /// inspect was accepted. The slot at `space` names the caller's own space, the one its thread runs in,
 /// and no other frame of `frames` is at `address`. `live` holds every address of the window whose
-/// page's permission the caller holds or has handed out, and `address` is not among them.
+/// page's permission the caller holds or has handed out, and `address` is not among them. The map is
+/// acall's own-space map against `token`, the page token of `address`, saying no frame is mapped
+/// there: on success it names the frame, and otherwise it is as it was.
 pub(crate) fn map_page(
     caller: &mut Tracked<Caller>,
+    token: &mut Tracked<PageToken>,
     space: u64,
     address: usize,
     frame: u64,
@@ -1315,6 +1550,10 @@ pub(crate) fn map_page(
     requires
         old(caller)@.wf(),
         own_process(old(caller)@),
+        old(caller)@.pages_wf(),
+        old(token)@.id() == old(caller)@.pages_id(),
+        old(token)@.path() == address_path(address as u64),
+        old(token)@.frame() is None,
         names_own_space(old(caller)@, space),
         !live@.contains(address),
         frame <= POSITION_INDEX_MASK,
@@ -1327,6 +1566,7 @@ pub(crate) fn map_page(
         final(caller)@.root() == old(caller)@.root(),
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
+        keeps_pages(old(caller)@, final(caller)@),
         match r.0 {
             Some(perm) => {
                 &&& perm@.is_range(address as int, PAGE_BYTES as int)
@@ -1347,6 +1587,10 @@ pub(crate) fn map_page(
         r.1@[0].out.status == STATUS_OK ==> r.1@.len() == 2,
         r.1@[0].call == (AcallCall::Inspect { at: frame }),
         r.1@.len() == 2 ==> r.1@[1].call == (AcallCall::Map { slot: space, va: address as u64, level: PAGE_LEVEL, from: frame, page: 0 }),
+        final(token)@.id() == old(token)@.id(),
+        final(token)@.path() == old(token)@.path(),
+        r.0 is Some ==> final(token)@.frame() is Some,
+        r.0 is None ==> final(token)@ == old(token)@,
     no_unwind
 {
     // The body relates three states; their invariants stay folded, and the lemmas open them.
@@ -1400,7 +1644,10 @@ pub(crate) fn map_page(
     if seen.status != STATUS_OK || seen.result_4 & RIGHT_WRITE == 0 {
         return (None, Ghost(inspected));
     }
-    let out = memory::map(caller, space, address as u64, PAGE_LEVEL, frame, 0);
+    proof {
+        assert(frame_held(mid.kernel(), root, frames@[key@]));
+    }
+    let out = memory::map_own(caller, token, space, address as u64, frame, 0);
     let ghost before = caller@.entry();
     let ghost step2 = AcallStep {
         pre: before,
@@ -1562,20 +1809,27 @@ fn page_permission(
 }
 
 /// Unmaps the page at `address` in the space at `space`, the caller's own, taking the permission to its
-/// bytes. Whether the kernel accepted, and the step it took. The frame the source holds under `key` of
-/// `frames` is the one mapped there: once the kernel accepted it is held mapped nowhere, and otherwise
-/// it is dropped.
+/// bytes. Whether the kernel accepted, the step it took, and the permission back when it refused. The
+/// frame the source holds under `key` of `frames` is the one mapped there: once the kernel accepted it
+/// is held mapped nowhere, and otherwise it is held as it was. The unmap is acall's own-space unmap
+/// against `token`, the page token of `address`, naming a frame: on success it says none, and
+/// otherwise it is as it was.
 pub(crate) fn unmap_page(
     caller: &mut Tracked<Caller>,
+    token: &mut Tracked<PageToken>,
     space: u64,
     address: usize,
     perm: Tracked<PointsToRaw>,
     frames: Ghost<Map<int, (usize, Option<usize>)>>,
     key: Ghost<int>,
-) -> (r: (bool, Ghost<AcallStep>))
+) -> (r: (bool, Ghost<AcallStep>, Tracked<Option<PointsToRaw>>))
     requires
         old(caller)@.wf(),
         own_process(old(caller)@),
+        old(caller)@.pages_wf(),
+        old(token)@.id() == old(caller)@.pages_id(),
+        old(token)@.path() == address_path(address as u64),
+        old(token)@.frame() is Some,
         names_own_space(old(caller)@, space),
         perm@.is_range(address as int, PAGE_BYTES as int),
         frames_held(old(caller)@.kernel(), old(caller)@.root(), frames@),
@@ -1586,8 +1840,15 @@ pub(crate) fn unmap_page(
         final(caller)@.root() == old(caller)@.root(),
         own_process(final(caller)@),
         keeps_own_space(old(caller)@, final(caller)@),
+        keeps_pages(old(caller)@, final(caller)@),
         r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.insert(key@, (frames@[key@].0, None))),
-        !r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@.remove(key@)),
+        !r.0 ==> frames_held(final(caller)@.kernel(), final(caller)@.root(), frames@),
+        final(token)@.id() == old(token)@.id(),
+        final(token)@.path() == old(token)@.path(),
+        r.0 ==> final(token)@.frame() is None,
+        !r.0 ==> final(token)@ == old(token)@,
+        r.0 ==> r.2@ is None,
+        !r.0 ==> r.2@ == Some(perm@),
         acall_steps(old(caller)@, final(caller)@, seq![r.1@]),
         r.1@.call == (AcallCall::Unmap { slot: space, va: address as u64, level: PAGE_LEVEL }),
         r.0 <==> r.1@.out.status == STATUS_OK,
@@ -1596,7 +1857,7 @@ pub(crate) fn unmap_page(
 {
     let ghost pre = caller@;
     // The caller gave up the permission to every byte of the page, so nothing it uses is there.
-    let out = memory::unmap(caller, space, address as u64, PAGE_LEVEL);
+    let out = memory::unmap_own(caller, token, space, address as u64);
     let ghost step = AcallStep {
         pre: caller@.entry(),
         post: caller@.kernel(),
@@ -1616,14 +1877,14 @@ pub(crate) fn unmap_page(
             lemma_frames_unmapped(e, caller@.kernel(), root, space, address, frames@, key@, out);
         } else {
             lemma_frames_same(e, caller@.kernel(), root, frames@);
-            lemma_frames_drop(caller@.kernel(), root, frames@, key@);
         }
         assert(step.valid()) by {
             reveal(AcallStep::valid);
         }
         lemma_acall_steps_one(pre, caller@, step);
     }
-    (out.status == STATUS_OK, Ghost(step))
+    let tracked kept: Option<PointsToRaw> = if out.status == STATUS_OK { None } else { Some(perm.get()) };
+    (out.status == STATUS_OK, Ghost(step), Tracked(kept))
 }
 
 /// Whether `token`'s kernel state has room for at least `n` flush-epoch increments without reaching

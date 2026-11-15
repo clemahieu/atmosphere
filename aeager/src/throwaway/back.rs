@@ -17,8 +17,8 @@ use crate::eager::*;
 use crate::exercise::*;
 use crate::glue::{
     AcallStep, acall_ok, acall_steps, flush_room, lemma_acall_ok_append, lemma_acall_refused_after_ok,
-    lemma_acall_steps_append, lemma_caller_alone_split, lemma_source_ready_premises,
-    names_own_space, own_process, source_ready,
+    lemma_acall_steps_append, lemma_acall_steps_claimed, lemma_caller_alone_split, lemma_source_ready_premises,
+    names_own_space, own_process, source_ready, window_unclaimed,
 };
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
@@ -35,6 +35,8 @@ pub fn throwaway_back(
     token: &mut Tracked<Caller>,
 )
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         false,

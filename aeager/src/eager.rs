@@ -5,8 +5,11 @@
 //!
 //! `Spans` is the window's bookkeeping, which the contract's view rests on: which blocks of the window
 //! a span holds, and the spans by base. `Record` is what the source knows of its untyped: each page
-//! free, held as a frame for reuse, mapped, parked, or taken by a table page or by a retype or unmap
-//! the kernel refused, and which tables of the window's path are linked. Its proof is that every index
+//! free, held as a frame for reuse, mapped, parked, or taken by a table page or by a retype the kernel
+//! refused, and which tables of the window's path are linked; a parked page whose unmap the kernel
+//! refused stays parked. It holds the page token of every page of the window, claimed when the source
+//! is made, and maps and unmaps against them through acall's calls on the caller's own space
+//! (design/region-map-owns-the-address-space/). Its proof is that every index
 //! and address it computes is in range, that the pages a span holds backed are the pages the record
 //! maps at their addresses, that a released page is parked at its address and backs that address again
 //! with no system call, that every `acall` step stays within the source's window, slots and untyped,
@@ -27,7 +30,11 @@ use vstd::raw_ptr::*;
 
 use acall::step::Caller;
 #[cfg(verus_keep_ghost)]
-use acall::step::caller_alone;
+use acall::step::{caller_alone, PageToken};
+#[cfg(verus_keep_ghost)]
+use vstd::resource::Loc;
+#[cfg(verus_keep_ghost)]
+use verified::capability::map::address_path;
 use aheap::arch::*;
 use aheap::source::*;
 #[cfg(verus_keep_ghost)]
@@ -1533,6 +1540,284 @@ struct Record {
     /// compiles it.
     #[cfg(verus_keep_ghost)]
     provenance: Ghost<Provenance>,
+    /// The page token of every page of the window, by address, claimed when the source was made. The
+    /// record maps and unmaps each page of the window against its token, through acall's own-space
+    /// calls (design/region-map-owns-the-address-space/). Only proofs read it, so only Verus compiles
+    /// it.
+    #[cfg(verus_keep_ghost)]
+    tokens: Tracked<Map<int, PageToken>>,
+    /// The page that each address whose token names a frame is mapped or parked by, by address.
+    #[cfg(verus_keep_ghost)]
+    holder: Ghost<Map<int, int>>,
+    /// The authority the tokens belong to, the caller token's.
+    #[cfg(verus_keep_ghost)]
+    pages_id: Ghost<Loc>,
+}
+
+/// `a` is the address of a page of the window at `window`.
+pub open spec fn window_page(window: usize, a: int) -> bool {
+    &&& window <= a < window + WINDOW_BYTES
+    &&& a % PAGE_BYTES as int == 0
+}
+
+/// The page tokens `tokens` agree with the frames a source holds, `frames`: there is one for every
+/// page of the window at `window`, of the authority `id`, for that page's path; the token of the
+/// address a frame is mapped or parked at names a frame, and `holder` names that frame's key there;
+/// and a token that names a frame is the token of the address the frame `holder` names is at.
+#[verifier::opaque]
+spec fn tokens_agree(
+    window: usize,
+    id: Loc,
+    frames: Map<int, (usize, Option<usize>)>,
+    tokens: Map<int, PageToken>,
+    holder: Map<int, int>,
+) -> bool {
+    &&& forall|a: int| #[trigger] window_page(window, a) ==> {
+        &&& tokens.contains_key(a)
+        &&& tokens[a].id() == id
+        &&& tokens[a].path() == address_path(a as u64)
+    }
+    &&& forall|k: int| #[trigger] frames.contains_key(k) && frames[k].1 is Some ==> {
+        &&& tokens.contains_key(frames[k].1->0 as int)
+        &&& tokens[frames[k].1->0 as int].frame() is Some
+        &&& holder.contains_key(frames[k].1->0 as int)
+        &&& holder[frames[k].1->0 as int] == k
+    }
+    &&& forall|a: int| #[trigger] tokens.contains_key(a) && tokens[a].frame() is Some ==> {
+        &&& 0 <= a <= usize::MAX
+        &&& holder.contains_key(a)
+        &&& frames.contains_key(holder[a])
+        &&& frames[holder[a]].1 == Some(a as usize)
+    }
+}
+
+/// Every page of the window has its token, of the authority `id`, for its path, and none names a
+/// frame: the tokens agree with a source that holds no frame mapped or parked.
+proof fn lemma_tokens_fresh(window: usize, id: Loc, frames: Map<int, (usize, Option<usize>)>, tokens: Map<int, PageToken>)
+    requires
+        forall|a: int| #[trigger] window_page(window, a) ==> {
+            &&& tokens.contains_key(a)
+            &&& tokens[a].id() == id
+            &&& tokens[a].path() == address_path(a as u64)
+            &&& tokens[a].frame() is None
+        },
+        forall|a: int| #[trigger] tokens.contains_key(a) ==> window_page(window, a),
+        forall|k: int| #[trigger] frames.contains_key(k) ==> frames[k].1 is None,
+    ensures
+        tokens_agree(window, id, frames, tokens, Map::empty()),
+{
+    reveal(tokens_agree);
+}
+
+/// The token of the address the frame under `k` is mapped or parked at, the window's page, which
+/// names a frame and is for that address's path.
+proof fn lemma_token_named(
+    window: usize,
+    id: Loc,
+    frames: Map<int, (usize, Option<usize>)>,
+    tokens: Map<int, PageToken>,
+    holder: Map<int, int>,
+    k: int,
+)
+    requires
+        tokens_agree(window, id, frames, tokens, holder),
+        frames.contains_key(k),
+        frames[k].1 is Some,
+        window_page(window, frames[k].1->0 as int),
+    ensures
+        tokens.contains_key(frames[k].1->0 as int),
+        tokens[frames[k].1->0 as int].id() == id,
+        tokens[frames[k].1->0 as int].path() == address_path(frames[k].1->0 as u64),
+        tokens[frames[k].1->0 as int].frame() is Some,
+{
+    reveal(tokens_agree);
+}
+
+/// The token of a window page `a` that no frame the source holds is mapped or parked at names no
+/// frame.
+proof fn lemma_token_free(
+    window: usize,
+    id: Loc,
+    frames: Map<int, (usize, Option<usize>)>,
+    tokens: Map<int, PageToken>,
+    holder: Map<int, int>,
+    a: int,
+)
+    requires
+        tokens_agree(window, id, frames, tokens, holder),
+        window_page(window, a),
+        forall|k: int| #[trigger] frames.contains_key(k) && frames[k].1 is Some ==> frames[k].1->0 != a,
+    ensures
+        tokens.contains_key(a),
+        tokens[a].id() == id,
+        tokens[a].path() == address_path(a as u64),
+        tokens[a].frame() is None,
+{
+    reveal(tokens_agree);
+    if tokens[a].frame() is Some {
+        assert(frames.contains_key(holder[a]));
+    }
+}
+
+/// A frame newly held mapped nowhere, under a key that held none mapped or parked, keeps the tokens
+/// agreeing.
+proof fn lemma_tokens_held(
+    window: usize,
+    id: Loc,
+    frames: Map<int, (usize, Option<usize>)>,
+    tokens: Map<int, PageToken>,
+    holder: Map<int, int>,
+    k: int,
+    slot: usize,
+)
+    requires
+        tokens_agree(window, id, frames, tokens, holder),
+        frames.contains_key(k) ==> frames[k].1 is None,
+    ensures
+        tokens_agree(window, id, frames.insert(k, (slot, None)), tokens, holder),
+{
+    reveal(tokens_agree);
+    let f = frames.insert(k, (slot, None));
+    assert forall|a: int| #[trigger] tokens.contains_key(a) && tokens[a].frame() is Some implies {
+        &&& 0 <= a <= usize::MAX
+        &&& holder.contains_key(a)
+        &&& f.contains_key(holder[a])
+        &&& f[holder[a]].1 == Some(a as usize)
+    } by {
+        assert(frames.contains_key(holder[a]));
+        assert(holder[a] != k);
+    }
+    assert forall|j: int| #[trigger] f.contains_key(j) && f[j].1 is Some implies {
+        &&& tokens.contains_key(f[j].1->0 as int)
+        &&& tokens[f[j].1->0 as int].frame() is Some
+        &&& holder.contains_key(f[j].1->0 as int)
+        &&& holder[f[j].1->0 as int] == j
+    } by {
+        assert(j != k);
+        assert(frames.contains_key(j));
+    }
+}
+
+/// The frame under `k`, mapped or parked at `a`, unmapped there and held mapped nowhere, with the
+/// token of `a` saying no frame: the tokens still agree.
+proof fn lemma_tokens_unmapped(
+    window: usize,
+    id: Loc,
+    frames: Map<int, (usize, Option<usize>)>,
+    tokens: Map<int, PageToken>,
+    holder: Map<int, int>,
+    k: int,
+    slot: usize,
+    t: PageToken,
+)
+    requires
+        tokens_agree(window, id, frames, tokens, holder),
+        frames.contains_key(k),
+        frames[k].1 is Some,
+        tokens.contains_key(frames[k].1->0 as int),
+        t.id() == tokens[frames[k].1->0 as int].id(),
+        t.path() == tokens[frames[k].1->0 as int].path(),
+        t.frame() is None,
+        forall|i: int, j: int|
+            #[trigger] frames.contains_key(i) && #[trigger] frames.contains_key(j) && i != j && frames[i].1 is Some
+                && frames[j].1 is Some ==> frames[i].1 != frames[j].1,
+    ensures
+        tokens_agree(window, id, frames.insert(k, (slot, None)), tokens.insert(frames[k].1->0 as int, t), holder),
+{
+    reveal(tokens_agree);
+    let a0 = frames[k].1->0 as int;
+    let f = frames.insert(k, (slot, None));
+    let u = tokens.insert(a0, t);
+    assert forall|a: int| #[trigger] window_page(window, a) implies {
+        &&& u.contains_key(a)
+        &&& u[a].id() == id
+        &&& u[a].path() == address_path(a as u64)
+    } by {}
+    assert forall|a: int| #[trigger] u.contains_key(a) && u[a].frame() is Some implies {
+        &&& 0 <= a <= usize::MAX
+        &&& holder.contains_key(a)
+        &&& f.contains_key(holder[a])
+        &&& f[holder[a]].1 == Some(a as usize)
+    } by {
+        assert(a != a0);
+        assert(tokens.contains_key(a) && tokens[a].frame() is Some);
+        assert(frames.contains_key(holder[a]));
+        if holder[a] == k {
+            assert(frames[k].1 == Some(a as usize));
+            assert(false);
+        }
+    }
+    assert forall|j: int| #[trigger] f.contains_key(j) && f[j].1 is Some implies {
+        &&& u.contains_key(f[j].1->0 as int)
+        &&& u[f[j].1->0 as int].frame() is Some
+        &&& holder.contains_key(f[j].1->0 as int)
+        &&& holder[f[j].1->0 as int] == j
+    } by {
+        assert(j != k);
+        assert(frames.contains_key(j));
+        assert(frames[j].1 != frames[k].1);
+        assert(f[j].1->0 as int != a0);
+    }
+}
+
+/// The frame under `k`, held mapped nowhere, mapped at the window page `a`, at which no frame the
+/// source holds is mapped or parked, with the token of `a` naming a frame and `holder` naming `k`
+/// there: the tokens still agree.
+proof fn lemma_tokens_mapped(
+    window: usize,
+    id: Loc,
+    frames: Map<int, (usize, Option<usize>)>,
+    tokens: Map<int, PageToken>,
+    holder: Map<int, int>,
+    k: int,
+    slot: usize,
+    a: usize,
+    t: PageToken,
+)
+    requires
+        tokens_agree(window, id, frames, tokens, holder),
+        frames.contains_key(k),
+        frames[k].1 is None,
+        tokens.contains_key(a as int),
+        t.id() == tokens[a as int].id(),
+        t.path() == tokens[a as int].path(),
+        t.frame() is Some,
+        forall|j: int| #[trigger] frames.contains_key(j) && frames[j].1 is Some ==> frames[j].1->0 != a,
+    ensures
+        tokens_agree(window, id, frames.insert(k, (slot, Some(a))), tokens.insert(a as int, t), holder.insert(a as int, k)),
+{
+    reveal(tokens_agree);
+    let f = frames.insert(k, (slot, Some(a)));
+    let u = tokens.insert(a as int, t);
+    let h = holder.insert(a as int, k);
+    assert forall|b: int| #[trigger] window_page(window, b) implies {
+        &&& u.contains_key(b)
+        &&& u[b].id() == id
+        &&& u[b].path() == address_path(b as u64)
+    } by {}
+    assert forall|b: int| #[trigger] u.contains_key(b) && u[b].frame() is Some implies {
+        &&& 0 <= b <= usize::MAX
+        &&& h.contains_key(b)
+        &&& f.contains_key(h[b])
+        &&& f[h[b]].1 == Some(b as usize)
+    } by {
+        if b != a as int {
+            assert(tokens.contains_key(b) && tokens[b].frame() is Some);
+            assert(frames.contains_key(holder[b]));
+            assert(holder[b] != k);
+        }
+    }
+    assert forall|j: int| #[trigger] f.contains_key(j) && f[j].1 is Some implies {
+        &&& u.contains_key(f[j].1->0 as int)
+        &&& u[f[j].1->0 as int].frame() is Some
+        &&& h.contains_key(f[j].1->0 as int)
+        &&& h[f[j].1->0 as int] == j
+    } by {
+        if j != k {
+            assert(frames.contains_key(j));
+            assert(f[j].1->0 != a);
+        }
+    }
 }
 
 /// How `Record::frame` changes `free_groups()` when it returns a held frame: either no free group is
@@ -1591,12 +1876,16 @@ impl Record {
     }
 
     /// `caller` is a token of the process whose space the record's system calls change, a process that
-    /// is its own: the slot at `space` names its own space.
+    /// is its own: the slot at `space` names its own space, and the record's page tokens are of the
+    /// caller's authority and agree with the frames it holds.
     spec fn serves(&self, caller: Caller) -> bool {
         &&& caller.wf()
         &&& own_process(caller)
         &&& names_own_space(caller, self.space)
         &&& frames_held(caller.kernel(), caller.root(), self.frames())
+        &&& caller.pages_wf()
+        &&& caller.pages_id() == self.pages_id@
+        &&& tokens_agree(self.window, self.pages_id@, self.frames(), self.tokens@, self.holder@)
     }
 
     /// The frames the source holds, by page: the slot of each page held, mapped or parked, and the
@@ -1608,13 +1897,17 @@ impl Record {
         )
     }
 
-    /// A record with another's space and frames serves every caller the other serves. A body that
-    /// hides `serves` carries it across a step that keeps both with this.
+    /// A record with another's space, frames, window and tokens serves every caller the other serves.
+    /// A body that hides `serves` carries it across a step that keeps them with this.
     proof fn lemma_serves_kept(&self, other: &Record, caller: Caller)
         requires
             other.serves(caller),
             self.space == other.space,
             self.frames() == other.frames(),
+            self.window == other.window,
+            self.tokens@ == other.tokens@,
+            self.holder@ == other.holder@,
+            self.pages_id@ == other.pages_id@,
         ensures
             self.serves(caller),
     {
@@ -1722,6 +2015,7 @@ impl Record {
         &&& self.slots == old.slots
         &&& self.window == old.window
         &&& self.provenance == old.provenance
+        &&& self.pages_id == old.pages_id
     }
 
     /// The addresses of the window whose page's permission the record has handed out or holds parked.
@@ -1944,6 +2238,7 @@ impl Record {
             self.state[i] = HELD;
             proof {
                 assert(self.frames() =~= before.frames().insert(i as int, (slot as usize, None)));
+                lemma_tokens_held(before.window, before.pages_id@, before.frames(), before.tokens@, before.holder@, i as int, slot as usize);
                 lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
                 if before.ready(c0) && caller_alone(c0, caller@) {
                     lemma_ready_retype_frame(
@@ -2064,6 +2359,11 @@ impl Record {
                         &&& final(self).avail_pages() + 1 == old(self).avail_pages()
                         &&& final(self).free_groups() <= old(self).free_groups()
                         &&& old(self).free_groups() <= final(self).free_groups() + 1
+                    }
+                    ||| {
+                        &&& old(self).avail_pages() >= 1
+                        &&& !acall_ok(r.1@)
+                        &&& *final(self) == *old(self)
                     }
                 },
             },
@@ -2214,8 +2514,25 @@ impl Record {
                 let ghost c0 = caller@;
                 let addr = self.owner[i];
                 let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
+                proof {
+                    assert(before.frames().contains_key(i as int));
+                    lemma_token_named(before.window, before.pages_id@, before.frames(), before.tokens@, before.holder@, i as int);
+                }
+                let tracked t = self.tokens.borrow_mut().tracked_remove(addr as int);
+                let mut token = Tracked(t);
                 assert(self.frames() =~= before.frames());
-                let (unmapped, Ghost(s)) = unmap_page(caller, self.space, addr, Tracked(perm), Ghost(before.frames()), Ghost(i as int));
+                let (unmapped, Ghost(s), Tracked(kept)) = unmap_page(
+                    caller,
+                    &mut token,
+                    self.space,
+                    addr,
+                    Tracked(perm),
+                    Ghost(before.frames()),
+                    Ghost(i as int),
+                );
+                proof {
+                    self.tokens.borrow_mut().tracked_insert(addr as int, token.get());
+                }
                 let ghost steps = seq![s];
                 proof {
                     assert(occupied(before.state@[i as int]));
@@ -2234,6 +2551,23 @@ impl Record {
                     self.state[i] = HELD;
                     proof {
                         assert(self.frames() =~= before.frames().insert(i as int, (before.frames()[i as int].0, None)));
+                        assert(self.tokens@ =~= before.tokens@.insert(addr as int, self.tokens@[addr as int]));
+                        assert forall|u: int, v: int|
+                            #[trigger] before.frames().contains_key(u) && #[trigger] before.frames().contains_key(v) && u != v
+                                && before.frames()[u].1 is Some && before.frames()[v].1 is Some implies before.frames()[u].1
+                            != before.frames()[v].1 by {
+                            assert(occupied(before.state@[u]) && occupied(before.state@[v]));
+                        }
+                        lemma_tokens_unmapped(
+                            before.window,
+                            before.pages_id@,
+                            before.frames(),
+                            before.tokens@,
+                            before.holder@,
+                            i as int,
+                            before.frames()[i as int].0,
+                            self.tokens@[addr as int],
+                        );
                         lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
                         lemma_free_groups_nonfree_change(before.state@, self.state@, ng as int, i as int);
                         if before.ready(c0)
@@ -2281,11 +2615,10 @@ impl Record {
                     }
                     return (Some(i), Ghost(steps));
                 }
-                self.state[i] = TAKEN;
-                assert(self.frames() =~= before.frames().remove(i as int));
                 proof {
-                    lemma_avail_update(before.state@, self.state@, self.pages as int, i as int);
-                    lemma_free_groups_nonfree_change(before.state@, self.state@, ng as int, i as int);
+                    self.parked.borrow_mut().tracked_insert(i as int, kept.tracked_unwrap());
+                    assert(self.parked@ =~= before.parked@);
+                    assert(self.tokens@ =~= before.tokens@);
                     if before.ready(c0)
                         && (flush_room(c0, 1) || forall|a: int| !#[trigger] old(self).parks(a))
                         && caller_alone(c0, caller@)
@@ -3426,7 +3759,25 @@ impl Record {
                 assert(false);
             }
         }
-        let (mapped, Ghost(s3)) = map_page(caller, self.space, addr, slot, provenance, Ghost(live), Ghost(held.frames()), Ghost(i as int));
+        proof {
+            lemma_token_free(held.window, held.pages_id@, held.frames(), held.tokens@, held.holder@, addr as int);
+        }
+        let tracked t = self.tokens.borrow_mut().tracked_remove(addr as int);
+        let mut token = Tracked(t);
+        let (mapped, Ghost(s3)) = map_page(
+            caller,
+            &mut token,
+            self.space,
+            addr,
+            slot,
+            provenance,
+            Ghost(live),
+            Ghost(held.frames()),
+            Ghost(i as int),
+        );
+        proof {
+            self.tokens.borrow_mut().tracked_insert(addr as int, token.get());
+        }
         let ghost steps = s12 + s3;
         proof {
             lemma_acall_steps_append(c0, c2, caller@, s12, s3);
@@ -3478,10 +3829,23 @@ impl Record {
                 self.state[i] = MAPPED;
                 self.owner[i] = addr;
                 proof {
+                    self.holder@ = self.holder@.insert(addr as int, i as int);
                     lemma_acall_ok_append(s12, s3);
                     lemma_addr_block(self.window, addr);
                     assert(self.state@[i as int] == MAPPED);
                     assert(self.frames() =~= held.frames().insert(i as int, (slot as usize, Some(addr))));
+                    assert(self.tokens@ =~= held.tokens@.insert(addr as int, self.tokens@[addr as int]));
+                    lemma_tokens_mapped(
+                        held.window,
+                        held.pages_id@,
+                        held.frames(),
+                        held.tokens@,
+                        held.holder@,
+                        i as int,
+                        slot as usize,
+                        addr,
+                        self.tokens@[addr as int],
+                    );
                     lemma_avail_update(held.state@, self.state@, self.pages as int, i as int);
                     let ng = (self.pages / TABLE_PAGES) as int;
                     lemma_fundamental_div_mod(self.pages as int, TABLE_PAGES as int);
@@ -3571,6 +3935,7 @@ impl Record {
             },
             None => {
                 proof {
+                    assert(self.tokens@ =~= held.tokens@);
                     lemma_keeps_no_new_mapped(*self, start);
                     lemma_keeps_no_new_parked(*self, start);
                     lemma_acall_ok_append(s12, s3);
@@ -3632,6 +3997,8 @@ impl Record {
             final(self).free_capacity() == old(self).free_capacity() + 1,
             final(self).inv(),
             final(self).frames() == old(self).frames(),
+            final(self).tokens == old(self).tokens,
+            final(self).holder == old(self).holder,
             final(self).parks(addr as int),
             forall|a: int| a != addr && #[trigger] old(self).maps(a) ==> final(self).maps(a),
             forall|a: int| #[trigger] final(self).maps(a) ==> a != addr && old(self).maps(a),
@@ -3754,6 +4121,8 @@ impl Record {
             final(self).free_capacity() == old(self).free_capacity() + pages as int,
             final(self).inv(),
             final(self).frames() == old(self).frames(),
+            final(self).tokens == old(self).tokens,
+            final(self).holder == old(self).holder,
             pages == 0 ==> *final(self) == *old(self),
             forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(self).parks(a),
             forall|a: int| !run_pages(start as int, pages as nat).contains(a) && #[trigger] old(self).maps(a) ==> final(self).maps(a),
@@ -3776,6 +4145,8 @@ impl Record {
                 self.avail_pages() == old(self).avail_pages() + k as nat,
                 self.free_capacity() == old(self).free_capacity() + k as int,
                 self.frames() == old(self).frames(),
+                self.tokens == old(self).tokens,
+                self.holder == old(self).holder,
                 k == 0 ==> *self == *old(self),
                 k <= pages,
                 start as int % PAGE_BYTES as int == 0,
@@ -4944,6 +5315,8 @@ fn release_fields(
         final(record).free_capacity() == old(record).free_capacity() + pages as int,
         final(record).inv(),
         final(record).frames() == old(record).frames(),
+        final(record).tokens == old(record).tokens,
+        final(record).holder == old(record).holder,
         backed_is_mapped(final(spans).map@, *final(record)),
         forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> final(record).parks(a),
         forall|a: int| #[trigger] old(record).parks(a) ==> final(record).parks(a),
@@ -5174,7 +5547,16 @@ impl Eager {
     /// that capability and, for a page the source maps, the one entry that maps it, at the address the
     /// source maps it at, in the space of the token's process.
     pub closed spec fn holds(&self, token: Caller) -> bool {
-        frames_held(token.kernel(), token.root(), self.record.frames())
+        &&& frames_held(token.kernel(), token.root(), self.record.frames())
+        &&& token.pages_wf()
+        &&& token.pages_id() == self.record.pages_id@
+        &&& tokens_agree(
+            self.record.window,
+            self.record.pages_id@,
+            self.record.frames(),
+            self.record.tokens@,
+            self.record.holder@,
+        )
     }
 
     /// A page is parked at `addr`: its run was released, and a back of it is granted with no system
@@ -5218,10 +5600,30 @@ impl Eager {
     /// `window`, which nothing maps, aligned to a region and with room for the window after it. None
     /// when the window or the counts do not fit, or `slots` is no slot. Each operation borrows the
     /// process's token of the kernel, which its system calls thread.
-    pub fn new(space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
+    pub fn new(
+        caller: &mut Tracked<Caller>,
+        space: u64,
+        untyped: u64,
+        memory: u64,
+        pages: usize,
+        slots: u64,
+        window: *mut u8,
+    ) -> (r: Option<Eager>)
+        requires
+            old(caller)@.pages_wf(),
+            window_unclaimed(old(caller)@, window@.addr),
         ensures
             match r {
                 Some(source) => {
+                    &&& final(caller)@.kernel() == old(caller)@.kernel()
+                    &&& final(caller)@.entry() == old(caller)@.entry()
+                    &&& final(caller)@.root() == old(caller)@.root()
+                    &&& final(caller)@.history() == old(caller)@.history()
+                    &&& final(caller)@.start() == old(caller)@.start()
+                    &&& final(caller)@.pages_id() == old(caller)@.pages_id()
+                    &&& acall_steps(old(caller)@, final(caller)@, Seq::<AcallStep>::empty())
+                    &&& caller_alone(old(caller)@, final(caller)@)
+                    &&& source.holds(final(caller)@)
                     &&& Self::new_ok(memory, pages, slots, window)
                     &&& source@.wf()
                     &&& source@.spans.is_empty()
@@ -5245,12 +5647,14 @@ impl Eager {
                     &&& pages < (2 + WINDOW_BLOCKS) * TABLE_PAGES ==> source.free_capacity() < 0
                     &&& source.acall_trace() == Seq::<AcallStep>::empty()
                     &&& source.fresh()
-                    &&& forall|token: Caller| #[trigger] source.holds(token)
                     &&& forall|token: Caller|
                         source_ready(token, space, untyped, memory, pages, slots, window@.addr)
                             ==> #[trigger] source.ready(token)
                 },
-                None => !Self::new_ok(memory, pages, slots, window),
+                None => {
+                    &&& !Self::new_ok(memory, pages, slots, window)
+                    &&& final(caller)@ == old(caller)@
+                },
             },
     {
         let addr = window.addr();
@@ -5294,6 +5698,7 @@ impl Eager {
             || addr > usize::MAX - WINDOW_BYTES {
             return None;
         }
+        let tracked tokens = claim_window(caller.borrow_mut(), addr, (WINDOW_BYTES / PAGE_BYTES) as int);
         let exposed = expose_provenance(window);
         let source = Eager {
             spans: Spans {
@@ -5319,6 +5724,12 @@ impl Eager {
                 parked: Tracked(Map::tracked_empty()),
                 #[cfg(verus_keep_ghost)]
                 provenance: Ghost(exposed@@),
+                #[cfg(verus_keep_ghost)]
+                tokens: Tracked(tokens),
+                #[cfg(verus_keep_ghost)]
+                holder: Ghost(Map::empty()),
+                #[cfg(verus_keep_ghost)]
+                pages_id: Ghost(caller@.pages_id()),
             },
             exposed,
             grants: Ghost(Seq::empty()),
@@ -5328,6 +5739,16 @@ impl Eager {
         proof {
             assert(source@.spans =~= Map::empty());
             assert(source.record.frames() =~= Map::empty());
+            assert((WINDOW_BYTES / PAGE_BYTES) as int * PAGE_BYTES as int == WINDOW_BYTES as int);
+            lemma_tokens_fresh(addr, caller@.pages_id(), source.record.frames(), source.record.tokens@);
+            // Claiming took no step: the token's root, history and kernel state are as they were.
+            lemma_acall_steps_none(caller@);
+            lemma_acall_steps_claimed(old(caller)@, caller@, caller@, Seq::<AcallStep>::empty());
+            assert(caller_alone(caller@, caller@)) by {
+                let h = caller@.history();
+                assert(h.take(h.len() as int) =~= h);
+                assert(h.skip(h.len() as int).len() == 0);
+            }
             assert(source.record.tables_unlinked() == 2 + WINDOW_BLOCKS as int);
             lemma_avail_all_free(source.record.state@, pages as int);
             let ng = (pages / TABLE_PAGES) as int;

@@ -2096,6 +2096,7 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
         return false;
     }
     let Some(mut eager) = aeager::Eager::new(
+        caller,
         operation::ROOT_PROCESS_SLOT,
         source,
         memory,
@@ -2203,6 +2204,7 @@ fn heap_source(caller: &mut Tracked<Caller>, empty: u64) -> Option<aeager::Eager
         return None;
     }
     aeager::Eager::new(
+        caller,
         operation::ROOT_PROCESS_SLOT,
         source,
         memory,

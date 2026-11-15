@@ -15,16 +15,18 @@ use crate::eager::*;
 use crate::exercise::*;
 use crate::glue::{
     AcallStep, acall_ok, acall_steps, flush_room, lemma_acall_ok_append, lemma_acall_refused_after_ok,
-    lemma_acall_steps_append, lemma_caller_alone_split, lemma_source_ready_premises,
-    names_own_space, own_process, source_ready,
+    lemma_acall_steps_append, lemma_acall_steps_claimed, lemma_caller_alone_split, lemma_source_ready_premises,
+    names_own_space, own_process, source_ready, window_unclaimed,
 };
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
 verus! {
 
 /// Constructs an eager source of `MAX_PAGES` pages over a region-aligned window.
-pub fn witness_new(space: u64, untyped: u64, window: *mut u8) -> (r: Option<Eager>)
+pub fn witness_new(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: Option<Eager>)
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         window@.addr != 0,
         window@.addr as int % REGION_BYTES as int == 0,
         window@.addr + WINDOW_BYTES <= usize::MAX,
@@ -35,13 +37,15 @@ pub fn witness_new(space: u64, untyped: u64, window: *mut u8) -> (r: Option<Eage
         assert(1int % LEAF_INDICES as int != 0) by (compute);
         assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
     }
-    Eager::new(space, untyped, 0, MAX_PAGES, 1, window)
+    Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window)
 }
 
 /// Constructs an eager source of `MAX_PAGES` pages over a region-aligned window in the caller's own
 /// space and exercises it, as dom0 does at boot.
 pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (seen: Exercised)
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         old(token)@.wf(),
         own_process(old(token)@),
         names_own_space(old(token)@, space),
@@ -55,7 +59,7 @@ pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut T
         assert(1int % LEAF_INDICES as int != 0) by (compute);
         assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
     }
-    let mut source = Eager::new(space, untyped, 0, MAX_PAGES, 1, window).unwrap();
+    let mut source = Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window).unwrap();
     let seen = exercise(&mut source, token);
     seen
 }
@@ -63,6 +67,8 @@ pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut T
 /// Reserves a one-block span from a fresh eager source over a region-aligned window.
 pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: Option<*mut u8>)
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         window@.addr != 0,
         window@.addr as int % REGION_BYTES as int == 0,
         window@.addr + WINDOW_BYTES <= usize::MAX,
@@ -76,7 +82,7 @@ pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tr
         assert(1int % LEAF_INDICES as int != 0) by (compute);
         assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, 0, MAX_PAGES, 1, window).unwrap();
+    let mut src: Eager = Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window).unwrap();
     src.reserve(token, 1)
 }
 
@@ -85,6 +91,8 @@ pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tr
 /// span held.
 pub fn witness_release_span(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: (*mut u8, Option<*mut u8>))
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         window@.addr != 0,
         window@.addr as int % REGION_BYTES as int == 0,
         window@.addr + WINDOW_BYTES <= usize::MAX,
@@ -99,7 +107,7 @@ pub fn witness_release_span(space: u64, untyped: u64, window: *mut u8, token: &m
         assert(1int % LEAF_INDICES as int != 0) by (compute);
         assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, 0, MAX_PAGES, 1, window).unwrap();
+    let mut src: Eager = Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window).unwrap();
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -127,6 +135,8 @@ pub fn witness_back(
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -150,12 +160,14 @@ pub fn witness_back(
         caller_alone(old(token)@, final(token)@) ==> r.0 is Some,
 {
     let pages: usize = (2 + WINDOW_BLOCKS) * TABLE_PAGES + 1;
+    let ghost tok0 = token@;
     proof {
         lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
         assert(pages <= MAX_PAGES) by (compute);
         assert(pages as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
+    let mut src: Eager = Eager::new(token, space, untyped, memory, pages, slots, window).unwrap();
+    let ghost made = token@;
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -180,6 +192,7 @@ pub fn witness_back(
     let ghost steps = src.acall_trace();
     proof {
         assert(src.acall_trace().skip(0) =~= steps);
+        lemma_acall_steps_claimed(tok0, made, token@, steps);
     }
     (got, Ghost(steps))
 }
@@ -198,6 +211,8 @@ pub fn witness_release(
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -206,12 +221,14 @@ pub fn witness_release(
         r.0 is Some ==> r.0->0@.is_range(window@.addr as int, PAGE_BYTES as int),
 {
     let pages: usize = (2 + WINDOW_BLOCKS) * TABLE_PAGES + 1;
+    let ghost tok0 = token@;
     proof {
         lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
         assert(pages <= MAX_PAGES) by (compute);
         assert(pages as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
+    let mut src: Eager = Eager::new(token, space, untyped, memory, pages, slots, window).unwrap();
+    let ghost made = token@;
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -237,6 +254,7 @@ pub fn witness_release(
     let ghost steps = src.acall_trace();
     proof {
         assert(src.acall_trace().skip(0) =~= steps);
+        lemma_acall_steps_claimed(tok0, made, token@, steps);
     }
     if got.is_none() {
         return (got, Ghost(steps));
@@ -265,6 +283,8 @@ pub fn witness_back_reuses_released(
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -296,7 +316,8 @@ pub fn witness_back_reuses_released(
         assert((3 * TABLE_PAGES + 1) / TABLE_PAGES as int == 3) by (compute);
         assert(2 * PAGE_BYTES <= BLOCK_BYTES) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
+    let mut src: Eager = Eager::new(token, space, untyped, memory, pages, slots, window).unwrap();
+    let ghost made = token@;
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -340,6 +361,7 @@ pub fn witness_back_reuses_released(
     let ghost steps1 = src.acall_trace();
     proof {
         assert(src.acall_trace().skip(0) =~= steps1);
+        lemma_acall_steps_claimed(tok0, made, token@, steps1);
         assert forall|va: int| #[trigger] run_pages(addr as int, 1).contains(va)
             implies run_pages(addr as int, 2).contains(va) by {};
         assert forall|k: int| 0 <= k < steps1.len() implies acall_call_in_window(
@@ -465,6 +487,8 @@ pub fn witness_back_after_release_span(
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -496,7 +520,8 @@ pub fn witness_back_after_release_span(
         assert((3 * TABLE_PAGES + 1) / TABLE_PAGES as int == 3) by (compute);
         assert(2 * PAGE_BYTES <= BLOCK_BYTES) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
+    let mut src: Eager = Eager::new(token, space, untyped, memory, pages, slots, window).unwrap();
+    let ghost made = token@;
     proof {
         assert(src.window_fits(0, 1));
     }
@@ -533,6 +558,7 @@ pub fn witness_back_after_release_span(
     let ghost steps1 = src.acall_trace();
     proof {
         assert(src.acall_trace().skip(0) =~= steps1);
+        lemma_acall_steps_claimed(tok0, made, token@, steps1);
         assert forall|va: int| #[trigger] run_pages(addr as int, 1).contains(va)
             implies run_pages(addr as int, 2).contains(va) by {};
         assert forall|k: int| 0 <= k < steps1.len() implies acall_call_in_window(
@@ -665,6 +691,8 @@ pub fn witness_back_second_block(
     token: &mut Tracked<Caller>,
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
+        old(token)@.pages_wf(),
+        window_unclaimed(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (5 * TABLE_PAGES) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -699,7 +727,8 @@ pub fn witness_back_second_block(
         assert(PAGE_BYTES < BLOCK_BYTES) by (compute);
         assert(WINDOW_BYTES == 4 * BLOCK_BYTES) by (compute);
     }
-    let mut src: Eager = Eager::new(space, untyped, memory, pages, slots, window).unwrap();
+    let mut src: Eager = Eager::new(token, space, untyped, memory, pages, slots, window).unwrap();
+    let ghost made = token@;
     proof {
         assert(src.window_fits(0, 2));
     }
@@ -744,6 +773,7 @@ pub fn witness_back_second_block(
     let ghost steps1 = src.acall_trace();
     proof {
         assert(src.acall_trace().skip(0) =~= steps1);
+        lemma_acall_steps_claimed(tok0, made, token@, steps1);
         assert forall|va: int| #[trigger] run_pages(addr as int, 1).contains(va)
             implies run_pages(addr as int, (BLOCK_PAGES + 1) as nat).contains(va) by {};
         assert forall|k: int| 0 <= k < steps1.len() implies acall_call_in_window(
