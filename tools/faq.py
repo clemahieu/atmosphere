@@ -1052,6 +1052,56 @@ class Tests(unittest.TestCase):
         self.assertIn(bytes_label(v["REACH_4K"]), out["slots-versus-memory.svg"])
         self.assertIn("Where a process's slot budget runs out", out["README.md"])
 
+    def test_the_frame_explainer_types_no_number_and_states_each_order(self):
+        text = (REPO / SOURCES / "frame-backs-many-mappings.md").read_text(encoding="utf-8")
+        # A digit inside an item's name, such as SIZE_2M, is the name. A typed number stands alone.
+        self.assertIsNone(re.search(r"(?<![A-Za-z0-9_])\d", PLACEHOLDER.sub("", text)))
+        out = outputs(REPO)
+        page = out["frame-backs-many-mappings.md"]
+        v = values(REPO)
+        for name, spec in PLACEHOLDER.findall(text):
+            self.assertIn(format(v[name], spec or ""), page)
+        self.assertEqual(1 << v["INDEX_BITS"], v["PAGES_PER_2M"])
+        self.assertEqual(v["PAGES_PER_1G"], v["ENTRIES"] * v["ENTRIES"])
+        self.assertEqual(v["PAGES_PER_1G"] // v["PAGES_PER_2M"], v["ENTRIES"])
+        self.assertEqual(v["ONE_G_ORDER"], 2 * v["INDEX_BITS"])
+        self.assertEqual(v["SIZE_2M"], v["PAGE_SZ"] * v["PAGES_PER_2M"])
+        self.assertEqual(v["SIZE_1G"], v["PAGE_SZ"] * v["PAGES_PER_1G"])
+        self.assertEqual(v["TABLE_ORDER"], 3)
+        self.assertEqual((v["TABLE_PAGE_BYTES"] // v["PAGE_SZ"]).bit_length() - 1, v["TABLE_ORDER"])
+        for name in ("PAGE_SZ", "SIZE_2M", "SIZE_1G", "PAGES_PER_1G", "TABLE_PAGE_BYTES"):
+            self.assertIn(f"{v[name]:,}", page)
+        for name in ("PAGES_PER_2M", "INDEX_BITS", "ONE_G_ORDER", "ENTRIES", "TABLE_ORDER", "IMAGE_ORDER"):
+            self.assertIn(str(v[name]), page)
+        self.assertIn("backs one mapping of", page)
+        self.assertIn("backs no mapping of", page)
+        self.assertIn("```mermaid", page)
+        self.assertIn("flowchart TD", page)
+        self.assertNotRegex(page, r"<\s*/?\s*(svg|script|html|iframe|style)\b")
+        map_rs = (REPO / "kernel/verified/capability/map.rs").read_text(encoding="utf-8")
+        self.assertIn("if (level != 1 && level != 2) || !entry_named(va, level)", map_rs)
+        self.assertIn(
+            f"if cap.order != {v['INDEX_BITS']} && cap.order != {v['ONE_G_ORDER']}", map_rs)
+        self.assertIn("page % PAGES_PER_2M != 0", map_rs)
+        self.assertIn(
+            "(page as int) * PAGE_SZ < block_bytes(self.payload_of(f).order)", map_rs)
+        self.assertIn("if level == 1 {\n        PAGE_SZ as u64", map_rs)
+        self.assertIn("} else if level == 2 {\n        SIZE_2M as u64", map_rs)
+        self.assertIn("} else if level == 3 {\n        SIZE_1G as u64", map_rs)
+        operation = (REPO / "kernel/verified/capability/operation.rs").read_text(encoding="utf-8")
+        self.assertIn(
+            "self.map_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), "
+            "frame.argument(3) as usize, frame.argument(4) as usize)",
+            operation)
+        retype = (REPO / "kernel/verified/capability/retype.rs").read_text(encoding="utf-8")
+        self.assertIn("self.can_retype_block(root, from, to, base, 0)", retype)
+        space = (REPO / "kernel/verified/capability/space.rs").read_text(encoding="utf-8")
+        self.assertIn(
+            "pub fn retype_table_page(&mut self, root: usize, from: usize, base: usize, level: usize,",
+            space)
+        self.assertIn("assert(block_bytes(3) == TABLE_PAGE_BYTES);", space)
+        self.assertIn("How one frame capability backs many mappings", out["README.md"])
+
 
 def main(arguments):
     if arguments == ["--test"]:
