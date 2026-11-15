@@ -2,7 +2,7 @@
 
 # Design decisions
 
-52 records: 52 active, 0 superseded.
+53 records: 53 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -109,6 +109,9 @@ in `revisit if` what would make it worth reopening.
 - **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-14): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area.
   - *confidence:* A structural choice; the no-cycles property it buys is what rules out the delete-cascade problem Nevill's thesis describes, and the table invariant is proven in kernel/verified/capability/table.rs.
   - *revisit if:* Threads in one process need distinct authority, or a process needs more slots than the two levels give, or a table must be passed as a capability, or a supported core's XSAVE area outgrows the 3072 bytes a thread's record page leaves it.
+- **[refused-claim-per-way](./refused-claim-per-way/DECISION.md)** (2026-11-15): A state change and an again are refused by an unchanged component meeting the way's postcondition, a query by a result other than the one the state gives, and a pure function by a wrong output, as the round trip does. A way whose specification admits the unchanged component is exempt, quoted from that arm. A claim names the inventory lines it covers; the ways with neither a claim nor an exemption are a list in the tree that only the human lengthens. An entry line is covered by the operations it reaches.
+  - *confidence:* The placement of today's 190 lines was checked against tools/witness-inventory.py on c9fb16bad228. That a refused postcondition shows the ensures says enough is Verus's. Which form a kind takes, and which ways are exempt, is judgement, argued below. The cost is measured for the one claim the tree holds.
+  - *revisit if:* A claim the table calls a state change verifies, because the specification admits an unchanged component for that way; or the refused step, once the ways have claims, costs more than the verify step it runs beside; or an empty proof whose ensures the requires meet is no longer refused by Verus.
 - **[region-map-owns-the-address-space](./region-map-owns-the-address-space/DECISION.md)** (2026-11-15): Between the kernel, which decides what can be mapped, and the heap, which carves pages it was given, a region map says which part of a program owns which addresses: built once at entry from what the kernel reports empty, it holds a tracked token per page saying which frame is mapped there or none, acall maps and unmaps in the caller's own space only against such a token, and the proof holds for a process whose code and controller keep four rules, a process another process built being sealed once its creator moves the capabilities naming it into it.
   - *confidence:* The hole is measured: a throwaway against the tree verifies false, below. That page tokens close it was checked on a model outside the tree whose kernel is a bare map, not on the tree. What the tokens need of the kernel is proven: that a call returns with nothing stale on its core, from the kernel's entry through acall's step, and that other callers only remove a sealed process's entries and raise no count of its blocks, as clauses of the kernel's rely with a lemma for each kind of step. Where the proof stops, the four rules, is the human's choice.
   - *revisit if:* The kernel comes to keep a revoked entry claimed until its owner unmaps it, which would let the kernel's table be the only record and the tokens go; or several threads of one process must map at once, which one authority per process does not serve; or a program that keeps the four rules is found whose memory proof still fails.
@@ -178,7 +181,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, flush-on-a-change-of-core-share, invoked-arm-is-the-operation-postcondition, ipc-with-reply-object, notification-word-reserves-the-waiter-bit, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
 - `entry`: invoked-arm-is-the-operation-postcondition
-- `gate`: boundary-into-verified-code-counted, committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, witness-per-way-an-operation-succeeds
+- `gate`: boundary-into-verified-code-counted, committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, refused-claim-per-way, witness-per-way-an-operation-succeeds
 - `glue`: machine-glue-below-the-kernel
 - `heap`: heap-size-classes, page-buddy-metadata-in-the-span
 - `interrupt`: machine-glue-below-the-kernel
@@ -210,10 +213,10 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
-- `tools`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, witness-per-way-an-operation-succeeds
+- `tools`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, refused-claim-per-way, witness-per-way-an-operation-succeeds
 - `tracker`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `trusted-base`: boundary-into-verified-code-counted, region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
-- `verified`: arch-module, boundary-into-verified-code-counted, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-on-a-change-of-core-share, flush-without-waiting, heap-size-classes, invoked-arm-is-the-operation-postcondition, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, wire-combinators-written-here, witness-per-way-an-operation-succeeds
+- `verified`: arch-module, boundary-into-verified-code-counted, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-on-a-change-of-core-share, flush-without-waiting, heap-size-classes, invoked-arm-is-the-operation-postcondition, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, refused-claim-per-way, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, wire-combinators-written-here, witness-per-way-an-operation-succeeds
 - `virtualization`: vmm-over-svm
-- `witness`: witness-per-way-an-operation-succeeds
+- `witness`: refused-claim-per-way, witness-per-way-an-operation-succeeds
