@@ -2824,6 +2824,7 @@ impl CapKernel {
     }
 
     /// Everything the invariant says after the writes of a map.
+    #[verifier::spinoff_prover]
     proof fn lemma_map_wf(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             post.blocks.pages@.len() == pre.blocks.pages@.len(),
