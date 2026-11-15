@@ -67,8 +67,9 @@ COMMAND_LINE = f"qemu_debug_exit_io_base={DEBUG_EXIT_PORT}"
 # two whole GiB and 512 MiB above them for the firmware.
 # design/test-guest-memory/.
 MEMORY_MIB = 2560
-# The kernel tracks this much from address 0, in MiB (NUM_PAGES in kernel/verified/define.rs).
-TRACKED_MIB = 4096
+# What the loader identity-maps from address 0, in MiB. The kernel tracks RAM up to its end rounded to a
+# GiB, which the guest's RAM must stay within: design/page-metadata-sized-from-the-memory-map/.
+IDENTITY_MAPPED_MIB = 4096
 # Where QEMU virt's RAM starts, in MiB. The PC's starts at 0.
 VIRT_RAM_BASE_MIB = 1024
 # The only program under user/, which the loader hands dom0.
@@ -402,12 +403,10 @@ class Tests(unittest.TestCase):
         # design/test-guest-memory/. The firmware allocates from the top of RAM and the loader
         # from the bottom, so the guest has 512 MiB past two whole GiB: the second is one free 1G
         # block on the PC, where RAM starts at 0, and the third on QEMU virt, where it starts at
-        # 1 GiB. The kernel tracks the pages of both.
+        # 1 GiB. The kernel tracks the pages of both, up to the end of RAM rounded to a GiB, which the
+        # loader's identity map covers.
         self.assertEqual(MEMORY_MIB, 2560)
-        self.assertEqual(TRACKED_MIB, 4096)
-        self.assertLessEqual(VIRT_RAM_BASE_MIB + MEMORY_MIB, TRACKED_MIB)
-        define = (REPO / "kernel/verified/define.rs").read_text()
-        self.assertIn(f"pub const NUM_PAGES: usize = {TRACKED_MIB // 4} * 1024;", define)
+        self.assertLessEqual(-(-(VIRT_RAM_BASE_MIB + MEMORY_MIB) // 1024) * 1024, IDENTITY_MAPPED_MIB)
         args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None,
                          "/ovmf/OVMF_CODE.fd")
         self.assertEqual(self.options(args, "-m"), [str(MEMORY_MIB)])

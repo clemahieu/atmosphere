@@ -5,20 +5,18 @@
 //! The map crosses the trust boundary, so a range that is empty, is not 4 KiB aligned, runs past
 //! the node space, is RAM that runs past the identity-mapped span, shares a page with another
 //! range, or is available inside the kernel image or dom0's reserved range is a boot panic. RAM is a
-//! range of any kind but Reserved, into which the loader folds device windows. Memory past the
-//! pages the kernel tracks is left unused.
+//! range of any kind but Reserved, into which the loader folds device windows. The kernel tracks
+//! every page from address 0 to the end of the highest RAM, rounded up to a GiB, and a map with no
+//! RAM is a boot panic: design/page-metadata-sized-from-the-memory-map/.
 //! Pages set aside for the kernel, the root's own boot objects and the 2M regions of dom0's image
 //! are taken out of the runs. Why the boundary is tier 3: design/trust-boundary/. What boot sets
 //! aside: design/root-process-at-boot/.
 
 use astd::boot::{PhysicalMemoryType, PhysicalRange, PAGE_BYTES};
 
-/// Pages the compile-time tables cover. `boot/mod.rs` checks this against `verified::define::NUM_PAGES`.
-/// design/page-metadata-sized-from-the-memory-map/.
-pub const PAGE_SLOTS: usize = 1024 * 1024;
-
-/// First address that is not a tracked page.
-pub const MAX_PAGE_ADDRESS: u64 = (PAGE_SLOTS as u64) * PAGE_BYTES;
+/// The bytes of a 1G region, to which the tracked pages are rounded. `boot/mod.rs` checks this against
+/// `verified::define::PAGES_PER_1G`.
+pub const GIB: u64 = 1 << 30;
 
 /// First address that is not a node id. `boot/mod.rs` checks this against the list's `NODE_SPACE`.
 pub const NODE_SPACE: u64 = 0x1_0000_0000_0000;
@@ -27,8 +25,9 @@ pub const NODE_SPACE: u64 = 0x1_0000_0000_0000;
 /// `verified::define::IDENTITY_SPAN`. design/page-metadata-sized-from-the-memory-map/.
 pub const IDENTITY_SPAN: u64 = astd::memory::USERSPACE_BASE;
 
-// A free run is made of tracked pages, so every page of one is identity-mapped and a node id.
-const _: () = assert!(MAX_PAGE_ADDRESS <= IDENTITY_SPAN && IDENTITY_SPAN <= NODE_SPACE);
+// A free run is made of tracked pages, which end within the span, so every page of one is
+// identity-mapped and a node id; and RAM that ends within the span ends within it rounded to a GiB.
+const _: () = assert!(IDENTITY_SPAN <= NODE_SPACE && IDENTITY_SPAN % GIB == 0);
 
 const TAKEN: u8 = 0;
 const FREE: u8 = 1;
@@ -69,7 +68,7 @@ struct Reject {
 
 /// Folds `ranges` into maximal free runs written at `out`, in address order.
 ///
-/// `seen` is one byte per tracked page; it must be `PAGE_SLOTS` long and is cleared here. `aside`
+/// `seen` is one byte per tracked page, as many as `tracked_pages` gives, and is cleared here. `aside`
 /// is the pages boot keeps for the kernel, the root's process, thread and table leaves, the list's
 /// synthetic root and the 2M regions of dom0's image. Returns how many runs were written. A range
 /// the loader was not allowed to hand over panics with the address at fault and the reason.
@@ -87,17 +86,48 @@ pub fn free_page_ranges(
     }
 }
 
+/// How many pages the kernel tracks: every page from address 0 to the end of the highest range of
+/// RAM, any kind but Reserved, rounded up to a GiB. A map with no RAM, or with RAM whose end overflows
+/// or lies past the identity-mapped span, panics with the address at fault and the reason. It reads
+/// only the map, since what it returns sizes the fold's scratch.
+/// design/page-metadata-sized-from-the-memory-map/.
+pub fn tracked_pages(ranges: &[PhysicalRange]) -> usize {
+    match ram_end(ranges) {
+        Ok(end) => (end.next_multiple_of(GIB) / PAGE_BYTES) as usize,
+        Err(reject) => panic!("boot memory map: {:#x}: {}", reject.address, reject.reason),
+    }
+}
+
+fn ram_end(ranges: &[PhysicalRange]) -> Result<u64, Reject> {
+    let mut highest = None;
+    for range in ranges.iter().filter(|range| range.kind != PhysicalMemoryType::Reserved) {
+        match range.base.checked_add(range.bytes) {
+            Some(end) if end <= IDENTITY_SPAN => highest = highest.max(Some(end)),
+            _ => {
+                return Err(Reject {
+                    address: range.base.max(IDENTITY_SPAN),
+                    reason: "past the identity-mapped span",
+                })
+            }
+        }
+    }
+    highest.ok_or(Reject {
+        address: 0,
+        reason: "no RAM",
+    })
+}
+
 /// Where boot carves the page metadata: the lowest address, on a page, at which the whole pages
-/// holding `bytes` lie inside one Available range, below the tracked pages' end and clear of every
-/// range in `clear`, or none when no range holds them. It reads only the map, since the carve is
-/// placed before any per-page fold of it. design/page-metadata-sized-from-the-memory-map/.
-pub fn carve(ranges: &[PhysicalRange], bytes: u64, clear: &[ByteRange]) -> Option<u64> {
+/// holding `bytes` lie inside one Available range, below `end`, where the tracked pages end, and clear
+/// of every range in `clear`, or none when no range holds them. It reads only the map, since the carve
+/// is placed before any per-page fold of it. design/page-metadata-sized-from-the-memory-map/.
+pub fn carve(ranges: &[PhysicalRange], bytes: u64, clear: &[ByteRange], end: u64) -> Option<u64> {
     let size = bytes.div_ceil(PAGE_BYTES) * PAGE_BYTES;
     ranges
         .iter()
         .filter(|range| range.kind == PhysicalMemoryType::Available)
         .filter_map(|range| {
-            let end = range.base.saturating_add(range.bytes).min(MAX_PAGE_ADDRESS) / PAGE_BYTES * PAGE_BYTES;
+            let end = range.base.saturating_add(range.bytes).min(end) / PAGE_BYTES * PAGE_BYTES;
             let mut base = range.base.next_multiple_of(PAGE_BYTES);
             // Each move passes the end of a range the candidate overlaps, and the candidate only
             // grows, so it overlaps each range at most once.
@@ -112,11 +142,12 @@ pub fn carve(ranges: &[PhysicalRange], bytes: u64, clear: &[ByteRange]) -> Optio
         .min()
 }
 
-/// The page numbers of `[base, end)` that the kernel tracks, with the range's edges moved out to
-/// pages.
-fn tracked(base: u64, end: u64) -> core::ops::Range<usize> {
-    let first = base.min(MAX_PAGE_ADDRESS) / PAGE_BYTES;
-    let last = end.min(MAX_PAGE_ADDRESS).div_ceil(PAGE_BYTES);
+/// The page numbers of `[base, end)` that the kernel tracks, the first `pages`, with the range's
+/// edges moved out to pages.
+fn tracked(base: u64, end: u64, pages: usize) -> core::ops::Range<usize> {
+    let limit = pages as u64 * PAGE_BYTES;
+    let first = base.min(limit) / PAGE_BYTES;
+    let last = end.min(limit).div_ceil(PAGE_BYTES);
     first as usize..last as usize
 }
 
@@ -128,7 +159,8 @@ fn fold(
     dom0_reserved: Option<ByteRange>,
     out: &mut [PageRun],
 ) -> Result<usize, Reject> {
-    assert!(seen.len() == PAGE_SLOTS);
+    let pages = seen.len();
+    assert!(pages as u64 * PAGE_BYTES <= IDENTITY_SPAN);
     seen.fill(TAKEN);
 
     for range in ranges {
@@ -193,11 +225,11 @@ fn fold(
                 reason: "available page inside dom0's reserved range",
             });
         }
-        seen[tracked(range.base, end)].fill(FREE);
+        seen[tracked(range.base, end, pages)].fill(FREE);
     }
     for reserved in aside {
         if reserved.size != 0 {
-            seen[tracked(reserved.base, reserved.end())].fill(TAKEN);
+            seen[tracked(reserved.base, reserved.end(), pages)].fill(TAKEN);
         }
     }
 

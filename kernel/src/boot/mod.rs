@@ -9,17 +9,12 @@ pub mod free_ranges;
 pub mod mapped_runs;
 
 // The loader, the boot checks and the verified kernel use one page size. The map check uses the
-// same page limit, identity-mapped span and node space as the verified kernel, and the 2M and 1G regions tile the pages
-// under that limit. The run check keeps user mappings out of the low entries that space keeps for
-// the kernel.
+// same identity-mapped span and node space as the verified kernel, and rounds the tracked pages to the
+// verified kernel's 1G region, so the 2M and 1G regions tile them. The run check keeps user mappings
+// out of the low entries that space keeps for the kernel.
 const _: () = {
     assert!(astd::boot::PAGE_BYTES == verified::define::PAGE_SZ as u64);
-    assert!(
-        free_ranges::MAX_PAGE_ADDRESS
-            == verified::define::NUM_PAGES as u64 * astd::boot::PAGE_BYTES
-    );
-    assert!(verified::define::NUM_PAGES % verified::define::PAGES_PER_1G == 0);
-    assert!(free_ranges::MAX_PAGE_ADDRESS <= free_ranges::IDENTITY_SPAN);
+    assert!(free_ranges::GIB == verified::define::PAGES_PER_1G as u64 * astd::boot::PAGE_BYTES);
     assert!(free_ranges::NODE_SPACE == verified::capability::list::NODE_SPACE as u64);
     assert!(free_ranges::IDENTITY_SPAN == verified::define::IDENTITY_SPAN as u64);
     assert!(

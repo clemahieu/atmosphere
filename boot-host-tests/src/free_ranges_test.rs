@@ -9,11 +9,15 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use astd::boot::{PhysicalMemoryType, PhysicalRange};
 use free_ranges::{
-    carve, free_page_ranges, ByteRange, PageRun, IDENTITY_SPAN, MAX_PAGE_ADDRESS, NODE_SPACE,
-    PAGE_SLOTS,
+    carve, free_page_ranges, tracked_pages, ByteRange, PageRun, GIB, IDENTITY_SPAN, NODE_SPACE,
 };
 
 use PhysicalMemoryType::{Available, Domain, Kernel, PageTable, Reserved};
+
+const PAGE: u64 = astd::boot::PAGE_BYTES;
+
+/// Where the tracked pages end in the fold and carve tests: one GiB, the least boot tracks.
+const TRACKED_END: u64 = GIB;
 
 fn range(base: u64, size: u64) -> ByteRange {
     ByteRange { base, size }
@@ -40,7 +44,7 @@ fn runs(
     dom0_reserved: Option<ByteRange>,
     out_len: usize,
 ) -> Result<Vec<PageRun>, String> {
-    let mut seen = vec![0u8; PAGE_SLOTS];
+    let mut seen = vec![0u8; (TRACKED_END / PAGE) as usize];
     let mut out = vec![PageRun { first: 0, count: 0 }; out_len];
     match catch_unwind(AssertUnwindSafe(|| {
         free_page_ranges(
@@ -108,13 +112,13 @@ fn free_page_repeated_or_overlapping_is_rejected() {
     ];
     // One range inside another, past the pages the kernel tracks.
     let nested = [
-        memory(MAX_PAGE_ADDRESS, 0x10_0000, Reserved),
-        memory(MAX_PAGE_ADDRESS + 0x8000, 0x1000, Available),
+        memory(TRACKED_END, 0x10_0000, Reserved),
+        memory(TRACKED_END + 0x8000, 0x1000, Available),
     ];
     for (ranges, at) in [
         (&repeated[..], 0x1000),
         (&overlapping[..], 0x6000),
-        (&nested[..], MAX_PAGE_ADDRESS + 0x8000),
+        (&nested[..], TRACKED_END + 0x8000),
     ] {
         let message = rejected(ranges, &[], range(0, 0), None);
         assert!(message.contains(&format!("{at:#x}")), "{message}");
@@ -256,17 +260,17 @@ fn free_page_ranges_stop_at_the_tracked_pages() {
     // Memory the kernel does not track is left unused, not refused: an available range that
     // crosses the limit gives its tracked pages, and ranges past the limit give none.
     let ranges = [
-        memory(MAX_PAGE_ADDRESS - 0x3000, 0x10_0000, Available),
-        memory(MAX_PAGE_ADDRESS + 0x1000_0000, 0x1000_0000, Available),
+        memory(TRACKED_END - 0x3000, 0x10_0000, Available),
+        memory(TRACKED_END + 0x1000_0000, 0x1000_0000, Available),
         memory(0xe000_0000, 0x1000_0000, Reserved),
     ];
-    let aside = [range(MAX_PAGE_ADDRESS - 0x1000, 0x8000)];
+    let aside = [range(TRACKED_END - 0x1000, 0x8000)];
     let got = runs(&ranges, &aside, range(0, 0), None, 8).expect("well-formed map");
     println!("free page ranges: past the tracked pages: {}", line(&got));
     assert_eq!(
         got,
         vec![PageRun {
-            first: MAX_PAGE_ADDRESS - 0x3000,
+            first: TRACKED_END - 0x3000,
             count: 2
         }]
     );
@@ -294,7 +298,7 @@ fn carve_takes_the_lowest_available_range_that_holds_it() {
         memory(0x10_0000, 0x10_0000, Reserved),
         memory(0x20_0000, 0x10_0000, Available),
     ];
-    let got = carve(&ranges, 0x3000, &[]);
+    let got = carve(&ranges, 0x3000, &[], TRACKED_END);
     println!("page metadata carve: lowest range: {got:x?}");
     assert_eq!(got, Some(0x20_0000));
 }
@@ -307,7 +311,7 @@ fn carve_is_whole_pages() {
         memory(0x1000, 0x2000, Available),
         memory(0x8000, 0x3000, Available),
     ];
-    let got = carve(&ranges, 0x2001, &[]);
+    let got = carve(&ranges, 0x2001, &[], TRACKED_END);
     println!("page metadata carve: whole pages: {got:x?}");
     assert_eq!(got, Some(0x8000));
 }
@@ -318,7 +322,7 @@ fn carve_stays_clear_of_the_ranges_it_is_given() {
     // ends inside a page: the carve starts on the page after it.
     let ranges = [memory(0x10_0000, 0x10_0000, Available)];
     let clear = [range(0x10_0000, 0x2000), range(0x10_3000, 0x1800), range(0, 0)];
-    let got = carve(&ranges, 0x2000, &clear);
+    let got = carve(&ranges, 0x2000, &clear, TRACKED_END);
     println!("page metadata carve: clear of the image and dom0: {got:x?}");
     assert_eq!(got, Some(0x10_5000));
 }
@@ -327,11 +331,80 @@ fn carve_stays_clear_of_the_ranges_it_is_given() {
 fn carve_stops_at_the_tracked_pages() {
     // A range that crosses the tracked end holds only its tracked pages, and one past it holds none.
     let ranges = [
-        memory(MAX_PAGE_ADDRESS - 0x2000, 0x10_0000, Available),
-        memory(MAX_PAGE_ADDRESS + 0x10_0000, 0x10_0000, Available),
+        memory(TRACKED_END - 0x2000, 0x10_0000, Available),
+        memory(TRACKED_END + 0x10_0000, 0x10_0000, Available),
     ];
-    let got = carve(&ranges, 0x3000, &[]);
+    let got = carve(&ranges, 0x3000, &[], TRACKED_END);
     println!("page metadata carve: past the tracked pages: {got:x?}");
     assert_eq!(got, None);
-    assert_eq!(carve(&ranges, 0x2000, &[]), Some(MAX_PAGE_ADDRESS - 0x2000));
+    assert_eq!(carve(&ranges, 0x2000, &[], TRACKED_END), Some(TRACKED_END - 0x2000));
+}
+
+fn tracked(ranges: &[PhysicalRange]) -> Result<usize, String> {
+    catch_unwind(AssertUnwindSafe(|| tracked_pages(ranges))).map_err(panic_message)
+}
+
+#[test]
+fn tracked_pages_reach_the_last_ram_rounded_up_to_a_gib() {
+    // The PC's test guest: RAM from 0 to 2.5 GiB with the firmware's ranges among it, and the APIC's
+    // window below 4 GiB, which the loader folds into Reserved and which does not move the end.
+    let pc = [
+        memory(0, 0xa_0000, Available),
+        memory(0xa_0000, 0x6_0000, Reserved),
+        memory(0x10_0000, 0x1680_0000, Available),
+        memory(0x1780_0000, 0x80_0000, Kernel),
+        memory(0x1f80_0000, 0x40_0000, Domain),
+        memory(0x2380_0000, 0x7000_0000, Available),
+        memory(0x9d65_4000, 0x8_0000, PageTable),
+        memory(0x9fff_f000, 0x1000, Reserved),
+        memory(0xfee0_0000, 0x1000, Reserved),
+    ];
+    // QEMU virt's: RAM from 1 GiB to 3.5 GiB, devices below it.
+    let virt = [
+        memory(0x900_0000, 0x1000, Reserved),
+        memory(0x4000_0000, 0xa000_0000, Available),
+    ];
+    // RAM that ends on a GiB is not rounded past it, and every kind but Reserved moves the end.
+    let whole = [memory(0, GIB, Available)];
+    for (kind, end) in [(Kernel, 3), (Domain, 3), (PageTable, 3), (Available, 3), (Reserved, 1)] {
+        let ranges = [memory(0, GIB, Available), memory(2 * GIB, 0x1000, kind)];
+        assert_eq!(tracked(&ranges), Ok((end * GIB / PAGE) as usize), "{kind:?}");
+    }
+    for (name, ranges, end) in [("pc", &pc[..], 3 * GIB), ("virt", &virt[..], 4 * GIB), ("whole", &whole[..], GIB)] {
+        let got = tracked(ranges).expect("the map holds RAM within the span");
+        println!("tracked pages: {name}: {got} pages, {:#x} bytes", got as u64 * PAGE);
+        assert_eq!(got, (end / PAGE) as usize, "{name}");
+    }
+}
+
+#[test]
+fn tracked_pages_of_a_map_without_ram_are_refused() {
+    for ranges in [&[][..], &[memory(0x1000, 0x1000, Reserved), memory(0xfee0_0000, 0x1000, Reserved)][..]] {
+        let message = tracked(ranges).expect_err("no RAM to track");
+        println!("tracked pages: rejected {message}");
+        assert!(message.contains("0x0: no RAM"), "{message}");
+    }
+}
+
+#[test]
+fn tracked_pages_past_the_identity_mapped_span_are_refused() {
+    // RAM of every kind that ends past the span, starting at its end and running across it, and a range
+    // whose end overflows. The address named is the first byte past the span, or the range's base when
+    // that lies past it.
+    let past = format!("{IDENTITY_SPAN:#x}: past the identity-mapped span");
+    for kind in [Available, Kernel, Domain, PageTable] {
+        for (base, bytes, at) in [
+            (IDENTITY_SPAN, 0x1000, past.clone()),
+            (IDENTITY_SPAN - 0x1000, 0x2000, past.clone()),
+            (u64::MAX - 0xfff, 0x2000, format!("{:#x}: past the identity-mapped span", u64::MAX - 0xfff)),
+        ] {
+            let ranges = [memory(0, GIB, Available), memory(base, bytes, kind)];
+            let message = tracked(&ranges).expect_err("RAM past the span");
+            println!("tracked pages: rejected {message}");
+            assert!(message.contains(&at), "{message}");
+        }
+    }
+    // RAM that ends on the span is tracked to it.
+    let ranges = [memory(IDENTITY_SPAN - 0x1000, 0x1000, Available)];
+    assert_eq!(tracked(&ranges), Ok((IDENTITY_SPAN / PAGE) as usize));
 }

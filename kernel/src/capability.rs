@@ -10,7 +10,7 @@
 
 use core::mem::size_of;
 
-use astd::boot::{BootInfo, MAPPED_RUNS, PAGE_BYTES};
+use astd::boot::{BootInfo, PhysicalMemoryType, MAPPED_RUNS, PAGE_BYTES};
 use verified::array::Array;
 use verified::capability::boot::{
     ROOT_CONSOLE_SLOT, ROOT_CORE_SLOT, ROOT_FRAME_SLOT, ROOT_POWER_SLOT, ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_UNTYPED_SLOT,
@@ -24,10 +24,10 @@ use verified::capability::space::SPACE_ROOT_PAGE;
 use verified::capability::table::{CapKind, MAX_ORDER};
 use verified::arch::{Registers, MEM_MASK};
 use verified::capability::block::metadata_layout;
-use verified::define::{KERNEL_MEM_END_L4INDEX, NUM_CPUS, NUM_IOMMUS, NUM_PAGES};
+use verified::define::{KERNEL_MEM_END_L4INDEX, NUM_CPUS, NUM_IOMMUS};
 use vstd::prelude::Tracked;
 
-use crate::boot::free_ranges::{carve, free_page_ranges, ByteRange, PageRun, PAGE_SLOTS};
+use crate::boot::free_ranges::{carve, free_page_ranges, tracked_pages, ByteRange, PageRun, IDENTITY_SPAN};
 use crate::boot::mapped_runs::mapped_runs;
 use crate::lock::Locked;
 
@@ -87,10 +87,9 @@ const REGION_BYTES: u64 = 512 * PAGE_BYTES;
 const MAX_FREE_RUNS: usize = 1024;
 const MAX_FREE_BLOCKS: usize = 4096;
 
-/// Boot's working memory, used once on CPU 0 before any other core starts.
+/// Boot's working memory of a fixed bound, used once on CPU 0 before any other core starts. The byte
+/// per tracked page the map's fold uses is the carve's last column instead.
 struct Scratch {
-    /// One byte per tracked page, for boot/free_ranges.rs.
-    seen: [u8; PAGE_SLOTS],
     runs: [PageRun; MAX_FREE_RUNS],
     /// The free blocks, as first page and order.
     blocks: [(usize, u8); MAX_FREE_BLOCKS],
@@ -100,7 +99,6 @@ struct Scratch {
 }
 
 static mut SCRATCH: Scratch = Scratch {
-    seen: [0; PAGE_SLOTS],
     runs: [PageRun { first: 0, count: 0 }; MAX_FREE_RUNS],
     blocks: [(0, 0); MAX_FREE_BLOCKS],
     free: [(0, 0); ROOT_UNTYPED_SLOTS],
@@ -144,25 +142,35 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let kernel_image = ByteRange { base: image_start, size: &raw const _end as u64 - image_start };
     let memory = &boot_info.memory[..];
 
+    // The kernel tracks every page from address 0 to the end of the map's highest RAM, rounded up to a
+    // GiB, and the page metadata is sized for that many: design/page-metadata-sized-from-the-memory-map/.
+    let pages = tracked_pages(memory);
+    assert!(pages as u64 * PAGE_BYTES <= IDENTITY_SPAN, "the tracked pages pass the identity-mapped span");
+    let layout = metadata_layout(pages);
+    let carve_bytes = layout.bytes as u64;
+
     // The page metadata goes in the first Available range that holds it clear of the kernel's image,
     // dom0's reservation and dom0's regions, found from the map alone, and is set aside as the stretch
-    // is, so no block or untyped covers it. design/page-metadata-sized-from-the-memory-map/.
-    let layout = metadata_layout(NUM_PAGES);
-    let carve_bytes = layout.bytes as u64;
+    // is, so no block or untyped covers it. After its columns it holds the fold's scratch, one byte per
+    // tracked page, which the verified kernel's permission does not cover.
+    let carve_size = (carve_bytes + pages as u64).div_ceil(PAGE_BYTES) * PAGE_BYTES;
     let mut clear = [ByteRange { base: 0, size: 0 }; 2 + MAPPED_RUNS];
     clear[0] = kernel_image;
     clear[1] = reserved;
     clear[2..2 + runs.len()].copy_from_slice(&aside[2..2 + runs.len()]);
-    let carve = carve(memory, carve_bytes, &clear[..2 + runs.len()]).expect("no available range holds the page metadata");
-    aside[1] = ByteRange { base: carve, size: carve_bytes.div_ceil(PAGE_BYTES) * PAGE_BYTES };
+    let carve = carve(memory, carve_size, &clear[..2 + runs.len()], pages as u64 * PAGE_BYTES)
+        .expect("no available range holds the page metadata");
+    aside[1] = ByteRange { base: carve, size: carve_size };
 
-    // Only CPU 0 runs, and it runs this once.
+    // Only CPU 0 runs, and it runs this once. The scratch column is free memory no one else holds,
+    // identity-mapped as every tracked page is, and the fold clears it before it reads it.
     let scratch = unsafe { &mut *&raw mut SCRATCH };
+    let seen = unsafe { core::slice::from_raw_parts_mut((carve + carve_bytes) as *mut u8, pages) };
 
     // The map is folded twice: the runs around the carve and dom0's regions say where the stretch
     // goes, and the runs around the stretch as well are what is left to hand out.
     let regions = &aside[1..2 + runs.len()];
-    let run_count = free_page_ranges(memory, &mut scratch.seen, regions, kernel_image, Some(reserved), &mut scratch.runs);
+    let run_count = free_page_ranges(memory, seen, regions, kernel_image, Some(reserved), &mut scratch.runs);
     let stretch_pages = BOOT_OBJECT_PAGES + size_of::<CapKernel>().div_ceil(PAGE_BYTES as usize) as u64;
     let stretch = aligned_stretch(&scratch.runs[..run_count], stretch_pages, BOOT_OBJECT_PAGES)
         .expect("no free stretch for the capability kernel");
@@ -170,7 +178,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let aside = &aside[..2 + runs.len()];
     log::info!("capability kernel at {:#x}, {} pages with the root's boot objects", stretch, stretch_pages);
 
-    let run_count = free_page_ranges(memory, &mut scratch.seen, aside, kernel_image, Some(reserved), &mut scratch.runs);
+    let run_count = free_page_ranges(memory, seen, aside, kernel_image, Some(reserved), &mut scratch.runs);
     let free = largest_blocks(&scratch.runs[..run_count], &mut scratch.blocks, &mut scratch.free);
     for (k, run) in runs.iter().enumerate() {
         scratch.image[k] = ImageRun {
@@ -189,9 +197,10 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let process = page(PROCESS_PAGE);
     let kernel = unsafe { &mut *(page(BOOT_OBJECT_PAGES) as *mut CapKernel) };
 
-    // The carve is free memory no one else holds; the verified init writes every column's value.
+    // The carve is free memory no one else holds; the verified init writes every column's value. The
+    // scratch after the columns is done with.
     unsafe { core::ptr::write_bytes(carve as *mut u8, 0, carve_bytes as usize) };
-    log::info!("page metadata: {} pages, {} bytes", NUM_PAGES, carve_bytes);
+    log::info!("page metadata: {} pages, {} bytes", pages, carve_bytes);
 
     // kernel_init takes the loader's root as a page the base register can name, the one a core naming
     // no space is pointed back at.
@@ -232,8 +241,8 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         // Nothing is unmapped yet, so each IOMMU's IOTLB model is empty, and this is the one place that
         // model is made: design/flush-without-waiting/.
         Tracked::assume_new(),
-        // The pages the block table tracks, the compile-time count until boot takes it from the map.
-        NUM_PAGES,
+        // The pages the block table tracks, as the map gives them.
+        pages,
         // The carve's bytes, which only the columns placed in it touch, and the provenance of the
         // identity map they are read through: design/page-metadata-sized-from-the-memory-map/.
         carve as usize,
@@ -243,6 +252,17 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let (untyped, frames) = held.expect("the capability kernel refused the boot memory or dom0's runs");
 
     log::info!("root holds {} untyped and {} frames", untyped, frames);
+    // What the root's untyped cover beside the RAM the map hands out and the pages the kernel tracks,
+    // so a boot shows the tracked pages reaching all of it.
+    let untyped_pages: usize = free.iter().map(|&(_, count)| count).sum();
+    let available: u64 =
+        memory.iter().filter(|range| range.kind == PhysicalMemoryType::Available).map(|range| range.bytes).sum();
+    log::info!(
+        "root's untyped: {} pages of the {} the map calls available, {} tracked",
+        untyped_pages,
+        available / PAGE_BYTES,
+        pages
+    );
     let fixed = [ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_CONSOLE_SLOT, ROOT_POWER_SLOT]
         .into_iter()
         .chain(ROOT_CORE_SLOT..ROOT_CORE_SLOT + NUM_CPUS)
