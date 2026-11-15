@@ -123,11 +123,12 @@ use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
 
+use crate::allocator::Allocator;
 use crate::arch::*;
 use crate::buddy::*;
 use crate::class::*;
 use crate::large::*;
-use crate::heap::{Heap, class_for, part_refused, run_order};
+use crate::heap::{Heap, class_for, part_refused, run_order, small_layout};
 use crate::page::*;
 use crate::record::{RecordStore, back_refused, gave_back, page_refused, record_page, took_page};
 use crate::slab::*;
@@ -3385,6 +3386,86 @@ pub fn witness_layout_fits() -> (r: (bool, bool, bool, bool))
         crate::heap::layout_fits(BLOCK_BYTES + 1, PAGE_BYTES),
         crate::heap::layout_fits(1, 3),
     )
+}
+
+/// From `src` and `token`: bundles an `Allocator<S>`, confirms its token is held, lends and
+/// returns the token, allocates a small slot when `src` does not refuse, and frees it.
+pub fn witness_allocator<S: SpanSource>(src: S, token: Tracked<S::Token>) -> (r: (
+    Allocator<S>,
+    bool,
+    bool,
+))
+    requires
+        src@.wf(),
+        src.serves(token@),
+    ensures
+        r.0.held(),
+        r.1,
+        r.0.src_view().refusals == src@.refusals ==> r.2,
+        r.2 ==> r.0.live() == ISet::<int>::empty(),
+{
+    let mut alloc: Allocator<S> = Allocator::new(0, src, token);
+    let held: bool = alloc.has_token();
+    let returned: Tracked<S::Token> = alloc.lend().unwrap();
+    alloc.give_back(returned);
+    proof {
+        alloc.lemma_wf();
+        assert(small_layout(8, 8)) by (compute);
+        lemma_class(0);
+        assert(class_for(8, 8) == 0) by (compute);
+    }
+    let got = alloc.alloc(8, 8);
+    let Some((p, perm)) = got else {
+        return (alloc, held, false);
+    };
+    proof {
+        alloc.lemma_wf();
+        assert(class_for(8, 8) == 0) by (compute);
+    }
+    alloc.free(p, 8, 8, perm);
+    proof {
+        assert(alloc.live() =~= ISet::<int>::empty());
+    }
+    (alloc, held, true)
+}
+
+/// From `src` and `token`: bundles an `Allocator<S>` and lends out its token.
+pub fn witness_allocator_lend<S: SpanSource>(src: S, token: Tracked<S::Token>) -> (r: (
+    Allocator<S>,
+    Option<Tracked<S::Token>>,
+))
+    requires
+        src@.wf(),
+        src.serves(token@),
+    ensures
+        !r.0.held(),
+        r.1 is Some,
+{
+    let mut alloc: Allocator<S> = Allocator::new(0, src, token);
+    let lent = alloc.lend();
+    (alloc, lent)
+}
+
+/// From `src` and `token`: bundles an `Allocator<S>` and allocates a small slot whenever `src`
+/// refuses no request.
+pub fn witness_allocator_alloc<S: SpanSource>(src: S, token: Tracked<S::Token>) -> (r: (
+    Allocator<S>,
+    Option<(*mut u8, Tracked<PointsToRaw>)>,
+))
+    requires
+        src@.wf(),
+        src.serves(token@),
+    ensures
+        r.0.held(),
+        r.0.src_view().refusals == src@.refusals ==> r.1 is Some,
+{
+    let mut alloc: Allocator<S> = Allocator::new(0, src, token);
+    proof {
+        alloc.lemma_wf();
+        assert(small_layout(8, 8)) by (compute);
+    }
+    let got = alloc.alloc(8, 8);
+    (alloc, got)
 }
 
 } // verus!

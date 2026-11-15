@@ -24,6 +24,7 @@
 // and one only they borrow mutably looks as if it need not be mutable.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_variables, unused_mut))]
 
+pub mod allocator;
 pub mod arch;
 pub mod buddy;
 pub mod class;

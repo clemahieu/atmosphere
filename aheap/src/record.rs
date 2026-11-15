@@ -30,6 +30,7 @@
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
 use vstd::layout::*;
+use vstd::pervasive::unreached;
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
@@ -137,6 +138,7 @@ pub open spec fn page_refused(pb: PageBuddy, fin: PageBuddy, s: SourceView, t: S
 fn header_at(hp: *mut u8, b: usize) -> (p: *mut PageHeader)
     ensures
         p == header_ptr(b as int, hp@.provenance),
+    no_unwind
 {
     hp.with_addr(b) as *mut PageHeader
 }
@@ -145,6 +147,7 @@ fn header_at(hp: *mut u8, b: usize) -> (p: *mut PageHeader)
 fn record_at(hp: *mut u8, a: usize) -> (p: *mut Record)
     ensures
         p == ptr_mut_from_data::<Record>(PtrData { addr: a, provenance: hp@.provenance, metadata: () }),
+    no_unwind
 {
     hp.with_addr(a) as *mut Record
 }
@@ -155,6 +158,7 @@ fn find(w: u64, set: bool) -> (r: usize)
         r <= PAGE_RECORDS,
         r < PAGE_RECORDS ==> in_use(w, r as int) == set,
         r == PAGE_RECORDS ==> forall|j: int| 0 <= j < PAGE_RECORDS ==> #[trigger] in_use(w, j) != set,
+    no_unwind
 {
     let mut i: usize = 0;
     while i < PAGE_RECORDS
@@ -553,6 +557,7 @@ impl RecordStore {
                     &&& !in_use(self.word(b as int), i as int)
                 },
             },
+        no_unwind
     {
         let hp = match self.head {
             None => {
@@ -619,11 +624,15 @@ impl RecordStore {
             } else {
                 self.chain@[r.1@ - 1]
             },
+        no_unwind
     {
         proof {
             self.lemma_page(b as int, prov);
         }
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ghost k = choose|k: int| 0 <= k < self.chain@.len() && self.chain@[k] == b as int;
         let mut prev: usize = 0;
         let mut cur: usize = hp.addr();
@@ -674,6 +683,7 @@ impl RecordStore {
             r.1@.ptr() == r.0,
             r.1@.is_uninit(),
             r.0@.provenance == prov,
+        no_unwind
     {
         let ghost bi = b as int;
         let ghost ii = i as int;
@@ -682,7 +692,10 @@ impl RecordStore {
             lemma_record_layout();
             lemma_addr(bi, ii);
         }
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ptr = header_at(hp, b);
         let tracked mut hperm = self.headers.borrow_mut().tracked_remove(bi);
         let mut h = ptr_mut_read(ptr, Tracked(&mut hperm));
@@ -778,6 +791,7 @@ impl RecordStore {
             r.1@.ptr() == r.0,
             r.1@.is_uninit(),
             r.0@.provenance == prov,
+        no_unwind
     {
         let ghost qi = q as int;
         let ghost ai = qi + HEADER_BYTES as int;
@@ -915,6 +929,7 @@ impl RecordStore {
             r.0 as int == record_page(p@.addr as int),
             r.1 <==> !exists|x: int| #[trigger] final(self).taken().contains(x) && record_page(x) == r.0 as int,
             r.1 ==> forall|j: int| 0 <= j < PAGE_RECORDS ==> !#[trigger] in_use(final(self).word(r.0 as int), j),
+        no_unwind
     {
         let a = p.addr();
         let ghost ai = a as int;
@@ -927,7 +942,10 @@ impl RecordStore {
         }
         let b = a - a % PAGE_BYTES;
         let i = (a - b - HEADER_BYTES) / RECORD_BYTES;
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ptr = header_at(hp, b);
         let tracked mut hperm = self.headers.borrow_mut().tracked_remove(bi);
         let mut h = ptr_mut_read(ptr, Tracked(&mut hperm));
@@ -1021,6 +1039,7 @@ impl RecordStore {
             final(self).taken() == old(self).taken(),
             r@.is_range(b as int, PAGE_BYTES as int),
             r@.provenance() == prov,
+        no_unwind
     {
         let ghost bi = b as int;
         let ghost old_chain = self.chain@;
@@ -1036,7 +1055,10 @@ impl RecordStore {
                 self.lemma_at(j + 1, prov);
             }
         }
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ptr = header_at(hp, b);
         let tracked mut hperm = self.headers.borrow_mut().tracked_remove(bi);
         let h = ptr_mut_read(ptr, Tracked(&mut hperm));
@@ -1212,6 +1234,7 @@ impl RecordStore {
                     }
                 },
             },
+        no_unwind
     {
         let ghost prov = src@.provenance;
         let ghost s0 = src@;
@@ -1389,6 +1412,7 @@ impl RecordStore {
                 &&& final(self).pages() == old(self).pages().remove(record_page(p@.addr as int))
                 &&& gave_back(*old(pb), *final(pb), old(src)@, final(src)@, record_page(p@.addr as int))
             },
+        no_unwind
     {
         let ghost prov = src@.provenance;
         let ghost s0 = src@;

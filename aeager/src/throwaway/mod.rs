@@ -10,6 +10,7 @@ pub mod back_second_block;
 pub mod exercise;
 pub mod exercise_eager;
 pub mod new;
+pub mod new_allocator;
 pub mod release;
 pub mod release_span;
 pub mod reserve;

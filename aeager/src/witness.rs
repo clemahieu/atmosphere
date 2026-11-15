@@ -11,6 +11,7 @@ use aheap::source::*;
 use verified::capability::operation::STATUS_REFUSED;
 use verified::capability::table::TABLE_INDICES;
 
+use crate::allocator::*;
 use crate::apart::{lemma_other_source_ready, lemma_other_window_unclaimed, process_ready, sources_apart};
 use crate::eager::*;
 use crate::exercise::*;
@@ -42,6 +43,29 @@ pub fn witness_new(space: u64, untyped: u64, window: *mut u8, token: &mut Tracke
         lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
     }
     Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window)
+}
+
+/// Constructs an eager source of `MAX_PAGES` pages over a region-aligned window in the caller's own
+/// space and bundles it into an `Allocator<Eager>`.
+pub fn witness_new_allocator(space: u64, untyped: u64, window: *mut u8, token: Tracked<Caller>) -> (r: AllocatorInit)
+    requires
+        token@.pages_wf(),
+        token@.kernel() == token@.start(),
+        window_tokens_clear(token@, window@.addr),
+        source_ready(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
+        window@.addr != 0,
+        window@.addr as int % REGION_BYTES as int == 0,
+        window@.addr + WINDOW_BYTES <= usize::MAX,
+    ensures
+        r is Ready,
+{
+    proof {
+        assert(1int % LEAF_INDICES as int != 0) by (compute);
+        assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_source_ready_premises(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
+    }
+    new_allocator(token, 0, space, untyped, 0, MAX_PAGES, 1, window)
 }
 
 /// Constructs an eager source of `MAX_PAGES` pages over a region-aligned window in the caller's own

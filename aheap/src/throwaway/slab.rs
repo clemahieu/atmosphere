@@ -8,11 +8,12 @@
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
+use crate::allocator::Allocator;
 use crate::arch::*;
 use crate::buddy::*;
 use crate::class::*;
 use crate::large::*;
-use crate::heap::{Heap, class_for, part_refused, run_order};
+use crate::heap::{Heap, class_for, part_refused, run_order, small_layout};
 use crate::page::*;
 use crate::record::{RecordStore, back_refused, gave_back, page_refused, record_page, took_page};
 use crate::slab::*;

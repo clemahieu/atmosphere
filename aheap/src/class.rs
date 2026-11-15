@@ -157,6 +157,7 @@ pub(crate) fn size(c: usize) -> (r: usize)
         c < CLASSES,
     ensures
         r as nat == class_size(c as nat),
+    no_unwind
 {
     proof {
         lemma_classes();
@@ -193,6 +194,7 @@ pub(crate) fn order(c: usize) -> (r: usize)
     ensures
         r as nat == slab_order(c as nat),
         r <= BLOCK_ORDER,
+    no_unwind
 {
     let s = size(c);
     proof {

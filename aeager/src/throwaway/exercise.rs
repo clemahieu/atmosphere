@@ -13,6 +13,7 @@ use aheap::arch::*;
 use aheap::source::*;
 use verified::capability::operation::STATUS_REFUSED;
 use verified::capability::table::TABLE_INDICES;
+use crate::allocator::*;
 use crate::apart::{lemma_other_source_ready, lemma_other_window_unclaimed, process_ready, sources_apart};
 use crate::eager::*;
 use crate::exercise::*;

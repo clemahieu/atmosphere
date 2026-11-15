@@ -10,41 +10,37 @@
 //! thread the permission to an object's bytes, which the allocator interface does not carry: the
 //! permission `alloc` returns is dropped here, and `dealloc` hands `free` one made up, on the
 //! interface's promise that it gets back a pointer `alloc` returned for the same layout, which is what
-//! `free` requires of that permission. `layout_fits`, which is verified, decides which layouts reach
-//! the heap; the rest get a null pointer. The interface carries no caller token either, so the token
-//! is kept here beside the heap and lent to each call. One thread per process maps and unmaps
-//! (design/region-map-owns-the-address-space/), so while the process borrows the token it does not
-//! allocate: an allocation then finds the token lent out and stops the process.
+//! `free` requires of that permission. `Allocator::alloc` decides which layouts reach the heap and
+//! returns nothing when a layout does not fit or the caller token is lent out; the rest get a null
+//! pointer. The interface carries no caller token either, so the verified `Allocator` keeps the
+//! token beside the heap and source, lends it to `with_caller` while not allocating, and `dealloc`
+//! stops the process if called with the token lent out.
 #![allow(unsafe_code)]
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 
 use acall::step::Caller;
-use aeager::Eager;
-use aheap::heap::{layout_fits, Heap};
+use aeager::{AllocatorInit, Eager};
+use aheap::allocator::Allocator;
 use spin::Mutex;
 use vstd::prelude::Tracked;
 
 /// The idle spans the heap keeps rather than give back to its source: none, so a source with a small
 /// window has every span it does not use free for a large object.
-const SPARES: usize = 0;
+pub const SPARES: usize = 0;
 
-/// The heap and the source it allocates from.
-struct Source {
-    heap: Heap,
-    eager: Eager,
-}
-
-/// What the allocator holds: the process's caller token, unless it is lent out, and the heap once the
-/// process installed one.
+/// What the allocator holds: the process's caller token until `install_with` moves it into the
+/// verified `Allocator`, or while lent out before installation, and the installed allocator once
+/// created.
 struct Held {
     caller: Option<Tracked<Caller>>,
-    source: Option<Source>,
+    allocator: Option<Allocator<Eager>>,
 }
 
-// The heap and the source hold addresses in the process's own space, which every thread of the
-// process shares, so the thread that holds the mutex may use them whichever thread installed them.
+// The allocator's heap and source hold addresses in the process's own space, which every thread of
+// the process shares, so the thread that holds the mutex may use them whichever thread installed
+// them.
 unsafe impl Send for Held {}
 
 /// The process's caller token, its heap and the source the heap allocates from.
@@ -55,45 +51,75 @@ pub struct Global {
 /// The process's allocator. On a target with no operating system under it, the process's own, it is
 /// the global allocator.
 #[cfg_attr(target_os = "none", global_allocator)]
-pub static GLOBAL: Global = Global { held: Mutex::new(Held { caller: None, source: None }) };
+pub static GLOBAL: Global = Global { held: Mutex::new(Held { caller: None, allocator: None }) };
 
 /// Keeps the process's caller token, which the process mints once at entry. Every later system call
 /// borrows it from here.
 pub fn keep_caller(caller: Tracked<Caller>) {
     let mut held = GLOBAL.held.lock();
-    assert!(held.caller.is_none(), "a process keeps one caller token");
+    assert!(held.caller.is_none() && held.allocator.is_none(), "a process keeps one caller token");
     held.caller = Some(caller);
 }
 
 /// Lends the process's caller token to `calls`. The mutex is released while it runs, and `calls`
-/// does not allocate: the heap's source needs the token it holds.
+/// does not free while the token is lent out.
 pub fn with_caller<R>(calls: impl FnOnce(&mut Tracked<Caller>) -> R) -> R {
-    let mut caller = GLOBAL.held.lock().caller.take().expect("the caller token is kept and not lent out");
+    let mut caller = {
+        let mut held = GLOBAL.held.lock();
+        if let Some(allocator) = held.allocator.as_mut() {
+            allocator.lend().expect("the caller token is kept and not lent out")
+        } else {
+            held.caller.take().expect("the caller token is kept and not lent out")
+        }
+    };
     let r = calls(&mut caller);
-    GLOBAL.held.lock().caller = Some(caller);
+    let mut held = GLOBAL.held.lock();
+    if let Some(allocator) = held.allocator.as_mut() {
+        allocator.give_back(caller);
+    } else {
+        held.caller = Some(caller);
+    }
     r
 }
 
-/// Gives the global allocator an empty heap over `eager`, from which it serves every allocation
-/// after. A process installs one source once; until then every allocation is refused.
-pub fn install(eager: Eager) {
-    let mut held = GLOBAL.held.lock();
-    assert!(held.source.is_none(), "the heap's source is installed once");
-    held.source = Some(Source { heap: Heap::new(SPARES), eager });
+#[inline(never)]
+fn store_allocator(init: AllocatorInit) -> bool {
+    match init {
+        AllocatorInit::Ready(allocator) => {
+            let mut held = GLOBAL.held.lock();
+            assert!(held.allocator.is_none(), "the heap's allocator is installed once");
+            assert!(held.caller.is_none(), "caller token was moved into install_with");
+            held.allocator = Some(allocator);
+            true
+        },
+        AllocatorInit::Refused(caller) => {
+            let mut held = GLOBAL.held.lock();
+            assert!(held.caller.is_none(), "caller token was moved into install_with");
+            held.caller = Some(caller);
+            false
+        },
+    }
+}
+
+/// Gives the global allocator an empty heap and eager source built by `make` with the kept caller
+/// token. A process installs one allocator once; returns `false` and restores the token if `make`
+/// refuses.
+pub fn install_with(make: impl FnOnce(Tracked<Caller>) -> AllocatorInit) -> bool {
+    let caller = {
+        let mut held = GLOBAL.held.lock();
+        assert!(held.allocator.is_none(), "the heap's allocator is installed once");
+        held.caller.take().expect("the caller token is kept and not lent out")
+    };
+    store_allocator(make(caller))
 }
 
 unsafe impl GlobalAlloc for Global {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut held = self.held.lock();
-        let Held { caller, source } = &mut *held;
-        let Some(Source { heap, eager }) = source.as_mut() else {
+        let Some(allocator) = held.allocator.as_mut() else {
             return null_mut();
         };
-        if !layout_fits(layout.size(), layout.align()) {
-            return null_mut();
-        }
-        let caller = caller.as_mut().expect("no allocation while the caller token is lent out");
-        match heap.alloc(eager, caller, layout.size(), layout.align()) {
+        match allocator.alloc(layout.size(), layout.align()) {
             Some((object, _bytes)) => object,
             None => null_mut(),
         }
@@ -101,9 +127,8 @@ unsafe impl GlobalAlloc for Global {
 
     unsafe fn dealloc(&self, object: *mut u8, layout: Layout) {
         let mut held = self.held.lock();
-        let Held { caller, source } = &mut *held;
-        let Source { heap, eager } = source.as_mut().expect("an object to free came from an installed heap");
-        let caller = caller.as_mut().expect("no free while the caller token is lent out");
-        heap.free(eager, caller, object, layout.size(), layout.align(), Tracked::assume_new());
+        let allocator = held.allocator.as_mut().expect("an object to free came from an installed heap");
+        assert!(allocator.has_token(), "no free while the caller token is lent out");
+        allocator.free(object, layout.size(), layout.align(), Tracked::assume_new());
     }
 }

@@ -2421,24 +2421,27 @@ fn run_objects_until_refused() -> Option<usize> {
 
 /// The eager source over which astd's global allocator serves dom0, set up as heap_allocator_held
 /// says, or None when a call was refused.
-fn heap_source(caller: &mut Tracked<Caller>, empty: u64) -> Option<aeager::Eager> {
+fn heap_source(mut caller: Tracked<Caller>, empty: u64) -> aeager::AllocatorInit {
     if !window_clear(HEAP_WINDOW, &[EAGER_WINDOW]) {
-        return None;
+        return aeager::AllocatorInit::Refused(caller);
     }
-    let (untyped, block) = untyped_of_pages(caller, empty, 1 << 18)?;
+    let Some((untyped, block)) = untyped_of_pages(&mut caller, empty, 1 << 18) else {
+        return aeager::AllocatorInit::Refused(caller);
+    };
     let memory = block.base + (4096 << block.order) - HEAP_BELOW_TOP;
     let source = first_slot(HEAP_ENTRY);
     for leaf in 0..HEAP_LEAVES {
         let base = memory - (leaf + 1) * LEAF_BYTES;
-        if retype(caller, untyped, operation::RETYPE_LEAF, base, HEAP_ENTRY + leaf, 0).status != operation::STATUS_OK {
-            return None;
+        if retype(&mut caller, untyped, operation::RETYPE_LEAF, base, HEAP_ENTRY + leaf, 0).status != operation::STATUS_OK {
+            return aeager::AllocatorInit::Refused(caller);
         }
     }
-    if derive(caller, untyped, source, block.rights, memory, HEAP_ORDER).status != operation::STATUS_OK {
-        return None;
+    if derive(&mut caller, untyped, source, block.rights, memory, HEAP_ORDER).status != operation::STATUS_OK {
+        return aeager::AllocatorInit::Refused(caller);
     }
-    aeager::Eager::new(
+    aeager::new_allocator(
         caller,
+        astd::heap::SPARES,
         operation::ROOT_PROCESS_SLOT,
         source,
         memory,
@@ -2456,10 +2459,9 @@ fn heap_source(caller: &mut Tracked<Caller>, empty: u64) -> Option<aeager::Eager
 /// run-sized objects are then allocated until the allocator refuses one, at least one given first, and
 /// all freed, after which one is given again.
 fn heap_allocator_held(empty: u64) -> bool {
-    let Some(eager) = astd::heap::with_caller(|caller| heap_source(caller, empty)) else {
+    if !astd::heap::install_with(|caller| heap_source(caller, empty)) {
         return false;
-    };
-    astd::heap::install(eager);
+    }
     let small = Box::new(0x5au8);
     let (Some(run), Some(large)) = (
         filled(2 * aheap::arch::PAGE_BYTES + 8, 0x11),

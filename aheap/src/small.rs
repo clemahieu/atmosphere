@@ -1509,6 +1509,7 @@ impl SizeClass {
                     )
                 },
             },
+        no_unwind
     {
         let ghost prov = src@.provenance;
         let ghost o = *self;
@@ -1975,6 +1976,7 @@ impl SizeClass {
                     &&& final(src)@ == old(src)@
                 }
             }),
+        no_unwind
     {
         let ghost prov = src@.provenance;
         let ghost o = *self;

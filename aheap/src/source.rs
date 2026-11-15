@@ -331,6 +331,7 @@ pub trait SpanSource {
                     &&& final(self)@ == old(self)@.reserved(base@.addr as int, blocks as nat)
                 },
             },
+        no_unwind
     ;
 
     /// Backs the run of `pages` pages from `start` inside the span at `span`, and returns the
@@ -355,6 +356,7 @@ pub trait SpanSource {
                     &&& final(self)@ == old(self)@.backed_run(span@, start as int, pages as nat)
                 },
             },
+        no_unwind
     ;
 
     /// Gives up the frames of the backed run of `pages` pages from `start` in the span at `span`,
@@ -371,6 +373,7 @@ pub trait SpanSource {
             final(self).serves(final(token)@),
             final(self)@.wf(),
             final(self)@ == old(self)@.released_run(span@, start as int, pages as nat),
+        no_unwind
     ;
 
     /// Gives up the span at `span`, which has no page backed.
@@ -384,6 +387,7 @@ pub trait SpanSource {
             final(self).serves(final(token)@),
             final(self)@.wf(),
             final(self)@ == old(self)@.released_span(span as int),
+        no_unwind
     ;
 }
 

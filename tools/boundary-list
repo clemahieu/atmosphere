@@ -4,9 +4,9 @@
 # text must be: design/boundary-into-verified-code-counted/. Fields, separated by tabs: path,
 # enclosing function, kind, callee, occurrence, guarantor's class, its text.
 # A 'nothing' line is debt: no document, proof or check vouches for it.
-astd/src/heap.rs	astd::heap::{impl#1}::alloc	call	aheap::heap::alloc	1	nothing	"the heap and its Eager sit together under one mutex from install, each alloc and free leaving the heap well-formed over the source and the source serving the caller, as their ensures say, and no system call between them takes away a frame the source holds; layout_fits above checks the layout"
-astd/src/heap.rs	astd::heap::{impl#1}::dealloc	call	aheap::heap::free	1	nothing	"as alloc's, and the object and its layout are ones alloc on this heap returned and nobody freed since, as GlobalAlloc::dealloc's contract has its caller promise"
-astd/src/heap.rs	astd::heap::{impl#1}::dealloc	conjure	aheap::heap::free argument 6: Tracked<vstd::raw_ptr::PointsToRaw>	1	language	library/core/src/alloc/global.rs "`ptr` is a block of memory currently allocated via this allocator and, * `layout` is the same layout that was used to allocate that block of memory."
+astd/src/heap.rs	astd::heap::with_caller	call	aheap::allocator::give_back	1	nothing	"the caller is the one lend gave out and its closure invoked no memory operation on the heap's Eager frames or space slot, so src_serves still holds when give_back returns it; tracked in atmo-6x9.5.32.4"
+astd/src/heap.rs	astd::heap::{impl#1}::dealloc	call	aheap::allocator::free	1	language	library/core/src/alloc/global.rs "`ptr` is a block of memory currently allocated via this allocator and, * `layout` is the same layout that was used to allocate that block of memory."
+astd/src/heap.rs	astd::heap::{impl#1}::dealloc	conjure	aheap::allocator::free argument 4: Tracked<vstd::raw_ptr::PointsToRaw>	1	language	library/core/src/alloc/global.rs "`ptr` is a block of memory currently allocated via this allocator and, * `layout` is the same layout that was used to allocate that block of memory."
 dom0/src/main.rs	dom0::inspect	call	acall::memory::inspect	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::retyped_frame_held::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::retyped_table_pages::{closure#1}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
@@ -114,7 +114,7 @@ dom0/src/main.rs	dom0::retyped_leaves_held::{closure#1}	call	acall::memory::rety
 dom0/src/main.rs	dom0::eager_source_held	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::eager_source_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::eager_source_held	call	aeager::exercise::exercise_eager	1	check	"window_clear(EAGER_WINDOW, &[])"
-dom0/src/main.rs	dom0::heap_source	call	aeager::eager::new	1	check	"window_clear(HEAP_WINDOW, &[EAGER_WINDOW])"
+dom0/src/main.rs	dom0::heap_source	call	aeager::allocator::new_allocator	1	nothing	"window_clear(HEAP_WINDOW, &[EAGER_WINDOW]) checks the heap window; the remaining caller invariants (wf, own_process, pages_wf, and ROOT_PROCESS_SLOT naming dom0's own space across retype and derive) rest on nothing and are tracked in atmo-6x9.5.32.5"
 dom0/src/main.rs	dom0::heap_source	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::heap_source	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::main	conjure	astd::heap::keep_caller argument 0: Tracked<acall::step::Caller>	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter

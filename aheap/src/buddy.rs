@@ -354,6 +354,7 @@ pub(crate) fn order_pages(o: usize) -> (r: usize)
         o <= BLOCK_ORDER,
     ensures
         r as int == pages(o as nat),
+    no_unwind
 {
     let mut r: usize = 1;
     let mut i: usize = 0;
@@ -802,8 +803,42 @@ impl BlockBuddy {
         ensures
             r.wf(),
             r.blocks() == initial(),
+        no_unwind
     {
-        let mut tags = [INNER;BLOCK_PAGES];
+        let mut tags: [u8; BLOCK_PAGES] = [
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+            INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER, INNER,
+        ];
         tags[0] = (BLOCK_ORDER + 1) as u8 + FREE;
         let r = BlockBuddy {
             tags,
@@ -836,6 +871,7 @@ impl BlockBuddy {
                             >= self.blocks()[h as int].order
                 },
             },
+        no_unwind
     {
         let mut best: Option<usize> = None;
         let mut best_order: usize = BLOCK_ORDER + 1;
@@ -917,6 +953,7 @@ impl BlockBuddy {
                             && self.blocks()[q].order >= k ==> self.blocks()[q].order >= o
                 },
             },
+        no_unwind
     {
         match self.best_fit(k) {
             None => None,
@@ -954,6 +991,7 @@ impl BlockBuddy {
                     &&& final(self).used() == old(self).used().insert(p as int, k as nat)
                 },
             },
+        no_unwind
     {
         let h = match self.best_fit(k) {
             None => return None,
@@ -1022,6 +1060,7 @@ impl BlockBuddy {
         ensures
             final(self).wf(),
             final(self).used() == old(self).used().remove(p as int),
+        no_unwind
     {
         let ghost u0 = self.used();
         proof {
@@ -1133,6 +1172,7 @@ impl BlockBuddy {
             from <= BLOCK_PAGES,
         ensures
             r == (forall|q: int| from <= q ==> !(#[trigger] self.used().dom().contains(q))),
+        no_unwind
     {
         let mut p: usize = from;
         while p < BLOCK_PAGES
@@ -1176,6 +1216,7 @@ impl BlockBuddy {
             self.wf(),
         ensures
             r == (self.used().dom() == Set::<int>::empty()),
+        no_unwind
     {
         let r = self.idle_from(0);
         proof {

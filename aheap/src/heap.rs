@@ -367,6 +367,7 @@ fn order_for(n: usize) -> (r: usize)
         r <= BLOCK_ORDER,
         n <= pages(r as nat),
         r == 0 || pages((r - 1) as nat) < n,
+    no_unwind
 {
     proof {
         lemma_block_pages();
@@ -455,6 +456,7 @@ fn class_index(n: usize, align: usize) -> (c: usize)
         c < CLASSES,
         n <= class_size(c as nat),
         class_size(c as nat) % align as nat == 0,
+    no_unwind
 {
     proof {
         lemma_class((CLASSES - 1) as nat);
@@ -1023,14 +1025,21 @@ impl Heap {
                 align as nat,
                 r,
             ),
+            final(src)@.wf(),
+        no_unwind
     {
-        if size <= PAGE_BYTES {
+        let r = if size <= PAGE_BYTES {
             self.alloc_slot(src, token, size, align)
         } else if size <= BLOCK_BYTES {
             self.alloc_part(src, token, size, align)
         } else {
             self.alloc_object(src, token, size, align)
+        };
+        proof {
+            self.lemma_parts(src@);
+            self.pb.lemma_view(src@);
         }
+        r
     }
 
     /// The slab arm of `alloc`.
@@ -1046,6 +1055,7 @@ impl Heap {
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             slot_alloc(*old(self), *final(self), old(src)@, final(src)@, size as nat, align as nat, r),
+        no_unwind
     {
         let c = class_index(size, align);
         let ghost ci = c as int;
@@ -1264,6 +1274,7 @@ impl Heap {
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             part_alloc(*old(self), *final(self), old(src)@, final(src)@, size as nat, align as nat, r),
+        no_unwind
     {
         let ghost o = *self;
         let ghost pb0 = self.pb;
@@ -1498,6 +1509,7 @@ impl Heap {
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
             part_free(*old(self), *final(self), old(src)@, final(src)@, p@.addr as int),
+        no_unwind
     {
         let ghost o = *self;
         let ghost pb0 = self.pb;
@@ -1595,6 +1607,7 @@ impl Heap {
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             large_alloc(*old(self), *final(self), old(src)@, final(src)@, size as nat, align as nat, r),
+        no_unwind
     {
         let ghost o = *self;
         let ghost s0 = src@;
@@ -1745,6 +1758,8 @@ impl Heap {
                 final(src)@,
                 p@.addr as int,
             ),
+            final(src)@.wf(),
+        no_unwind
     {
         if size <= PAGE_BYTES {
             self.free_slot(src, token, p, size, align, perm);
@@ -1752,6 +1767,10 @@ impl Heap {
             self.free_part(src, token, p, size, perm);
         } else {
             self.free_object(src, token, p, perm);
+        }
+        proof {
+            self.lemma_parts(src@);
+            self.pb.lemma_view(src@);
         }
     }
 
@@ -1778,6 +1797,7 @@ impl Heap {
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
             slot_free(*old(self), *final(self), old(src)@, final(src)@, p@.addr as int, size as nat, align as nat),
+        no_unwind
     {
         let c = class_index(size, align);
         let ghost ci = c as int;
@@ -1886,6 +1906,7 @@ impl Heap {
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
             large_free(*old(self), *final(self), old(src)@, final(src)@, p@.addr as int),
+        no_unwind
     {
         let ghost o = *self;
         let ghost s0 = src@;

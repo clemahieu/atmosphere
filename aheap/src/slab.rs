@@ -702,13 +702,14 @@ impl Slab {
             r.free_slots() == Set::range(0, r.count() as int),
             r.owns(*final(perms)),
             r.outside(*old(perms), *final(perms)),
+        no_unwind
     {
         let count = bytes / slot;
         proof {
             lemma_div_non_zero(bytes as int, slot as int);
             assert(count > 0);
         }
-        let mut map = [0u64;MAP_WORDS];
+        let mut map: [u64; MAP_WORDS] = [0u64, 0u64, 0u64, 0u64];
         let mut w: usize = 0;
         while w < MAP_WORDS
             invariant
@@ -881,6 +882,7 @@ impl Slab {
                     &&& *final(perms) == old(perms).remove(p@.addr as int)
                 },
             },
+        no_unwind
     {
         let ghost s0 = *self;
         let ghost p0 = *perms;
@@ -920,9 +922,29 @@ impl Slab {
             w += 1;
         }
         let word = self.map[w];
-        let j = word.trailing_ones() as usize;
         proof {
-            axiom_u64_trailing_ones(word);
+            assert(word >> 0u64 == word && u64::MAX >> 0u64 == u64::MAX) by (bit_vector);
+        }
+        let mut rem = word;
+        let mut j: usize = 0;
+        while (rem & 1u64) == 1u64
+            invariant
+                j < WORD_BITS,
+                rem == word >> (j as u64),
+                rem != u64::MAX >> (j as u64),
+            decreases WORD_BITS - j,
+        {
+            proof {
+                assert((j as u64) < 64 && rem == (word >> (j as u64)) && rem != (u64::MAX >> (j as u64))
+                    && (rem & 1u64) == 1u64 ==> (j as u64) < 63 && (rem >> 1u64) == (word >> ((j + 1) as u64))
+                    && (rem >> 1u64) != (u64::MAX >> ((j + 1) as u64))) by (bit_vector);
+            }
+            rem = rem >> 1u64;
+            j += 1;
+        }
+        proof {
+            assert((j as u64) < 64 && rem == (word >> (j as u64)) && (rem & 1u64) == 0u64 ==> (word >> (j
+                as u64)) & 1u64 == 0u64) by (bit_vector);
         }
         let i = w * WORD_BITS + j;
         proof {
@@ -991,6 +1013,7 @@ impl Slab {
             final(self).owns(*final(perms)),
             final(self).free_slots() == old(self).free_slots().insert(old(self).index(a as int)),
             *final(perms) == old(perms).insert(a as int, perm@),
+        no_unwind
     {
         let ghost s0 = *self;
         let ghost p0 = *perms;
@@ -1042,6 +1065,7 @@ impl Slab {
             self.wf(),
         ensures
             r == (self.free_slots() == Set::<int>::empty()),
+        no_unwind
     {
         proof {
             vstd::set_lib::lemma_set_empty_equivalency_len(self.free_slots());
@@ -1055,6 +1079,7 @@ impl Slab {
             self.wf(),
         ensures
             r == (self.free_slots() == Set::range(0, self.count() as int)),
+        no_unwind
     {
         proof {
             self.lemma_slots();
@@ -1069,6 +1094,7 @@ impl Slab {
     pub(crate) fn start(&self) -> (r: *mut u8)
         ensures
             r == self.base(),
+        no_unwind
     {
         self.base
     }
@@ -1077,6 +1103,7 @@ impl Slab {
     pub(crate) fn holds_address(&self, a: usize) -> (r: bool)
         ensures
             r == self.within(a as int),
+        no_unwind
     {
         let base = self.base.addr();
         base <= a && a - base < self.bytes
@@ -1095,6 +1122,7 @@ impl Slab {
             run@.provenance() == self.base()@.provenance,
             self.outside(*old(perms), *final(perms)),
             forall|a: int| self.within(a) ==> !#[trigger] final(perms).contains_key(a),
+        no_unwind
     {
         let ghost b = self.base@.addr as int;
         let ghost s = self.slot as int;

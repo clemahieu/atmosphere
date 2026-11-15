@@ -182,6 +182,7 @@ impl ClassList {
                     &&& p == record_ptr(self.seq()[0], prov)
                 },
             },
+        no_unwind
     {
         self.head
     }
@@ -199,6 +200,7 @@ impl ClassList {
                     &&& self.slabs()[p@.addr as int].within(a as int)
                 },
             },
+        no_unwind
     {
         let h = match self.head {
             None => return None,
@@ -264,6 +266,7 @@ impl ClassList {
             final(self).wf(prov),
             final(self).seq() == seq![p@.addr as int] + old(self).seq(),
             final(self).slabs() == old(self).slabs().insert(p@.addr as int, perm@.value().slab),
+        no_unwind
     {
         let ghost a = p@.addr as int;
         let ghost old_order = self.order@;
@@ -340,6 +343,7 @@ impl ClassList {
             perm@.ptr() == p,
             perm@.is_init(),
             perm@.value().slab == old(self).slabs()[p@.addr as int],
+        no_unwind
     {
         let ghost a = p@.addr as int;
         let ghost old_order = self.order@;

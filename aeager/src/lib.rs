@@ -16,6 +16,7 @@
 // A cargo build erases specifications and proofs, so there a variable only they read looks unused.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
 
+mod allocator;
 #[cfg(verus_keep_ghost)]
 mod apart;
 mod eager;
@@ -28,6 +29,7 @@ mod witness;
 
 #[cfg(verus_keep_ghost)]
 pub use acall::step::caller_alone;
+pub use allocator::{AllocatorInit, new_allocator};
 pub use eager::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 #[cfg(verus_keep_ghost)]
 pub use eager::{acall_call_in_window, acall_setup_call, run_touches_block, untyped_page, window_block};

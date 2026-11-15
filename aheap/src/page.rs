@@ -63,6 +63,7 @@
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
 use vstd::layout::*;
+use vstd::pervasive::unreached;
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
@@ -600,6 +601,7 @@ fn node_at(hp: *mut u8, b: usize) -> (r: *mut Node)
         b + BLOCK_BYTES <= usize::MAX,
     ensures
         r == node_ptr(b as int, hp@.provenance),
+    no_unwind
 {
     hp.with_addr(b + BLOCK_BYTES) as *mut Node
 }
@@ -1141,6 +1143,7 @@ impl PageBuddy {
                             ==> self.spans()[c][q].order >= o
                 },
             },
+        no_unwind
     {
         let hp = match self.head {
             None => {
@@ -1341,13 +1344,17 @@ impl PageBuddy {
                 } else {
                     self.chain@[j - 1]
                 },
+        no_unwind
     {
         let ghost b = self.span_base(c as int);
         proof {
             self.lemma_block(c as int);
             self.lemma_base(b);
         }
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ghost jb = choose|i: int| 0 <= i < self.chain@.len() && self.chain@[i] == b;
         let mut prev: usize = 0;
         let mut cur: usize = hp.addr();
@@ -1427,6 +1434,7 @@ impl PageBuddy {
                     #[trigger] s.contains_key(q) && s[q].free && s[q].order >= k ==> s[q].order
                         >= s[h].order
             }),
+        no_unwind
     {
         let ghost old_used = self.used();
         let ghost old_spans = self.spans();
@@ -1438,16 +1446,25 @@ impl PageBuddy {
             self.lemma_blocks_of(bi);
             lemma_meta(bi);
         }
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ghost n0 = self.node(bi);
         let ptr = node_at(hp, b);
         let tracked mut perm = self.nodes.borrow_mut().tracked_remove(bi);
         let mut node = ptr_mut_read(ptr, Tracked(&mut perm));
         let was_idle = node.lo.is_idle() && node.hi.idle_from(1);
         let h = if hi {
-            node.hi.alloc(k).unwrap()
+            match node.hi.alloc(k) {
+                Some(v) => v,
+                None => unreached(),
+            }
         } else {
-            node.lo.alloc(k).unwrap()
+            match node.lo.alloc(k) {
+                Some(v) => v,
+                None => unreached(),
+            }
         };
         ptr_mut_write(ptr, Tracked(&mut perm), node);
         proof {
@@ -1619,6 +1636,7 @@ impl PageBuddy {
                     &&& took_span(old(self).view@, final(self).view@, b)
                 },
             },
+        no_unwind
     {
         let ghost old_used = self.used();
         let ghost old_spans = self.spans();
@@ -1700,12 +1718,18 @@ impl PageBuddy {
             assert(hi.blocks().contains_key(0) && hi.blocks()[0].free);
             assert(lo.blocks().contains_key(0) && lo.blocks()[0].free);
         }
-        let mp = hi.alloc(0).unwrap();
+        let mp = match hi.alloc(0) {
+            Some(v) => v,
+            None => unreached(),
+        };
         proof {
             assert(mp == 0);
             assert(hi.used() == Map::<int, nat>::empty().insert(0, 0));
         }
-        let h = lo.alloc(k).unwrap();
+        let h = match lo.alloc(k) {
+            Some(v) => v,
+            None => unreached(),
+        };
         ptr_mut_write(ptr, Tracked(&mut typed), Node { next, lo, hi });
         proof {
             self.nodes.borrow_mut().tracked_insert(bi, typed);
@@ -1847,6 +1871,7 @@ impl PageBuddy {
                 },
                 Ok(p) => cut_run(*old(self), *final(self), old(src)@, final(src)@, p as int, k as nat),
             },
+        no_unwind
     {
         self.view = Ghost(src@);
         proof {
@@ -1895,6 +1920,7 @@ impl PageBuddy {
             final(src).serves(final(token)@),
             final(self).wf(final(src)@),
             freed(*old(self), *final(self), old(src)@, final(src)@, p as int),
+        no_unwind
     {
         self.view = Ghost(src@);
         let ghost entry = *self;
@@ -1934,7 +1960,10 @@ impl PageBuddy {
             self.lemma_blocks_of(bi);
             lemma_meta(bi);
         }
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ghost n0 = self.node(bi);
         let ghost u0 = old_used[ci];
         let ptr = node_at(hp, b);
@@ -2274,6 +2303,7 @@ impl PageBuddy {
                     &&& final(src)@ == old(src)@.backed_run(old(self).span_base(span_of(p as int)), p as int, n as nat)
                 },
             },
+        no_unwind
     {
         self.view = Ghost(src@);
         let ghost entry = *self;
@@ -2289,7 +2319,10 @@ impl PageBuddy {
             lemma_first_pages(p as int, n as nat, pages(k as nat) as nat);
             lemma_first_pages_in(self.view@, bi, p as int, n as nat, pages(k as nat) as nat);
         }
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ghost start = self.view@;
         let backed = src.back(token, Ghost(bi), p, n);
         self.view = Ghost(src@);
@@ -2348,6 +2381,7 @@ impl PageBuddy {
             final(self).used() == old(self).used(),
             final(self).metas() == old(self).metas(),
             final(src)@ == old(src)@.released_run(old(self).span_base(span_of(p as int)), p as int, n as nat),
+        no_unwind
     {
         self.view = Ghost(src@);
         let ghost entry = *self;

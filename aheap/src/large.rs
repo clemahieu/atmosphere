@@ -27,6 +27,7 @@
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
 use vstd::layout::*;
+use vstd::pervasive::unreached;
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
@@ -181,6 +182,7 @@ proof fn lemma_record(b: int, pages: nat)
 fn record_at(hp: *mut u8, r: usize) -> (p: *mut LargeNode)
     ensures
         p == ptr_mut_from_data::<LargeNode>(PtrData { addr: r, provenance: hp@.provenance, metadata: () }),
+    no_unwind
 {
     hp.with_addr(r) as *mut LargeNode
 }
@@ -399,6 +401,7 @@ impl LargeMap {
                         self.record_of(self.chain@[j - 1])
                     }
             },
+        no_unwind
     {
         let hp = match self.head {
             None => {
@@ -498,6 +501,7 @@ impl LargeMap {
                     &&& size <= n * PAGE_BYTES
                 },
             },
+        no_unwind
     {
         let ghost start = src@;
         let ghost old_objects = self.objects();
@@ -658,6 +662,7 @@ impl LargeMap {
             final(self).wf(final(src)@),
             final(self).objects() == old(self).objects().remove(p as int),
             final(src)@ == old(src)@.released_span(p as int),
+        no_unwind
     {
         let ghost start = src@;
         let ghost old_objects = self.objects();
@@ -689,7 +694,10 @@ impl LargeMap {
                 self.lemma_at(j + 1, start);
             }
         }
-        let hp = self.head.unwrap();
+        let hp = match self.head {
+            Some(h) => h,
+            None => unreached(),
+        };
         let ptr = record_at(hp, cur);
         let tracked mut nperm = self.nodes.borrow_mut().tracked_remove(pi);
         let node = ptr_mut_read(ptr, Tracked(&mut nperm));
