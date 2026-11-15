@@ -3120,9 +3120,10 @@ impl CapKernel {
     /// move the process capability into slot 3 of that leaf, through itself; and inspect slot 3 again.
     /// Every step succeeds. The thread is Runnable from the start on, before the moves, since start
     /// needs the thread capability with control in the caller's own table. The first inspect finds
-    /// nothing and the second the process's own capability, and from the second move on the process is
-    /// sealed: no table but its own names it, so the rely of kernel/verified/capability/rely.rs holds
-    /// for it. The use is a creator handing a built process itself, and the process's code learning
+    /// nothing and the second the process's own capability with 0 cycles, since a process capability
+    /// names no thread, and from the second move on the process is sealed: no table but its own names
+    /// it, so the rely of kernel/verified/capability/rely.rs holds for it. The use is a creator handing
+    /// a built process itself, and the process's code learning
     /// that it may rely on being sealed by finding its own capability in slot 3. See
     /// design/region-map-owns-the-address-space/.
     pub fn witness_built_process_sealed(
@@ -3139,7 +3140,7 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: (bool, bool, Option<Payload>, bool, bool, Option<Payload>))
+    ) -> (ret: (bool, bool, Option<(Payload, u64)>, bool, bool, Option<(Payload, u64)>))
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
@@ -3150,7 +3151,7 @@ impl CapKernel {
             ret.2 is None,
             ret.3,
             ret.4,
-            ret.5 == Some(process_of(base)),
+            ret.5 == Some((process_of(base), 0u64)),
             ({
                 let thread = (base + 10 * PAGE_SZ) as usize;
                 let bl = (base + 12 * PAGE_SZ) as usize;
@@ -3338,10 +3339,15 @@ impl CapKernel {
             assert(s5.root_live(base));
             assert(s5.tables.roots@.contains_key(base));
             assert(s5.cap_at(base, Position { through: None, index: WITNESS_SEALED_PROCESS_SLOT }) == Some(pn));
+            // A process capability names no thread, so inspect returns 0 cycles beside the payload.
+            assert(s5.consumed_named(process_of(base)) == 0);
         }
 
         // The process, looking in slot 3 again, finds its own capability: it is sealed.
         let after = self.inspect(base, at, Tracked(&mut steps));
+        proof {
+            assert(after == Some((process_of(base), 0u64)));
+        }
         (placed, started, before, ok1, ok2, after)
     }
 
