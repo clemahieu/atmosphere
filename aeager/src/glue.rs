@@ -53,7 +53,7 @@ use verified::capability::map::{
     address_path, entry_written, frame_map_entry, names_entry, walk_table, LOWER_HALF_END,
 };
 #[cfg(verus_keep_ghost)]
-use verified::capability::mapping::{entries_cleared, space_mapping, step, SpacePath};
+use verified::capability::mapping::{entries_cleared, space_mapping, step, walk, SpacePath};
 #[cfg(verus_keep_ghost)]
 use verified::capability::rely::same_cap;
 #[cfg(verus_keep_ghost)]
@@ -642,6 +642,88 @@ pub open spec fn window_unclaimed(caller: Caller, window: usize) -> bool {
             None,
         )
     }
+}
+
+/// The caller holds no page token for a page of the window at `window`.
+pub open spec fn window_tokens_clear(caller: Caller, window: usize) -> bool {
+    forall|a: int| #[trigger] window_page(window, a) ==> !caller.pages().contains_key(address_path(a as u64))
+}
+
+/// An empty level-4 entry maps no page under it: the walk stops at the root, so the space agrees
+/// with a token that says nothing is mapped at `p`.
+pub(crate) proof fn lemma_l4_empty_page_agrees(tree: TableTree, root: usize, p: SpacePath)
+    requires
+        tree.entry(root, p.l4).is_empty(),
+    ensures
+        page_agrees(space_mapping(tree, root), p, None),
+{
+    assert(!tree.entry(root, p.l4).perm.present);
+    assert(!tree.names_child(root, p.l4));
+    assert(step(tree, root, p.l4) is None);
+    assert(walk(tree, root, p) is None) by {
+        if tree.is_root(root) {
+            assert(step(tree, root, p.l4) is None);
+        }
+    };
+    let wide = large_path(p);
+    assert(wide.l4 == p.l4);
+    assert(walk(tree, root, wide) is None) by {
+        if tree.is_root(root) {
+            assert(step(tree, root, wide.l4) is None);
+        }
+    };
+    let m = space_mapping(tree, root);
+    assert(!m.contains_key(p)) by {
+        assert(walk(tree, root, p) is None);
+    };
+    assert(!m.contains_key(wide)) by {
+        assert(walk(tree, root, wide) is None);
+    };
+}
+
+/// `source_ready` on a caller that still holds the kernel state it was handed, and that holds no
+/// page token for the window, is `window_unclaimed`: the window's level-4 entry is empty, so no
+/// page of it is mapped now or in the state the process was handed.
+pub proof fn lemma_window_unclaimed(
+    caller: Caller,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+)
+    requires
+        source_ready(caller, space, untyped, memory, pages, slots, window),
+        caller.kernel() == caller.start(),
+        window_tokens_clear(caller, window),
+    ensures
+        window_unclaimed(caller, window),
+{
+    let root = caller.root();
+    let k = caller.kernel();
+    let tree = tree_of(&k.table_pages, &k.spaces);
+    let l4 = address_path(window as u64).l4;
+    assert(kernel_source_ready(k, root, space, untyped, memory, pages, slots, window));
+    assert(tree.entry(root, l4).is_empty());
+    assert(window != 0);
+    assert(window as int % SIZE_512G as int == 0);
+    assert(window + WINDOW_BYTES <= LOWER_HALF_END as usize);
+    let start_tree = tree_of(&caller.start().table_pages, &caller.start().spaces);
+    assert(start_tree == tree);
+    assert forall|a: int| #[trigger] window_page(window, a) implies {
+        &&& !caller.pages().contains_key(address_path(a as u64))
+        &&& page_agrees(space_mapping(start_tree, root), address_path(a as u64), None)
+        &&& page_agrees(space_mapping(tree, root), address_path(a as u64), None)
+    } by {
+        assert(window_tokens_clear(caller, window));
+        let va = a as usize;
+        assert(0 <= a < (window + WINDOW_BYTES) as int);
+        assert(va as int == a);
+        lemma_window_va_path(window, va);
+        assert(address_path(va as u64).l4 == l4);
+        lemma_l4_empty_page_agrees(tree, root, address_path(va as u64));
+    };
 }
 
 /// The path of the page `k` pages into a region-aligned window: the window's level-4 and level-3

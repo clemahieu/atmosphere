@@ -16,7 +16,7 @@ use crate::exercise::*;
 use crate::glue::{
     AcallStep, acall_ok, acall_steps, flush_room, lemma_acall_ok_append, lemma_acall_refused_after_ok,
     lemma_acall_steps_append, lemma_acall_steps_claimed, lemma_caller_alone_split, lemma_source_ready_premises,
-    names_own_space, own_process, source_ready, window_unclaimed,
+    lemma_window_unclaimed, names_own_space, own_process, source_ready, window_tokens_clear,
 };
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
@@ -26,7 +26,9 @@ verus! {
 pub fn witness_new(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: Option<Eager>)
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
+        source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
         window@.addr != 0,
         window@.addr as int % REGION_BYTES as int == 0,
         window@.addr + WINDOW_BYTES <= usize::MAX,
@@ -36,6 +38,7 @@ pub fn witness_new(space: u64, untyped: u64, window: *mut u8, token: &mut Tracke
     proof {
         assert(1int % LEAF_INDICES as int != 0) by (compute);
         assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
     }
     Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window)
 }
@@ -45,7 +48,9 @@ pub fn witness_new(space: u64, untyped: u64, window: *mut u8, token: &mut Tracke
 pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (seen: Exercised)
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
+        source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
         old(token)@.wf(),
         own_process(old(token)@),
         names_own_space(old(token)@, space),
@@ -58,6 +63,7 @@ pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut T
     proof {
         assert(1int % LEAF_INDICES as int != 0) by (compute);
         assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
     }
     let mut source = Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window).unwrap();
     let seen = exercise(&mut source, token);
@@ -68,7 +74,9 @@ pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut T
 pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: Option<*mut u8>)
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
+        source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
         window@.addr != 0,
         window@.addr as int % REGION_BYTES as int == 0,
         window@.addr + WINDOW_BYTES <= usize::MAX,
@@ -81,6 +89,7 @@ pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tr
     proof {
         assert(1int % LEAF_INDICES as int != 0) by (compute);
         assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
     }
     let mut src: Eager = Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window).unwrap();
     src.reserve(token, 1)
@@ -92,7 +101,9 @@ pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tr
 pub fn witness_release_span(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: (*mut u8, Option<*mut u8>))
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
+        source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
         window@.addr != 0,
         window@.addr as int % REGION_BYTES as int == 0,
         window@.addr + WINDOW_BYTES <= usize::MAX,
@@ -106,6 +117,7 @@ pub fn witness_release_span(space: u64, untyped: u64, window: *mut u8, token: &m
     proof {
         assert(1int % LEAF_INDICES as int != 0) by (compute);
         assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
     }
     let mut src: Eager = Eager::new(token, space, untyped, 0, MAX_PAGES, 1, window).unwrap();
     proof {
@@ -136,7 +148,8 @@ pub fn witness_back(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -163,6 +176,7 @@ pub fn witness_back(
     let ghost tok0 = token@;
     proof {
         lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, memory, pages, slots, window@.addr);
         assert(pages <= MAX_PAGES) by (compute);
         assert(pages as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
     }
@@ -212,7 +226,8 @@ pub fn witness_release(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -224,6 +239,7 @@ pub fn witness_release(
     let ghost tok0 = token@;
     proof {
         lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, memory, pages, slots, window@.addr);
         assert(pages <= MAX_PAGES) by (compute);
         assert(pages as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
     }
@@ -284,7 +300,8 @@ pub fn witness_back_reuses_released(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -312,6 +329,7 @@ pub fn witness_back_reuses_released(
     let ghost tok0 = token@;
     proof {
         lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, memory, pages, slots, window@.addr);
         assert(pages <= MAX_PAGES) by (compute);
         assert((3 * TABLE_PAGES + 1) / TABLE_PAGES as int == 3) by (compute);
         assert(2 * PAGE_BYTES <= BLOCK_BYTES) by (compute);
@@ -488,7 +506,8 @@ pub fn witness_back_after_release_span(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -516,6 +535,7 @@ pub fn witness_back_after_release_span(
     let ghost tok0 = token@;
     proof {
         lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, memory, pages, slots, window@.addr);
         assert(pages <= MAX_PAGES) by (compute);
         assert((3 * TABLE_PAGES + 1) / TABLE_PAGES as int == 3) by (compute);
         assert(2 * PAGE_BYTES <= BLOCK_BYTES) by (compute);
@@ -692,7 +712,8 @@ pub fn witness_back_second_block(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
-        window_unclaimed(old(token)@, window@.addr),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (5 * TABLE_PAGES) as usize, slots, window@.addr),
     ensures
         final(token)@.wf(),
@@ -721,6 +742,7 @@ pub fn witness_back_second_block(
     let ghost tok0 = token@;
     proof {
         lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, memory, pages, slots, window@.addr);
         assert(pages <= MAX_PAGES) by (compute);
         assert((5 * TABLE_PAGES) / TABLE_PAGES as int == 5) by (compute);
         assert(BLOCK_BYTES == PAGE_BYTES * BLOCK_PAGES);
