@@ -94,6 +94,7 @@ tools/gdb.py            # attach gdb to a tools/run.py --gdb run
 tools/check-upstream-copies.py --update   # rewrite the recorded delta of a copied upstream file
 tools/check-boot-log.py --arch ARCH LOG   # hold a dom0 boot's serial log to the gate's boot checks
 tools/check-throwaways.py --write   # after adding a root witness or changing one's parameters or requires: rewrite the throwaways the gate runs; --list says which witnesses are roots
+tools/check-refused.py  # after adding a false claim under a verified crate's refused/ or changing a postcondition one names: Verus refuses each claim where it says; the gate's refused step
 tools/check-layout-claims.py  # after adding a 'global layout' or 'global size_of' claim, or a new Verus: the build refuses a wrong one in each file, on both targets; the gate's layout claims step
 tools/check-boundary.py --sites   # after adding or moving an assume_new, a cast to a verified type or a call to a verified function with a requires in kernel, dom0 or astd: the sites as tools/boundary-list lines, each with its guarantor or '?'; the gate's boundary step
 tools/check-invoked-arms.py   # before changing an arm of invoked or an operation's ensures: each conjunct the arm does not carry; the gate's invoked arms step

@@ -25,6 +25,8 @@ Every combinator implements one trait:
 
 `Steps` is the crate's own ghost counter, the shape `design/one-lock-bounded-steps/` gives the kernel's: one unit per iteration of an exec loop, a callee's units adding to its caller's. A refusal is charged the input's length because a refusal ends the parse of the whole packet, so a format is charged it once. Bounded repetition requires its part to consume at least one byte on each element, so its iterations are at most the bytes it reads and its count is linear in them whatever its bound.
 
+The properties are stated strongly enough to refuse a combinator that breaks them, and the tree keeps one to show it: `awire/src/refused/` holds a `u16` parsed big-endian and serialised little-endian, whose proofs are those a big-endian serialiser verifies with, compiled only under `cfg(refused)`. The gate's refused step, `tools/check-refused.py`, runs Verus on it and passes only when Verus refuses it at the two round-trip postconditions and nowhere else. Each property of a parse is its own ensures clause, so a refusal names the one it fails.
+
 Nothing allocates (rule 5). A byte run's exec value borrows the input, `&'a [u8]`, and copies nothing. A repetition's value has the capacity of its bound, fixed when the format is written, and the bound is a parameter of the format, as rule 2 asks. Integers are assembled from bytes by shifts the bit-vector solver proves, with no call to `from_be_bytes` or its kin, so the crate has no `external_body` and no assumed specification.
 
 ## Context

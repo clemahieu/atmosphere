@@ -24,6 +24,8 @@ mod bytes;
 mod integer;
 pub use bytes::*;
 pub use integer::*;
+#[cfg(refused)]
+mod refused;
 #[cfg(throwaway)]
 mod throwaway;
 #[cfg(verus_keep_ghost)]

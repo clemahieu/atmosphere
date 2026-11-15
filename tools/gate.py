@@ -51,6 +51,7 @@ EXTERNAL_BODY_CHECK = "tools/check-external-body.py"
 LAYOUT_CLAIMS_CHECK = "tools/check-layout-claims.py"
 BOUNDARY_CHECK = "tools/check-boundary.py"
 THROWAWAY_CHECK = "tools/check-throwaways.py"
+REFUSED_CHECK = "tools/check-refused.py"
 INVOKED_ARMS_CHECK = "tools/check-invoked-arms.py"
 WITNESS_INVENTORY = "tools/witness-inventory.py"
 # Every way an operation succeeds that no witness reaches, one line each: path, operation and way,
@@ -506,6 +507,8 @@ STEPS = (
     # After verify, whose exported crates a throwaway run of a crate that depends on one reads.
     Step("throwaways", X86_64, self_tested(THROWAWAY_CHECK)),
     Step("unwitnessed", X86_64, unwitnessed),
+    # After verify too: a false claim a verified crate keeps, held to Verus's refusal where it says.
+    Step("refused", X86_64, self_tested(REFUSED_CHECK)),
     Step("verify aarch64", AARCH64, verify_for("--target", AARCH64)),
     Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK)),
     # Verus takes a layout claim as stated; the build checks it, for both targets.
@@ -726,6 +729,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(gate.calls, [[WITNESS_INVENTORY, "--test"], [WITNESS_INVENTORY]])
         names = [step.name for step in chosen(X86_64)]
         self.assertEqual(names.index("unwitnessed"), names.index("throwaways") + 1)
+
+    def test_the_refused_step_runs_the_checks_tests_then_the_check_after_verify(self):
+        said = "refused: 1 false claim in 1 crate, each refused by Verus at the postconditions it declares and nowhere else"
+        gate = FakeGate(self.root, {REFUSED_CHECK: (0, said + "\n")})
+        step = next(step for step in STEPS if step.name == "refused")
+        self.assertEqual(step.check(gate), said)
+        self.assertEqual(gate.calls, [[REFUSED_CHECK, "--test"], [REFUSED_CHECK]])
+        names = [step.name for step in chosen(X86_64)]
+        self.assertLess(names.index("verify"), names.index("refused"))
 
     def test_the_invoked_arms_step_fails_on_a_printed_conjunct(self):
         gate = FakeGate(self.root)
