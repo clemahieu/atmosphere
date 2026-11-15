@@ -5,7 +5,9 @@
 //! it back, having first asked the value's serialised length within the buffer's room, as a composite
 //! does before it writes; the buffer then starts with exactly the bytes the parse consumed. Each
 //! reaches the accepting way of the combinator's `parse`, `length` and `serialize`; a choice's,
-//! through each alternative. Each `Length` integer's witness reaches its conversions.
+//! through each alternative. Each `Length` integer's witness reaches its conversions. A repetition's
+//! witness asks the length of, and writes, the value its parse gave, which it holds in place; the
+//! witness of `Elements` builds a value in place and reads it back.
 //! design/witness-per-way-an-operation-succeeds/.
 
 use vstd::prelude::*;
@@ -398,6 +400,80 @@ pub fn witness_length_u32_le() -> (r: (usize, usize, usize))
     let t = c.of_len(3);
     let n = c.len_of(&t);
     (w, m, n)
+}
+
+/// The value a parse accepted, left where the parse put it.
+fn accepted<T>(parsed: &Option<(usize, T)>) -> (t: &T)
+    requires
+        parsed is Some,
+    ensures
+        *t == (parsed->0).1,
+{
+    match parsed {
+        Some((_, t)) => t,
+        None => unreached(),
+    }
+}
+
+/// Reads three bytes as exactly three `u8`s and writes them back.
+pub fn witness_count(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Elements<u8, 4>)>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 3,
+        old(out).len() >= 3,
+    ensures
+        r.0 is Some,
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(3) == input@.take(3),
+{
+    let c: Count<U8, 4> = Count { inner: U8, count: 3 };
+    proof {
+        reveal_with_fuel(parse_count, 4);
+    }
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let room = c.length(accepted(&parsed), out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(accepted(&parsed), out, 0, Tracked(&mut steps));
+    assert(out@.take(3) =~= input@.take(3));
+    (parsed, wrote, room)
+}
+
+/// Reads a length of 2 and the two `u8`s it counts, at most three of them, and writes them back.
+pub fn witness_bounded(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Elements<u8, 4>)>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 3,
+        input[0] == 2,
+        old(out).len() >= 3,
+    ensures
+        r.0 is Some,
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(3) == input@.take(3),
+{
+    let c: Bounded<U8, U8, 4> = Bounded { length: U8, inner: U8, bound: 3 };
+    proof {
+        reveal_with_fuel(parse_fill, 3);
+    }
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let room = c.length(accepted(&parsed), out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(accepted(&parsed), out, 0, Tracked(&mut steps));
+    assert(out@.take(3) =~= input@.take(3));
+    (parsed, wrote, room)
+}
+
+/// Builds two values in place and reads them back.
+pub fn witness_elements() -> (r: (usize, u8, u8))
+    ensures
+        r == (2usize, 7u8, 9u8),
+{
+    let mut e: Elements<u8, 2> = Elements::new();
+    e.push(7);
+    e.push(9);
+    let n = e.len();
+    let a = e.get(0);
+    let b = e.get(1);
+    (n, a, b)
 }
 
 } // verus!

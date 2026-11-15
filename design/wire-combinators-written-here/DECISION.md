@@ -28,7 +28,7 @@ Every combinator implements one trait:
 
 The properties are stated strongly enough to refuse a combinator that breaks them, and the tree keeps one to show it: `awire/src/refused/` holds a `u16` parsed big-endian and serialised little-endian, whose proofs are those a big-endian serialiser verifies with, compiled only under `cfg(refused)`. The gate's refused step, `tools/check-refused.py`, runs Verus on it and passes only when Verus refuses it at the two round-trip postconditions and nowhere else. Each property of a parse is its own ensures clause, so a refusal names the one it fails.
 
-Nothing allocates (rule 5). A byte run's exec value borrows the input, `&'a [u8]`, and copies nothing. A repetition's value has the capacity of its bound, fixed when the format is written, and the bound is a parameter of the format, as rule 2 asks. Integers are assembled from bytes by shifts the bit-vector solver proves, with no call to `from_be_bytes` or its kin, so the crate has no `external_body` and no assumed specification.
+Nothing allocates (rule 5). A byte run's exec value borrows the input, `&'a [u8]`, and copies nothing. A repetition's value is an array of a capacity fixed when the format is written, with a count of the elements it holds, each element's exec value held in place; the count or the bound is a parameter of the format at most that capacity, as rule 2 asks. An array is read in no step and needs its elements' exec values to be `Copy`, which the integers' and the byte runs' are; a view that parsed its elements again on access would charge every read the bytes before it. Integers are assembled from bytes by shifts the bit-vector solver proves, with no call to `from_be_bytes` or its kin, so the crate has no `external_body` and no assumed specification.
 
 ## Context
 
@@ -57,5 +57,4 @@ Writing them here keeps every proof under the tree's gate and its counts, and le
 
 - The constants `K` and `C` of each combinator, which its leaf proves.
 - Combinators beyond the six, such as a tail that takes the rest of the input or a checksum; each is added when a format needs it, with the same trait.
-- Whether a repetition's value is an array with a count or a view that parses its elements again on access; either keeps the capacity of the bound and allocates nothing.
 - The wire formats themselves, and how each states its nesting bounds.
