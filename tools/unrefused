@@ -15,17 +15,11 @@ kernel/verified/capability/device.rs	unbind_device_at	true
 kernel/verified/capability/device_space.rs	map_device	true
 kernel/verified/capability/endpoint.rs	retype_endpoint	true
 kernel/verified/capability/endpoint.rs	retype_notification	true
-kernel/verified/capability/guest_space.rs	map_nested	true
-kernel/verified/capability/kernel.rs	flush_iommu	returns
-kernel/verified/capability/kernel.rs	acknowledge	returns
 kernel/verified/capability/map.rs	link_at	true
 kernel/verified/capability/map.rs	map_at	true
-kernel/verified/capability/mapping.rs	load_space	returns
-kernel/verified/capability/mapping.rs	switch_space	returns
 kernel/verified/capability/moving.rs	move_cap	true
 kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some
-kernel/verified/capability/probe.rs	probe_at	Some
 kernel/verified/capability/process.rs	retype_process	true
 kernel/verified/capability/reclaim.rs	reclaim	Freed
 kernel/verified/capability/reclaim.rs	reclaim	Unlinked

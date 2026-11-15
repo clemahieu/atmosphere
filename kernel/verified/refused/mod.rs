@@ -14,7 +14,9 @@
 //! kernel, and tick's Kept, where no selected thread preempts, is another result. switch_thread and
 //! enter_boot_thread do not make a thread current on an unchanged kernel. check_current's MovedOff
 //! does not move a thread off an unchanged kernel, and its Kept, where the thread need not leave,
-//! is MovedOff.
+//! is MovedOff. map_nested, load_space, switch_space, flush_iommu and acknowledge meet no unchanged
+//! kernel. probe_at's Some clears accessed and dirty bits in the level 1 table's words and leaves the
+//! view as it was, so the unchanged kernel includes those words and the probed prefix does not hold.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -77,6 +79,12 @@ pub mod switch_thread_returns;
 pub mod enter_boot_thread_returns;
 pub mod check_current_kept;
 pub mod check_current_moved_off;
+pub mod map_nested_ok;
+pub mod load_space_returns;
+pub mod switch_space_returns;
+pub mod flush_iommu_returns;
+pub mod acknowledge_returns;
+pub mod probe_at_some;
 
 use vstd::prelude::*;
 
@@ -85,16 +93,20 @@ verus! {
 use crate::arch::{user_rip, FrameKind, Registers, saved_frame, tag_written};
 use crate::capability::thread::{CurrentStep, SuspendStep, ThreadState, entry_frame_save, runs_in_space, same_record_perm_but_links};
 use crate::capability::unmap::Unmapped;
-use crate::define::{NUM_CPUS, PAGE_SZ, PCID_MAX};
+use crate::define::{NUM_CPUS, NUM_IOMMUS, PAGE_SZ, PCID_MAX};
 use crate::util::page_ptr_util_u::mem_valid;
 use crate::capability::boot_image::{image_blocks, ImageRun, ROOT_FRAME_SLOTS};
 use crate::capability::boot_memory::{runs_blocks, ROOT_UNTYPED_SLOTS};
 use crate::capability::boot_table::{image_tables_bound, image_virt_wf, untyped_tables};
 use crate::capability::decompose::page_block_payload;
-use crate::capability::kernel::{CapKernel, holds_id, id_pcid, ID_GENERATION_MAX, KERNEL_TAG};
+use crate::capability::kernel::{CapKernel, holds_id, id_pcid, ID_GENERATION_MAX, KERNEL_TAG, TlbEntry};
+use crate::capability::guest_space::GuestPhysRange;
+use crate::capability::link::tree_of;
+use crate::capability::mapping::space_says;
+use crate::capability::probe::Probed;
 use crate::capability::reach::{discharges, Effect, saves_own_frame};
 use crate::capability::schedule::{at_back_of_priority, queued_at_back, thread_priority};
-use crate::capability::space::SPACE_ROOT_PAGE;
+use crate::capability::space::{SPACE_ROOT_PAGE, Spaces};
 use crate::capability::switch::TickStep;
 use crate::capability::view::bound_threads;
 use crate::capability::table::{Payload, MAX_ORDER};
@@ -1067,6 +1079,269 @@ pub trait SwitchThreadReturns {
                     &&& post.tlb@.tags(c as int) == pre.tlb@.tags(c as int).insert(tag_written(c as int, KERNEL_TAG))
                 },
             },
+    ;
+}
+
+/// `map_nested`'s success at an unchanged kernel. The call is allowed, and neither a page nor a large
+/// page was written into the nested table.
+pub trait MapNestedOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, slot: usize, r: GuestPhysRange, from: usize, page: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_map_nested(root, slot, r, from, page),
+            post == pre,
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
+            post.stale_epoch == pre.stale_epoch,
+            post.cores == pre.cores,
+            post.iommus.present == pre.iommus.present,
+            ret == pre.can_map_nested(root, slot, r, from, page),
+            post.spaces.loaded == pre.spaces.loaded,
+            !ret ==> post == pre,
+            ret && r.large() ==> CapKernel::map_large_done(pre, post, root, slot, r.path(), from, page),
+            ret && !r.large() ==> CapKernel::map_done(pre, post, root, slot, r.path(), from, page),
+            ret ==> discharges(pre.view(), post.view(), root, Effect::Share { space: pre.tables.node_of(root, slot), from: pre.tables.node_of(root, from) }),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+    ;
+}
+
+/// `load_space` at an unchanged kernel. The core list, the id word and the retire are as they were,
+/// and the returned pcid is not one the ensures name. The space's core-list page is named because a
+/// well-formed space has one, which the ensures read.
+pub trait LoadSpaceReturns {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, s: usize, pcid: usize)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.spaces.roots@.contains_key(s),
+            pre.spaces.records@[s].value().kind is Process,
+            pre.cores@[c as int].generation < ID_GENERATION_MAX,
+            pre.cores@[c as int].space is None || pre.cores@[c as int].space == Some(s)
+                || holds_id(pre.cores@, pre.spaces.loaded@, c as int, s)
+                || pre.cores@[c as int].next_pcid != PCID_MAX,
+            pre.spaces.loaded@.contains_key(s),
+            post == pre,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            pre.cores@[c as int].next_pcid != PCID_MAX ==> {
+                &&& post.cores@[c as int].generation == pre.cores@[c as int].generation
+                &&& post.cores@[c as int].next_pcid <= pre.cores@[c as int].next_pcid + 1
+            },
+            CapKernel::step_ok(pre, post, c as int),
+            post.loaded(c as int, s),
+            post.spaces.loaded@[s].value().retired == 0,
+            post.depends(c as int, s),
+            1 <= pcid < PCID_MAX,
+            holds_id(post.cores@, post.spaces.loaded@, c as int, s),
+            id_pcid(post.spaces.loaded@[s].value().ids@[c as int]) == pcid,
+            holds_id(pre.cores@, pre.spaces.loaded@, c as int, s) ==> {
+                &&& pcid == id_pcid(pre.spaces.loaded@[s].value().ids@[c as int])
+                &&& post.cores@[c as int].generation == pre.cores@[c as int].generation
+                &&& post.tlb == pre.tlb
+            },
+            !holds_id(pre.cores@, pre.spaces.loaded@, c as int, s) ==> ({
+                &&& !pre.tlb@.tags(c as int).contains(pcid)
+                &&& post.cores@[c as int].generation == pre.cores@[c as int].generation
+                &&& post.tlb == pre.tlb
+            } || {
+                &&& post.cores@[c as int].generation == pre.cores@[c as int].generation + 1
+                &&& post.tlb@.tags(c as int) == Set::<usize>::empty()
+                &&& post.tlb@[c as int] == Set::<TlbEntry>::empty()
+                &&& post.acked(c as int) == pre.flush_epoch
+            }),
+            !holds_id(pre.cores@, pre.spaces.loaded@, c as int, s) && pre.cores@[c as int].next_pcid == PCID_MAX ==> {
+                &&& post.cores@[c as int].generation == pre.cores@[c as int].generation + 1
+                &&& post.tlb@.tags(c as int) == Set::<usize>::empty()
+            },
+            forall|r: usize| r != s && #[trigger] holds_id(post.cores@, post.spaces.loaded@, c as int, r) ==> {
+                &&& holds_id(pre.cores@, pre.spaces.loaded@, c as int, r)
+                &&& post.spaces.loaded@[r] == pre.spaces.loaded@[r]
+            },
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS && d != c ==> #[trigger] holds_id(post.cores@, post.spaces.loaded@, d, r) == holds_id(pre.cores@, pre.spaces.loaded@, d, r),
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS && d != c && post.spaces.loaded@.contains_key(r)
+                ==> #[trigger] post.spaces.loaded@[r].value().ids@[d] == pre.spaces.loaded@[r].value().ids@[d],
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d],
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@[d] == pre.tlb@[d],
+            forall|e: TlbEntry| #[trigger] post.tlb@[c as int].contains(e) ==> pre.tlb@[c as int].contains(e),
+            post.cores@[c as int].current_thread == pre.cores@[c as int].current_thread,
+            post.cores@[c as int].space == pre.cores@[c as int].space,
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == s)
+                ==> #[trigger] post.loaded(d, r) == pre.loaded(d, r),
+            forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
+                ==> #[trigger] post.core_may_hold(c as int, e),
+            post.spaces.loaded@ == pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]),
+            post.spaces.loaded@.dom() == pre.spaces.loaded@.dom(),
+            post.spaces.roots == pre.spaces.roots,
+            post.spaces.records == pre.spaces.records,
+            post.spaces.holders == pre.spaces.holders,
+            post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
+            post.spaces.bound == pre.spaces.bound,
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.blocks == pre.blocks,
+            post.holders == pre.holders,
+            post.mappings == pre.mappings,
+            post.table_pages == pre.table_pages,
+            post.zeroing == pre.zeroing,
+            post.frames == pre.frames,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
+            post.iommus == pre.iommus,
+            post.devices == pre.devices,
+            post.threads == pre.threads,
+            post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
+    ;
+}
+
+/// `switch_space` at an unchanged kernel. The core's record, its base register and its tag set are
+/// as they were, so they do not name the space the call points them at.
+pub trait SwitchSpaceReturns {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, space: Option<usize>, root: usize, tag: usize)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            root % PAGE_SZ == 0,
+            space is None ==> mem_valid(root),
+            match space {
+                Some(s) => {
+                    &&& root == s + SPACE_ROOT_PAGE * PAGE_SZ
+                    &&& pre.loaded(c as int, s)
+                    &&& pre.spaces.loaded@[s].value().retired == 0
+                    &&& holds_id(pre.cores@, pre.spaces.loaded@, c as int, s)
+                    &&& tag == id_pcid(pre.spaces.loaded@[s].value().ids@[c as int])
+                },
+                None => {
+                    &&& root == pre.spaces.kernel_root@
+                    &&& tag == KERNEL_TAG
+                },
+            },
+            match pre.cores@[c as int].current_thread {
+                Some(t) => pre.threads.records@[t].value().pending_stop
+                    || (space is Some && pre.threads.records@[t].value().process == space),
+                None => true,
+            },
+            post == pre,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            CapKernel::step_ok(pre, post, c as int),
+            post.cores@[c as int].space == space,
+            post.spaces.registers@[c as int].root() == root,
+            post.spaces.registers@[c as int].tag() == tag_written(c as int, tag),
+            forall|d: int| d != c ==> #[trigger] post.spaces.registers@[d] == pre.spaces.registers@[d],
+            post.cores@[c as int].current_thread == pre.cores@[c as int].current_thread,
+            post.cores@[c as int].acked_epoch == pre.cores@[c as int].acked_epoch,
+            post.cores@[c as int].generation == pre.cores@[c as int].generation,
+            post.cores@[c as int].next_pcid == pre.cores@[c as int].next_pcid,
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d],
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS ==> #[trigger] holds_id(post.cores@, post.spaces.loaded@, d, r) == holds_id(pre.cores@, pre.spaces.loaded@, d, r),
+            post.tlb@.len() == pre.tlb@.len(),
+            forall|d: int| #[trigger] post.tlb@[d] == pre.tlb@[d],
+            post.tlb@.tags(c as int) == pre.tlb@.tags(c as int).insert(tag_written(c as int, tag)),
+            forall|d: int| d != c ==> #[trigger] post.tlb@.tags(d) == pre.tlb@.tags(d),
+            post.spaces.roots == pre.spaces.roots,
+            post.spaces.records == pre.spaces.records,
+            post.spaces.loaded == pre.spaces.loaded,
+            post.spaces.holders == pre.spaces.holders,
+            post.spaces.bound == pre.spaces.bound,
+            post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
+            post.spaces == (Spaces { registers: post.spaces.registers, ..pre.spaces }),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.blocks == pre.blocks,
+            post.holders == pre.holders,
+            post.mappings == pre.mappings,
+            post.table_pages == pre.table_pages,
+            post.zeroing == pre.zeroing,
+            post.frames == pre.frames,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
+            post.iommus == pre.iommus,
+            post.devices == pre.devices,
+            post.threads == pre.threads,
+            post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
+    ;
+}
+
+/// `flush_iommu` at an unchanged kernel. The IOMMU has not taken the epoch and its IOTLB model is
+/// not empty.
+pub trait FlushIommuReturns {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, i: usize)
+        requires
+            pre.wf(),
+            i < NUM_IOMMUS,
+            pre.iommu_present(i as int),
+            post == pre,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            post.iommu_acked(i as int) == pre.flush_epoch,
+            forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] post.iommu_acked(j) == pre.iommu_acked(j),
+            post.iommus.tlb@[i as int] == Set::<TlbEntry>::empty(),
+            CapKernel::only_iommu_changed(pre, post, i as int),
+    ;
+}
+
+/// `acknowledge` at an unchanged kernel. The core has not taken the epoch, and neither its TLB nor
+/// the tags it may hold entries under are empty.
+pub trait AcknowledgeReturns {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            post == pre,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            CapKernel::step_ok(pre, post, c as int),
+            post.acked(c as int) == pre.flush_epoch,
+            post.tlb@[c as int] == Set::<TlbEntry>::empty(),
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@[d] == pre.tlb@[d],
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            CapKernel::only_core_changed(pre, post, c as int),
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d],
+            post.cores@[c as int].generation == pre.cores@[c as int].generation,
+            post.cores@[c as int].next_pcid == pre.cores@[c as int].next_pcid,
+            post.tlb@.tags(c as int) == Set::<usize>::empty(),
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@.tags(d) == pre.tlb@.tags(d),
+    ;
+}
+
+/// `probe_at`'s Some at an unchanged kernel. The call is allowed. The view is what the specification
+/// keeps, and the level 1 table's words are part of the kernel, so an unchanged kernel has not cleared
+/// their accessed and dirty bits.
+pub trait ProbeAtSome {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, slot: usize, va: u64, count: u64, ret: Option<Probed>)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_probe(root, slot, va, count),
+            post == pre,
+            ret is Some,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::probe_answered(pre, post, root, slot, va, count, ret is Some),
+            ret is Some ==> CapKernel::probe_done(pre, post, root, slot, va, count, ret->0),
+            discharges(pre.view(), post.view(), root, Effect::Local),
+            CapKernel::threads_bound_kept(pre, post),
     ;
 }
 
