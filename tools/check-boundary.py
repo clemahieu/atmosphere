@@ -35,7 +35,7 @@ comment line. The classes and what their text must be:
   toolchain's rust-src, as tools/check-external-body.py matches a '// rust:' line.
 - boot '<witness>': a function of that name, starting witness_, in a marked crate.
 - check '"<condition>"': the condition's text in the enclosing function before the site, in a
-  statement that holds assert or if.
+  statement that holds assert, if or while.
 - nothing '"<what it rests on>"': debt, said in words.
 
 It prints one line per finding to stderr and exits 1: a site the source holds and the list does not,
@@ -411,7 +411,7 @@ class Rules:
 
 
 def checked(repo, site, condition, start=None):
-    """Whether the condition's text is in an assert or an if of the enclosing function before the site:
+    """Whether the condition's text is in an assert, an if or a while of the enclosing function before the site:
     from the first line of the function's body that rustc reports, which start gives, to the site."""
     try:
         lines = (repo / site.path).read_text(encoding="utf-8").splitlines()
@@ -423,7 +423,7 @@ def checked(repo, site, condition, start=None):
     at = before.find(wanted)
     while at >= 0:
         statement = re.split(r"[;{}]", before[:at])[-1]
-        if re.search(r"\bassert\w*!|\bif\b", statement):
+        if re.search(r"\bassert\w*!|\b(?:if|while)\b", statement):
             return True
         at = before.find(wanted, at + 1)
     return False
@@ -734,6 +734,12 @@ class Tests(unittest.TestCase):
         self.assertFalse(checked(self.repo, site, "let core = 0"))
         self.assertFalse(checked(self.repo, site, "Tracked::assume_new()"))
         self.assertFalse(checked(self.repo, site, "core < NUM_CPUS", start=52))
+
+    def test_a_check_may_be_the_condition_of_a_while(self):
+        lines = (self.repo / "kernel/src/capability.rs").read_text().splitlines()
+        lines[51] = "    while left > 0 {"
+        (self.repo / "kernel/src/capability.rs").write_text("\n".join(lines) + "\n")
+        self.assertTrue(checked(self.repo, self.found()[DISPATCH], "left > 0"))
 
     def test_an_unknown_class_or_kind_fails(self):
         self.assertIn("none of", compare(self.found(), self.entries("someone", '"x"'), self.rules)[0])
