@@ -120,8 +120,8 @@ The match comes before any hand-over. It is this round's own reading of the reco
 A triage that refutes counts before it closes the review. `bd list --parent <epic> -l review --status closed --json | jq '[.[] | select((.close_reason // "") | startswith("refuted"))] | length'` is how many of the epic's reviews closed refuted before this one. A proof that verifies and a gate that passes do not stop the next pass from refuting, so the count does: an epic sent back again and again has a criterion no pass can close or a design nobody decided, and each further leaf patches around it (`design/third-refuted-review-waits-on-the-human/`).
 
 - None: nothing more.
-- One, so this review is the epic's second refuted: write the assessment below, `bd update <epic> --append-notes "Refuted twice, <review>: <the assessment>"`, and put `<epic> refuted twice: <the kind>` in the report's notifications. Nothing waits on it: the leaves and the repeat go ahead.
-- Two or more: file a decision only the human can make by section 5 under the epic, titled `<epic> has been refuted <n> times: go on, reword the criterion, or decide the design first?`, with the assessment and the options below as its description; then `bd dep add <leaf> <question>` for each leaf this triage filed, so they leave the ready list and the repeat waits behind them. The loop goes on with other work.
+- One, so this review is the epic's second refuted: write the assessment below, `bd update <epic> --append-notes "Refuted twice, <review>: <the assessment>"`, and put `<epic> refuted twice: <the kind>` in the report's notifications. When the kind is undesigned or a closed claim, ask the questions below. Otherwise nothing waits: the leaves and the repeat go ahead.
+- Two or more: write the assessment the same way, as `Refuted <n> times, <review>: <the assessment>`, and ask the questions below, whatever the kind. The loop goes on with other work.
 
 The assessment says, from the close reasons of the epic's refuted reviews and from this report: which criterion each pass refuted; whether the leaves filed for them added state, an operation or an obligation of the glue to the model, or only proof; and the kind of this refutation, the first of these that fits.
 
@@ -130,9 +130,15 @@ The assessment says, from the close reasons of the epic's refuted reviews and fr
 - Stale criterion: the tree is right and the criterion's wording is behind it. The answer is a redefine of the criterion, not a change to the tree.
 - From below: a specification that does not say when its operation refuses, or a witness that does not start from what boot ensures. More proof, and no decision.
 
-The question's options are to go on, with the leaves as filed; to reword the criterion, with the wording proposed; or to decide the design first, each undecided point with its usual answers, after which a round writes the record and rewrites the leaves from it. The round that takes the answered question carries it out and closes it, which makes the leaves ready.
+The questions are one for each point the assessment leaves to the human, each a decision only the human can make, filed by section 5 under the epic, and each about that point alone. A question's title is the point asked as a question, not the count. Its description says what the tree does today and where that was set, then the options, one of them to keep what the tree does, with what each implies for the leaves, named by id, and the usual answer when there is one. It names the epic's notes for the assessment and repeats none of it.
 
-A leaf labelled `refuted` answers a refutation and is meant to be one correction. When a round would split it into more than three pieces, the epic it became would need a review of its own (above), over criteria a pass wrote. Do not split it: file the decision by section 5 under the leaf's parent, with the pieces you would have written, the assessment and the same options, and depend the leaf on it.
+- An undecided point of the design, from an undesigned refutation or a closed claim: one question a point. Two points that one answer settles are one question, and two that can be answered apart are two.
+- A criterion's wording, from a stale criterion or from one that does not name the measure the passes judged it by: the question is the wording proposed, to take or to leave.
+- No point the round can name, which only a third or later refutation from below leaves: one question, titled `<epic> has been refuted <n> times: go on?`, saying what a further pass is likely to find. A question that lists several points under that title is not this one: file each point.
+
+Then `bd dep add <leaf> <question>` for each leaf this triage filed whose content the answer could change, and `bd dep add <repeat> <question>` for every question, so no further pass runs before the answers. A leaf that is the same under every option waits on no question. What the triage found that is not this epic's to decide, a rule of the process or the design of another epic, is its own issue under the epic it belongs to, and no part of these questions. The round that takes an answered question carries it out, rewriting the leaves that waited on it, and closes it.
+
+A leaf labelled `refuted` answers a refutation and is meant to be one correction. When a round would split it into more than three pieces, the epic it became would need a review of its own (above), over criteria a pass wrote. Do not split it: write the assessment into the notes of the leaf's parent and ask the questions above under that parent, with the pieces you would have written named in them, and depend the leaf on each.
 
 ## 7. Epic rounds
 

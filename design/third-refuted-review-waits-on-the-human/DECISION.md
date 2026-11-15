@@ -1,31 +1,37 @@
 ---
-title: "An epic's third refuted review waits on the human; its second is only reported"
-date: 2026-11-12
+title: "A repeated refutation asks the human one question per undecided point: from the third refuted review, and at the second for an undecided design or a closed claim"
+date: 2026-11-15
 status: active
 tags: [process, skeptic, tracker]
-one_line: "A round that triages a refuting review counts the epic's refuted reviews: the second is reported to the human with the kind of refutation it is and nothing waits; from the third, the leaves it files wait on a question that asks whether to go on, reword the criterion or decide the design first; a leaf filed for a refutation is not split into an epic that needs its own review without the same question."
-revisit_if: "Most of the questions are answered `go on`, counted as questions titled `has been refuted` whose answer is that against those answered otherwise; or an epic still reaches a fifth refuted review; or the second refutation's report is never acted on, so it could be dropped or made to wait."
-confidence: "The thresholds are a judgement from eight days of history, measured below. That a repeated refutation marks something a pass cannot close is what the history shows; that the human's look is cheaper than the passes it stops is a bet the first questions will settle."
+one_line: "A round that triages a refuting review counts the epic's refuted reviews and, from the second, writes down the kind of refutation. From the third, and at the second when the kind is undesigned or a closed claim, it files one question to the human for each point it can name, each about that point alone; a leaf waits on the questions whose answer could change it, and the repeat review on all of them. A leaf filed for a refutation is not split into an epic that needs its own review without asking the same way."
+revisit_if: "Most answers keep what the tree does, counted over the questions filed under this rule; or an epic still reaches a fifth refuted review; or the questions filed at a second refutation are mostly ones the next pass would have closed anyway; or leaves that waited on no question are regularly rewritten after the answers."
+confidence: "The thresholds are a judgement from the history measured below. That a repeated refutation marks something a pass cannot close is what the history shows. That the round can name the point is shown by three of the four questions first asked under this rule, which listed their points. That it names the kind early is weaker: at the second refutation it did so in one of those three."
 ---
 
 ## Decision
 
-A round that triages a refuting review counts the reviews of that epic that closed refuted before it.
+A round that triages a refuting review counts the reviews of that epic that closed refuted before it. Which closings count is `design/review-is-a-leaf-of-its-epic/`'s.
 
-The second refuted review is reported and nothing waits: the round writes an assessment into the epic's notes and one line into the round's notifications, and the leaves and the repeat review go ahead.
-
-From the third, the round files a question to the human under the epic, and each leaf it filed for that pass waits on it. The repeat review waits on those leaves, so no further pass runs until the answer. The loop goes on with other work.
-
-A leaf filed for a refutation carries the label `refuted`. When a round would split one into more than three pieces, so into an epic that needs a review of its own, it files the same question instead and the leaf waits on it.
-
-The assessment says which criterion each pass refuted, whether the leaves that answered them added state, an operation or an obligation of the glue to the model or only proof, and which kind the refutation is:
+From the second refuted review, the round writes an assessment into the epic's notes and one line into the round's notifications. The assessment says which criterion each pass refuted, whether the leaves that answered them added state, an operation or an obligation of the glue to the model or only proof, and which kind the refutation is:
 
 - **Undesigned.** The leaves decided something no record here decides. The round names the part of a kernel it is, what any kernel has to decide about that part, which record decides each point or that none does, and the usual answers, from general knowledge and under the License principle.
 - **Closed claim.** The criterion says nothing else can do something, or that a list is exact, and each pass finds one more case.
 - **Stale criterion.** The tree is right and the wording is behind it.
 - **From below.** A specification that does not say when it refuses, or a witness that does not start from what boot ensures.
 
-The question's options are to go on, to reword the criterion, or to decide the design first. `.claude/agents/round.md`, section 6, is the procedure.
+At the second refuted review the round asks the human when the kind is undesigned or a closed claim. Otherwise nothing waits, and the leaves and the repeat review go ahead. From the third it asks whatever the kind.
+
+Asking is one question for each point the assessment leaves to the human, each about that point alone:
+
+- An undecided point of the design. The question says what the tree does today and where that was set, the options, one of them to keep it, what each implies for the leaves, and the usual answer.
+- A criterion's wording, when the criterion is stale or does not name the measure the passes judged it by. The question is the wording proposed, to take or to leave.
+- When the round can name no point, which only a refutation from below that keeps repeating leaves, one question that says so and asks whether to go on.
+
+A leaf filed for the pass waits on the questions whose answer could change it, and on none when it is the same under every option. The repeat review waits on every question, so no further pass runs until the answers. The loop goes on with other work. What the triage found that is not the epic's to decide, a rule of the process or another epic's design, is its own issue where it belongs and no part of the questions.
+
+A leaf filed for a refutation carries the label `refuted`. When a round would split one into more than three pieces, so into an epic that needs a review of its own, it asks the same way instead and the leaf waits on the questions.
+
+`.claude/agents/round.md`, section 6, is the procedure.
 
 ## Context
 
@@ -48,19 +54,31 @@ Measured on 2026-11-12 from one `bd list --all --json`. A pass is a review, refu
 
 The kinds come from reading those ten. They matter because the answers differ: a stale criterion wants a reword, a refusal condition wants more proof and no decision, and only the first two kinds want the human.
 
+Measured on 2026-11-15, from the four questions this rule had asked while it asked one question at the third refuted review, with three options: go on, reword the criterion, or decide the design first. Read from the questions and from the notes of their epics.
+
+- Three held something to decide. The fourth held nothing: its kind was from below, its own text said no design was undecided, and the proof leaf that waited on it was the same under every option.
+- Each of the three named what was undecided inside the option to decide the design first: three points in one; one point with three usual answers in another; and in the third one point, the same point again as a contradiction in its record, and a rule of the process that was not the epic's.
+- Two had been answered. One answer reworded the criterion to name its boundary. The other was none of the three options: it made each of the question's three points an issue of its own, one of them a question to the human.
+- At the second refutation the assessment had named a closed claim in one of the three, saying it would close only on a decided boundary; the leaves went ahead, and the third pass found the next case. In the other two it had read the second refutation as from below. So asking at the second by kind would have saved a pass and two leaves once in three. It costs nothing when the kind reads otherwise, since the third asks whatever the kind.
+
+A question is answered as a whole, so a question holding three points is answered only by first taking it apart, and the round that wrote the assessment has the points in front of it. The repeat review waits on every question because the passes are what a repeated refutation spends. A leaf waits only on what could change it: a proof that is the same under every answer gains nothing by waiting. The round judges which leaves those are, and one it lets go wrongly costs that leaf and not a pass.
+
 The round writes the assessment and not the skeptic. The skeptic has no context on purpose and judges evidence; whether a design exists is a question about the records and about the epic's history, which the triaging round has in front of it.
 
 ## Alternatives rejected
 
-- **Wait at the second refutation.** Four of the ten closed on the next pass; see the measurement.
+- **Wait at the second refutation, whatever the kind.** Four of the ten closed on the next pass; see the measurement.
 - **Count a criterion, not an epic.** The two agree on every epic in the history, and a criterion's number moves when the criteria are reworded.
 - **Report only, never wait.** The longest runs cost the most after the third pass, and a note nobody has to answer does not stop the leaves that patch around a missing decision.
 - **Have the skeptic say whether the design exists.** It would need the epic's history and the records' intent, which is the context it is run without.
 - **A token budget per epic.** Nothing measured predicts what a pass or an epic costs, `design/review-is-a-leaf-of-its-epic/`, so a budget would stop sound work as readily as a spin.
 - **Count in `tools/reviews.py`.** The count is one query at the moment of triage, and the tool lists finished epics, which an epic being triaged is not.
+- **One question with the courses as its options: go on, reword the criterion, or decide the design first.** The points to decide sat inside the third option, so the question had to be split before it could be answered, and a matter that was not the epic's rode along with it; see the measurement.
+- **Have the round split an undesigned epic at its second refutation, moving the refuted part of its criterion into a sibling epic.** The round would reword one epic's criterion and write another's with no one asked, on a kind it read at the second refutation once in three. The questions make the same cut, and the answers decide what moves.
 
 ## What this does not settle
 
 - Passes recorded as notes before reviews existed are not counted, so an epic with such passes reaches the wait later than its history says.
 - The kind is the round's judgement. Nothing checks it but the human reading the question.
 - Whether the split of a large epic should ask what its subsystem has to decide before any leaf is written, which would catch an undesigned part before the first pass rather than at the third.
+- Which leaves an answer could change is the round's judgement, as the kind is. The repeat review waits whatever it judges.
