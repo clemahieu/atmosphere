@@ -5,3 +5,4 @@
 Each explainer answers one question about the design, cites the design record and the kernel source each claim comes from, and takes every number from the kernel's constants.
 
 - [How does boot cover all free memory in a bounded number of untyped capabilities?](./boot-covers-all-memory.md)
+- [What actually consumes capability slots](./what-consumes-slots.md)

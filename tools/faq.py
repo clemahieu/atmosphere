@@ -46,9 +46,15 @@ INDEX = "README.md"
 CONSTANTS = {
     "PAGE_SZ": "kernel/verified/define.rs",
     "ENTRIES": "kernel/verified/define.rs",
+    "INDEX_BITS": "kernel/verified/define.rs",
+    "PAGES_PER_2M": "kernel/verified/define.rs",
+    "PAGES_PER_1G": "kernel/verified/define.rs",
+    "SIZE_2M": "kernel/verified/define.rs",
+    "SIZE_1G": "kernel/verified/define.rs",
     "NODES_PER_PAGE": "kernel/verified/capability/list.rs",
     "ROOT_ENTRIES": "kernel/verified/capability/table.rs",
     "LEAF_BYTES": "kernel/verified/capability/table.rs",
+    "TABLE_INDICES": "kernel/verified/capability/table.rs",
     "MAX_ORDER": "kernel/verified/capability/table.rs",
     "ROOT_UNTYPED_SLOT": "kernel/verified/capability/boot.rs",
     "ROOT_FRAME_SLOT": "kernel/verified/capability/boot.rs",
@@ -56,6 +62,7 @@ CONSTANTS = {
     "ROOT_FRAME_SLOTS": "kernel/verified/capability/boot_image.rs",
     "IMAGE_ORDER": "kernel/verified/capability/boot_image.rs",
     "PROCESS_ORDER": "kernel/verified/capability/process.rs",
+    "THREAD_ORDER": "kernel/verified/capability/thread.rs",
     "TABLE_PAGE_BYTES": "kernel/verified/capability/space.rs",
 }
 
@@ -181,6 +188,9 @@ DERIVED = {
     "UNTYPED_LAST_SLOT": lambda c: c["ROOT_UNTYPED_SLOT"] + c["ROOT_UNTYPED_SLOTS"] - 1,
     "FRAME_LAST_SLOT": lambda c: c["ROOT_FRAME_SLOT"] + c["ROOT_FRAME_SLOTS"] - 1,
     "LEAF_SLOTS": lambda c: c["NODES_PER_PAGE"] - 1,
+    # One leaf's slots at every root entry. The larger frame order is twice the shift of a 2M block.
+    "TABLE_SLOTS": lambda c: c["ROOT_ENTRIES"] * (c["NODES_PER_PAGE"] - 1),
+    "ONE_G_ORDER": lambda c: 2 * c["INDEX_BITS"],
     "IMAGE_PAGES": lambda c: 1 << c["IMAGE_ORDER"],
     "TABLE_ORDER": table_order,
     "EXAMPLE_START": lambda c: EXAMPLE_START,
@@ -365,6 +375,7 @@ def write(root, table=CONSTANTS, derived=DERIVED):
 
 
 class Tests(unittest.TestCase):
+    # The toy table has none of the names DERIVED reads, so a call on it passes an empty derived map.
     TABLE = {"PAGE": "define.rs", "LEAF": "table.rs", "SLOTS": "table.rs"}
 
     def tree(self, templates, define="pub const PAGE: usize = 4096;\n"):
@@ -449,7 +460,17 @@ class Tests(unittest.TestCase):
                 outputs(root, self.TABLE, {})
 
     def test_the_tree_defines_every_constant_of_the_table_once(self):
-        self.assertEqual(set(values(REPO)), set(CONSTANTS) | set(DERIVED))
+        got = values(REPO)
+        self.assertEqual(set(got), set(CONSTANTS) | set(DERIVED))
+        self.assertEqual(got["LEAF_SLOTS"], got["NODES_PER_PAGE"] - 1)
+        self.assertEqual(got["ENTRIES"], 1 << got["INDEX_BITS"])
+        self.assertEqual(got["TABLE_INDICES"], got["ROOT_ENTRIES"] * got["NODES_PER_PAGE"])
+        self.assertEqual(got["TABLE_SLOTS"], got["TABLE_INDICES"] - got["ROOT_ENTRIES"])
+        self.assertEqual(got["ONE_G_ORDER"], 2 * got["INDEX_BITS"])
+        self.assertEqual(got["PAGES_PER_2M"], got["ENTRIES"])
+        self.assertEqual(got["PAGES_PER_1G"], got["ENTRIES"] * got["ENTRIES"])
+        self.assertEqual(got["SIZE_2M"], got["PAGE_SZ"] * got["PAGES_PER_2M"])
+        self.assertEqual(got["SIZE_1G"], got["PAGE_SZ"] * got["PAGES_PER_1G"])
 
     def test_a_misaligned_run_decomposes_by_boots_rule(self):
         # Page 3 of a 13-page run is aligned only to order 0; page 4 holds an
