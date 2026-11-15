@@ -1551,14 +1551,16 @@ impl CapKernel {
     /// as they were. A 4K frame: ok, with the caller's slot the word names now holding the frame, the
     /// untyped's child, its page a block with a count of one that no frame capability had a page in,
     /// and every other slot of every table as it was. A 2M frame: again, with every table's view as it
-    /// was and the block being zeroed, its cursor past where it was, as spec_retyped gives through
-    /// large_frame_zeroing, or ok as a 4K frame is with the 2M block. A table page: ok, with every
-    /// table's view as it was and an empty table page of the level at base. A leaf: ok, with every
-    /// table's view as it was and every index of the root entry it fills an empty slot of the
-    /// position's table. The free kind: again, while a core has not acknowledged the frame, with every
-    /// table's view and the block table as they were, or ok, with every table's view as it was. A
-    /// process: ok, with the caller's slot the word names now holding the process capability, the
-    /// untyped's child, and every other slot of every table as it was. A thread: the same with the
+    /// was, the block being zeroed, its cursor past where it was, and the same retype still allowed, as
+    /// spec_retyped gives through large_frame_zeroing, or ok as a 4K frame is with the 2M block. A table
+    /// page: ok, with every table's view as it was and an empty table page of the level at base. A leaf:
+    /// ok, with every table's view as it was and every index of the root entry it fills an empty slot of
+    /// the position's table. The free kind: again, while a core has not acknowledged the frame, with
+    /// every table's view and the block table as they were and the same free still allowed, or ok once
+    /// every core has, with every table's view as it was, the page free afterwards at order 0 and the
+    /// region free and not typed at order 9 or 18, as frame_freed and large_frame_freed say of the block
+    /// table. A process: ok, with the caller's slot the word names now holding the process capability,
+    /// the untyped's child, and every other slot of every table as it was. A thread: the same with the
     /// thread capability, the thread bound to the process whose capability is at index level and every
     /// other binding as it was, and no frame capability's block or count changed. The zeroing cursor
     /// and the acknowledgement read the kernel outside the view.
@@ -1598,6 +1600,7 @@ impl CapKernel {
                 &&& pre.zeroing.active(Large::Two, region)
                     ==> pre.zeroing.cursor@[page as int] < post.zeroing.cursor@[page as int]
                 &&& 0 < post.zeroing.cursor@[page as int] < level_pages(Large::Two)
+                &&& post.retype_allowed(root, kind, from, base, word, level)
             }
             ||| {
                 &&& kind == RETYPE_LARGE_FRAME
@@ -1635,13 +1638,22 @@ impl CapKernel {
                 &&& out == status_only(STATUS_AGAIN)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
                 &&& post.blocks == pre.blocks
+                &&& post.retype_allowed(root, kind, from, base, word, level)
             }
             ||| {
+                let page = base / PAGE_SZ;
+                let freed = large_level(level as u8);
+                let region = page / level_pages(freed);
                 &&& kind == RETYPE_FREE
                 &&& allowed
+                &&& pre.frame_free_acknowledged(base, level)
                 &&& out == status_only(STATUS_OK)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
                 &&& Self::frame_blocks_kept(pre, post)
+                &&& level == 0 ==> post.blocks.pages@[page as int].kind is Free
+                &&& level == 0 ==> post.blocks.small_free(page as int, 0)
+                &&& (level == 9 || level == 18) ==> !block_typed(&post.blocks, level_ref(freed, region))
+                &&& (level == 9 || level == 18) ==> post.blocks.large_free(freed, region as int)
             }
             ||| {
                 &&& kind == RETYPE_PROCESS
@@ -2059,6 +2071,42 @@ impl CapKernel {
         }
     }
 
+    /// A 2M retype that can_retype_large still allows is one retype_allowed allows: the untyped in the
+    /// view covers the block above the deepest depth, the slot the word names is empty, and the region
+    /// is free or being zeroed. large_frame_zeroing's repeat is this, over the caller's view.
+    pub proof fn lemma_large_still_allowed(k: Self, root: usize, from: usize, to: usize, base: usize, word: u64, level: usize)
+        requires
+            word as usize == to,
+            k.can_retype_large(root, from, to, base, 9),
+        ensures
+            k.retype_allowed(root, RETYPE_LARGE_FRAME, from, base, word, level),
+    {
+        let parent = k.tables.node_of(root, from);
+        let p = k.payload_of(parent);
+        assert(k.can_retype(root, from, to, base, 9));
+        assert(k.can_retype_under(root, from, base, 9));
+        assert(p.kind is Untyped);
+        assert(p.rights & right_bit(Right::Retype) != 0);
+        assert(block_within(base, 9, p));
+        assert(k.list.nodes@[parent as int].depth < MAX_DEPTH);
+        k.lemma_table_view(root, from);
+        assert(k.table_view(root).contains_key(from));
+        let v = k.table_view(root)[from];
+        assert(v == k.slot_view(root, from));
+        assert(v.kind == p.kind && v.base == p.base && v.order == p.order && v.rights == p.rights);
+        assert(view_retypes(v, base, 9));
+        assert(k.retype_under_allowed(root, from, base, 9));
+        assert(k.empty_slot(root, to));
+        assert(k.empty_slot(root, word as usize));
+        assert(level_pages(Large::Two) == PAGES_PER_2M);
+        assert(large_level(9) == Large::Two);
+        let region = base / PAGE_SZ / PAGES_PER_2M;
+        assert(region == base / PAGE_SZ / level_pages(Large::Two));
+        assert(base / PAGE_SZ / PAGES_PER_2M < k.blocks.num_2m());
+        assert(k.zeroing.active(Large::Two, region) || k.blocks.large_free(Large::Two, region as int));
+        assert(k.large_block_ready(base));
+    }
+
     /// Retype's specification implies its contract.
     #[verifier::spinoff_prover]
     pub proof fn lemma_retype_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
@@ -2129,6 +2177,11 @@ impl CapKernel {
                 assert(pre.zeroing.active(Large::Two, r)
                     ==> pre.zeroing.cursor@[page as int] < post.zeroing.cursor@[page as int]);
                 assert(0 < post.zeroing.cursor@[page as int] < level_pages(Large::Two));
+                // large_frame_zeroing keeps the same retype allowed, which is retype_allowed over the view.
+                assert(post.can_retype_large(root, from, to, base, 9));
+                assert(post.retype_allowed(root, kind, from, base, word, level)) by {
+                    Self::lemma_large_still_allowed(post, root, from, to, base, word, level);
+                }
             } else {
                 assert(post.is_cap(child));
                 assert(post.slot_view(root, to) == frame_view(base, 9, parent));
@@ -2201,16 +2254,27 @@ impl CapKernel {
         } else if kind == RETYPE_FREE {
             if out == status_only(STATUS_AGAIN) {
                 assert(!pre.frame_free_acknowledged(base, level));
+                // spec_retyped answers again with the kernel unchanged, so the free stays allowed.
+                assert(post == pre);
+                assert(post.retype_allowed(root, kind, from, base, word, level));
             } else if out == status_only(STATUS_OK) {
+                assert(pre.frame_free_acknowledged(base, level));
                 if level == 0 {
                     let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed(post, c, root, from, base);
+                    let page = base / PAGE_SZ;
+                    assert(post.blocks.pages@[page as int].kind is Free);
+                    assert(post.blocks.small_free(page as int, 0));
                     assert(post.list == pre.list && post.tables == pre.tables);
                     Self::lemma_freed_page_keeps_frame_blocks(pre, post, base / PAGE_SZ);
                 } else {
                     let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.large_frame_freed(post, c, root, from, base, level as u8);
+                    assert(level == 9 || level == 18);
                     assert(post.list == pre.list && post.tables == pre.tables);
                     let l = large_level(level as u8);
-                    Self::lemma_region_keeps_frame_blocks(pre, post, l, base / PAGE_SZ / level_pages(l));
+                    let region = base / PAGE_SZ / level_pages(l);
+                    assert(!block_typed(&post.blocks, level_ref(l, region)));
+                    assert(post.blocks.large_free(l, region as int));
+                    Self::lemma_region_keeps_frame_blocks(pre, post, l, region);
                 }
             }
             Self::lemma_views_same(pre, post);
