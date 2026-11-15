@@ -4,7 +4,8 @@
 //! output buffer, as a format's parser and serialiser do, parses a value from the input and writes
 //! it back, having first asked the value's serialised length within the buffer's room, as a composite
 //! does before it writes; the buffer then starts with exactly the bytes the parse consumed. Each
-//! reaches the accepting way of the combinator's `parse`, `length` and `serialize`.
+//! reaches the accepting way of the combinator's `parse`, `length` and `serialize`; a choice's,
+//! through each alternative.
 //! design/witness-per-way-an-operation-succeeds/.
 
 use vstd::prelude::*;
@@ -226,6 +227,84 @@ pub fn witness_tag(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, ())>, Op
     let wrote = c.serialize(&v, out, 0, Tracked(&mut steps));
     assert(out@.take(2) =~= input@.take(2));
     (parsed, wrote, room)
+}
+
+/// Tells an IPv4 ethertype from an IPv6 one, reading an IPv4 one, and writes it back.
+pub fn witness_choice_first(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Either<(), ()>)>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 2,
+        input@[0] == 0x08,
+        input@[1] == 0x00,
+        old(out).len() >= 2,
+    ensures
+        r.0 is Some,
+        r.0 matches Some((_, Either::First(_))),
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(2) == input@.take(2),
+{
+    let ipv4: [u8; 2] = [0x08, 0x00];
+    let ipv6: [u8; 2] = [0x86, 0xdd];
+    let c: Choice<Tag, Tag> = Choice { first: Tag { bytes: &ipv4 }, second: Tag { bytes: &ipv6 } };
+    proof {
+        lemma_ethertypes_disjoint(&c);
+    }
+    assert(c.first.bytes@ =~= input@.take(2));
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let (_, v) = parsed.as_ref().unwrap();
+    let room = c.length(v, out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(v, out, 0, Tracked(&mut steps));
+    assert(out@.take(2) =~= input@.take(2));
+    (parsed, wrote, room)
+}
+
+/// Tells an IPv4 ethertype from an IPv6 one, reading an IPv6 one, and writes it back.
+pub fn witness_choice_second(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Either<(), ()>)>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 2,
+        input@[0] == 0x86,
+        input@[1] == 0xdd,
+        old(out).len() >= 2,
+    ensures
+        r.0 is Some,
+        r.0 matches Some((_, Either::Second(_))),
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(2) == input@.take(2),
+{
+    let ipv4: [u8; 2] = [0x08, 0x00];
+    let ipv6: [u8; 2] = [0x86, 0xdd];
+    let c: Choice<Tag, Tag> = Choice { first: Tag { bytes: &ipv4 }, second: Tag { bytes: &ipv6 } };
+    proof {
+        lemma_ethertypes_disjoint(&c);
+    }
+    assert(c.second.bytes@ =~= input@.take(2));
+    assert(input@.take(2)[0] != c.first.bytes@[0]);
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let (_, v) = parsed.as_ref().unwrap();
+    let room = c.length(v, out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(v, out, 0, Tracked(&mut steps));
+    assert(out@.take(2) =~= input@.take(2));
+    (parsed, wrote, room)
+}
+
+/// A tag of 0x08 0x00 refuses whatever starts with 0x86 0xdd.
+proof fn lemma_ethertypes_disjoint(c: &Choice<Tag, Tag>)
+    requires
+        c.first.bytes@ == seq![0x08u8, 0x00u8],
+        c.second.bytes@ == seq![0x86u8, 0xddu8],
+    ensures
+        c.wf(),
+{
+    assert forall|v: (), rest: Seq<u8>| c.second.valid(v) implies (#[trigger] c.first.spec_parse(c.second.spec_serialize(v) + rest)) is None by {
+        let s = c.second.spec_serialize(v) + rest;
+        assert(s[0] == 0x86u8);
+        if 2 <= s.len() {
+            assert(s.take(2)[0] != c.first.bytes@[0]);
+        }
+    }
 }
 
 } // verus!
