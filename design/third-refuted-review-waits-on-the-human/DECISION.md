@@ -1,25 +1,30 @@
 ---
-title: "A repeated refutation asks the human one question per undecided point: from the third refuted review, and at the second for an undecided design or a closed claim"
+title: "A repeated refutation asks the human one question per undecided point from the third review (and at the second for an undecided design or a closed claim), and files a gate check when the same kind repeats"
 date: 2026-11-15
 status: active
-tags: [process, skeptic, tracker]
-one_line: "A round that triages a refuting review counts the epic's refuted reviews and, from the second, writes down the kind of refutation. From the third, and at the second when the kind is undesigned or a closed claim, it files one question to the human for each point it can name, each about that point alone; a leaf waits on the questions whose answer could change it, and the repeat review on all of them. A leaf filed for a refutation is not split into an epic that needs its own review without asking the same way."
-revisit_if: "Most answers keep what the tree does, counted over the questions filed under this rule; or an epic still reaches a fifth refuted review; or the questions filed at a second refutation are mostly ones the next pass would have closed anyway; or leaves that waited on no question are regularly rewritten after the answers."
-confidence: "The thresholds are a judgement from the history measured below. That a repeated refutation marks something a pass cannot close is what the history shows. That the round can name the point is shown by three of the four questions first asked under this rule, which listed their points. That it names the kind early is weaker: at the second refutation it did so in one of those three."
+tags: [process, skeptic, tracker, gate]
+one_line: "A round that triages a refuting review counts the epic's refuted reviews and, from the second, writes down the kind of refutation and whether it repeats the previous pass. When the same kind repeats, it either files a tool issue for a gate check across the tree (blocking the refutation's leaves whose instances the check would find) or records why the class cannot be checked mechanically. From the third, and at the second when the kind is undesigned or a closed claim, it files one question to the human for each point it can name, each about that point alone; a leaf waits on the questions whose answer could change it, and the repeat review on all of them. A leaf filed for a refutation is not split into an epic that needs its own review without asking the same way."
+revisit_if: "Most answers keep what the tree does, counted over the questions filed under this rule; or an epic still reaches a fifth refuted review; or the questions filed at a second refutation are mostly ones the next pass would have closed anyway; or leaves that waited on no question are regularly rewritten after the answers; or the checks filed this way mostly catch nothing after their first run."
+confidence: "The thresholds are a judgement from the history measured below. That a repeated refutation marks something a pass cannot close is what the history shows. That the round can name the point is shown by three of the four questions first asked under this rule, which listed their points. That it names the kind early is weaker: at the second refutation it did so in one of those three. That tree-wide gate checks contain repeated proof and contract classes is shown by three prior classes measured below."
 ---
 
 ## Decision
 
 A round that triages a refuting review counts the reviews of that epic that closed refuted before it. Which closings count is `design/review-is-a-leaf-of-its-epic/`'s.
 
-From the second refuted review, the round writes an assessment into the epic's notes and one line into the round's notifications. The assessment says which criterion each pass refuted, whether the leaves that answered them added state, an operation or an obligation of the glue to the model or only proof, and which kind the refutation is:
+From the second refuted review, the round writes an assessment into the epic's notes and one line into the round's notifications. The assessment says which criterion each pass refuted and its kind, whether the leaves that answered them added state, an operation or an obligation of the glue to the model or only proof, which kind this refutation is, and whether it repeats the kind the previous pass refuted:
 
 - **Undesigned.** The leaves decided something no record here decides. The round names the part of a kernel it is, what any kernel has to decide about that part, which record decides each point or that none does, and the usual answers, from general knowledge and under the License principle.
 - **Closed claim.** The criterion says nothing else can do something, or that a list is exact, and each pass finds one more case.
-- **Stale criterion.** The tree is right and the wording is behind it.
+- **Stale criterion.** The tree is right and the criterion's wording is behind it.
 - **From below.** A specification that does not say when it refuses, or a witness that does not start from what boot ensures.
 
-At the second refuted review the round asks the human when the kind is undesigned or a closed claim. Otherwise nothing waits, and the leaves and the repeat review go ahead. From the third it asks whatever the kind.
+From the second refuted review, when the assessment names the same kind the previous pass refuted, the round also decides the check for that class:
+
+- When the class can be checked mechanically across the tree, it checks whether an open tool issue or an existing gate step already covers it. When no open tool issue covers it, the round files a tool issue for a gate check that finds every instance of that class across the tree (or widens an existing gate check that covers part of the tree or missed this shape), and blocks every leaf of the refutation whose instances the check would find on that tool issue, so all instances are found and fixed together and guarded against later regressions.
+- When the class cannot be checked mechanically—an undecided design with no decided rule to enforce, or a closed claim whose boundary is not yet settled—the round writes that reason in the assessment instead of filing a check.
+
+At the second refuted review the round asks the human when the kind is undesigned or a closed claim. Otherwise no human question waits: the leaves (still waiting on any gate-check issue filed above) and the repeat review go ahead. From the third it asks whatever the kind.
 
 Asking is one question for each point the assessment leaves to the human, each about that point alone:
 
@@ -38,6 +43,8 @@ A leaf filed for a refutation carries the label `refuted`. When a round would sp
 A review that refutes files a leaf per refuted criterion and a repeat review, `design/review-is-a-leaf-of-its-epic/`. Nothing bounded that: a leaf has two proof attempts before the human is asked, and a review had no count at all. The skeptic's report is an issue description a round files verbatim, so a pass could go on choosing what the model gains, one refutation at a time, with nobody asked whether the thing being patched had been designed.
 
 It happened. The record of how a dead process is torn down came to hold, in one paragraph revised by six leaves, the whole of how a core's page-table base register is modelled: what it names when it names no space, under which tag, who writes it at boot. No record decided any of it beforehand: each point was a refutation first.
+
+The same loop happened inside `from below`, where no design was missing. Three consecutive passes refuted the caller's-view contracts in `kernel/verified/capability/caller.rs` on one class—a contract arm met by an unexpected refusal or by a call changing nothing—one or two arms per pass, because each leaf fixed only the arm named while nothing checked the rest of the file or the rest of the tree. Without a gate check, fixing the named arm also leaves every future proof attempt free to weaken another `ensures` to make a proof verify.
 
 ## Reasoning
 
@@ -65,6 +72,15 @@ A question is answered as a whole, so a question holding three points is answere
 
 The round writes the assessment and not the skeptic. The skeptic has no context on purpose and judges evidence; whether a design exists is a question about the records and about the epic's history, which the triaging round has in front of it.
 
+Measured on 2026-11-15 from the three refuting passes on the caller's-view contracts (`kernel/verified/capability/caller.rs`):
+
+- Pass 1 (`main 3c93fbb2`) refuted `revoke_contract`'s epoch-refused arm (admitting refusal from any epoch); one leaf fixed it.
+- Pass 2 (`main 36ba7cc8`) refuted `revoke_contract`'s `again` arm and `retype_contract`'s `2M` and `free` `again` arms (each met by an unchanged state); two leaves fixed those arms, and the second assessment read the refutation as `from below`, so no human question waited and nothing checked the remaining arms across the tree.
+- Pass 3 (`main f434769d`) refuted `retype_contract`'s `free` `ok` arm (met by a free that freed nothing) and its `again` arms (dropping the repeat's allowance).
+- All three passes attacked one class (`from below`, an arm weaker than its specification), while `tools/check-refused.py` already existed in the tree (`awire/src/refused/`) without running on `kernel/verified`. Earlier repeated classes—dropped `ensures` fields across `invoked`'s arms (`design/invoked-arm-is-the-operation-postcondition/`, `tools/check-invoked-arms.py`) and uncounted calls or conjured values across the boundary into verified code (`design/boundary-into-verified-code-counted/`, `tools/check-boundary.py`)—were each contained once a gate step checked the whole tree, and `design/refused-claim-per-way/` sets the claim forms for the operation inventory.
+
+When the second refuted review names the same kind the previous pass refuted, the pattern has already recurred once, and `from below` asks no human question there. Filing a gate-check tool issue then—and blocking the refutation's leaves whose instances the check would find—puts the tree-wide check in place before the leaves run, so every instance is found and fixed together and stays guarded against later regressions. Explaining in the assessment when no mechanical check fits keeps undecided designs and closed claims whose boundary is not yet set (though once set as a list or rule, as in `tools/boundary-list`, a gate check can hold it) from generating checks that cannot be written.
+
 ## Alternatives rejected
 
 - **Wait at the second refutation, whatever the kind.** Four of the ten closed on the next pass; see the measurement.
@@ -75,6 +91,10 @@ The round writes the assessment and not the skeptic. The skeptic has no context 
 - **Count in `tools/reviews.py`.** The count is one query at the moment of triage, and the tool lists finished epics, which an epic being triaged is not.
 - **One question with the courses as its options: go on, reword the criterion, or decide the design first.** The points to decide sat inside the third option, so the question had to be split before it could be answered, and a matter that was not the epic's rode along with it; see the measurement.
 - **Have the round split an undesigned epic at its second refutation, moving the refuted part of its criterion into a sibling epic.** The round would reword one epic's criterion and write another's with no one asked, on a kind it read at the second refutation once in three. The questions make the same cut, and the answers decide what moves.
+- **Fix every sibling instance by hand in the refutation's leaf without a gate check.** Leaves later commits—including a proof attempt that weakens an `ensures` so it verifies—free to reintroduce the class, and misses instances outside the leaf's file.
+- **File the gate check only from the third refuted review.** A class repeated at the second refutation has already appeared twice, and `from below` waits on no human question at the second, so waiting until the third spends another pass and narrow leaf.
+- **File the gate check without blocking the refutation's leaves.** The leaves run first, fix only the named instances, and close before the check exists to catch the rest.
+- **Require a gate check for every repeated kind without exception.** An undecided design or an unbounded closed claim has no rule to check until the human decides it.
 
 ## What this does not settle
 
@@ -82,3 +102,5 @@ The round writes the assessment and not the skeptic. The skeptic has no context 
 - The kind is the round's judgement. Nothing checks it but the human reading the question.
 - Whether the split of a large epic should ask what its subsystem has to decide before any leaf is written, which would catch an undesigned part before the first pass rather than at the third.
 - Which leaves an answer could change is the round's judgement, as the kind is. The repeat review waits whatever it judges.
+- Whether a repeated class can be checked mechanically, and which leaves its check would find, is the triaging round's judgement, as the kind is.
+- Whether a gate check already in `tools/` covers a newly refuted shape or needs an issue to widen it is decided when the round searches existing checks.
