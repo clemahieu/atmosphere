@@ -34,8 +34,12 @@ it, once the human's answer is on the question the change waits on. A line of to
 a way an operation succeeds that no witness reaches, and adding one lowers what the proof shows from
 below, which is the human's to allow the same way (design/witness-per-way-an-operation-succeeds/):
 a line the base's list does not hold stops the landing and is named, as path:operation:way, unless
---approve names it. The committer is not the adversary (design/committer-is-not-the-adversary/), so
-this is a tripwire, not a lock.
+--approve names it. A line of tools/unrefused is a way with no refused claim, and a line of
+tools/refused-exempt is a way whose specification admits an unchanged component; adding either
+lowers what the check shows, which is the human's to allow the same way
+(design/refused-claim-per-way/). A line of either list the base's does not hold stops the landing
+and is named, as path:operation:way, unless --approve names it. The committer is not the adversary
+(design/committer-is-not-the-adversary/), so this is a tripwire, not a lock.
 
 Exit status:
   0  landed and pushed
@@ -46,7 +50,7 @@ Exit status:
   5  the change is cleared to land and did not reach origin: the merge or the push kept failing
   6  the gate fails and no gate has judged the base: fix the change, or settle it with --judge-base
   7  not gated: the change adds an external_body or exec_allows_no_decreases_clause item, or a line of
-     tools/unwitnessed, the human has not approved
+     tools/unwitnessed, tools/unrefused or tools/refused-exempt, the human has not approved
 
 usage: tools/land.py [--onto BRANCH] [--gate COMMAND] [--approve PATH:ITEM:ATTRIBUTE | PATH:OPERATION:WAY]...
        tools/land.py --judge-base [--onto BRANCH] [--gate COMMAND]    (exits 1 or 4)
@@ -76,6 +80,9 @@ UNVOUCHED = ("external_body", "exec_allows_no_decreases_clause")
 # The list of every way an operation succeeds that no witness reaches, which the gate holds equal to
 # the witness inventory: path, operation, way.
 UNWITNESSED = "tools/unwitnessed"
+# The same shape of list for the ways with no refused claim, and for the ways the check exempts.
+UNREFUSED = "tools/unrefused"
+REFUSED_EXEMPT = "tools/refused-exempt"
 # How often the rebase and the fast-forward are tried while other landings move main.
 MERGE_TRIES = 30
 PUSH_TRIES = 3
@@ -249,17 +256,24 @@ def unvouched(worktree, commit):
             if attribute in UNVOUCHED}
 
 
+def way_lines(worktree, commit, path):
+    """The lines of a path, operation, way list at a commit, as path:operation:way. An exemption's
+    clause is not part of the name. Empty when the commit holds no such list."""
+    return {":".join(fields[:3]) for fields in listed(worktree, commit, path) if len(fields) >= 3}
+
+
 def unwitnessed(worktree, commit):
     """The lines of the unwitnessed list at a commit, as path:operation:way."""
-    return {":".join(fields) for fields in listed(worktree, commit, UNWITNESSED)}
+    return way_lines(worktree, commit, UNWITNESSED)
 
 
 def unapproved(worktree, base, approved):
     """What the change adds that the human has not approved, each said: an unvouched item, new or
-    turned from an assumed specification, and a line of the unwitnessed list. The approved ones are
-    said too."""
+    turned from an assumed specification, and a line of the unwitnessed, unrefused or refused-exempt
+    list. The approved ones are said too."""
     added = {item: f"an unvouched item {EXEMPTIONS}" for item in unvouched(worktree, "HEAD") - unvouched(worktree, base)}
-    added.update((line, f"a line {UNWITNESSED}") for line in unwitnessed(worktree, "HEAD") - unwitnessed(worktree, base))
+    for path in (UNWITNESSED, UNREFUSED, REFUSED_EXEMPT):
+        added.update((line, f"a line {path}") for line in way_lines(worktree, "HEAD", path) - way_lines(worktree, base, path))
     for item in sorted(added.keys() & approved):
         say(f"approved by the human: {item}")
     missing = sorted(added.keys() - approved)
@@ -683,6 +697,53 @@ class Tests(unittest.TestCase):
         self.assertEqual(result.returncode, LANDED, result.stdout)
         self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
 
+    def listed_ways(self, where, path, *units):
+        """Commits a path/operation/way list, an exemption's units carrying the clause as a fourth field."""
+        return self.commit(where, path, "".join(f"{line}\n" for line in ("# header", *("\t".join(unit) for unit in units))))
+
+    def test_a_branch_that_adds_a_line_to_the_unrefused_list_is_refused_until_the_flag_names_it(self):
+        self.listed_ways(self.main, UNREFUSED, self.SLICE)
+        self.git(self.task, "reset", "-q", "--hard", "main")
+        change = self.listed_ways(self.task, UNREFUSED, self.SLICE, self.UNMAP)
+        result = self.land()
+        self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
+        self.assertIn("land: not approved: k/unmap.rs:unmap_at:Some is a line tools/unrefused on", result.stdout)
+        self.assertNotIn("k/retype.rs:retype:Slice", result.stdout)
+        self.assertFalse((self.root / "gates").exists())
+        result = self.land("true", "--approve", "k/unmap.rs:unmap_at:Some")
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertIn("land: approved by the human: k/unmap.rs:unmap_at:Some", result.stdout)
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+
+    def test_a_branch_that_removes_a_line_of_the_unrefused_list_lands_with_no_flag(self):
+        self.listed_ways(self.main, UNREFUSED, self.SLICE, self.UNMAP)
+        self.git(self.task, "reset", "-q", "--hard", "main")
+        change = self.listed_ways(self.task, UNREFUSED, self.UNMAP)
+        result = self.land()
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+
+    def test_a_branch_that_adds_an_exemption_is_refused_until_the_flag_names_it(self):
+        kept = ("k/reclaim.rs", "reclaim", "Again", "ret is Again ==> post == pre")
+        added = ("k/reclaim.rs", "reclaim_frame", "Again", "!(ret is Freed) ==> post == pre")
+        self.listed_ways(self.main, REFUSED_EXEMPT, kept)
+        self.git(self.task, "reset", "-q", "--hard", "main")
+        # Rewording the clause is not a new line.
+        reworded = ("k/reclaim.rs", "reclaim", "Again", "ret is Again ==> *final(self) == *old(self)")
+        change = self.listed_ways(self.task, REFUSED_EXEMPT, reworded)
+        result = self.land()
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+        self.git(self.task, "reset", "-q", "--hard", "main")
+        change = self.listed_ways(self.task, REFUSED_EXEMPT, kept, added)
+        result = self.land()
+        self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
+        self.assertIn("land: not approved: k/reclaim.rs:reclaim_frame:Again is a line tools/refused-exempt on", result.stdout)
+        self.assertNotIn("reclaim:Again", result.stdout)
+        result = self.land("true", "--approve", "k/reclaim.rs:reclaim_frame:Again")
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+
     def test_a_worktree_with_uncommitted_changes_is_not_run(self):
         self.commit(self.task, "a")
         (self.task / "stray").write_text("x")
@@ -705,8 +766,8 @@ def main():
     parser.add_argument("--judge-base", action="store_true", help="gate the base the change stands on instead of the change")
     parser.add_argument(
         "--approve", action="append", default=[], metavar="PATH:ITEM:ATTRIBUTE",
-        help=f"an external_body or exec_allows_no_decreases_clause item of {EXEMPTIONS}, or a line of {UNWITNESSED} as "
-             "PATH:OPERATION:WAY, that the change adds and the human approved; once per item",
+        help=f"an external_body or exec_allows_no_decreases_clause item of {EXEMPTIONS}, or a line of {UNWITNESSED}, "
+             f"{UNREFUSED} or {REFUSED_EXEMPT} as PATH:OPERATION:WAY, that the change adds and the human approved; once per item",
     )
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()

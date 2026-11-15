@@ -814,6 +814,15 @@ def tree_rows(root):
     return rows + wrapper_rows(kernel_texts, read(root, CALLS))
 
 
+def wired_operations(root):
+    """The names of the operations `dispatch` calls. `dispatch` and `enter` are covered when every
+    way of each of these is covered or exempt (design/refused-claim-per-way/)."""
+    texts = read(root, KERNEL)
+    comp = Component(texts)
+    methods, dispatch = entry(comp)
+    return set(called(methods, dispatch, *dispatch.body))
+
+
 def listing(rows):
     out = ["\t".join((row.path, row.operation, row.way, row.witness or "none") + ((row.note,) if row.note else ()))
            for row in rows]

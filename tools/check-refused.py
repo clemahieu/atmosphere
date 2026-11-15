@@ -32,9 +32,31 @@ It passes when
 It prints one line per finding to stderr, under the output of a run that has one, and exits 1, or
 prints one line counting the claims and one per refusal, with where Verus refused it, and exits 0.
 
-usage: tools/check-refused.py          the check
-       tools/check-refused.py --test   this script's own tests; one runs Verus, so tools/env.sh first
+--coverage says, per inventory line, the refused claim that covers it or none. A module's opening
+comment names the lines its claim covers, beside the refused lines:
+
+  //! covers: <path>	<operation>	<way>
+
+The three fields are tools/witness-inventory.py's, separated by tabs. A line is covered when a
+module the refused check accepts names it. tools/refused-exempt holds the ways whose specification
+admits an unchanged component, each with the clause quoted from the operation's file. An acall
+line, and dispatch and enter, are covered when every way of every operation the line reaches is
+covered or exempt; an arm that names no operation stays uncovered. The report is one line per
+inventory line and then the count:
+
+  <path>	<operation>	<way>	<module>[, <module>...] | exempt | entry | none
+  coverage: <n> of <m> lines have no refused claim
+
+A covers line that names an exempt way, an entry or anything but an inventory line fails the check,
+as does an exemption whose clause is not a line of the operation's file. The gate's unrefused step,
+which runs after this check has held each module to Verus's refusal, holds the lines that are none
+to tools/unrefused (design/refused-claim-per-way/).
+
+usage: tools/check-refused.py            the check
+       tools/check-refused.py --coverage the report
+       tools/check-refused.py --test     this script's own tests; one runs Verus, so tools/env.sh first
 """
+import importlib.util
 import os
 import re
 import shutil
@@ -64,6 +86,14 @@ POSTCONDITION = "postcondition not satisfied"
 
 # One false claim: the module's name, its file and the (function, clause) pairs it declares.
 Claim = namedtuple("Claim", "name path refusals")
+# Ways whose specification admits an unchanged component, so no claim is written. Fields, separated
+# by tabs: path, operation, way, and the clause quoted from the operation's file.
+EXEMPT_LIST = "tools/refused-exempt"
+# dispatch and enter fold every wired operation; an acall line folds the operations its arm names.
+ENTRY_FILE = "kernel/verified/capability/operation.rs"
+ENTRY_OPERATIONS = {"dispatch", "enter"}
+KERNEL_OPERATIONS = "kernel/verified/capability/"
+CALLS = "acall/"
 
 
 def claims(crate_root):
@@ -227,7 +257,199 @@ def check(crates, root):
                       f"Verus at the postconditions it declares and nowhere else", *report]
 
 
+def normalize_clause(line):
+    """A source line as an exemption quotes it: its indentation, a leading &&& and a trailing comma
+    removed."""
+    text = line.strip()
+    if text.startswith("&&&"):
+        text = text[3:].strip()
+    return text.removesuffix(",")
+
+
+def clause_lines(text):
+    """The file's lines as an exemption would quote them."""
+    return {normalize_clause(line) for line in text.splitlines()} - {""}
+
+
+def is_entry(path, operation):
+    """Whether the inventory line is an entry: an acall wrapper, or dispatch or enter."""
+    return path.startswith(CALLS) or (path == ENTRY_FILE and operation in ENTRY_OPERATIONS)
+
+
+def covers_in(text, module):
+    """The covers lines of one module, and the lines that are not path, operation and way."""
+    findings, found = [], []
+    for raw in text.splitlines():
+        if not raw.startswith("//! covers:"):
+            continue
+        match = re.fullmatch(r"//! covers: ([^\t]+)\t([^\t]+)\t([^\t]+)", raw)
+        if match is None:
+            findings.append(f"{module}: a covers line is not path, operation and way separated by tabs: {raw}")
+            continue
+        found.append((*match.groups(), module))
+    return findings, found
+
+
+def exemptions_in(text):
+    """The exemption list's lines, and the lines that are not path, operation, way and clause."""
+    findings, found = [], []
+    for raw in text.splitlines():
+        if not raw or raw.startswith("#"):
+            continue
+        fields = raw.split("\t")
+        if len(fields) != 4:
+            findings.append(f"{EXEMPT_LIST}: a line has {len(fields)} fields, not path, operation, way and clause: {raw}")
+            continue
+        found.append(tuple(fields))
+    return findings, found
+
+
+def kernel_operation_ways(rows):
+    """Each kernel operation's inventory lines, entries left out, by the operation's name."""
+    found = {}
+    for row in rows:
+        if is_entry(row.path, row.operation) or not row.path.startswith(KERNEL_OPERATIONS):
+            continue
+        found.setdefault(row.operation, []).append((row.path, row.operation, row.way))
+    return found
+
+
+def reached_operations(row, wired):
+    """The operations an entry line reaches, or None when its arm names none."""
+    if row.path.startswith(CALLS):
+        if not row.witness:
+            return None
+        return row.witness.split(", ")
+    return sorted(wired)
+
+
+def account_covers(rows, covers, exemptions, clauses_by_path, wired):
+    """What covers the inventory: (findings, one (path, operation, way, status) per row).
+
+    `covers` is (path, operation, way, module). `exemptions` is (path, operation, way, clause).
+    `clauses_by_path` is the operation file's quoted lines, or None when the file is absent.
+    `wired` is the operations dispatch calls. A line's status is `exempt`, `entry`, the module that
+    covers it, or `none`."""
+    findings = []
+    inventory = {(row.path, row.operation, row.way) for row in rows}
+    exempt = set()
+    for path, operation, way, clause in exemptions:
+        key = (path, operation, way)
+        if key not in inventory:
+            findings.append(f"{EXEMPT_LIST}: {path}\t{operation}\t{way} is not an inventory line")
+            continue
+        clauses = clauses_by_path.get(path)
+        if clauses is None or clause not in clauses:
+            findings.append(f"{EXEMPT_LIST}: {path}\t{operation}\t{way} quotes {clause!r}, which is not a line of {path}")
+            continue
+        exempt.add(key)
+    by_module = {}
+    for path, operation, way, module in covers:
+        shown_line = f"{path}\t{operation}\t{way}"
+        key = (path, operation, way)
+        if key not in inventory:
+            findings.append(f"{module}: covers {shown_line}, which is not an inventory line")
+        elif key in exempt:
+            findings.append(f"{module}: covers {shown_line}, which is exempt")
+        elif is_entry(path, operation):
+            findings.append(f"{module}: covers {shown_line}, an entry a claim does not cover")
+        else:
+            by_module.setdefault(key, []).append(module)
+    ways = kernel_operation_ways(rows)
+
+    def satisfied(names):
+        if not names:
+            return False
+        for name in names:
+            lines = ways.get(name)
+            if not lines:
+                return False
+            for line in lines:
+                if line not in by_module and line not in exempt:
+                    return False
+        return True
+
+    report = []
+    for row in rows:
+        key = (row.path, row.operation, row.way)
+        if key in exempt:
+            status = "exempt"
+        elif is_entry(row.path, row.operation):
+            names = reached_operations(row, wired)
+            status = "entry" if names is not None and satisfied(names) else "none"
+        elif key in by_module:
+            status = ", ".join(sorted(set(by_module[key])))
+        else:
+            status = "none"
+        report.append((*key, status))
+    return findings, report
+
+
+def format_coverage(report):
+    """The report as the gate reads it, and the count of the lines that are none."""
+    none = sum(status == "none" for *_, status in report)
+    lines = ["\t".join(row) for row in report]
+    lines.append(f"coverage: {none} of {len(report)} lines have no refused claim")
+    return "\n".join(lines) + "\n"
+
+
+def load_witness_inventory():
+    """tools/witness-inventory.py, whose file name is not a module name."""
+    spec = importlib.util.spec_from_file_location(
+        "witness_inventory", Path(__file__).resolve().parent / "witness-inventory.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def covers_of(root):
+    """The covers lines of the modules the refused directory structure accepts, and what is wrong
+    with a directory. A crate whose directory the refused check would reject contributes none: the
+    gate runs this after that check has held each accepted module to Verus's refusal."""
+    findings, covers = [], []
+    for crate in verify.marked_crates(verify.cargo_metadata()):
+        crate_root = Path(crate["src"]).parent
+        found, tree = claims(crate_root)
+        if tree:
+            findings += [f"{crate['package']}: {finding}" for finding in tree]
+            continue
+        for claim in found:
+            module = str(shown(claim.path, root))
+            module_findings, module_covers = covers_in(claim.path.read_text(), module)
+            findings += module_findings
+            covers += module_covers
+    return findings, covers
+
+
+def coverage(root):
+    """(findings, the report's rows) for the tree."""
+    inventory = load_witness_inventory()
+    try:
+        rows = inventory.tree_rows(root)
+        wired = inventory.wired_operations(root)
+    except inventory.Unreadable as error:
+        return [str(error)], []
+    findings, covers = covers_of(root)
+    exempt_path = root / EXEMPT_LIST
+    exempt_findings, exemptions = exemptions_in(exempt_path.read_text() if exempt_path.is_file() else "")
+    findings += exempt_findings
+    clauses = {}
+    for path, _, _, _ in exemptions:
+        if path not in clauses:
+            file = root / path
+            clauses[path] = clause_lines(file.read_text()) if file.is_file() else None
+    more, report = account_covers(rows, covers, exemptions, clauses, wired)
+    return findings + more, report
+
+
 def main(args):
+    if args == ["--coverage"]:
+        findings, report = coverage(REPO)
+        if findings:
+            print("\n".join(f"coverage: {finding}" for finding in findings), file=sys.stderr)
+            return 1
+        print(format_coverage(report), end="")
+        return 0
     if args:
         sys.exit(__doc__.split("usage: ")[1].join(("usage: ", "")).rstrip())
     crates = [(crate, *claims(Path(crate["src"]).parent)) for crate in verify.marked_crates(verify.cargo_metadata())]
@@ -416,6 +638,117 @@ class Verus(unittest.TestCase):
             "awire: src/refused/u16_be_le.rs: lemma_serialize_parse verifies the postcondition it declares Verus refuses: "
             "self.spec_parse(self.spec_serialize(v) + rest) == Some((self.spec_serialize(v).len(), v))",
         ])
+
+
+class Coverage(unittest.TestCase):
+    """The tie from a covers line or an exemption to an inventory line. Rows are the inventory's."""
+
+    Row = namedtuple("Row", "path operation way witness")
+
+    def ways(self, *rows):
+        return [self.Row(*row) for row in rows]
+
+    def account(self, rows, covers=(), exemptions=(), clauses=None, wired=frozenset()):
+        return account_covers(rows, covers, exemptions, {} if clauses is None else clauses, wired)
+
+    def test_a_covers_line_names_the_module_and_an_uncovered_way_is_none(self):
+        rows = self.ways(("k/retype.rs", "reclaim", "Freed", None), ("k/unmap.rs", "unmap_at", "Some", None))
+        findings, report = self.account(rows, [("k/retype.rs", "reclaim", "Freed", "k/refused/reclaim.rs")])
+        self.assertEqual(findings, [])
+        self.assertEqual(report, [
+            ("k/retype.rs", "reclaim", "Freed", "k/refused/reclaim.rs"),
+            ("k/unmap.rs", "unmap_at", "Some", "none"),
+        ])
+
+    def test_two_modules_covering_one_way_are_both_named(self):
+        rows = self.ways(("k/a.rs", "parse", "returns", None))
+        _, report = self.account(rows, [("k/a.rs", "parse", "returns", "k/refused/b.rs"),
+                                        ("k/a.rs", "parse", "returns", "k/refused/a.rs")])
+        self.assertEqual(report[0][3], "k/refused/a.rs, k/refused/b.rs")
+
+    def test_an_exemption_whose_clause_is_a_line_of_the_file_is_exempt(self):
+        rows = self.ways(("k/reclaim.rs", "reclaim", "Again", None))
+        clause = "ret is Again ==> post == pre"
+        findings, report = self.account(
+            rows, exemptions=[("k/reclaim.rs", "reclaim", "Again", clause)],
+            clauses={"k/reclaim.rs": {clause, "something else"}})
+        self.assertEqual(findings, [])
+        self.assertEqual(report[0][3], "exempt")
+
+    def test_a_covers_line_that_is_not_an_inventory_line_or_names_an_exempt_way_or_an_entry_fails(self):
+        rows = self.ways(("k/reclaim.rs", "reclaim", "Again", None),
+                         ("acall/src/m.rs", "nap", "OPERATION_NAP=9", None))
+        clause = "ret is Again ==> post == pre"
+        findings, _ = self.account(
+            rows,
+            [("k/gone.rs", "gone", "true", "k/refused/gone.rs"),
+             ("k/reclaim.rs", "reclaim", "Again", "k/refused/again.rs"),
+             ("acall/src/m.rs", "nap", "OPERATION_NAP=9", "k/refused/nap.rs")],
+            [("k/reclaim.rs", "reclaim", "Again", clause)],
+            {"k/reclaim.rs": {clause}})
+        self.assertEqual(findings, [
+            "k/refused/gone.rs: covers k/gone.rs\tgone\ttrue, which is not an inventory line",
+            "k/refused/again.rs: covers k/reclaim.rs\treclaim\tAgain, which is exempt",
+            "k/refused/nap.rs: covers acall/src/m.rs\tnap\tOPERATION_NAP=9, an entry a claim does not cover",
+        ])
+
+    def test_an_exemption_that_is_not_an_inventory_line_or_whose_clause_is_not_in_the_file_fails(self):
+        rows = self.ways(("k/reclaim.rs", "reclaim", "Again", None))
+        findings, report = self.account(
+            rows,
+            exemptions=[("k/gone.rs", "gone", "true", "post == pre"),
+                        ("k/reclaim.rs", "reclaim", "Again", "post == pre")],
+            clauses={"k/reclaim.rs": {"ret is Again ==> post == pre"}})
+        self.assertEqual(findings, [
+            "tools/refused-exempt: k/gone.rs\tgone\ttrue is not an inventory line",
+            "tools/refused-exempt: k/reclaim.rs\treclaim\tAgain quotes 'post == pre', which is not a line of k/reclaim.rs",
+        ])
+        # A quote the file does not hold exempts nothing, so the way stays uncovered.
+        self.assertEqual(report[0][3], "none")
+
+    def test_an_entry_is_covered_when_every_way_it_reaches_is_covered_or_exempt(self):
+        rows = self.ways(
+            ("kernel/verified/capability/delete.rs", "delete", "Some", None),
+            ("kernel/verified/capability/delete.rs", "delete", "Again", None),
+            ("acall/src/m.rs", "delete", "OPERATION_DELETE=5", "delete"),
+            ("acall/src/m.rs", "empty", "OPERATION_EMPTY=8", None),
+            ("kernel/verified/capability/operation.rs", "dispatch", "Some", "witness_root_dispatches"),
+            ("kernel/verified/capability/operation.rs", "enter", "Some", "witness_root_enters_the_kernel"))
+        clause = "ret is Again ==> post == pre"
+        covers = [("kernel/verified/capability/delete.rs", "delete", "Some", "k/refused/delete.rs")]
+        exemptions = [("kernel/verified/capability/delete.rs", "delete", "Again", clause)]
+        findings, report = self.account(
+            rows, covers, exemptions, {"kernel/verified/capability/delete.rs": {clause}}, {"delete"})
+        self.assertEqual(findings, [])
+        self.assertEqual([status for *_, status in report], ["k/refused/delete.rs", "exempt", "entry", "none", "entry", "entry"])
+        # One way of the operation still open, and the entry stays none.
+        _, open_report = self.account(rows, (), exemptions, {"kernel/verified/capability/delete.rs": {clause}}, {"delete"})
+        self.assertEqual([status for *_, status in open_report], ["none", "exempt", "none", "none", "none", "none"])
+
+    def test_an_entry_whose_arm_names_an_operation_the_inventory_lacks_stays_uncovered(self):
+        rows = self.ways(("acall/src/m.rs", "nap", "OPERATION_NAP=9", "missing"))
+        _, report = self.account(rows, wired={"missing"})
+        self.assertEqual(report[0][3], "none")
+
+    def test_a_covers_line_and_an_exemption_line_are_read_as_tabs(self):
+        findings, found = covers_in("//! covers: k/a.rs\top\tway\n//! covers: not tabs\n", "k/refused/a.rs")
+        self.assertEqual(found, [("k/a.rs", "op", "way", "k/refused/a.rs")])
+        self.assertEqual(findings, ["k/refused/a.rs: a covers line is not path, operation and way separated by tabs: //! covers: not tabs"])
+        findings, found = exemptions_in("# header\n\nk/a.rs\top\tway\tpost == pre\nk/a.rs\top\n")
+        self.assertEqual(found, [("k/a.rs", "op", "way", "post == pre")])
+        self.assertEqual(findings, ["tools/refused-exempt: a line has 2 fields, not path, operation, way and clause: k/a.rs\top"])
+
+    def test_a_quoted_clause_drops_the_indentation_the_conjunction_and_the_comma(self):
+        self.assertEqual(normalize_clause("            ret is Again ==> post == pre,"), "ret is Again ==> post == pre")
+        self.assertEqual(normalize_clause("        &&& !(ret is Freed) ==> post == pre"), "!(ret is Freed) ==> post == pre")
+        self.assertIn("!(ret is Freed) ==> post == pre", clause_lines((REPO / "kernel/verified/capability/reclaim.rs").read_text()))
+
+    def test_each_recorded_exemption_quotes_a_line_of_its_file(self):
+        findings, parsed = exemptions_in((REPO / EXEMPT_LIST).read_text())
+        self.assertEqual(findings, [])
+        self.assertTrue(parsed)
+        for path, operation, way, clause in parsed:
+            self.assertIn(clause, clause_lines((REPO / path).read_text()), f"{operation} {way}")
 
 
 if __name__ == "__main__":

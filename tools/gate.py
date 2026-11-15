@@ -59,6 +59,8 @@ WITNESS_INVENTORY = "tools/witness-inventory.py"
 # Every way an operation succeeds that no witness reaches, one line each: path, operation and way,
 # separated by tabs.
 UNWITNESSED = "tools/unwitnessed"
+# Every way with no refused claim, not exempt and not an entry the operations it reaches cover.
+UNREFUSED = "tools/unrefused"
 PAGE_LITERALS_CHECK = "tools/check-page-literals.py"
 ARCH_SOURCES_CHECK = "tools/check-arch-sources.py"
 UPSTREAM_COPIES_CHECK = "tools/check-upstream-copies.py"
@@ -412,6 +414,31 @@ def unwitnessed(gate):
     return f"{len(found)} of {len(rows)} lines have no witness, each a line of {UNWITNESSED}"
 
 
+def unrefused(gate):
+    """The refused-claim coverage, held to the list. The refused step, which comes first, has run
+    this check's tests and held each claim to Verus's refusal; a module counts here only once that
+    has accepted it. The step fails unless the inventory lines the report gives as none, each a way
+    with no refused claim, no exemption and not an entry the operations it reaches cover, are
+    exactly the lines of tools/unrefused. So a way that lands without a claim and a line left
+    behind by the change that covered its way both fail it, and the list's length is the number
+    with no claim. tools/land.py lets the list grow only with the human's approval
+    (design/refused-claim-per-way/)."""
+    report = check_output(gate, REFUSED_CHECK, "--coverage")
+    rows = [line.split("\t") for line in report.splitlines() if "\t" in line]
+    if any(len(row) < 4 for row in rows):
+        raise Failure(f"{REFUSED_CHECK} --coverage: a line with fewer than 4 fields")
+    found = Counter("\t".join(row[:3]) for row in rows if row[3] == "none")
+    listed = Counter(line for line in (gate.root / UNREFUSED).read_text().splitlines()
+                     if line and not line.startswith("#"))
+    unlisted, stale = found - listed, listed - found
+    if unlisted or stale:
+        raise Failure("\n".join(
+            said + unit_lines(units) for said, units in (
+                (f"no refused claim and no line in {UNREFUSED}:", unlisted),
+                (f"a line in {UNREFUSED} and not without a refused claim, to remove:", stale)) if units))
+    return f"{len(found)} of {len(rows)} lines have no refused claim, each a line of {UNREFUSED}"
+
+
 def invoked_arms(gate):
     """The check's own tests, then the check, which prints each conjunct of an operation's ensures
     that its arm of invoked does not carry: the step fails on any line it prints, as on its exit
@@ -511,6 +538,8 @@ STEPS = (
     Step("unwitnessed", X86_64, unwitnessed),
     # After verify too: a false claim a verified crate keeps, held to Verus's refusal where it says.
     Step("refused", X86_64, self_tested(REFUSED_CHECK)),
+    # After refused, whose accepted modules are the ones a covers line may name.
+    Step("unrefused", X86_64, unrefused),
     Step("verify aarch64", AARCH64, verify_for("--target", AARCH64)),
     Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK)),
     # Verus takes a layout claim as stated; the build checks it, for both targets.
@@ -613,6 +642,7 @@ class Tests(unittest.TestCase):
         (self.root / "tools").mkdir()
         (self.root / VERIFY_ALLOWANCE).write_text("2\n")
         (self.root / UNWITNESSED).write_text("# a comment\n")
+        (self.root / UNREFUSED).write_text("# a comment\n")
 
     def test_runs_both_targets_unless_one_is_named(self):
         self.assertIsNone(arguments([]).target)
@@ -741,6 +771,57 @@ class Tests(unittest.TestCase):
         self.assertEqual(gate.calls, [[REFUSED_CHECK, "--test"], [REFUSED_CHECK]])
         names = [step.name for step in chosen(X86_64)]
         self.assertLess(names.index("verify"), names.index("refused"))
+
+    # A coverage report: one way a claim covers, one exempt, one entry the rule covers, two with none.
+    COVERAGE = ("k/retype.rs\treclaim\tFreed\tk/refused/reclaim.rs\n"
+                "k/reclaim.rs\treclaim\tAgain\texempt\n"
+                "acall/src/m.rs\tdelete\tOPERATION_DELETE=5\tentry\n"
+                "k/unmap.rs\tunmap_at\tSome\tnone\n"
+                "k/op.rs\tdispatch\tSome\tnone\n"
+                "coverage: 2 of 5 lines have no refused claim\n")
+    UNCOVERED = ("k/unmap.rs\tunmap_at\tSome\n", "k/op.rs\tdispatch\tSome\n")
+
+    def unrefused_with(self, *lines, report=None):
+        (self.root / UNREFUSED).write_text("# a comment\n" + "".join(lines))
+        return unrefused(FakeGate(self.root, {f"{REFUSED_CHECK} --coverage": (0, self.COVERAGE if report is None else report)}))
+
+    def test_the_ways_with_no_refused_claim_are_the_lists_lines(self):
+        self.assertEqual(self.unrefused_with(*self.UNCOVERED),
+                         "2 of 5 lines have no refused claim, each a line of tools/unrefused")
+        self.assertEqual(self.unrefused_with(*reversed(self.UNCOVERED)),
+                         "2 of 5 lines have no refused claim, each a line of tools/unrefused")
+
+    def test_a_way_added_without_a_claim_fails(self):
+        """A throwaway inventory line with no claim and no list line is the gate's failure."""
+        with self.assertRaisesRegex(Failure, "^no refused claim and no line in tools/unrefused:\n  k/unmap.rs\tunmap_at\tSome$"):
+            self.unrefused_with(self.UNCOVERED[1])
+
+    def test_removing_a_covered_claim_fails(self):
+        """A throwaway that drops the claim, so the way the list does not hold is now none."""
+        dropped = self.COVERAGE.replace("k/retype.rs\treclaim\tFreed\tk/refused/reclaim.rs",
+                                        "k/retype.rs\treclaim\tFreed\tnone")
+        with self.assertRaisesRegex(Failure, "^no refused claim and no line in tools/unrefused:\n  k/retype.rs\treclaim\tFreed$"):
+            self.unrefused_with(*self.UNCOVERED, report=dropped)
+
+    def test_a_listed_way_that_has_a_claim_or_is_gone_fails(self):
+        covered = "k/retype.rs\treclaim\tFreed\n"
+        with self.assertRaisesRegex(Failure, "^a line in tools/unrefused and not without a refused claim, to remove:\n  k/retype.rs\treclaim\tFreed$"):
+            self.unrefused_with(*self.UNCOVERED, covered)
+        with self.assertRaisesRegex(Failure, "to remove:\n  k/gone.rs\tgone\ttrue$"):
+            self.unrefused_with(*self.UNCOVERED, "k/gone.rs\tgone\ttrue\n")
+        # A line twice is one line too many, so the list's length is the count.
+        with self.assertRaisesRegex(Failure, "to remove:\n  k/unmap.rs\tunmap_at\tSome$"):
+            self.unrefused_with(*self.UNCOVERED, self.UNCOVERED[0])
+
+    def test_the_unrefused_step_reads_the_coverage_and_comes_after_refused(self):
+        gate = FakeGate(self.root, {f"{REFUSED_CHECK} --coverage": (0, "coverage: 0 of 0 lines have no refused claim\n")})
+        (self.root / UNREFUSED).write_text("# a comment\n")
+        self.assertEqual(unrefused(gate), "0 of 0 lines have no refused claim, each a line of tools/unrefused")
+        self.assertEqual(gate.calls, [[REFUSED_CHECK, "--coverage"]])
+        names = [step.name for step in chosen(X86_64)]
+        self.assertEqual(names.index("unrefused"), names.index("refused") + 1)
+        with self.assertRaisesRegex(Failure, r"^tools/check-refused.py --coverage: exit status: 1$"):
+            unrefused(FakeGate(self.root, {f"{REFUSED_CHECK} --coverage": (1, "")}))
 
     def test_the_invoked_arms_step_fails_on_a_printed_conjunct(self):
         gate = FakeGate(self.root)

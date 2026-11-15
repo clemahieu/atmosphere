@@ -1,0 +1,11 @@
+# Ways whose specification admits an unchanged component, so the state-change claim would verify
+# and is not written (design/refused-claim-per-way/). The clause is a source line of the
+# operation's file, its indentation, a leading &&& and a trailing comma removed, and that text is
+# a line of the file. Adding a line lowers what the check shows, so it is a decision only the
+# human can make: tools/land.py refuses a landing that adds one unless --approve names it, as
+# path:operation:way.
+# Fields, separated by tabs: path from the repository root, operation, way, clause.
+#
+kernel/verified/capability/reclaim.rs	reclaim	Again	ret is Refused || ret is Again ==> *final(self) == *old(self)
+kernel/verified/capability/reclaim.rs	reclaim_frame	Again	!(ret is Freed) ==> post == pre
+kernel/verified/capability/reclaim.rs	reclaim_large_frame	Again	!(ret is Freed) ==> post == pre
