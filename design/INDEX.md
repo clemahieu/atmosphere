@@ -2,7 +2,7 @@
 
 # Design decisions
 
-53 records: 53 active, 0 superseded.
+54 records: 54 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -130,6 +130,9 @@ in `revisit if` what would make it worth reopening.
 - **[sharing-by-derive](./sharing-by-derive/DECISION.md)** (2026-11-10): The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; a move relocates a node without changing its place, within the caller's table, out of a controlled process's table, which is a claim, or into one, which is a placement; delete is refused while a node has children, mappings or bindings.
   - *confidence:* The human's choice among three lifetime packages, with a precedent survey of seL4, NOVA, L4Re, Genode, EROS, Zircon and Barrelfish from their documents. The structure it rests on is proven, design/revoke-by-depth-first-list/.
   - *revisit if:* A service must survive the death of the holder that granted to its clients without a longer-lived parent doing the granting, and claim by a supervisor is not enough.
+- **[synthetic-benchmark-suite](./synthetic-benchmark-suite/DECISION.md)** (2026-11-15): Adopt Fuchsia perftest's execution model (warm-up, fixed batches, pre-faulted sample storage, multi-step *_ignore, min/median/mean) and runtime JSON array ({label, test_suite, unit, values}) with fenced TSC and RDPMC companion series measured in separate pinned KVM runs, and map every file of Fuchsia's src/tests/microbenchmarks onto Atmosphere operations or exclude POSIX, Starnix, FIDL, and kernel-VFS tests with reasons.
+  - *confidence:* All 90 BSD-2-Clause files of Fuchsia src/tests/microbenchmarks (76 files) and zircon/system/ulib/perftest (14 files) at commit 3a111afac557ea92fd5f315810201a5871b4e37f were inspected directly and cross-checked against kernel/verified/capability/operation.rs, asys/src/operation.rs, dom0/src/main.rs, aheap, aeager, aring, amailbox, afanin, pager-policy, and tools/measure-pinned.py; neither Fuchsia's binary on this host nor the Atmosphere runner exists yet.
+  - *revisit if:* Real application workloads supersede synthetic primitives as the primary regression signal, multiple kernel instances exist on one machine, Fuchsia's fuchsiaperf JSON format changes away from {label, test_suite, unit, values}, or bare-metal PMU access replaces boot-programmed CR4.PCE counters.
 - **[syscall-abi-in-registers](./syscall-abi-in-registers/DECISION.md)** (2026-11-14): One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. A table position is one word: the index in bits 0 to 15, and in bits 16 to 31 one more than the slot of a process capability with control in the caller's table, or 0 for the caller's own; any higher bit is refused. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4, and in result 5 the cycles a thread has run for a thread capability, 0 for any other kind. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2. Power-off, operation 18, ends the run through a power capability, with argument 1 saying whether the run succeeded. Retype kind 5 is a process and kind 6 a thread, whose process slot is argument 4, an index in the caller's own table. Destroy, operation 9, names a process or a thread. Reading and writing a thread's saved frame are operations 19 and 20: argument 1 is a word index, a multiple of four, and four words travel in results 1 to 4 or in arguments 2 to 5; every other word stays, and a write then applies the user-return rule to the whole frame. Place is operation 21, with the core capability's slot in argument 1 and the priority in argument 2. Start is operation 22 and suspend is operation 23, each naming only the thread. Derive's argument 5 is the child's badge: 0 keeps the parent's, and any other value is accepted only from a capability whose own badge is 0, an endpoint's below 2^48 or a notification's below 2^63.
   - *confidence:* A packing judgement; each target's preserved set is the one its C convention keeps across a call, the operations' positions are counted against the verified functions' parameters in kernel/verified/capability, and the aarch64 table is written from the Arm Architecture Reference Manual; dom0's checks run through it at EL0 under KVM on a Cortex-A76, which tests the positions and that an immediate other than 0 returns unknown.
   - *revisit if:* A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, a second entry is needed for a different privilege transition, or a target's instruction leaves fewer than seven registers free to carry an invocation.
@@ -174,9 +177,10 @@ in `revisit if` what would make it worth reopening.
 
 A view of the lists above. Nothing is reachable only through a tag.
 
-- `abi`: arch-module, gs-base-swapped-at-ring-3, one-kernel-instance, syscall-abi-in-registers, thread-pointer-cleared-on-switch
+- `abi`: arch-module, gs-base-swapped-at-ring-3, one-kernel-instance, synthetic-benchmark-suite, syscall-abi-in-registers, thread-pointer-cleared-on-switch
 - `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
 - `arch`: who-vouches-for-an-unproven-claim
+- `bench`: synthetic-benchmark-suite
 - `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, flush-on-a-change-of-core-share, invoked-arm-is-the-operation-postcondition, ipc-with-reply-object, notification-word-reserves-the-waiter-bit, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
@@ -186,13 +190,13 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `heap`: heap-size-classes, page-buddy-metadata-in-the-span
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: device-binding-under-the-space-capability, machine-glue-below-the-kernel
-- `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, notification-word-reserves-the-waiter-bit, syscall-abi-in-registers
+- `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, notification-word-reserves-the-waiter-bit, synthetic-benchmark-suite, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `landing`: land-without-regating, no-gate-for-what-no-step-reads
 - `license`: license-stated-in-every-source-file
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
-- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, region-map-owns-the-address-space, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
+- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, region-map-owns-the-address-space, synthetic-benchmark-suite, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, gs-base-swapped-at-ring-3, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps, thread-pointer-cleared-on-switch
 - `network`: network-stack-proven-at-tier-1, wire-combinators-written-here
 - `notification`: notification-word-reserves-the-waiter-bit
@@ -205,12 +209,12 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `reach`: device-binding-under-the-space-capability
 - `real-time`: schedulers-over-core-partitions
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
-- `scheduling`: core-names-a-space-while-running-its-thread, cpu-time-as-capability, flush-on-a-change-of-core-share, schedulers-over-core-partitions
+- `scheduling`: core-names-a-space-while-running-its-thread, cpu-time-as-capability, flush-on-a-change-of-core-share, schedulers-over-core-partitions, synthetic-benchmark-suite
 - `security`: divider-proven-by-invariant, fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
 - `side-channel`: flush-on-a-change-of-core-share
 - `skeptic`: committer-is-not-the-adversary, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
-- `test`: test-guest-memory
+- `test`: synthetic-benchmark-suite, test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
 - `tools`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, refused-claim-per-way, witness-per-way-an-operation-succeeds
