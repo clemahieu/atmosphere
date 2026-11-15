@@ -105,6 +105,11 @@ GS_LOADED_LINE = "dom0 gs loaded across entries"
 # its own data selector, found all three null and an FS base of 0: a core does not pass them from one thread to the next.
 SEGMENTS_LINE = "dom0 segments not passed on"
 
+# The lines dom0 prints once every register the syscall ABI preserves kept a distinct value across a
+# cheap invocation and across a timer preemption, on both targets. design/syscall-abi-in-registers/.
+SYSCALL_REGISTERS_LINE = "dom0 syscall registers held"
+PREEMPTION_REGISTERS_LINE = "dom0 preemption registers held"
+
 # The line dom0 prints once it suspended the thread it started, twice, and started it again, after the
 # suspends a slot without a thread and a copy without control must refuse were refused.
 SUSPENDED_LINE = "dom0 thread suspended"
@@ -358,6 +363,10 @@ def boot_log_accepted(serial, arch, translation=False, bench=False):
         raise Refused(f'the serial log does not show dom0 entering the kernel with GS loaded: "{GS_LOADED_LINE}"')
     if arch == "x86_64" and not line_printed(serial, SEGMENTS_LINE):
         raise Refused(f'the serial log does not show a thread finding null segments after dom0 loaded them: "{SEGMENTS_LINE}"')
+    if not line_printed(serial, SYSCALL_REGISTERS_LINE):
+        raise Refused(f'the serial log does not show dom0 keeping preserved registers across an invocation: "{SYSCALL_REGISTERS_LINE}"')
+    if not line_printed(serial, PREEMPTION_REGISTERS_LINE):
+        raise Refused(f'the serial log does not show dom0 keeping preserved registers across a preemption: "{PREEMPTION_REGISTERS_LINE}"')
     if not line_printed(serial, SUSPENDED_LINE):
         raise Refused(f'the serial log does not show dom0 suspending a thread: "{SUSPENDED_LINE}"')
     if not CORE_1_RESTARTED.search(serial):
@@ -378,7 +387,7 @@ def boot_log_accepted(serial, arch, translation=False, bench=False):
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
             f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
-            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
+            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}syscall registers line, preemption registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if translation:
@@ -452,6 +461,8 @@ def boot_log():
             "dom0 tpidr_el0 not passed on\n"
             "dom0 gs loaded across entries\n"
             "dom0 segments not passed on\n"
+            "dom0 syscall registers held\n"
+            "dom0 preemption registers held\n"
             "dom0 thread suspended\n"
             "core 1 stop took 2 again\n"
             "dom0 thread restarted on core 1\n"
@@ -504,6 +515,8 @@ class Tests(unittest.TestCase):
             ("thread counted 39000000 in 3 turns\n", "both counting"),
             ("dom0 gs loaded across entries\n", "GS loaded"),
             ("dom0 segments not passed on\n", "null segments"),
+            ("dom0 syscall registers held\n", "across an invocation"),
+            ("dom0 preemption registers held\n", "across a preemption"),
             ("dom0 thread suspended\n", "suspending a thread"),
             ("core 1 stop took 2 again\n", "stopping a thread on core 1"),
             ("dom0 thread restarted on core 1\n", "stopping a thread on core 1"),
@@ -538,6 +551,13 @@ class Tests(unittest.TestCase):
         held = boot_log_accepted(boot_log(), "x86_64")
         self.assertIn("GS line", held)
         self.assertIn("segments line", held)
+
+    def test_the_preserved_register_lines_are_asked_on_both_targets(self):
+        virt = boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
+        self.assertIn("syscall registers line", boot_log_accepted(virt, "aarch64"))
+        self.assertIn("preemption registers line", boot_log_accepted(virt, "aarch64"))
+        self.assertIn("across an invocation", self.refused(virt.replace("dom0 syscall registers held\n", ""), "aarch64"))
+        self.assertIn("across a preemption", self.refused(virt.replace("dom0 preemption registers held\n", ""), "aarch64"))
 
     def test_the_eager_line_names_forty_pages(self):
         self.assertIn("eager source", self.refused(boot_log().replace("backed 40\n", "backed 39\n")))

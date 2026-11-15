@@ -144,6 +144,8 @@
 #![no_std]
 #![no_main]
 
+mod registers;
+
 extern crate alloc;
 
 use alloc::boxed::Box;
@@ -697,7 +699,7 @@ const fn entry_address(k: u64) -> u64 {
 
 /// Prints through the console each of `parts` in turn, which together are shorter than the 40 bytes
 /// print carries. The status is the low half of what the print returns.
-fn print_parts(parts: &[&[u8]]) -> u64 {
+pub(crate) fn print_parts(parts: &[&[u8]]) -> u64 {
     let mut text = [0u8; 39];
     let mut length = 0;
     for part in parts {
@@ -2553,7 +2555,7 @@ fn heap_allocator_held(empty: u64) -> bool {
 /// # Safety
 ///
 /// `operation::invoke` may change the caller's address space. Print does not.
-unsafe fn print_slot(slot: u64, arguments: [u64; 5]) -> u64 {
+pub(crate) unsafe fn print_slot(slot: u64, arguments: [u64; 5]) -> u64 {
     operation::status(unsafe { operation::invoke(operation::PRINT, slot, arguments) })
 }
 
@@ -2658,6 +2660,11 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && thread_pointer_cleared_held()
                                 && gs_loaded_held()
                                 && segments_cleared_held()
+                                && registers::syscall_registers_held()
+                                && registers::preemption_registers_held(
+                                    (entry_address(SHARED_ENTRY) + (CHILD_COUNT_ADDRESS - CHILD_DATA_ADDRESS))
+                                        as *const u64,
+                                )
                                 && suspended_thread_held(caller, empty + 5)
                                 && core_1_counting_held(caller)
                                 && core_1_restarted_held(caller)
