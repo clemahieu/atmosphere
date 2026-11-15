@@ -1361,6 +1361,36 @@ impl CapKernel {
         }
     }
 
+    /// The step a thread of the process at root takes keeps space_kept of root, unless it is a map:
+    /// every other operation only removes entries of a space or keeps them, whichever caller takes it.
+    /// What a page token's frame or none rests on across the process's own calls
+    /// (design/region-map-owns-the-address-space/).
+    pub proof fn lemma_own_step_keeps_space(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) != Some(Operation::Map),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+        match spec_operation(frame.operation_number()) {
+            Some(Operation::Retype) => Self::lemma_retype_keeps_space(pre, post, root, frame, out, root),
+            Some(Operation::Derive) => Self::lemma_derive_keeps_space(pre, post, root, frame, out, root),
+            Some(Operation::Move) => Self::lemma_move_keeps_space(pre, post, root, frame, out, root),
+            Some(Operation::Delete) => Self::lemma_delete_keeps_space(pre, post, root, frame, out, root),
+            Some(Operation::Revoke) => Self::lemma_revoke_keeps_space(pre, post, root, frame, out, root),
+            Some(Operation::Link) => Self::lemma_link_keeps_space(pre, post, root, frame, out, root),
+            Some(Operation::Unmap) => Self::lemma_unmap_keeps_space(pre, post, root, frame, out, root),
+            Some(Operation::Probe) => Self::lemma_probe_keeps_space(pre, post, root, frame, out, root),
+            Some(Operation::Destroy) => Self::lemma_destroyed_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::WriteRegisters) => Self::lemma_registers_written_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Place) => Self::lemma_placed_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Start) => Self::lemma_started_keeps_rely(pre, post, root, frame, out, root),
+            Some(Operation::Suspend) => Self::lemma_suspended_keeps_rely(pre, post, root, frame, out, root),
+            _ => Self::lemma_space_kept_reflexive(pre, root),
+        }
+    }
+
     /// No table but root's holds a frame capability with a page in the block br: every capability that
     /// holds br is root's, so no other caller can map a page of br or derive from a capability of it.
     pub open spec fn held_by(&self, br: BlockRef, root: usize) -> bool {
