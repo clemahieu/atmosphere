@@ -9,7 +9,8 @@
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
 //! each slot from the first untyped holds an untyped whose base is aligned to its order, up to the first
-//! slot that holds nothing, which inspect refuses. Retype under an empty slot, a slot past the table and
+//! slot that holds nothing, which inspect refuses. Inspect says dom0's own thread slot holds a thread that
+//! has consumed cycles, and dom0 prints so. Retype under an empty slot, a slot past the table and
 //! the console is refused, and retype of the last untyped's last page into that empty slot is
 //! accepted, after which inspect says the slot holds a 4K frame at that page. dom0 then retypes
 //! four table pages, after a table page of a level no table has is refused, and a retype of one of
@@ -179,6 +180,19 @@ const CHECKS_FAILED: [u64; 5] = operation::print_words(b"dom0 slot checks failed
 
 /// The line after the check line. dom0 reports success only once this print is accepted.
 const EXIT_MARKER: [u64; 5] = operation::print_words(b"dom0 capability done\n");
+
+/// What dom0 prints once inspect on its own thread, at root slot 2, reported consumed cycles, which the
+/// gate looks for. design/cpu-time-as-capability/.
+const OWN_CONSUMED_HELD: [u64; 5] = operation::print_words(b"dom0 own thread consumed cycles\n");
+
+/// Whether inspect on dom0's own thread capability says it holds a thread that has consumed cycles. Every
+/// kernel entry charges the thread its core ran, and dom0's thread has entered the kernel by now, so result
+/// 5 is nonzero once it reaches dom0: on x86_64 in r9, design/syscall-abi-in-registers/.
+fn own_consumed_held(caller: &mut Tracked<Caller>) -> bool {
+    matches!(inspect(caller, operation::ROOT_THREAD_SLOT),
+             Ok(held) if held.kind == operation::KIND_THREAD && held.consumed != 0)
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, OWN_CONSUMED_HELD) } == operation::STATUS_OK
+}
 
 /// The largest order a capability's block has: 2^36 pages reach the end of the 48-bit space.
 const MAX_ORDER: u64 = 36;
@@ -2229,7 +2243,8 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && other_instruction_unknown()
         && astd::heap::with_caller(|caller| {
             first_empty_slot(caller).filter(|&empty| {
-                retyped_frame_held(caller, empty)
+                own_consumed_held(caller)
+                    && retyped_frame_held(caller, empty)
                     && retyped_table_pages(caller, empty)
                         .is_some_and(|(untyped, tables)| {
                             linked_path_held(caller, untyped, tables)

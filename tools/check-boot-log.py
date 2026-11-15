@@ -5,7 +5,7 @@
 
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
-design/test-guest-memory/), dom0's check line, exit marker, eager source line, heap line, freed frame
+design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
 line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
@@ -28,6 +28,11 @@ CONSOLE_LINE = "dom0 slot checks held"
 
 # The line dom0 prints after that check line, and only then exits with success.
 EXIT_MARKER = "dom0 capability done"
+
+# The line dom0 prints once inspect on its own thread, at root slot 2, reported a nonzero result 5, the
+# cycles each of the thread's kernel entries charged it: the result word reached the process.
+# design/cpu-time-as-capability/.
+OWN_CONSUMED_LINE = "dom0 own thread consumed cycles"
 
 # The line dom0 prints once its eager span source reserved a span, backed it a page at a time until the
 # source refused, wrote and read it, released it, backed a page of it again and gave it all back: the 64
@@ -240,6 +245,8 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused("the serial log does not hold dom0's check line")
     if not line_printed(serial, EXIT_MARKER):
         raise Refused("the serial log does not show dom0's exit marker")
+    if not line_printed(serial, OWN_CONSUMED_LINE):
+        raise Refused(f'the serial log does not show inspect reporting dom0\'s own thread\'s consumed cycles: "{OWN_CONSUMED_LINE}"')
     if not line_printed(serial, EAGER_LINE):
         raise Refused(f'the serial log does not show dom0\'s eager source backing 40 pages: "{EAGER_LINE}"')
     if not line_printed(serial, HEAP_LINE):
@@ -284,7 +291,7 @@ def boot_log_accepted(serial, arch, translation=False):
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, "
+            f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
@@ -325,7 +332,8 @@ def slot_lines(frame_kind):
 def boot_log():
     """A boot log with the lines the checks keep, and no capability-entry line."""
     return (slot_lines("frame")
-            + "dom0 freed frame retyped\n"
+            + "dom0 own thread consumed cycles\n"
+            "dom0 freed frame retyped\n"
             "dom0 process retyped\n"
             "thread best 31000 before 57405\n"
             "thread mean 33000 before 59384\n"
@@ -374,6 +382,7 @@ class Tests(unittest.TestCase):
             ("dom0 slot checks held\n", "check line"),
             ("dom0 eager backed 40\n", "eager source"),
             ("dom0 heap allocator held\n", "heap allocator"),
+            ("dom0 own thread consumed cycles\n", "own thread's consumed cycles"),
             ("dom0 freed frame retyped\n", "freed frame"),
             ("dom0 process retyped\n", "child process"),
             ("dom0 threads retyped\n", "threads"),

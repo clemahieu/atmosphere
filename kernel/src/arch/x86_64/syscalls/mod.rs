@@ -202,9 +202,10 @@ unsafe extern "C" fn sys_entry() -> ! {
 
         // Return to the same thread. The exit restores only part of the frame, so it clears the
         // caller-saved registers the handler used: a process must not see them. It returns the
-        // frame's rdi, rsi, rdx and r8, where the handler wrote the invocation's result words.
+        // frame's rdi, rsi, rdx, r8 and r9, where the handler wrote the invocation's result words.
 
-        // skip r15~r10 (8 registers)
+        // skip r15, r14, r13, r12, rbp, rbx, r11 and r10 (8 registers)
+        "mov r9, [rsp + 8*8]",   // r9
         "mov r8, [rsp + 8*9]",   // r8
         // skip rcx
         "mov rdx, [rsp + 8*11]", // rdx
@@ -217,7 +218,6 @@ unsafe extern "C" fn sys_entry() -> ! {
         "mov r11, [rsp + 8*18]", // rflags
         "mov rsp, [rsp + 8*19]", // rsp
 
-        "xor r9d, r9d",
         "xor r10d, r10d",
 
         // sysretq loads RFLAGS, IF with them, from r11 (APM 3, SYSRET).
