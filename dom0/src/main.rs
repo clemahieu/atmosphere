@@ -144,6 +144,7 @@
 #![no_std]
 #![no_main]
 
+mod context;
 mod registers;
 
 extern crate alloc;
@@ -2665,6 +2666,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                     (entry_address(SHARED_ENTRY) + (CHILD_COUNT_ADDRESS - CHILD_DATA_ADDRESS))
                                         as *const u64,
                                 )
+                                && context::context_switch_held()
                                 && suspended_thread_held(caller, empty + 5)
                                 && core_1_counting_held(caller)
                                 && core_1_restarted_held(caller)

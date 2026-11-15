@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 abench = { path = "../abench" }
 acall = { path = "../acall" }
+acontext = { path = "../acontext" }
 aeager = { path = "../aeager" }
 aheap = { path = "../aheap" }
 astd = { path = "../astd", features = ["heap"] }

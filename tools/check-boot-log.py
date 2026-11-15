@@ -110,6 +110,10 @@ SEGMENTS_LINE = "dom0 segments not passed on"
 SYSCALL_REGISTERS_LINE = "dom0 syscall registers held"
 PREEMPTION_REGISTERS_LINE = "dom0 preemption registers held"
 
+# The line dom0 prints once acontext starts a second context 16-byte aligned and keeps every saved
+# register and stack pointer across switches, on both targets. design/register-convention-of-an-assembly-leaf/.
+CONTEXT_SWITCH_REGISTERS_LINE = "dom0 context switch registers held"
+
 # The line dom0 prints once it suspended the thread it started, twice, and started it again, after the
 # suspends a slot without a thread and a copy without control must refuse were refused.
 SUSPENDED_LINE = "dom0 thread suspended"
@@ -367,6 +371,8 @@ def boot_log_accepted(serial, arch, translation=False, bench=False):
         raise Refused(f'the serial log does not show dom0 keeping preserved registers across an invocation: "{SYSCALL_REGISTERS_LINE}"')
     if not line_printed(serial, PREEMPTION_REGISTERS_LINE):
         raise Refused(f'the serial log does not show dom0 keeping preserved registers across a preemption: "{PREEMPTION_REGISTERS_LINE}"')
+    if not line_printed(serial, CONTEXT_SWITCH_REGISTERS_LINE):
+        raise Refused(f'the serial log does not show dom0 keeping saved registers across a context switch: "{CONTEXT_SWITCH_REGISTERS_LINE}"')
     if not line_printed(serial, SUSPENDED_LINE):
         raise Refused(f'the serial log does not show dom0 suspending a thread: "{SUSPENDED_LINE}"')
     if not CORE_1_RESTARTED.search(serial):
@@ -387,7 +393,7 @@ def boot_log_accepted(serial, arch, translation=False, bench=False):
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
             f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
-            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}syscall registers line, preemption registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
+            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}syscall registers line, preemption registers line, context switch registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if translation:
@@ -463,6 +469,7 @@ def boot_log():
             "dom0 segments not passed on\n"
             "dom0 syscall registers held\n"
             "dom0 preemption registers held\n"
+            "dom0 context switch registers held\n"
             "dom0 thread suspended\n"
             "core 1 stop took 2 again\n"
             "dom0 thread restarted on core 1\n"
@@ -517,6 +524,7 @@ class Tests(unittest.TestCase):
             ("dom0 segments not passed on\n", "null segments"),
             ("dom0 syscall registers held\n", "across an invocation"),
             ("dom0 preemption registers held\n", "across a preemption"),
+            ("dom0 context switch registers held\n", "across a context switch"),
             ("dom0 thread suspended\n", "suspending a thread"),
             ("core 1 stop took 2 again\n", "stopping a thread on core 1"),
             ("dom0 thread restarted on core 1\n", "stopping a thread on core 1"),
