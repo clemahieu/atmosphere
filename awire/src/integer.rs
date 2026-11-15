@@ -3,7 +3,8 @@
 //! The fixed-width unsigned integers: `U8`, and `U16`, `U32` and `U64` big-endian (`Be`), as the
 //! Internet's headers carry them, and little-endian (`Le`), as virtio's do. A value is assembled
 //! from its bytes by shifts and taken apart by shifts and truncation, each step proven by the
-//! bit-vector solver, so nothing here is trusted. None loops: each adds no step.
+//! bit-vector solver, so nothing here is trusted. None loops: each adds no step, and each's length is
+//! its width.
 
 
 use crate::*;
@@ -63,6 +64,14 @@ impl<'a> Combinator<'a> for U8 {
             self.lemma_parse_serialize(input@);
         }
         Some((1, input[0]))
+    }
+
+    fn length(&self, _v: &u8, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if cap < 1 {
+            None
+        } else {
+            Some(1)
+        }
     }
 
     fn serialize(&self, v: &u8, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
@@ -158,6 +167,14 @@ impl<'a> Combinator<'a> for U16Be {
         Some((2, v))
     }
 
+    fn length(&self, _v: &u16, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if cap < 2 {
+            None
+        } else {
+            Some(2)
+        }
+    }
+
     fn serialize(&self, v: &u16, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
         if pos > out.len() || out.len() - pos < 2 {
             return None;
@@ -229,6 +246,14 @@ impl<'a> Combinator<'a> for U16Le {
             self.lemma_parse_serialize(input@);
         }
         Some((2, v))
+    }
+
+    fn length(&self, _v: &u16, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if cap < 2 {
+            None
+        } else {
+            Some(2)
+        }
     }
 
     fn serialize(&self, v: &u16, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
@@ -331,6 +356,14 @@ impl<'a> Combinator<'a> for U32Be {
         Some((4, v))
     }
 
+    fn length(&self, _v: &u32, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if cap < 4 {
+            None
+        } else {
+            Some(4)
+        }
+    }
+
     fn serialize(&self, v: &u32, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
         if pos > out.len() || out.len() - pos < 4 {
             return None;
@@ -406,6 +439,14 @@ impl<'a> Combinator<'a> for U32Le {
             self.lemma_parse_serialize(input@);
         }
         Some((4, v))
+    }
+
+    fn length(&self, _v: &u32, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if cap < 4 {
+            None
+        } else {
+            Some(4)
+        }
     }
 
     fn serialize(&self, v: &u32, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
@@ -522,6 +563,14 @@ impl<'a> Combinator<'a> for U64Be {
         Some((8, v))
     }
 
+    fn length(&self, _v: &u64, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if cap < 8 {
+            None
+        } else {
+            Some(8)
+        }
+    }
+
     fn serialize(&self, v: &u64, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
         if pos > out.len() || out.len() - pos < 8 {
             return None;
@@ -605,6 +654,14 @@ impl<'a> Combinator<'a> for U64Le {
             self.lemma_parse_serialize(input@);
         }
         Some((8, v))
+    }
+
+    fn length(&self, _v: &u64, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if cap < 8 {
+            None
+        } else {
+            Some(8)
+        }
     }
 
     fn serialize(&self, v: &u64, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {

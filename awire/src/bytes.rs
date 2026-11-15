@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 //! `Bytes`, a run of `len` bytes. Its exec value borrows the input, so a parse copies nothing and
-//! adds no step; a serialisation copies the run a byte per step.
+//! adds no step; its length is the run's, read in no step; a serialisation copies the run a byte per
+//! step.
 
 use vstd::slice::slice_subrange;
 
@@ -61,6 +62,15 @@ impl<'a> Combinator<'a> for Bytes {
             Some((self.len, run))
         } else {
             None
+        }
+    }
+
+    fn length(&self, v: &&'a [u8], cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        let run: &[u8] = *v;
+        if run.len() != self.len || run.len() > cap {
+            None
+        } else {
+            Some(run.len())
         }
     }
 

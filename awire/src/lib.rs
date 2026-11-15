@@ -9,9 +9,11 @@
 //! one the format can carry and that serialising it gives back exactly the bytes it consumed. Its
 //! exec serialise writes exactly the spec serialisation at the position it is given, leaving every
 //! other byte as it was, or refuses, leaving the buffer as it was, exactly when the value is not one
-//! the format can carry or does not fit. Both run no loop without a decreases clause, so Verus proves
-//! they end, and both bound the ghost `Steps` they add by `k * bytes + c`, `k` and `c` constants of
-//! the combinator's specification.
+//! the format can carry or does not fit. Its exec length gives the length of a value's serialisation
+//! exactly when the value is one the format can carry and the length is within the room it is given,
+//! so a composite checks every part before it writes any. Each runs no loop without a decreases
+//! clause, so Verus proves it ends, and each bounds the ghost `Steps` it adds by `k * bytes + c`, `k`
+//! and `c` constants of the combinator's specification.
 //!
 //! The combinators here: `U8`, `U16Be`, `U16Le`, `U32Be`, `U32Le`, `U64Be` and `U64Le`, the
 //! fixed-width unsigned integers in each byte order, assembled by shifts; and `Bytes`, a run of a
@@ -61,6 +63,15 @@ impl Steps {
 /// `before` with `bytes` written from `pos`, every other byte as it was.
 pub open spec fn written(before: Seq<u8>, pos: int, bytes: Seq<u8>) -> Seq<u8> {
     before.take(pos) + bytes + before.skip(pos + bytes.len())
+}
+
+/// The bytes of a buffer of length `len` from `pos` on, none when `pos` is past its end.
+pub open spec fn room(len: int, pos: int) -> nat {
+    if pos <= len {
+        (len - pos) as nat
+    } else {
+        0
+    }
 }
 
 /// A parser and serialiser of one wire format. `V` is the value as the specification sees it, `T`
@@ -132,10 +143,34 @@ pub trait Combinator<'a> {
             },
     ;
 
+    /// The length of the serialisation of `v`, exactly when `v` is one the format can carry and
+    /// that length is at most `cap`; `None` otherwise. At most `k * n + c` steps when the length is
+    /// `n`, `k * cap + c` when it refused, so a composite that finds an invalid part late is charged
+    /// no more than the room it was given. A composite asks it of each part before writing any, so
+    /// its `serialize` refuses with `out` as it was.
+    fn length(&self, v: &Self::T, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>)
+        requires
+            self.wf(),
+        ensures
+            match r {
+                None => {
+                    &&& !(self.valid(v@) && self.spec_serialize(v@).len() <= cap)
+                    &&& final(steps).count <= old(steps).count + self.k() * cap + self.c()
+                },
+                Some(n) => {
+                    &&& self.valid(v@)
+                    &&& n == self.spec_serialize(v@).len()
+                    &&& n <= cap
+                    &&& final(steps).count <= old(steps).count + self.k() * n + self.c()
+                },
+            },
+    ;
+
     /// Writes the serialisation of `v` into `out` from `pos` and returns its length, every other
     /// byte as it was; or refuses, `out` as it was, exactly when `v` is not one the format can carry
-    /// or its bytes do not fit. At most `k * n + c` steps when it wrote `n` bytes, `c` when it
-    /// refused.
+    /// or its bytes do not fit. At most `k * n + c` steps when it wrote `n` bytes, `k * room + c`
+    /// when it refused, `room` the bytes of `out` from `pos` on, as a refused parse is charged its
+    /// input.
     fn serialize(&self, v: &Self::T, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>)
         requires
             self.wf(),
@@ -144,7 +179,7 @@ pub trait Combinator<'a> {
                 None => {
                     &&& !(self.valid(v@) && pos + self.spec_serialize(v@).len() <= old(out)@.len())
                     &&& final(out)@ == old(out)@
-                    &&& final(steps).count <= old(steps).count + self.c()
+                    &&& final(steps).count <= old(steps).count + self.k() * room(old(out)@.len() as int, pos as int) + self.c()
                 },
                 Some(n) => {
                     &&& self.valid(v@)

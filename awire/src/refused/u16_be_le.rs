@@ -91,6 +91,14 @@ impl<'a> Combinator<'a> for U16BeLe {
         Some((2, v))
     }
 
+    fn length(&self, _v: &u16, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if cap < 2 {
+            None
+        } else {
+            Some(2)
+        }
+    }
+
     fn serialize(&self, v: &u16, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
         if pos > out.len() || out.len() - pos < 2 {
             return None;
