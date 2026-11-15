@@ -178,6 +178,7 @@ impl CapKernel {
             kernel_root % PAGE_SZ == 0,
             mem_valid(kernel_root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
             final(steps).count <= TICK_STEPS,
             final(self).current_live(c as int),
@@ -218,6 +219,7 @@ impl CapKernel {
             mem_valid(kernel_root),
             old(self).current_live(c as int),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
             final(steps).count <= old(steps).count + SWITCH_THREAD_STEPS,
             final(self).current_live(c as int),
@@ -488,6 +490,7 @@ impl CapKernel {
                 None => true,
             },
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
             final(steps).count <= old(steps).count + SWITCH_THREAD_STEPS,
             final(self).cores@[c as int].current_thread == next,

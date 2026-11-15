@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 
-//! The layout of every object the kernel keeps in a 4K page. rustc checks each at compile time, and a
-//! proof that converts a page to an object can rely on it. The thread record holds the target's trap
-//! frame, arch::Registers, so its size is one per target.
+//! The layout of every object the kernel keeps in a 4K page or in a column of the page metadata.
+//! rustc checks each at compile time, and a proof that converts a page or a carve to objects can rely
+//! on it. The thread record holds the target's trap frame, arch::Registers, so its size is one per
+//! target.
 
 use vstd::prelude::*;
 
+use crate::capability::block::{PageEntry, RegionEntry};
 use crate::capability::endpoint::QueueRecord;
 use crate::capability::reply::ReplyRecord;
 use crate::capability::list::NodePage;
@@ -42,6 +44,8 @@ global layout ThreadRecord is size == 384, align == 8;
 global layout ProcessRecord is size == 1, align == 1;
 global layout QueueRecord is size == 32, align == 8;
 global layout ReplyRecord is size == 16, align == 8;
+global layout PageEntry is size == 32, align == 8;
+global layout RegionEntry is size == 16, align == 8;
 
 /// A page becomes an uninitialised node page.
 pub proof fn page_into_node_page(tracked page: PagePerm4k) -> (tracked ret: PointsTo<NodePage>)
@@ -195,6 +199,16 @@ pub proof fn lemma_table_block_layouts()
         vstd::layout::size_of::<PageMap>() == PAGE_SZ,
         vstd::layout::size_of::<TableRecord>() == 56,
         vstd::layout::size_of::<PageBytes>() == PAGE_SZ,
+{
+}
+
+/// The sizes and alignments the block table's columns need from the carve.
+pub proof fn lemma_page_metadata_layouts()
+    ensures
+        vstd::layout::size_of::<PageEntry>() == 32,
+        vstd::layout::align_of::<PageEntry>() == 8,
+        vstd::layout::size_of::<RegionEntry>() == 16,
+        vstd::layout::align_of::<RegionEntry>() == 8,
 {
 }
 

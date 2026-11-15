@@ -15,8 +15,6 @@ use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::arch::tag_written;
 use crate::array::Array;
 use crate::column::Column;
-#[cfg(verus_keep_ghost)]
-use crate::column::lemma_word_aligned;
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::derive::badges_inherited;
@@ -689,6 +687,8 @@ pub open spec fn entries_translatable(blocks: &BlockTable, tlb: TlbModel, iotlb:
 /// page a core may translate stays one it may translate.
 pub proof fn lemma_refs_changed_translatable(a: &BlockTable, b: &BlockTable, br: BlockRef, refs: usize, dead: bool)
     requires
+        a.span_wf(),
+        b.pages@.len() == a.pages@.len(),
         blocks_refs_changed(a, b, br, refs, dead),
     ensures
         forall|g: usize| translatable(a, g) ==> #[trigger] translatable(b, g),
@@ -705,6 +705,8 @@ pub proof fn lemma_refs_changed_translatable(a: &BlockTable, b: &BlockTable, br:
 /// The same, for a change whose block and counts a specification names only inside its own bindings.
 pub proof fn lemma_some_refs_changed_translatable(a: &BlockTable, b: &BlockTable)
     requires
+        a.span_wf(),
+        b.pages@.len() == a.pages@.len(),
         exists|br: BlockRef, refs: usize, dead: bool| #[trigger] blocks_refs_changed(a, b, br, refs, dead),
     ensures
         forall|g: usize| translatable(a, g) ==> #[trigger] translatable(b, g),
@@ -717,6 +719,7 @@ pub proof fn lemma_some_refs_changed_translatable(a: &BlockTable, b: &BlockTable
 /// block was free and in no typed region, so it was none.
 pub proof fn lemma_small_typed_translatable(pre: &BlockTable, post: &BlockTable, page: usize, order: usize)
     requires
+        post.pages@.len() == pre.pages@.len(),
         small_order(order),
         page % (order_pages(order) as usize) == 0,
         forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] pre.pages@[page + k].kind is Free,
@@ -737,6 +740,7 @@ pub proof fn lemma_small_typed_translatable(pre: &BlockTable, post: &BlockTable,
 
 pub proof fn lemma_entries_translatable_kept(pre: &BlockTable, post: &BlockTable, tlb: TlbModel, iotlb: IotlbModel)
     requires
+        post.pages@.len() == pre.pages@.len(),
         entries_translatable(pre, tlb, iotlb),
         forall|g: usize| translatable(pre, g) ==> #[trigger] translatable(post, g),
     ensures
@@ -992,54 +996,47 @@ impl StaleEpochs {
         &&& self.pages.wf()
         &&& self.two.wf()
         &&& self.one.wf()
-        &&& self.pages@.len() == NUM_PAGES
-        &&& self.two@.len() == NUM_2M
-        &&& self.one@.len() == NUM_1G
+        &&& self.pages@.len() % PAGES_PER_1G as nat == 0
+        &&& self.pages@.len() * PAGE_SZ <= IDENTITY_SPAN
+        &&& self.two@.len() == self.pages@.len() / PAGES_PER_2M as nat
+        &&& self.one@.len() == self.pages@.len() / PAGES_PER_1G as nat
     }
 
-    /// Every word zero, no unmap yet, in the carve at `carve`, as metadata_layout places the three
-    /// columns in it for the block table's page count. `raw` grants the carve from the stale epochs to
-    /// its end; each column's permission is split from it and each word written, so what the carve held
-    /// before is not what this relies on. What `raw` grants past the stale epochs comes back, for the
-    /// columns that follow them.
-    pub fn new(carve: usize, Tracked(raw): Tracked<PointsToRaw>, Tracked(exposed): Tracked<IsExposed>)
+    /// Every word zero, no unmap yet, for `pages` pages, in the carve at `carve`, as metadata_layout
+    /// places the three columns in it. `raw` grants the carve from the stale epochs to its end; each
+    /// column's permission is split from it and each word written, so what the carve held before is not
+    /// what this relies on. What `raw` grants past the stale epochs comes back, for the columns that
+    /// follow them.
+    pub fn new(carve: usize, pages: usize, Tracked(raw): Tracked<PointsToRaw>, Tracked(exposed): Tracked<IsExposed>)
         -> (ret: (Self, Tracked<PointsToRaw>))
         requires
             carve % PAGE_SZ == 0,
-            carve + spec_metadata_layout(NUM_PAGES).bytes <= usize::MAX,
+            pages % PAGES_PER_1G == 0,
+            pages * PAGE_SZ <= IDENTITY_SPAN,
+            carve + spec_metadata_layout(pages).bytes <= usize::MAX,
             raw.is_range(
-                carve + spec_metadata_layout(NUM_PAGES).stale_pages,
-                spec_metadata_layout(NUM_PAGES).bytes - spec_metadata_layout(NUM_PAGES).stale_pages,
+                carve + spec_metadata_layout(pages).stale_pages,
+                spec_metadata_layout(pages).bytes - spec_metadata_layout(pages).stale_pages,
             ),
             raw.provenance() == exposed@,
         ensures
             ret.0.wf(),
-            forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] ret.0.pages@[j] == 0,
-            forall|r: int| 0 <= r < NUM_2M ==> #[trigger] ret.0.two@[r] == 0,
-            forall|r: int| 0 <= r < NUM_1G ==> #[trigger] ret.0.one@[r] == 0,
+            ret.0.pages@.len() == pages,
+            forall|j: int| 0 <= j < ret.0.pages@.len() ==> #[trigger] ret.0.pages@[j] == 0,
+            forall|r: int| 0 <= r < ret.0.two@.len() ==> #[trigger] ret.0.two@[r] == 0,
+            forall|r: int| 0 <= r < ret.0.one@.len() ==> #[trigger] ret.0.one@[r] == 0,
             ret.1@.is_range(
-                carve + spec_metadata_layout(NUM_PAGES).stale_end,
-                spec_metadata_layout(NUM_PAGES).bytes - spec_metadata_layout(NUM_PAGES).stale_end,
+                carve + spec_metadata_layout(pages).stale_end,
+                spec_metadata_layout(pages).bytes - spec_metadata_layout(pages).stale_end,
             ),
             ret.1@.provenance() == exposed@,
     {
-        proof {
-            assert(NUM_PAGES * PAGE_SZ <= IDENTITY_SPAN) by (compute_only);
-        }
-        let l = metadata_layout(NUM_PAGES);
+        let l = metadata_layout(pages);
         let ghost c = carve as int;
         proof {
-            assert(NUM_PAGES / PAGES_PER_2M == NUM_2M) by (compute_only);
-            assert(NUM_PAGES / PAGES_PER_1G == NUM_1G) by (compute_only);
-            assert(l.stale_2m == NUM_PAGES * 8);
-            assert(l.stale_1g == l.stale_2m + NUM_2M * 8);
-            assert(l.stale_end == l.stale_1g + NUM_1G * 8);
-            assert(c % 8 == 0);
-            lemma_word_aligned(c);
-            lemma_word_aligned(c + l.stale_2m);
-            lemma_word_aligned(c + l.stale_1g);
+            lemma_metadata_aligned(c, l, pages);
         }
-        let tracked (first, rest) = raw.split(Set::range(c, c + l.stale_2m));
+        let tracked (first, rest) = raw.split(Set::range(c + l.stale_pages, c + l.stale_2m));
         proof {
             assert(rest.dom() =~= Set::range(c + l.stale_2m, c + l.bytes));
         }
@@ -1053,16 +1050,16 @@ impl StaleEpochs {
             assert(past.dom() =~= Set::range(c + l.stale_end, c + l.bytes));
         }
         let epochs = StaleEpochs {
-            pages: Column::new(carve + l.stale_pages, NUM_PAGES, 0, Tracked(first), Tracked(exposed)),
-            two: Column::new(carve + l.stale_2m, NUM_2M, 0, Tracked(second), Tracked(exposed)),
-            one: Column::new(carve + l.stale_1g, NUM_1G, 0, Tracked(third), Tracked(exposed)),
+            pages: Column::new(carve + l.stale_pages, pages, 0, Tracked(first), Tracked(exposed)),
+            two: Column::new(carve + l.stale_2m, pages / PAGES_PER_2M, 0, Tracked(second), Tracked(exposed)),
+            one: Column::new(carve + l.stale_1g, pages / PAGES_PER_1G, 0, Tracked(third), Tracked(exposed)),
         };
         (epochs, Tracked(past))
     }
 
     /// No page's last unmap is later than this epoch.
     pub open spec fn bounded(&self, epoch: int) -> bool {
-        forall|g: int| 0 <= g < NUM_PAGES ==> #[trigger] self.pages@[g] <= epoch
+        forall|g: int| 0 <= g < self.pages@.len() ==> #[trigger] self.pages@[g] <= epoch
     }
 
     /// A core at epoch `acked` has not acknowledged this page's last unmap, read at any level.
@@ -1092,29 +1089,45 @@ impl StaleEpochs {
     pub fn record_run(&mut self, first: usize, count: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
-            first + count <= NUM_PAGES,
+            first + count <= old(self).pages@.len(),
             count <= PAGES_PER_2M,
         ensures
             final(steps).count <= old(steps).count + count,
             final(self).wf(),
+            final(self).pages@.len() == old(self).pages@.len(),
             forall|g: usize| first <= g < first + count ==> #[trigger] final(self).written(epoch, g),
-            forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] final(self).above(a, g),
-            forall|g: int| 0 <= g < NUM_PAGES && !(first <= g < first + count)
+            forall|a: int, g: usize| a < epoch && g < old(self).pages@.len() && old(self).above(a, g) ==> #[trigger] final(self).above(a, g),
+            forall|g: int| 0 <= g < old(self).pages@.len() && !(first <= g < first + count)
                 ==> #[trigger] final(self).pages@[g] == old(self).pages@[g],
             forall|e: int| epoch <= e && #[trigger] old(self).bounded(e) ==> final(self).bounded(e),
     {
         let mut k = 0;
         let ghost start = steps.count;
+        proof {
+            crate::define::lemma_span_within_48_bits();
+            assert(PAGE_SZ >= 1) by (compute_only);
+            assert((1usize << 48) < usize::MAX) by (compute_only);
+            let len = self.pages@.len();
+            assert(first + count <= usize::MAX) by (nonlinear_arith)
+                requires
+                    first + count <= len,
+                    len * PAGE_SZ <= IDENTITY_SPAN,
+                    IDENTITY_SPAN <= 1usize << 48,
+                    PAGE_SZ >= 1,
+                    (1usize << 48) < usize::MAX;
+        }
         while k != count
             invariant
                 self.wf(),
                 0 <= k <= count,
                 count <= PAGES_PER_2M,
+                first + count <= usize::MAX,
                 steps.count == start + k,
-                first + count <= NUM_PAGES,
+                self.pages@.len() == old(self).pages@.len(),
+                first + count <= old(self).pages@.len(),
                 forall|g: usize| first <= g < first + k ==> #[trigger] self.written(epoch, g),
-                forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] self.above(a, g),
-                forall|g: int| 0 <= g < NUM_PAGES && !(first <= g < first + count) ==> #[trigger] self.pages@[g] == old(self).pages@[g],
+                forall|a: int, g: usize| a < epoch && g < old(self).pages@.len() && old(self).above(a, g) ==> #[trigger] self.above(a, g),
+                forall|g: int| 0 <= g < old(self).pages@.len() && !(first <= g < first + count) ==> #[trigger] self.pages@[g] == old(self).pages@[g],
                 forall|e: int| epoch <= e && #[trigger] old(self).bounded(e) ==> self.bounded(e),
             decreases count - k,
         {
@@ -1128,12 +1141,12 @@ impl StaleEpochs {
                         assert(mid.written(epoch, g));
                     }
                 }
-                assert forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) implies #[trigger] self.above(a, g) by {
+                assert forall|a: int, g: usize| a < epoch && g < old(self).pages@.len() && old(self).above(a, g) implies #[trigger] self.above(a, g) by {
                     assert(mid.above(a, g));
                 }
                 assert forall|e: int| epoch <= e && #[trigger] old(self).bounded(e) implies self.bounded(e) by {
                     assert(mid.bounded(e));
-                    assert forall|g: int| 0 <= g < NUM_PAGES implies #[trigger] self.pages@[g] <= e by {
+                    assert forall|g: int| 0 <= g < self.pages@.len() implies #[trigger] self.pages@[g] <= e by {
                         if g != page as int {
                             assert(mid.pages@[g] <= e);
                         }
@@ -1148,13 +1161,19 @@ impl StaleEpochs {
     pub fn record(&mut self, page: usize, epoch: usize)
         requires
             old(self).wf(),
-            page < NUM_PAGES,
+            page < old(self).pages@.len(),
         ensures
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(page as int, epoch),
             final(self).two@ == old(self).two@.update((page / PAGES_PER_2M) as int, epoch),
             final(self).one@ == old(self).one@.update((page / PAGES_PER_1G) as int, epoch),
     {
+        proof {
+            let n = self.pages@.len() as int;
+            lemma_whole_regions(n);
+            lemma_region_of_page(page as int, PAGES_PER_2M as int, n / PAGES_PER_2M as int);
+            lemma_region_of_page(page as int, PAGES_PER_1G as int, n / PAGES_PER_1G as int);
+        }
         self.pages.set(page, epoch);
         self.two.set(page / PAGES_PER_2M, epoch);
         self.one.set(page / PAGES_PER_1G, epoch);
@@ -1497,6 +1516,7 @@ pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
 /// member page is in no typed region, so its block names its base.
 pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &BlockTable)
     requires
+        b.pages@.len() == a.pages@.len(),
         list_pages_used(list, a),
         a.wf(),
         forall|i: int| a.tracks(i) ==> {
@@ -1653,6 +1673,7 @@ impl CapKernel {
     /// buffers it reads only that they are well formed, and a rise of the epoch keeps it.
     pub proof fn lemma_iommus_same(pre: Self, post: Self)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.iommus_wf(),
             post.iommus.present == pre.iommus.present,
             post.iommus.acked == pre.iommus.acked,
@@ -1685,6 +1706,7 @@ impl CapKernel {
         &&& self.tables.caps_wf(&self.list)
         &&& self.tables.control_wf(&self.list)
         &&& self.stale_epoch.wf()
+        &&& self.stale_epoch.pages@.len() == self.blocks.pages@.len()
         &&& self.tlb_wf()
         &&& entries_translatable(&self.blocks, self.tlb@, self.iommus.tlb@)
         &&& ids_wf(self.cores@, self.spaces.loaded@)
@@ -1728,6 +1750,27 @@ impl CapKernel {
         &&& device_bindings_wf(&self.list, &self.tables, self.spaces.bound@, &self.devices)
         &&& devices_placed(&self.list, self.iommus.present@, self.iommus.acked@, &self.devices)
         &&& !self.threads.records@.contains_key(self.devices.page)
+    }
+
+    /// The block table tracks as many pages after as before: no operation changes the page count.
+    pub open spec fn page_count_kept(pre: Self, post: Self) -> bool {
+        post.blocks.pages@.len() == pre.blocks.pages@.len()
+    }
+
+    /// The tracked pages lie within the identity-mapped span, and their count is the length of the
+    /// block table's page entries. A caller that needs only this keeps wf hidden.
+    pub proof fn lemma_page_span(&self)
+        requires
+            self.wf(),
+        ensures
+            self.blocks.span_wf(),
+            self.blocks.page_count() == self.blocks.pages@.len(),
+            self.blocks.page_count() * PAGE_SZ <= IDENTITY_SPAN,
+            self.blocks.pages@.len() * PAGE_SZ <= crate::capability::list::NODE_SPACE,
+            self.blocks.page_count() * PAGE_SZ <= crate::capability::list::NODE_SPACE,
+            self.stale_epoch.pages@.len() == self.blocks.pages@.len(),
+    {
+        self.blocks.lemma_count_fits();
     }
 
     /// One thread's record is well formed. A caller that needs only this keeps wf hidden: revealed,
@@ -1860,6 +1903,7 @@ impl CapKernel {
     /// neither frame nor table page hold none.
     pub proof fn lemma_small_freed_translatable(pre: Self, post: &BlockTable, base: usize)
         requires
+            post.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.blocks.tracks(base as int),
             pre.blocks.pages@[base as int].kind is Base,
@@ -2108,6 +2152,7 @@ impl CapKernel {
     /// acknowledged that was.
     pub proof fn lemma_acknowledged_kept(pre: Self, post: Self, f: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             post.stale_epoch == pre.stale_epoch,
             post.cores == pre.cores,
             post.iommus == pre.iommus,
@@ -2173,8 +2218,8 @@ impl CapKernel {
     /// `registers` are the cores' base registers as boot left them, each naming `kernel_root` under
     /// KERNEL_TAG, `tlb` is the cores' TLB model as boot makes it, each core's sets empty, and `iotlb` the
     /// IOMMUs', each IOMMU's set empty. The page metadata's columns are placed in the carve at `carve`,
-    /// which `carve_perm` grants, as metadata_layout lays them out for the block table's page count. In
-    /// place, since the block table is too large to move by value.
+    /// which `carve_perm` grants, as metadata_layout lays them out for `pages`, the count of pages the
+    /// block table tracks. In place, since the kernel is too large to move by value.
     pub(crate) fn init(
         &mut self,
         root: usize,
@@ -2186,14 +2231,18 @@ impl CapKernel {
         Tracked(registers): Tracked<Map<int, BaseRegister>>,
         Tracked(tlb): Tracked<TlbModel>,
         Tracked(iotlb): Tracked<IotlbModel>,
+        pages: usize,
         carve: usize,
         Tracked(carve_perm): Tracked<PointsToRaw>,
         Tracked(exposed): Tracked<IsExposed>,
     )
         requires
+            0 < pages,
+            pages % PAGES_PER_1G == 0,
+            pages * PAGE_SZ <= IDENTITY_SPAN,
             carve % PAGE_SZ == 0,
-            carve + spec_metadata_layout(old(self).blocks.page_count()).bytes <= usize::MAX,
-            carve_perm.is_range(carve as int, spec_metadata_layout(old(self).blocks.page_count()).bytes as int),
+            carve + spec_metadata_layout(pages).bytes <= usize::MAX,
+            carve_perm.is_range(carve as int, spec_metadata_layout(pages).bytes as int),
             carve_perm.provenance() == exposed@,
             boot_registers(registers, kernel_root),
             boot_tlb(tlb),
@@ -2225,6 +2274,8 @@ impl CapKernel {
             },
             final(self).list.seq@[0] == root,
             final(self).boot_empty(),
+            final(self).blocks.page_count() == pages,
+            final(self).blocks.pages@.len() == pages,
             forall|j: int| final(self).blocks.tracks(j) ==> #[trigger] final(self).stale_epoch.pages@[j] == 0,
             forall|r: int| 0 <= r < final(self).blocks.num_2m() ==> #[trigger] final(self).stale_epoch.two@[r] == 0,
             forall|r: int| 0 <= r < final(self).blocks.num_1g() ==> #[trigger] final(self).stale_epoch.one@[r] == 0,
@@ -2244,17 +2295,13 @@ impl CapKernel {
         self.processes = Processes::new();
         self.endpoints = Endpoints::new();
         self.replies = Replies::new();
-        self.blocks.pages.init();
-        self.blocks.regions_2m.init();
-        self.blocks.regions_1g.init();
-        self.blocks.count_2m.init();
-        self.blocks.count_1g.init();
-        self.blocks.init(Tracked(&mut steps));
+        let (blocks, Tracked(past_blocks)) = BlockTable::new(carve, pages, Tracked(carve_perm), Tracked(exposed));
+        self.blocks = blocks;
         self.cores.init();
         init_cores(&mut self.cores);
-        let (stale_epoch, Tracked(past_stale)) = StaleEpochs::new(carve, Tracked(carve_perm), Tracked(exposed));
+        let (stale_epoch, Tracked(past_stale)) = StaleEpochs::new(carve, pages, Tracked(past_blocks), Tracked(exposed));
         self.stale_epoch = stale_epoch;
-        self.zeroing = Zeroing::new(carve, self.blocks.page_count(), Tracked(past_stale), Tracked(exposed));
+        self.zeroing = Zeroing::new(carve, pages, Tracked(past_stale), Tracked(exposed));
         self.iommus.acked.init();
         self.iommus.zero();
         self.iommus.tlb = Tracked(iotlb);
@@ -2401,6 +2448,7 @@ impl CapKernel {
     /// has entries for.
     pub proof fn lemma_tlb_same(pre: Self, post: Self)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.tlb_wf(),
             post.cores == pre.cores,
             post.iommus == pre.iommus,
@@ -2436,6 +2484,7 @@ impl CapKernel {
     /// The TLB model after a space no core loaded goes: no core held an entry of it.
     pub proof fn lemma_tlb_space_removed(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.tlb_wf(),
             post.cores == pre.cores,
             post.iommus == pre.iommus,
@@ -2470,6 +2519,7 @@ impl CapKernel {
     /// More pages being mapped keeps the TLB model: it says least about a mapped page.
     pub proof fn lemma_tlb_more_mapped(pre: Self, post: Self)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.tlb_wf(),
             post.cores == pre.cores,
             post.iommus == pre.iommus,
@@ -2514,6 +2564,7 @@ impl CapKernel {
     /// block's pages in it and every holder in place, adding none.
     pub proof fn lemma_mappings_blocks_changed(pre: Self, post: Self)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             post.list == pre.list,
             post.tables == pre.tables,
@@ -2542,6 +2593,7 @@ impl CapKernel {
     /// base or a member, none Reserved.
     pub proof fn lemma_kernel_root_freed(pre: Self, post: Self, base: int)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.blocks.tracks(base),
             pre.blocks.pages@[base].kind is Base,
@@ -2560,6 +2612,7 @@ impl CapKernel {
     /// Typing `n` pages from `page` that were Free keeps the kernel root's page Reserved.
     pub proof fn lemma_kernel_root_typed(pre: Self, post: Self, page: int, n: int)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             post.spaces.kernel_root == pre.spaces.kernel_root,
             forall|k: int| 0 <= k < n ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
@@ -2576,6 +2629,7 @@ impl CapKernel {
     /// Changing only the `n` pages from `start`, none of them the kernel root's, keeps it Reserved.
     pub proof fn lemma_kernel_root_apart(pre: Self, post: Self, start: int, n: int)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             post.spaces.kernel_root == pre.spaces.kernel_root,
             kernel_root_apart(&pre.blocks, pre.spaces.kernel_root@, start, n),
@@ -2593,6 +2647,7 @@ impl CapKernel {
     /// them keeps its own, every typed block keeps its pages and every holder stays in place.
     pub proof fn lemma_zeroing_changed(pre: Self, post: Self)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             kernel_root_reserved(&post.blocks, post.spaces.kernel_root@),
             post.blocks.wf(),
@@ -2644,6 +2699,7 @@ impl CapKernel {
     /// Changing only the block table keeps the invariant.
     pub proof fn lemma_blocks_changed(pre: Self, post: Self)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             kernel_root_reserved(&post.blocks, post.spaces.kernel_root@),
             post.blocks.wf(),
@@ -2810,6 +2866,7 @@ impl CapKernel {
     /// to say, since a frame hands its pages back from there.
     pub proof fn lemma_small_freed(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
@@ -3045,6 +3102,7 @@ impl CapKernel {
             i < NUM_IOMMUS,
             old(self).iommu_present(i as int),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + FLUSH_IOMMU_STEPS,
             final(self).wf(),
             final(self).iommu_acked(i as int) == old(self).flush_epoch,
@@ -3110,6 +3168,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + ACKNOWLEDGE_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).acked(c as int) == old(self).flush_epoch,

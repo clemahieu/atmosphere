@@ -778,6 +778,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             // The leaf's arm, a slice and then a free, is the largest.
             final(steps).count <= old(steps).count + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (REVOKE_STEP_STEPS + 1)
                 + (NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX),
@@ -1126,6 +1127,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (REVOKE_STEP_STEPS + 1),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -1179,6 +1181,7 @@ impl CapKernel {
         let mut k = 1;
         while taken != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE && self.flush_epoch != usize::MAX
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 start == old(steps).count,
                 steps.count <= start + (k - 1) + taken * (REVOKE_STEP_STEPS + 1),
                 Self::mappings_shrunk(*old(self), *self),
@@ -1352,6 +1355,8 @@ impl CapKernel {
     /// keeps: the block it changes is one the leaf's slots name, and every page stays in its block.
     proof fn lemma_slice_kept_step(pre: Self, mid: Self, post: Self, base: usize, n: usize)
         requires
+            post.blocks.pages@.len() == mid.blocks.pages@.len(),
+            mid.blocks.pages@.len() == pre.blocks.pages@.len(),
             mid.wf(),
             base % LEAF_BYTES == 0,
             base < n < base + NODES_PER_PAGE,
@@ -1522,6 +1527,7 @@ impl CapKernel {
             old(self).is_cap(n),
             old(self).list.childless(n),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count == old(steps).count,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -1601,6 +1607,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -1682,6 +1689,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1) + ENTRIES + (NUM_CPUS + NUM_IOMMUS)
                 + (TABLE_NODE_PAGES + SMALL_PAGES_MAX),
             final(self).wf(),
@@ -1953,6 +1961,7 @@ impl CapKernel {
             old(self).no_stale_translation(base / PAGE_SZ),
             old(self).no_stale_translation((base / PAGE_SZ + 1) as usize),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -2244,6 +2253,7 @@ impl CapKernel {
     /// every other block, leaf and list page is as it was.
     proof fn lemma_leaf_freed_blocks(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.leaf_is_empty(base),
             post.blocks.wf(),
@@ -2346,6 +2356,7 @@ impl CapKernel {
     /// list page changed, and the view is as it was.
     proof fn lemma_leaf_freed(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.leaf_is_empty(base),
             post.blocks.wf(),
@@ -2880,6 +2891,7 @@ impl CapKernel {
     /// The kernel after the empty table page at `base` frees.
     proof fn lemma_table_freed(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::table_freed_step(pre, post, base),
             pre.no_stale_translation(base / PAGE_SZ),
         ensures
@@ -2928,6 +2940,7 @@ impl CapKernel {
             old(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 0,
             old(self).no_stale_translation(base / PAGE_SZ),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + TABLE_NODE_PAGES + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::table_freed_step(*old(self), *final(self), base),
@@ -3133,6 +3146,8 @@ impl CapKernel {
     /// goes: each lies in its own block, apart from the freed one.
     proof fn lemma_space_freed_node_pages(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            pre.blocks.span_wf(),
             table_pages_wf(&pre.list, &pre.table_pages, &pre.blocks),
             spaces_wf(&pre.list, &pre.tables, &pre.spaces, &pre.blocks),
             base % TABLE_PAGE_BYTES == 0,
@@ -3152,6 +3167,7 @@ impl CapKernel {
             implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
             assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
+            pre.blocks.lemma_addr_in_span(t);
             lemma_node_pages_disjoint(t, base, k);
         }
         assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && !(post.spaces.records@[s].value().kind is Process)
@@ -3159,6 +3175,7 @@ impl CapKernel {
             assert(post.spaces.records@[s] == pre.spaces.records@[s]);
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
             assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
+            pre.blocks.lemma_addr_in_span(s);
             lemma_node_pages_disjoint(s, base, k);
         }
     }
@@ -3167,6 +3184,7 @@ impl CapKernel {
     /// lie in its own block.
     proof fn lemma_space_freed_pages(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::space_freed_step(pre, post, base),
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
         ensures
@@ -3183,6 +3201,7 @@ impl CapKernel {
         Self::lemma_node_block_list_pages(pre, post, base);
         assert(order_pages(3) == 8);
         assert(pre.blocks.in_block(page as int, page as int));
+        pre.lemma_page_span();
         Self::lemma_space_freed_node_pages(pre, post, base);
         lemma_table_pages_small_freed(&pre.list, &post.list, &post.table_pages, &pre.blocks, &post.blocks, page);
         assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
@@ -3195,6 +3214,7 @@ impl CapKernel {
     /// The kernel after the empty space at `base` frees.
     proof fn lemma_space_freed(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::space_freed_step(pre, post, base),
             pre.no_stale_translation(base / PAGE_SZ),
         ensures
@@ -3244,6 +3264,7 @@ impl CapKernel {
             old(self).space_is_empty(base),
             old(self).no_stale_translation(base / PAGE_SZ),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + TABLE_NODE_PAGES + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::space_freed_step(*old(self), *final(self), base),
@@ -3358,6 +3379,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + ENTRIES + (NUM_CPUS + NUM_IOMMUS) + (TABLE_NODE_PAGES + SMALL_PAGES_MAX),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -3427,6 +3449,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count == old(steps).count,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -3568,6 +3591,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -4167,6 +4191,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -4235,6 +4260,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).parent is None,
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).level >= 2,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
             final(self).wf(),
             cut <= TABLE_SLICE_BUDGET,
@@ -4259,6 +4285,7 @@ impl CapKernel {
         let mut e: usize = 0;
         while cut != TABLE_SLICE_BUDGET && e != ENTRIES && self.flush_epoch != usize::MAX
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 start == old(steps).count,
                 steps.count <= start + e + cut * CUT_NOTE_STEPS,
                 self.wf(),
@@ -4403,6 +4430,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -4615,6 +4643,7 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is Mapping,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + UNLINK_ARM_STEPS,
             final(self).wf(),
             Self::mapping_unlinked(*old(self), *final(self), n),
@@ -4796,6 +4825,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + UNMAP_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -4840,6 +4870,7 @@ impl CapKernel {
         let mut e: usize = 0;
         while unlinked != TABLE_SLICE_BUDGET && e != ENTRIES && self.flush_epoch != usize::MAX
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 start == old(steps).count,
                 steps.count <= start + e + unlinked * UNLINK_ARM_STEPS,
                 self.wf(),
@@ -4958,6 +4989,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + CUT_SLICE_STEPS + UNMAP_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -4994,6 +5026,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -5138,6 +5171,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + NUM_CPUS + NUM_IOMMUS,
             ret is Refused ==> final(steps).count == old(steps).count,
             final(self).wf(),
@@ -5207,6 +5241,7 @@ impl CapKernel {
             old(self).region_is_dead(level, r),
             old(self).region_clean(level, r),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::same_tree(*old(self), *final(self)),
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).list == old(self).list,
@@ -5290,6 +5325,7 @@ impl CapKernel {
             old(self).frame_is_dead(page),
             old(self).no_stale_translation(page),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             Self::same_tree(*old(self), *final(self)),
             Self::step_ok(*old(self), *final(self), c as int),

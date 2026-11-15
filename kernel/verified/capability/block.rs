@@ -14,16 +14,16 @@ use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::set_lib::*;
 #[cfg(verus_keep_ghost)]
-use vstd::layout::size_of;
+use vstd::layout::{size_of, align_of};
+use vstd::raw_ptr::{IsExposed, PointsToRaw};
 
 verus! {
 
-use crate::array::Array;
+use crate::column::Column;
+#[cfg(verus_keep_ghost)]
+use crate::column::lemma_word_aligned;
 use crate::define::*;
 use crate::capability::steps::Steps;
-
-pub const NUM_2M: usize = 2048;
-pub const NUM_1G: usize = 4;
 
 #[derive(Clone, Copy)]
 pub enum PageKind {
@@ -130,12 +130,21 @@ pub proof fn lemma_whole_regions(n: int)
 
 /// Where each column of the page metadata lies in the region boot carves, as byte offsets from the
 /// region's base, and how many bytes the columns take, which is what boot carves. Each column starts
-/// where the one before it ends. The word columns come first and the byte columns after them, so each
-/// starts at a multiple of its element's size, which is a multiple of its alignment.
-/// design/page-metadata-sized-from-the-memory-map/.
+/// where the one before it ends. The columns whose elements are words, or a whole number of words,
+/// come first and the byte columns after them, so each starts at a multiple of a word, which is a
+/// multiple of its element's alignment. design/page-metadata-sized-from-the-memory-map/.
 #[derive(Clone, Copy)]
 pub struct MetadataLayout {
-    /// The stale epochs: one per tracked page, then one per 2M region, then one per 1G region.
+    /// The block table's page entries, one per tracked page.
+    pub page_entries: usize,
+    /// The block table's region entries: one per 2M region, then one per 1G region.
+    pub regions_2m: usize,
+    pub regions_1g: usize,
+    /// The block table's counts: one per 2M region, then one per 1G region.
+    pub count_2m: usize,
+    pub count_1g: usize,
+    /// The stale epochs: one per tracked page, then one per 2M region, then one per 1G region. They
+    /// start where the block table's columns end.
     pub stale_pages: usize,
     pub stale_2m: usize,
     pub stale_1g: usize,
@@ -151,22 +160,59 @@ pub struct MetadataLayout {
 
 /// The layout of the page metadata for `pages` tracked pages.
 pub open spec fn spec_metadata_layout(pages: usize) -> MetadataLayout {
+    let e = size_of::<PageEntry>() as int;
+    let g = size_of::<RegionEntry>() as int;
     let w = size_of::<usize>() as int;
-    let stale_2m = pages * w;
-    let stale_1g = stale_2m + (pages / PAGES_PER_2M) as int * w;
-    let stale_end = stale_1g + (pages / PAGES_PER_1G) as int * w;
+    let two = (pages / PAGES_PER_2M) as int;
+    let one = (pages / PAGES_PER_1G) as int;
+    let regions_2m = pages * e;
+    let regions_1g = regions_2m + two * g;
+    let count_2m = regions_1g + one * g;
+    let count_1g = count_2m + two * w;
+    let stale_pages = count_1g + one * w;
+    let stale_2m = stale_pages + pages * w;
+    let stale_1g = stale_2m + two * w;
+    let stale_end = stale_1g + one * w;
     let active_2m = stale_end + pages * w;
-    let active_1g = active_2m + (pages / PAGES_PER_2M) as int;
+    let active_1g = active_2m + two;
     MetadataLayout {
-        stale_pages: 0,
+        page_entries: 0,
+        regions_2m: regions_2m as usize,
+        regions_1g: regions_1g as usize,
+        count_2m: count_2m as usize,
+        count_1g: count_1g as usize,
+        stale_pages: stale_pages as usize,
         stale_2m: stale_2m as usize,
         stale_1g: stale_1g as usize,
         stale_end: stale_end as usize,
         zero_cursor: stale_end as usize,
         active_2m: active_2m as usize,
         active_1g: active_1g as usize,
-        bytes: (active_1g + (pages / PAGES_PER_1G) as int) as usize,
+        bytes: (active_1g + one) as usize,
     }
+}
+
+/// The offsets a layout of the page metadata for `pages` tracked pages holds, as sums: what
+/// metadata_layout ensures and what the column constructors read.
+pub open spec fn layout_sums(l: MetadataLayout, pages: usize) -> bool {
+    let two = pages / PAGES_PER_2M;
+    let one = pages / PAGES_PER_1G;
+    let w = size_of::<usize>();
+    &&& l == spec_metadata_layout(pages)
+    &&& l.page_entries == 0
+    &&& l.regions_2m == pages * size_of::<PageEntry>()
+    &&& l.regions_1g == l.regions_2m + two * size_of::<RegionEntry>()
+    &&& l.count_2m == l.regions_1g + one * size_of::<RegionEntry>()
+    &&& l.count_1g == l.count_2m + two * w
+    &&& l.stale_pages == l.count_1g + one * w
+    &&& l.stale_2m == l.stale_pages + pages * w
+    &&& l.stale_1g == l.stale_2m + two * w
+    &&& l.stale_end == l.stale_1g + one * w
+    &&& l.zero_cursor == l.stale_end
+    &&& l.active_2m == l.zero_cursor + pages * w
+    &&& l.active_1g == l.active_2m + two
+    &&& l.bytes == l.active_1g + one
+    &&& l.bytes <= IDENTITY_SPAN
 }
 
 /// The layout of the page metadata for `pages` tracked pages, from the page count, `size_of` and
@@ -176,41 +222,112 @@ pub fn metadata_layout(pages: usize) -> (l: MetadataLayout)
     requires
         pages * PAGE_SZ <= IDENTITY_SPAN,
     ensures
-        l == spec_metadata_layout(pages),
-        l.stale_pages == 0,
-        l.stale_2m == pages * size_of::<usize>(),
-        l.stale_1g == l.stale_2m + (pages / PAGES_PER_2M) * size_of::<usize>(),
-        l.stale_end == l.stale_1g + (pages / PAGES_PER_1G) * size_of::<usize>(),
-        l.zero_cursor == l.stale_end,
-        l.active_2m == l.zero_cursor + pages * size_of::<usize>(),
-        l.active_1g == l.active_2m + pages / PAGES_PER_2M,
-        l.bytes == l.active_1g + pages / PAGES_PER_1G,
-        l.bytes <= IDENTITY_SPAN,
+        layout_sums(l, pages),
 {
     let w = core::mem::size_of::<usize>();
+    let e = core::mem::size_of::<PageEntry>();
+    let g = core::mem::size_of::<RegionEntry>();
     proof {
         lemma_span_within_48_bits();
+        crate::layouts::lemma_page_metadata_layouts();
         assert(pages / PAGES_PER_2M <= pages && pages / PAGES_PER_1G <= pages) by {
             vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(pages as int, 1, PAGES_PER_2M as int);
             vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(pages as int, 1, PAGES_PER_1G as int);
             vstd::arithmetic::div_mod::lemma_div_basics(pages as int);
         }
-        // Four word columns and two byte columns are at most five words a page, and a page is far
-        // larger than that.
-        assert(PAGE_SZ >= 40) by (compute_only);
-        assert(5 * pages * w <= pages * PAGE_SZ) by (nonlinear_arith)
+        // A page entry, two region entries, eight words and two bytes a page are far less than a page.
+        assert(PAGE_SZ >= 256) by (compute_only);
+        assert((e + 2 * g + 8 * w + 2) * pages <= pages * PAGE_SZ) by (nonlinear_arith)
             requires
+                e == 32,
+                g == 16,
                 w == 8,
-                PAGE_SZ >= 40,
+                PAGE_SZ >= 256,
                 0 <= pages;
     }
-    let stale_2m = pages * w;
+    let regions_2m = pages * e;
+    let regions_1g = regions_2m + pages / PAGES_PER_2M * g;
+    let count_2m = regions_1g + pages / PAGES_PER_1G * g;
+    let count_1g = count_2m + pages / PAGES_PER_2M * w;
+    let stale_pages = count_1g + pages / PAGES_PER_1G * w;
+    let stale_2m = stale_pages + pages * w;
     let stale_1g = stale_2m + pages / PAGES_PER_2M * w;
     let stale_end = stale_1g + pages / PAGES_PER_1G * w;
     let active_2m = stale_end + pages * w;
     let active_1g = active_2m + pages / PAGES_PER_2M;
     let bytes = active_1g + pages / PAGES_PER_1G;
-    MetadataLayout { stale_pages: 0, stale_2m, stale_1g, stale_end, zero_cursor: stale_end, active_2m, active_1g, bytes }
+    MetadataLayout {
+        page_entries: 0,
+        regions_2m,
+        regions_1g,
+        count_2m,
+        count_1g,
+        stale_pages,
+        stale_2m,
+        stale_1g,
+        stale_end,
+        zero_cursor: stale_end,
+        active_2m,
+        active_1g,
+        bytes,
+    }
+}
+
+/// Every column of the page metadata starts at an address aligned for its element, in a carve that
+/// starts on a page.
+pub proof fn lemma_metadata_aligned(carve: int, l: MetadataLayout, pages: usize)
+    requires
+        0 <= carve,
+        carve % PAGE_SZ as int == 0,
+        layout_sums(l, pages),
+    ensures
+        (carve + l.page_entries) % align_of::<PageEntry>() as int == 0,
+        (carve + l.regions_2m) % align_of::<RegionEntry>() as int == 0,
+        (carve + l.regions_1g) % align_of::<RegionEntry>() as int == 0,
+        (carve + l.count_2m) % align_of::<usize>() as int == 0,
+        (carve + l.count_1g) % align_of::<usize>() as int == 0,
+        (carve + l.stale_pages) % align_of::<usize>() as int == 0,
+        (carve + l.stale_2m) % align_of::<usize>() as int == 0,
+        (carve + l.stale_1g) % align_of::<usize>() as int == 0,
+        (carve + l.zero_cursor) % align_of::<usize>() as int == 0,
+{
+    crate::layouts::lemma_page_metadata_layouts();
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(carve, PAGE_SZ as int);
+    let m = carve / PAGE_SZ as int;
+    let p = pages as int;
+    let two = (pages / PAGES_PER_2M) as int;
+    let one = (pages / PAGES_PER_1G) as int;
+    assert(PAGE_SZ as int == ENTRIES as int * 8) by (compute_only);
+    let c = m * ENTRIES as int;
+    assert(carve == c * 8) by (nonlinear_arith)
+        requires
+            carve == m * PAGE_SZ as int,
+            PAGE_SZ as int == ENTRIES as int * 8,
+            c == m * ENTRIES as int;
+    // Each offset is a whole number of words: the sums, with the element sizes, in words.
+    lemma_whole_words(carve + l.page_entries, c);
+    lemma_whole_words(carve + l.regions_2m, c + 4 * p);
+    lemma_whole_words(carve + l.regions_1g, c + 4 * p + 2 * two);
+    lemma_whole_words(carve + l.count_2m, c + 4 * p + 2 * two + 2 * one);
+    lemma_whole_words(carve + l.count_1g, c + 4 * p + 3 * two + 2 * one);
+    lemma_whole_words(carve + l.stale_pages, c + 4 * p + 3 * two + 3 * one);
+    lemma_whole_words(carve + l.stale_2m, c + 5 * p + 3 * two + 3 * one);
+    lemma_whole_words(carve + l.stale_1g, c + 5 * p + 4 * two + 3 * one);
+    lemma_whole_words(carve + l.zero_cursor, c + 5 * p + 4 * two + 4 * one);
+}
+
+/// An address that is a whole number of words is aligned for a word, and for any element whose
+/// alignment is a word.
+proof fn lemma_whole_words(x: int, q: int)
+    requires
+        0 <= q,
+        x == q * 8,
+    ensures
+        x % 8 == 0,
+        x % align_of::<usize>() as int == 0,
+{
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q, 8);
+    lemma_word_aligned(x);
 }
 
 /// A page below n regions of p pages each is in one of them.
@@ -247,12 +364,16 @@ pub enum Large {
     One,
 }
 
+/// The page entries, the region entries and the counts are columns of the page metadata boot carves,
+/// placed by metadata_layout. How many pages the table tracks is the length of its page entries, the
+/// one length it holds; the region counts are divisions of it.
+/// design/page-metadata-sized-from-the-memory-map/.
 pub struct BlockTable {
-    pub pages: Array<PageEntry, NUM_PAGES>,
-    pub regions_2m: Array<RegionEntry, NUM_2M>,
-    pub regions_1g: Array<RegionEntry, NUM_1G>,
-    pub count_2m: Array<usize, NUM_2M>,
-    pub count_1g: Array<usize, NUM_1G>,
+    pub pages: Column<PageEntry>,
+    pub regions_2m: Column<RegionEntry>,
+    pub regions_1g: Column<RegionEntry>,
+    pub count_2m: Column<usize>,
+    pub count_1g: Column<usize>,
     /// The permission of every free page, as bytes.
     pub free_perms: Tracked<Map<usize, PagePerm4k>>,
     /// What each region's count counts: its non-free pages, and for a 1G region, the base page of
@@ -262,26 +383,46 @@ pub struct BlockTable {
 }
 
 impl BlockTable {
-    /// How many pages the table tracks. Every bound on a page index or a page's address is stated
-    /// through this and the predicates below, so that where the count comes from is decided here.
+    /// How many pages the table tracks: the length of its page entries. Every bound on a page index
+    /// or a page's address is stated through this and the predicates below.
     pub open spec fn spec_page_count(&self) -> usize {
-        NUM_PAGES
+        self.pages@.len() as usize
     }
 
     #[verifier::when_used_as_spec(spec_page_count)]
     pub fn page_count(&self) -> (n: usize)
+        requires
+            self.pages.wf(),
         ensures
             n == self.page_count(),
+            n == self.pages@.len(),
     {
-        NUM_PAGES
+        self.pages.len()
     }
 
     /// The tracked pages are whole 1G regions from address 0 and end within the identity-mapped
     /// span. No proof bounds the count by anything smaller. design/page-metadata-sized-from-the-memory-map/.
     pub open spec fn span_wf(&self) -> bool {
-        &&& 0 < self.spec_page_count()
-        &&& self.spec_page_count() % PAGES_PER_1G == 0
-        &&& self.spec_page_count() * PAGE_SZ <= IDENTITY_SPAN
+        &&& 0 < self.pages@.len()
+        &&& self.pages@.len() % PAGES_PER_1G as nat == 0
+        &&& self.pages@.len() * PAGE_SZ <= IDENTITY_SPAN
+    }
+
+    /// The page count is the length of the page entries: a length within the span fits a usize.
+    pub proof fn lemma_page_count(&self)
+        requires
+            self.span_wf(),
+        ensures
+            self.spec_page_count() == self.pages@.len(),
+            0 < self.spec_page_count(),
+            self.spec_page_count() % PAGES_PER_1G == 0,
+            self.spec_page_count() * PAGE_SZ <= IDENTITY_SPAN,
+    {
+        let n = self.pages@.len() as int;
+        assert(n <= n * PAGE_SZ) by (nonlinear_arith)
+            requires
+                0 <= n,
+                PAGE_SZ >= 1;
     }
 
     /// A tracked page lies within the identity-mapped span, so its address and the end of its page
@@ -318,6 +459,31 @@ impl BlockTable {
                 a % PAGE_SZ < PAGE_SZ;
     }
 
+    /// An address in a tracked page is below 2^48, so adding a block's bytes or a node's index to it
+    /// does not overflow.
+    pub proof fn lemma_addr_fits(&self, a: usize)
+        requires
+            self.span_wf(),
+            self.tracks_addr(a),
+        ensures
+            a < crate::capability::list::NODE_SPACE,
+    {
+        self.lemma_addr_in_span(a);
+        assert(IDENTITY_SPAN <= crate::capability::list::NODE_SPACE) by (compute_only);
+    }
+
+    /// The tracked pages' bytes end within 2^48, so a page index plus a block's pages does not overflow.
+    pub proof fn lemma_count_fits(&self)
+        requires
+            self.span_wf(),
+        ensures
+            self.pages@.len() * PAGE_SZ <= crate::capability::list::NODE_SPACE,
+            self.spec_page_count() == self.pages@.len(),
+    {
+        assert(IDENTITY_SPAN <= crate::capability::list::NODE_SPACE) by (compute_only);
+        self.lemma_page_count();
+    }
+
     /// The 2M and the 1G regions each tile the tracked pages: the page count is a whole number of
     /// either.
     pub proof fn lemma_regions_tile(&self)
@@ -338,6 +504,8 @@ impl BlockTable {
 
     #[verifier::when_used_as_spec(spec_num_2m)]
     pub fn num_2m(&self) -> (n: usize)
+        requires
+            self.pages.wf(),
         ensures
             n == self.num_2m(),
     {
@@ -351,6 +519,8 @@ impl BlockTable {
 
     #[verifier::when_used_as_spec(spec_num_1g)]
     pub fn num_1g(&self) -> (n: usize)
+        requires
+            self.pages.wf(),
         ensures
             n == self.num_1g(),
     {
@@ -367,6 +537,8 @@ impl BlockTable {
 
     #[verifier::when_used_as_spec(spec_level_regions)]
     pub fn level_regions(&self, level: Large) -> (n: usize)
+        requires
+            self.pages.wf(),
         ensures
             n == self.level_regions(level),
     {
@@ -403,38 +575,43 @@ impl BlockTable {
 
     /// Page i is one the table tracks.
     pub open spec fn tracks(&self, i: int) -> bool {
-        0 <= i < NUM_PAGES
+        0 <= i < self.pages@.len()
     }
 
     /// The n pages from page s end within the tracked pages.
     pub open spec fn tracks_run(&self, s: int, n: int) -> bool {
-        s + n <= NUM_PAGES
+        s + n <= self.pages@.len()
     }
 
     /// Address a is in a page the table tracks.
     pub open spec fn tracks_addr(&self, a: usize) -> bool {
-        a / PAGE_SZ < NUM_PAGES
+        a / PAGE_SZ < self.pages@.len()
     }
 
     /// The n pages from the one holding address a end within the tracked pages.
     pub open spec fn tracks_addr_run(&self, a: usize, n: int) -> bool {
-        a / PAGE_SZ + n <= NUM_PAGES
+        a / PAGE_SZ + n <= self.pages@.len()
     }
 
     /// Whether page i is one the table tracks.
     pub fn page_tracked(&self, i: usize) -> (r: bool)
+        requires
+            self.pages.wf(),
         ensures
             r == self.tracks(i as int),
     {
-        i < NUM_PAGES
+        i < self.pages.len()
     }
 
     /// Whether the n pages from page s end within the tracked pages.
     pub fn run_tracked(&self, s: usize, n: usize) -> (r: bool)
+        requires
+            self.pages.wf(),
         ensures
             r == self.tracks_run(s as int, n as int),
     {
-        s <= NUM_PAGES && n <= NUM_PAGES - s
+        let count = self.pages.len();
+        s <= count && n <= count - s
     }
 
     /// Page i is inside a typed large block.
@@ -466,11 +643,16 @@ impl BlockTable {
 
     /// Each count is the size of its set, and the sets are exactly what they count.
     pub open spec fn counts_wf(&self) -> bool {
+        &&& self.span_wf()
         &&& self.pages.wf()
         &&& self.regions_2m.wf()
         &&& self.regions_1g.wf()
         &&& self.count_2m.wf()
         &&& self.count_1g.wf()
+        &&& self.regions_2m@.len() == self.num_2m()
+        &&& self.regions_1g@.len() == self.num_1g()
+        &&& self.count_2m@.len() == self.num_2m()
+        &&& self.count_1g@.len() == self.num_1g()
         &&& self.in_2m@.len() == self.num_2m()
         &&& self.in_1g@.len() == self.num_1g()
         &&& forall|r: int| 0 <= r < self.num_2m() ==> {
@@ -552,6 +734,7 @@ impl BlockTable {
 
     pub open spec fn wf(&self) -> bool {
         &&& self.span_wf()
+        &&& self.pages.wf()
         &&& self.counts_wf()
         &&& self.large_wf()
         &&& self.free_wf()
@@ -620,8 +803,7 @@ impl BlockTable {
     pub proof fn lemma_blocks_wf_same(pre: Self, post: Self)
         requires
             pre.blocks_wf(),
-            pre.pages@.len() == pre.page_count(),
-            post.pages@.len() == post.page_count(),
+            post.pages@.len() == pre.pages@.len(),
             forall|i: int| pre.tracks(i) ==> Self::same_block(#[trigger] pre.pages@[i], post.pages@[i]),
         ensures
             post.blocks_wf(),
@@ -803,6 +985,7 @@ impl BlockTable {
     /// post is this table changed in the pages of the small run of this order at page alone: every
     /// region's entry, at either level, and every page outside the run is as it was.
     pub open spec fn kept_but_run(&self, post: BlockTable, page: int, order: usize) -> bool {
+        &&& post.pages@.len() == self.pages@.len()
         &&& post.regions_2m@ == self.regions_2m@
         &&& post.regions_1g@ == self.regions_1g@
         &&& forall|i: int| self.tracks(i) && !(page <= i < page + order_pages(order)) ==> #[trigger] post.pages@[i] == self.pages@[i]
@@ -860,112 +1043,104 @@ impl BlockTable {
         }
     }
 
-    /// Set every entry Reserved, in place, since a table this size cannot move by value.
-    pub fn init(&mut self, Tracked(steps): Tracked<&mut Steps>)
+    /// A table tracking `pages` pages, every page Reserved and every region untyped and counting all
+    /// its pages, with no free page, its columns in the carve at `carve` as metadata_layout places
+    /// them. `raw` grants the carve; each column's permission is split from it and each entry written,
+    /// so what the carve held before is not what this relies on. What `raw` grants past the block
+    /// table's columns comes back, for the columns that follow them.
+    pub fn new(carve: usize, pages: usize, Tracked(raw): Tracked<PointsToRaw>, Tracked(exposed): Tracked<IsExposed>)
+        -> (ret: (Self, Tracked<PointsToRaw>))
         requires
-            old(self).pages.wf(),
-            old(self).count_2m.wf(),
-            old(self).count_1g.wf(),
-            old(self).regions_2m.wf(),
-            old(self).regions_1g.wf(),
+            carve % PAGE_SZ == 0,
+            0 < pages,
+            pages % PAGES_PER_1G == 0,
+            pages * PAGE_SZ <= IDENTITY_SPAN,
+            carve + spec_metadata_layout(pages).bytes <= usize::MAX,
+            raw.is_range(carve as int, spec_metadata_layout(pages).bytes as int),
+            raw.provenance() == exposed@,
         ensures
-            final(steps).count <= old(steps).count + old(self).page_count() + old(self).num_2m() + old(self).num_1g(),
-            final(self).wf(),
-            forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i].kind is Reserved,
-            forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i].object is None,
-            forall|r: int| 0 <= r < final(self).num_2m() ==> !(#[trigger] final(self).regions_2m@[r]).typed,
-            forall|r: int| 0 <= r < final(self).num_1g() ==> !(#[trigger] final(self).regions_1g@[r]).typed,
+            ret.0.wf(),
+            ret.0.page_count() == pages,
+            ret.0.pages@.len() == pages,
+            forall|i: int| ret.0.tracks(i) ==> #[trigger] ret.0.pages@[i].kind is Reserved,
+            forall|i: int| ret.0.tracks(i) ==> #[trigger] ret.0.pages@[i].object is None,
+            forall|r: int| 0 <= r < ret.0.num_2m() ==> !(#[trigger] ret.0.regions_2m@[r]).typed,
+            forall|r: int| 0 <= r < ret.0.num_1g() ==> !(#[trigger] ret.0.regions_1g@[r]).typed,
+            ret.1@.is_range(
+                carve + spec_metadata_layout(pages).stale_pages,
+                spec_metadata_layout(pages).bytes - spec_metadata_layout(pages).stale_pages,
+            ),
+            ret.1@.provenance() == exposed@,
     {
-        let n = self.page_count();
-        let ghost steps0 = steps.count;
-        let mut i = 0;
-        while i != n
-            invariant
-                n == self.page_count(),
-                i <= n,
-                steps.count == steps0 + i,
-                self.pages.wf(),
-                forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j].kind is Reserved,
-                forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j].object is None,
-            decreases n - i,
-        {
-            self.pages.set(i, PageEntry {
-                kind: PageKind::Reserved,
-                object: ObjectType::None,
-                base: 0,
-                order: 0,
-                dead: false,
-                torn_down: false,
-                refs: 0,
-            });
-            i = i + 1;
-            proof {
-                steps.step();
-            }
+        let l = metadata_layout(pages);
+        let ghost c = carve as int;
+        let n2 = pages / PAGES_PER_2M;
+        let n1 = pages / PAGES_PER_1G;
+        proof {
+            crate::layouts::lemma_page_metadata_layouts();
+            lemma_metadata_aligned(c, l, pages);
         }
-        let n2 = self.num_2m();
-        let mut r = 0;
-        while r != n2
-            invariant
-                n == self.page_count(),
-                n2 == self.num_2m(),
-                0 <= r <= n2,
-                steps.count == steps0 + n + r,
-                self.count_2m.wf(),
-                self.regions_2m.wf(),
-                forall|j: int| 0 <= j < r ==> #[trigger] self.count_2m@[j] == PAGES_PER_2M,
-                forall|j: int| 0 <= j < r ==> !(#[trigger] self.regions_2m@[j]).typed,
-            decreases n2 - r,
-        {
-            self.count_2m.set(r, PAGES_PER_2M);
-            self.regions_2m.set(r, RegionEntry { typed: false, dead: false, torn_down: false, refs: 0 });
-            r = r + 1;
-            proof {
-                steps.step();
-            }
+        let tracked (first, rest) = raw.split(Set::range(c + l.page_entries, c + l.regions_2m));
+        proof {
+            assert(rest.dom() =~= Set::range(c + l.regions_2m, c + l.bytes));
         }
-        let n1 = self.num_1g();
-        let mut r = 0;
-        while r != n1
-            invariant
-                n == self.page_count(),
-                n2 == self.num_2m(),
-                n1 == self.num_1g(),
-                0 <= r <= n1,
-                steps.count == steps0 + n + n2 + r,
-                self.count_1g.wf(),
-                self.regions_1g.wf(),
-                forall|j: int| 0 <= j < r ==> #[trigger] self.count_1g@[j] == PAGES_PER_1G,
-                forall|j: int| 0 <= j < r ==> !(#[trigger] self.regions_1g@[j]).typed,
-            decreases n1 - r,
-        {
-            self.count_1g.set(r, PAGES_PER_1G);
-            self.regions_1g.set(r, RegionEntry { typed: false, dead: false, torn_down: false, refs: 0 });
-            r = r + 1;
-            proof {
-                steps.step();
-            }
+        let tracked (second, rest) = rest.split(Set::range(c + l.regions_2m, c + l.regions_1g));
+        proof {
+            assert(rest.dom() =~= Set::range(c + l.regions_1g, c + l.bytes));
         }
-        self.in_2m = Ghost(Seq::new(n2 as nat, |r: int| set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M)));
-        self.in_1g = Ghost(Seq::new(n1 as nat, |r: int| set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G)));
-        self.free_perms = Tracked(Map::tracked_empty());
+        let tracked (third, rest) = rest.split(Set::range(c + l.regions_1g, c + l.count_2m));
+        proof {
+            assert(rest.dom() =~= Set::range(c + l.count_2m, c + l.bytes));
+        }
+        let tracked (fourth, rest) = rest.split(Set::range(c + l.count_2m, c + l.count_1g));
+        proof {
+            assert(rest.dom() =~= Set::range(c + l.count_1g, c + l.bytes));
+        }
+        let tracked (fifth, past) = rest.split(Set::range(c + l.count_1g, c + l.stale_pages));
+        proof {
+            assert(fifth.dom() =~= Set::range(c + l.count_1g, c + l.stale_pages));
+            assert(past.dom() =~= Set::range(c + l.stale_pages, c + l.bytes));
+        }
+        let reserved = PageEntry {
+            kind: PageKind::Reserved,
+            object: ObjectType::None,
+            base: 0,
+            order: 0,
+            dead: false,
+            torn_down: false,
+            refs: 0,
+        };
+        let untyped = RegionEntry { typed: false, dead: false, torn_down: false, refs: 0 };
+        let mut table = BlockTable {
+            pages: Column::new(carve + l.page_entries, pages, reserved, Tracked(first), Tracked(exposed)),
+            regions_2m: Column::new(carve + l.regions_2m, n2, untyped, Tracked(second), Tracked(exposed)),
+            regions_1g: Column::new(carve + l.regions_1g, n1, untyped, Tracked(third), Tracked(exposed)),
+            count_2m: Column::new(carve + l.count_2m, n2, PAGES_PER_2M, Tracked(fourth), Tracked(exposed)),
+            count_1g: Column::new(carve + l.count_1g, n1, PAGES_PER_1G, Tracked(fifth), Tracked(exposed)),
+            free_perms: Tracked(Map::tracked_empty()),
+            in_2m: Ghost(Seq::empty()),
+            in_1g: Ghost(Seq::empty()),
+        };
+        table.in_2m = Ghost(Seq::new(n2 as nat, |r: int| set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M)));
+        table.in_1g = Ghost(Seq::new(n1 as nat, |r: int| set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G)));
         proof {
             assert forall|r: int| 0 <= r < n2 implies {
-                &&& (#[trigger] self.in_2m@[r]).len() == self.count_2m@[r]
-                &&& self.in_2m@[r].subset_of(set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M))
+                &&& (#[trigger] table.in_2m@[r]).len() == table.count_2m@[r]
+                &&& table.in_2m@[r].subset_of(set_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M))
             } by {
                 lemma_int_range(r * PAGES_PER_2M, (r + 1) * PAGES_PER_2M);
             }
             assert forall|r: int| 0 <= r < n1 implies {
-                &&& (#[trigger] self.in_1g@[r]).len() == self.count_1g@[r]
-                &&& self.in_1g@[r].subset_of(set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G))
+                &&& (#[trigger] table.in_1g@[r]).len() == table.count_1g@[r]
+                &&& table.in_1g@[r].subset_of(set_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G))
             } by {
                 lemma_int_range(r * PAGES_PER_1G, (r + 1) * PAGES_PER_1G);
             }
-            assert(self.bases_wf()) by { reveal(BlockTable::bases_wf); }
-            assert(self.members_wf()) by { reveal(BlockTable::members_wf); }
-            assert(self.member_bases_wf()) by { reveal(BlockTable::member_bases_wf); }
+            assert(table.bases_wf()) by { reveal(BlockTable::bases_wf); }
+            assert(table.members_wf()) by { reveal(BlockTable::members_wf); }
+            assert(table.member_bases_wf()) by { reveal(BlockTable::member_bases_wf); }
         }
+        (table, Tracked(past))
     }
 
     /// Make a non-free page free, taking back its permission.
@@ -979,6 +1154,7 @@ impl BlockTable {
             perm.addr() == i * PAGE_SZ,
             perm.is_uninit(),
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).counts_wf(),
             final(self).large_wf(),
             final(self).free_wf(),
@@ -1061,6 +1237,7 @@ impl BlockTable {
             !old(self).covered(i as int),
             !(entry.kind is Free),
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).counts_wf(),
             final(self).large_wf(),
             final(self).free_wf(),
@@ -1141,6 +1318,7 @@ impl BlockTable {
                 Large::One => r < old(self).num_1g() && entry.typed == old(self).regions_1g@[r as int].typed,
             },
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             final(self).free_perms == old(self).free_perms,
@@ -1224,6 +1402,7 @@ impl BlockTable {
                 Large::One => r < old(self).num_1g(),
             },
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             match level {
@@ -1248,6 +1427,7 @@ impl BlockTable {
                 Large::One => r < old(self).num_1g() && old(self).regions_1g@[r as int].dead,
             },
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             match level {
@@ -1272,6 +1452,7 @@ impl BlockTable {
                 Large::One => r < old(self).num_1g(),
             },
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             !added ==> *final(self) == *old(self),
             final(self).pages@ == old(self).pages@,
@@ -1306,6 +1487,7 @@ impl BlockTable {
                 Large::One => r < old(self).num_1g() && old(self).regions_1g@[r as int].refs > 0,
             },
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             match level {
@@ -1329,6 +1511,7 @@ impl BlockTable {
             old(self).wf(),
             r < old(self).num_2m(),
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             ret is None ==> *final(self) == *old(self),
@@ -1444,6 +1627,7 @@ impl BlockTable {
             r < old(self).num_2m(),
             forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M ==> #[trigger] old(self).pages@[i].kind is Reserved,
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(steps).count <= old(steps).count + PAGES_PER_2M,
             final(self).wf(),
             final(self).free_perms == old(self).free_perms,
@@ -1464,6 +1648,7 @@ impl BlockTable {
             assert(pre.pages@[first as int].kind is Reserved);
             pre.lemma_not_free_uncovered(first as int);
             pre.lemma_region_counts();
+            pre.lemma_page_count();
             assert(first + PAGES_PER_2M <= self.page_count()) by (nonlinear_arith)
                 requires
                     first == r * PAGES_PER_2M,
@@ -1480,7 +1665,9 @@ impl BlockTable {
                 r < pre.num_2m(),
                 first == r * PAGES_PER_2M,
                 self.tracks_run(first as int, PAGES_PER_2M as int),
+                first + PAGES_PER_2M <= usize::MAX,
                 self.pages.wf(),
+                self.pages@.len() == pre.pages@.len(),
                 forall|i: int| self.tracks(i) ==> #[trigger] self.pages@[i]
                     == if first <= i < first + k { free_entry() } else { pre.pages@[i] },
                 self.regions_2m == pre.regions_2m,
@@ -1588,6 +1775,7 @@ impl BlockTable {
             old(self).wf(),
             r < old(self).num_1g(),
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             ret is None ==> *final(self) == *old(self),
@@ -1693,6 +1881,7 @@ impl BlockTable {
             forall|i: usize| Self::large_pages(Large::Two, r as int).contains(i) ==> #[trigger] holds(perms, i),
             perms.dom() == Self::large_pages(Large::Two, r as int),
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             !final(self).regions_2m@[r as int].typed,
@@ -1797,6 +1986,7 @@ impl BlockTable {
             forall|i: usize| Self::large_pages(Large::One, r as int).contains(i) ==> #[trigger] holds(perms, i),
             perms.dom() == Self::large_pages(Large::One, r as int),
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             !final(self).regions_1g@[r as int].typed,
@@ -1873,6 +2063,7 @@ impl BlockTable {
             perm.addr() == i * PAGE_SZ,
             perm.is_uninit(),
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(i as int, free_entry()),
             final(self).regions_2m@ == old(self).regions_2m@,
@@ -1897,6 +2088,7 @@ impl BlockTable {
             base % (order_pages(order) as usize) == 0,
             old(self).tracks_run(base as int, order_pages(order)),
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(steps).count <= old(steps).count + 2 * SMALL_PAGES_MAX,
             final(self).wf(),
             ret is None ==> *final(self) == *old(self),
@@ -1956,6 +2148,7 @@ impl BlockTable {
                 self.counts_wf(),
                 self.large_wf(),
                 self.free_wf(),
+                self.pages@.len() == pre.pages@.len(),
                 self.regions_2m@ == pre.regions_2m@,
                 self.regions_1g@ == pre.regions_1g@,
                 !pre.covered(base as int),
@@ -2038,8 +2231,7 @@ impl BlockTable {
     proof fn lemma_typed_blocks_wf(&self, pre: Self, base: int, order: usize)
         requires
             pre.blocks_wf(),
-            pre.pages@.len() == pre.page_count(),
-            self.pages@.len() == self.page_count(),
+            self.pages@.len() == pre.pages@.len(),
             small_order(order),
             base % order_pages(order) == 0,
             0 <= base,
@@ -2129,6 +2321,7 @@ impl BlockTable {
             entry.kind is Base,
             entry.order == old(self).pages@[base as int].order,
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(base as int, entry),
             final(self).regions_2m@ == old(self).regions_2m@,
@@ -2165,6 +2358,7 @@ impl BlockTable {
             old(self).tracks(base as int),
             old(self).pages@[base as int].kind is Base,
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(base as int,
                 PageEntry { dead: true, ..old(self).pages@[base as int] }),
@@ -2183,6 +2377,7 @@ impl BlockTable {
             old(self).pages@[base as int].kind is Base,
             old(self).pages@[base as int].dead,
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(base as int,
                 PageEntry { torn_down: true, ..old(self).pages@[base as int] }),
@@ -2200,6 +2395,7 @@ impl BlockTable {
             old(self).tracks(base as int),
             old(self).pages@[base as int].kind is Base,
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             added ==> final(self).pages@ == old(self).pages@.update(base as int,
                 PageEntry { refs: (old(self).pages@[base as int].refs + 1) as usize, ..old(self).pages@[base as int] }),
@@ -2224,6 +2420,7 @@ impl BlockTable {
             old(self).pages@[base as int].kind is Base,
             old(self).pages@[base as int].refs > 0,
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(base as int,
                 PageEntry { refs: (old(self).pages@[base as int].refs - 1) as usize, ..old(self).pages@[base as int] }),
@@ -2250,6 +2447,7 @@ impl BlockTable {
                 &&& perms[(base + k) as usize].is_uninit()
             },
         ensures
+            final(self).pages@.len() == old(self).pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             final(self).regions_2m@ == old(self).regions_2m@,
@@ -2275,6 +2473,7 @@ impl BlockTable {
                 self.large_wf(),
                 self.free_wf(),
                 pre.wf(),
+                self.pages@.len() == pre.pages@.len(),
                 size as int == order_pages(order),
                 order == pre.pages@[base as int].order,
                 pre.pages@[base as int].kind is Base,
@@ -2330,8 +2529,7 @@ impl BlockTable {
     proof fn lemma_freed_blocks_wf(&self, pre: Self, base: int)
         requires
             pre.blocks_wf(),
-            pre.pages@.len() == pre.page_count(),
-            self.pages@.len() == self.page_count(),
+            self.pages@.len() == pre.pages@.len(),
             self.tracks(base),
             pre.pages@[base].kind is Base,
             forall|i: int| self.tracks(i) ==> #[trigger] self.pages@[i] == (

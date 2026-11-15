@@ -321,6 +321,7 @@ impl CapKernel {
     /// the epoch, so the invariant holds and every core depends on what it did before.
     proof fn lemma_process_retired(pre: Self, post: Self, s: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.spaces.roots@.contains_key(s),
             pre.flush_epoch < usize::MAX,
@@ -401,6 +402,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + RETIRE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -476,6 +478,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + NUM_CPUS + CUT_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -954,6 +957,7 @@ impl CapKernel {
     /// The kernel after the spent process at `base` frees.
     proof fn lemma_process_freed(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::process_freed_step(pre, post, base),
         ensures
             post.wf(),
@@ -1058,6 +1062,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).process_is_spent(base),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -1186,6 +1191,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + NUM_CPUS + ROOT_ENTRIES + (ENTRIES - KERNEL_MEM_END_L4INDEX)
                 + (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),

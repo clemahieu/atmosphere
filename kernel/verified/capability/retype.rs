@@ -77,6 +77,7 @@ pub enum RetypeStep {
 /// The region a 2M or 1G block at this aligned base is, if the block table has one.
 pub fn large_region(blocks: &BlockTable, base: usize, order: u8) -> (ret: Option<(Large, usize)>)
     requires
+        blocks.pages.wf(),
         order <= MAX_ORDER,
         base as int % block_bytes(order) == 0,
     ensures
@@ -147,6 +148,7 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
         old(blocks).wf(),
         r < old(blocks).level_regions(level),
     ensures
+        final(blocks).pages@.len() == old(blocks).pages@.len(),
         final(blocks).wf(),
         ret is None ==> *final(blocks) == *old(blocks),
         final(blocks).pages@ == old(blocks).pages@,
@@ -470,6 +472,7 @@ impl CapKernel {
             base as int + block_bytes(order) <= NODE_SPACE as int,
             old(self).frame_block_ready(base, order),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
@@ -601,6 +604,7 @@ impl CapKernel {
     /// they were.
     pub proof fn lemma_order3_keeps(pre: Self, post: Self, mid: Tree, root: usize, to: usize, page: int)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.tables.has_slot(&pre.list, root, to),
             !pre.list.nodes@[pre.tables.node_of(root, to) as int].live,
@@ -838,6 +842,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + RETYPE_FRAME_STEPS,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -965,6 +970,7 @@ impl CapKernel {
             old(self).wf(),
             r < old(self).blocks.level_regions(level),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + ZERO_LARGE_STEPS,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -1317,6 +1323,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + RETYPE_LEAF_STEPS,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -1406,6 +1413,7 @@ impl CapKernel {
             old(self).list.nodes@[parent as int].kind is Capability,
             old(self).list.nodes@[parent as int].depth < MAX_DEPTH,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + PLACE_LEAF_STEPS,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1648,6 +1656,7 @@ impl CapKernel {
     /// is the block's base.
     proof fn lemma_leaf_list_pages(pre: Self, post: Self, base: usize, page: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             base / PAGE_SZ == page,
             pre.blocks.tracks_run(page as int, 2),
@@ -1671,6 +1680,7 @@ impl CapKernel {
     /// every table page's node is as it was.
     proof fn lemma_leaf_table_pages(pre: Self, post: Self, base: usize, page: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::leaf_step(pre, post, base),
             post.blocks.wf(),
             post.table_pages == pre.table_pages,
@@ -1797,6 +1807,7 @@ impl CapKernel {
     /// held no frame.
     proof fn lemma_leaf_holders(pre: Self, post: Self, mid: Tree, leaf: usize, page: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::leaf_step(pre, post, leaf),
             post.list.seq@[0] == pre.list.seq@[0],
             post.list.nodes@[leaf as int].kind is Hidden,
@@ -1849,6 +1860,7 @@ impl CapKernel {
     /// block typed held no frame, and no table changed.
     proof fn lemma_leaf_mappings(pre: Self, post: Self, mid: Tree, leaf: usize, page: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::leaf_step(pre, post, leaf),
             post.list.nodes@[leaf as int].kind is Hidden,
             forall|i: int| 0 <= i < NODE_SPACE ==> #[trigger] mid.nodes@[i].live == pre.list.nodes@[i].live,
@@ -1897,6 +1909,7 @@ impl CapKernel {
     /// holds the one reference its typing took. Every other leaf's block and node are as they were.
     proof fn lemma_leaf_blocks_leaf_added(pre: Self, post: Self, base: usize, page: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::leaf_step(pre, post, base),
             post.list.nodes@[base as int].live,
             post.list.nodes@[base as int].kind is Hidden,
@@ -2172,6 +2185,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + RETYPE_LARGE_FRAME_STEPS,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),

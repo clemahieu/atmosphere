@@ -234,6 +234,7 @@ impl CapKernel {
                 || holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s)
                 || old(self).cores@[c as int].next_pcid != PCID_MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + LOAD_SPACE_STEPS,
             old(self).cores@[c as int].next_pcid != PCID_MAX ==> {
                 &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation
@@ -461,6 +462,7 @@ impl CapKernel {
                 None => true,
             },
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).cores@[c as int].space == space,
             final(self).spaces.registers@[c as int].root() == root,
@@ -598,6 +600,7 @@ impl CapKernel {
             old(self).cores@[c as int].generation < ID_GENERATION_MAX,
             old(self).cores@[c as int].space is None || old(self).cores@[c as int].next_pcid != PCID_MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + FRESH_PCID_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             Self::only_core_changed(*old(self), *final(self), c as int),
@@ -674,6 +677,7 @@ impl CapKernel {
     /// The invariant after a step that changed only core c's ids, given that they still hold.
     proof fn lemma_core_ids(pre: Self, post: Self, c: int)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             0 <= c < NUM_CPUS,
             post.cores.wf(),
@@ -1207,6 +1211,7 @@ pub proof fn lemma_mappings_kept(
     mappings: IMap<usize, MappingRecord>,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         mappings_wf(list_a, tables_a, tree_a, blocks_a, holders_a, mappings),
         same_mapping_nodes(list_a, list_b),
         same_frame_entries(tree_a, tree_b),
@@ -1327,6 +1332,7 @@ impl CapKernel {
     /// mapping node's parent, frame block and holders.
     pub proof fn lemma_mappings_same_tree(pre: Self, post: Self)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             Self::same_tree(pre, post),
             post.mappings == pre.mappings,
@@ -1348,6 +1354,7 @@ impl CapKernel {
     /// present entry at level 1.
     pub proof fn lemma_mappings_grown(pre: Self, post: Self, page: usize, order: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             post.mappings == pre.mappings,
             post.holders == pre.holders,
@@ -1693,11 +1700,13 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is Mapping,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + MAPPING_NOTE_STEPS,
             Self::mapping_unlinked(*old(self), *final(self), n),
             Self::mapping_stale_noted(*old(self), *final(self), n),
             Self::mapping_word(*old(self), n, ret),
             final(self).stale_epoch.wf(),
+            final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
             entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             mapped_wf(final(self).mapped@, final(self).mappings@),
@@ -1862,8 +1871,10 @@ impl CapKernel {
             old(self).mappings@[n].large == large,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + MAPPING_NOTE_STEPS,
             final(self).stale_epoch.wf(),
+            final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
             entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             Self::mapping_stale_noted(*old(self), *final(self), n),

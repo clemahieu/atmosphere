@@ -241,6 +241,7 @@ pub proof fn lemma_processes_same_caps(
 /// And nothing of the block table but its page entries.
 pub proof fn lemma_processes_same_pages(list: &Tree, tables: &Tables, processes: &Processes, a: &BlockTable, b: &BlockTable)
     requires
+        b.pages@.len() == a.pages@.len(),
         processes_wf(list, tables, processes, a),
         b.pages@ == a.pages@,
     ensures
@@ -269,6 +270,7 @@ pub proof fn lemma_processes_refs_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         processes_wf(list_a, tables_a, processes, a),
         blocks_refs_changed(a, b, br, refs, dead),
         match br {
@@ -307,6 +309,7 @@ pub proof fn lemma_processes_small_typed(
     size: int,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         processes_wf(list_a, tables_a, processes, a),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
         forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
@@ -365,6 +368,7 @@ pub proof fn lemma_processes_small_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         processes_wf(list_a, tables_a, processes, a),
         a.wf(),
         a.tracks(base as int),
@@ -406,6 +410,7 @@ pub proof fn lemma_processes_process_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         processes_wf(list, tables_a, pa, a),
         a.wf(),
         pa.records@.contains_key(base),
@@ -494,6 +499,7 @@ pub proof fn lemma_processes_bound_added(
     t: usize,
 )
     requires
+        bb.pages@.len() == ba.pages@.len(),
         processes_wf(list, tables, a, ba),
         a.records@.contains_key(p),
         !a.bound@[p].contains(t),
@@ -556,6 +562,7 @@ pub proof fn lemma_processes_bound_dropped(
     t: usize,
 )
     requires
+        bb.pages@.len() == ba.pages@.len(),
         processes_wf(list, tables, a, ba),
         a.records@.contains_key(p),
         a.bound@[p].contains(t),
@@ -908,6 +915,7 @@ impl CapKernel {
     /// pages and holders.
     proof fn lemma_spaces_process_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::space_step(pre, post, child),
             base % PROCESS_BYTES == 0,
             base / PAGE_SZ == page,
@@ -1037,6 +1045,7 @@ impl CapKernel {
     /// holds its one capability, and every other lay outside the block and keeps its holders.
     proof fn lemma_processes_process_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::space_step(pre, post, child),
             base % PROCESS_BYTES == 0,
             base / PAGE_SZ == page,
@@ -1340,6 +1349,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + RETYPE_PROCESS_STEPS,
             final(self).wf(),
             Self::process_retype_answered(*old(self), *final(self), root, from, to, base, ret),

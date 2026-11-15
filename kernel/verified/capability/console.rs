@@ -83,6 +83,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + PRINT_BYTES,
             *final(self) == *old(self),
             ret == old(self).holds_console(root, i),

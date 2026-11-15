@@ -96,6 +96,7 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is Mapping ==> old(self).flush_epoch < usize::MAX,
             old(self).list.nodes@[n as int].kind is DeviceBinding ==> old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + UNLINK_ARM_STEPS,
             !(old(self).list.nodes@[n as int].kind is Mapping) && !(old(self).list.nodes@[n as int].kind is DeviceBinding)
                 ==> final(steps).count == old(steps).count,
@@ -110,6 +111,7 @@ impl CapKernel {
             final(self).iommus.present == old(self).iommus.present,
             final(self).iommus.acked == old(self).iommus.acked,
             final(self).stale_epoch.wf(),
+            final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
             entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             mapped_wf(final(self).mapped@, final(self).mappings@),
@@ -495,6 +497,8 @@ impl CapKernel {
     /// Revoke steps compose: what one did to the blocks and what the next did is what both did.
     pub proof fn lemma_blocks_revoked_compose(pre: Self, mid: Self, post: Self)
         requires
+            post.blocks.pages@.len() == mid.blocks.pages@.len(),
+            mid.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::blocks_revoked(pre, mid),
             Self::blocks_revoked(mid, post),
         ensures
@@ -649,6 +653,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + REVOKE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -684,6 +689,7 @@ impl CapKernel {
         let mut taken = 0;
         while taken != REVOKE_BUDGET && self.flush_epoch != usize::MAX
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 taken <= REVOKE_BUDGET,
                 self.flush_epoch <= pre.flush_epoch + taken,
                 Self::records_shrunk(pre, *self),
@@ -830,6 +836,7 @@ impl CapKernel {
             old(self).tables.owner@[page_of(c)].0 == root,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + REVOKE_STEP_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -1111,6 +1118,9 @@ impl CapKernel {
     /// with r's capability and its mapping gone and every other capability as it was.
     pub proof fn lemma_revoke_step_wf(pre: Self, mid: Self, post: Self, root: usize, c: usize, r: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            mid.blocks.pages@.len() == pre.blocks.pages@.len(),
+            mid.stale_epoch.pages@.len() == pre.stale_epoch.pages@.len(),
             saved_registers(&mid.threads) == saved_registers(&pre.threads),
             pre.wf(),
             mid.tables.roots@.dom() == pre.tables.roots@.dom(),
@@ -1729,6 +1739,7 @@ impl CapKernel {
     #[verifier::spinoff_prover]
     pub proof fn lemma_revoke_binding_holders(pre: Self, post: Self, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
             pre.list.nodes@[n as int].live,
@@ -2092,6 +2103,7 @@ impl CapKernel {
     /// block's count did, and the device left its space's bound set.
     pub proof fn lemma_revoke_device_binding_holders(pre: Self, post: Self, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
             pre.list.nodes@[n as int].live,
@@ -2311,6 +2323,7 @@ impl CapKernel {
     /// node, capability or holder changed.
     pub proof fn lemma_revoke_mapping_holders(pre: Self, post: Self, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
             pre.list.nodes@[n as int].live,
@@ -2352,6 +2365,7 @@ impl CapKernel {
     /// capability changed.
     proof fn lemma_revoke_mapping_blocks(pre: Self, post: Self, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
             pre.list.nodes@[n as int].live,
@@ -2408,6 +2422,7 @@ impl CapKernel {
     /// nor space's, and the one entry emptied is at level 1, below every link.
     proof fn lemma_revoke_mapping_tables(pre: Self, post: Self, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
             pre.list.nodes@[n as int].live,
@@ -2475,6 +2490,7 @@ impl CapKernel {
     /// are as they were, and the entry emptied was n's alone.
     proof fn lemma_revoke_mapping_mappings(pre: Self, post: Self, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
             pre.list.nodes@[n as int].live,

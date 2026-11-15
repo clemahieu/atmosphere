@@ -141,6 +141,7 @@ impl CapKernel {
     /// block when every page of b0 is free and no large block is typed.
     proof fn lemma_untyped_block_free(&self, process: usize, b0: (nat, nat))
         requires
+            self.blocks.span_wf(),
             self.payload_of(self.root_untyped(process)) == page_block_payload(b0),
             b0.1 <= MAX_ORDER,
             self.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int),
@@ -153,6 +154,7 @@ impl CapKernel {
         let pw = pow2(b0.1) as int;
         lemma2_to64();
         lemma_pow2_pos(b0.1);
+        self.blocks.lemma_count_fits();
         assert(block_bytes(3) == PROCESS_BYTES);
         assert forall|b: usize| #[trigger] block_within(b, 3, self.payload_of(self.root_untyped(process)))
             implies self.root_table_block(process, b) by {
@@ -313,8 +315,8 @@ impl CapKernel {
     /// the first leaf holds, or the image does not fit the second leaf or the first untyped block's
     /// tables. On success the state is the one `booted` describes, with `kernel_root`, a page the base
     /// register can name, which kernel/src checks with its alignment, as the root a core naming no
-    /// space may be pointed back at. `carve_perm` covers the page metadata's columns, the bytes
-    /// metadata_layout gives for the block table's page count from `carve`, the region kernel/src
+    /// space may be pointed back at. The block table tracks `page_count` pages, and `carve_perm` covers
+    /// the page metadata's columns, the bytes metadata_layout gives for that count from `carve`, the region kernel/src
     /// carved from memory no block or other permission holds: design/page-metadata-sized-from-the-memory-map/.
     /// See design/root-process-at-boot/.
     #[verifier::spinoff_prover]
@@ -336,14 +338,18 @@ impl CapKernel {
         Tracked(registers): Tracked<Map<int, BaseRegister>>,
         Tracked(tlb): Tracked<TlbModel>,
         Tracked(iotlb): Tracked<IotlbModel>,
+        page_count: usize,
         carve: usize,
         Tracked(carve_perm): Tracked<PointsToRaw>,
         Tracked(exposed): Tracked<IsExposed>,
     ) -> (ret: Option<(usize, usize)>)
         requires
+            0 < page_count,
+            page_count % PAGES_PER_1G == 0,
+            page_count * PAGE_SZ <= IDENTITY_SPAN,
             carve % PAGE_SZ == 0,
-            carve + spec_metadata_layout(old(self).blocks.page_count()).bytes <= usize::MAX,
-            carve_perm.is_range(carve as int, spec_metadata_layout(old(self).blocks.page_count()).bytes as int),
+            carve + spec_metadata_layout(page_count).bytes <= usize::MAX,
+            carve_perm.is_range(carve as int, spec_metadata_layout(page_count).bytes as int),
             carve_perm.provenance() == exposed@,
             boot_registers(registers, kernel_root),
             kernel_root % PAGE_SZ == 0,
@@ -360,15 +366,15 @@ impl CapKernel {
             iommus_present.wf(),
             iommu_commands.wf(iommus_present@),
             process % PROCESS_BYTES == 0,
-            old(self).blocks.tracks_addr_run(process, 8),
+            process / PAGE_SZ + 8 <= page_count,
             leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
-            old(self).blocks.tracks_addr_run(leaf, 2),
+            leaf / PAGE_SZ + 2 <= page_count,
             frames % LEAF_BYTES == 0,
             frames != NO_LEAF,
-            old(self).blocks.tracks_addr_run(frames, 2),
+            frames / PAGE_SZ + 2 <= page_count,
             t % THREAD_BYTES == 0,
-            old(self).blocks.tracks_addr_run(t, 2),
+            t / PAGE_SZ + 2 <= page_count,
             process + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= process,
             process + PROCESS_BYTES <= frames || frames + LEAF_BYTES <= process,
             process + PROCESS_BYTES <= t || t + THREAD_BYTES <= process,
@@ -379,12 +385,12 @@ impl CapKernel {
             !(leaf <= root < leaf + LEAF_BYTES),
             !(frames <= root < frames + LEAF_BYTES),
             !(t <= root < t + THREAD_BYTES),
-            runs_wf(free@, old(self).blocks.page_count()),
+            runs_wf(free@, page_count),
             forall|j: int| #[trigger] in_runs(free@, free@.len() as int, j)
                 ==> !in_root_blocks(process, leaf, frames, t, j) && j != root / PAGE_SZ,
-            image_runs_wf(image@, old(self).blocks.page_count()),
+            image_runs_wf(image@, page_count),
             forall|j: int| #[trigger] image_region(image@, region_2m(j)) ==> {
-                &&& old(self).blocks.tracks(j)
+                &&& 0 <= j < page_count
                 &&& !in_root_blocks(process, leaf, frames, t, j)
                 &&& !in_runs(free@, free@.len() as int, j)
                 &&& j != root / PAGE_SZ
@@ -408,7 +414,7 @@ impl CapKernel {
             ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame, iommus_present@, kernel_root),
     {
         hide(CapKernel::wf);
-        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb), Tracked(iotlb), carve, Tracked(carve_perm), Tracked(exposed));
+        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb), Tracked(iotlb), page_count, carve, Tracked(carve_perm), Tracked(exposed));
         let ghost s0 = *self;
         let ghost len = free@.len() as int;
         let tracked mut pages = pages;
@@ -571,6 +577,9 @@ impl CapKernel {
             }
             assert forall|r: int| 0 <= r < s3.blocks.num_1g() implies !(#[trigger] s3.blocks.regions_1g@[r]).typed by {
                 assert(s3.blocks.regions_1g@[r] == s0.blocks.regions_1g@[r]);
+            }
+            assert(s3.blocks.span_wf()) by {
+                reveal(CapKernel::wf);
             }
             s3.lemma_untyped_block_free(process, bs[0]);
             // No table page, so the root's space maps nothing.

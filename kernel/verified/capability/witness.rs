@@ -156,6 +156,7 @@ pub open spec fn witness_zero_left(k: CapKernel, page: usize) -> int {
 /// any of them holds the first.
 proof fn lemma_free_2m(k: CapKernel, process: usize, cursor: usize, jb: int, big: usize)
     requires
+        k.wf(),
         0 <= jb,
         cursor % PROCESS_BYTES == 0,
         cursor + (jb + 64) * PROCESS_BYTES <= NODE_SPACE,
@@ -217,6 +218,8 @@ proof fn lemma_free_2m(k: CapKernel, process: usize, cursor: usize, jb: int, big
     assert(k.root_table_block(process, cl));
     assert(cl / PAGE_SZ == g + 8 * 63);
     assert(k.blocks.tracks_run(g, PAGES_PER_2M as int));
+    k.lemma_page_span();
+    k.blocks.lemma_tracked_regions(g);
 }
 
 /// After a 2M retype into index i of the table at root, whose node n held nothing, the slot holds the
@@ -654,6 +657,7 @@ pub open spec fn dead_table_ready(k: CapKernel, process: usize, u: usize, first:
 /// hi, which the block lies outside.
 proof fn lemma_witness_block_kept(pre: CapKernel, post: CapKernel, b: usize, first: Payload, lo: int, hi: int)
     requires
+        post.blocks.pages@.len() == pre.blocks.pages@.len(),
         witness_block(pre, b, first),
         post.blocks.regions_2m@ == pre.blocks.regions_2m@,
         post.blocks.regions_1g@ == pre.blocks.regions_1g@,
@@ -671,6 +675,7 @@ proof fn lemma_witness_block_kept(pre: CapKernel, post: CapKernel, b: usize, fir
 /// So does a run of them, all on one side of lo up to hi.
 proof fn lemma_run_kept(pre: CapKernel, post: CapKernel, b: usize, jlo: int, jhi: int, first: Payload, lo: int, hi: int)
     requires
+        post.blocks.pages@.len() == pre.blocks.pages@.len(),
         witness_run(pre, b, jlo, jhi, first),
         b % PROCESS_BYTES == 0,
         0 <= jlo,
@@ -1322,7 +1327,7 @@ impl CapKernel {
                 assert(j == 17);
             }
             assert forall|j: int| #[trigger] image_region(image@, region_2m(j)) implies {
-                &&& self.blocks.tracks(j)
+                &&& 0 <= j < NUM_PAGES
                 &&& !in_root_blocks(process, leaf, frames, t, j)
                 &&& !in_runs(free@, free@.len() as int, j)
                 &&& j != root / PAGE_SZ
@@ -1336,6 +1341,8 @@ impl CapKernel {
                 }
             }
             assert(!image_region(image@, region_2m((kernel_root / PAGE_SZ) as int)));
+            assert(NUM_PAGES % PAGES_PER_1G == 0) by (compute_only);
+            assert(NUM_PAGES * PAGE_SZ <= IDENTITY_SPAN) by (compute_only);
         }
         let out = self.kernel_init(
             root,
@@ -1354,6 +1361,7 @@ impl CapKernel {
             registers,
             tlb,
             iotlb,
+            NUM_PAGES,
             carve,
             carve_perm,
             exposed,
@@ -1472,6 +1480,7 @@ impl CapKernel {
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             final(self).cores@[0].space == Some(process),
             final(self).spaces.registers@[0].root() == process + SPACE_ROOT_PAGE * PAGE_SZ,
@@ -2304,6 +2313,7 @@ impl CapKernel {
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ret.2,
@@ -2421,6 +2431,7 @@ impl CapKernel {
             assert(base == first.base + itb * PROCESS_BYTES);
             assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
             // The first untyped is the first boot block, whose pages boot left acknowledged.
+            s0.lemma_page_span();
             lemma_runs_blocks(free@, MAX_ORDER as nat, s0.blocks.page_count());
             let b0 = bs[0];
             assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));
@@ -3953,6 +3964,7 @@ impl CapKernel {
             assert(r7.tlb_wf()) by {
                 reveal(CapKernel::wf);
             }
+            r7.lemma_page_span();
         }
 
         // Load the process's space on core 0, which runs nothing, and point core 0's base register at it,
@@ -4281,6 +4293,7 @@ impl CapKernel {
             lemma_witness_slot_kept(h0, r0, base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, (base + 14 * PAGE_SZ) as usize, 1), dc);
             h0.lemma_slot_bound(u);
             assert(u != b3);
+            h0.lemma_page_span();
             lemma_added_children(h0.list, r0.list, b3, u);
             assert(r0.list.parent@[b3] == u);
             assert(r0.list.parent@[child] == h0.list.parent@[child]);
@@ -4614,6 +4627,7 @@ impl CapKernel {
             assert(q6.tlb_wf()) by {
                 reveal(CapKernel::wf);
             }
+            q6.lemma_page_span();
             assert(q6.blocks.tracks((bl / PAGE_SZ) as int));
             assert(q6.blocks.tracks((bl / PAGE_SZ + 1) as int));
             assert(q6.acknowledged(bl / PAGE_SZ)) by {
@@ -4837,6 +4851,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).child_slot(t, e),
             tree_of(&old(self).table_pages, &old(self).spaces).entry(t, e).is_empty(),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret,
             final(self).wf(),
             final(self).tables == old(self).tables,
@@ -5002,6 +5017,7 @@ impl CapKernel {
             witness_block(*old(self), (cursor + PROCESS_BYTES) as usize, first@),
             witness_block(*old(self), (cursor + 2 * PROCESS_BYTES) as usize, first@),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret,
             final(self).wf(),
             final(self).tables == old(self).tables,
@@ -5143,6 +5159,7 @@ impl CapKernel {
             image_tables_bound(image@) + 9 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ret.2,
@@ -5966,6 +5983,7 @@ impl CapKernel {
         }
         while k < REVOKE_BUDGET + 1
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 0 <= k <= REVOKE_BUDGET + 1,
                 REVOKE_BUDGET == 64,
                 lb % PAGE_SZ == 0,
@@ -6088,6 +6106,7 @@ impl CapKernel {
             image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ({
@@ -6392,6 +6411,7 @@ impl CapKernel {
             image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ({
@@ -6635,6 +6655,7 @@ impl CapKernel {
             assert(block_dead(&s2.blocks, br));
             assert(s2.blocks.pages@[ep].kind is Base);
             assert(s2.blocks.pages@[ep].object is Endpoint);
+            s1.lemma_page_span();
             assert(base % PAGE_SZ == 0);
             lemma_fundamental_div_mod(base as int, PAGE_SZ as int);
             assert(((base / PAGE_SZ) * PAGE_SZ) as usize == base);
@@ -6781,6 +6802,7 @@ impl CapKernel {
             image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ({
@@ -7034,6 +7056,7 @@ impl CapKernel {
             assert(block_dead(&s2.blocks, br));
             assert(s2.blocks.pages@[ep].kind is Base);
             assert(s2.blocks.pages@[ep].object is Notification);
+            s1.lemma_page_span();
             assert(base % PAGE_SZ == 0);
             lemma_fundamental_div_mod(base as int, PAGE_SZ as int);
             assert(((base / PAGE_SZ) * PAGE_SZ) as usize == base);
@@ -7095,6 +7118,7 @@ impl CapKernel {
             image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret,
             ({
                 let ne = (base + 2 * PAGE_SZ + 3) as usize;
@@ -7270,6 +7294,7 @@ impl CapKernel {
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES / 2,
             !image_l4(image@, l4),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ret.2,
@@ -7752,6 +7777,8 @@ impl CapKernel {
         // Unmap and map the second page again, each round one epoch on.
         while self.flush_epoch != usize::MAX
             invariant
+                self.blocks.pages@.len() == s4.blocks.pages@.len(),
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 s4.wf(),
                 !s4.list.nodes@[n2 as int].live,
                 n1 != n2,
@@ -8937,6 +8964,7 @@ impl CapKernel {
             assert(s9.tlb_wf()) by {
                 reveal(CapKernel::wf);
             }
+            s9.lemma_page_span();
             let e = s9.stale_epoch.pages@[fp] as int;
             assert(e <= s9.flush_epoch);
             assert(s9.acknowledged(fp as usize)) by {
@@ -9017,6 +9045,7 @@ impl CapKernel {
             info.number < IOMMU_DEVICES,
             present@[info.iommu as int],
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ret.2,
@@ -9854,6 +9883,7 @@ impl CapKernel {
             old(self).root_live(root),
             old(self).can_retype_large(root, from, to, big, 9),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0 is Done,
             Self::large_frame_retyped(ret.1@, *final(self), root, from, to, big, 9),
             ret.1@.list == old(self).list,
@@ -9897,6 +9927,7 @@ impl CapKernel {
         };
         while !done
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 self.wf(),
                 self.processes == s0.processes,
                 self.stale_epoch == s0.stale_epoch,
@@ -10386,6 +10417,7 @@ impl CapKernel {
         requires
             old(self).wf(),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             final(self).all_acknowledged(old(self).flush_epoch as int),
             final(self).flush_epoch == old(self).flush_epoch,
@@ -10418,6 +10450,7 @@ impl CapKernel {
         requires
             old(self).wf(),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] final(self).acked(c) == old(self).flush_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -10477,6 +10510,7 @@ impl CapKernel {
         requires
             old(self).wf(),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             forall|j: int| 0 <= j < NUM_IOMMUS && #[trigger] final(self).iommu_present(j) ==> final(self).iommu_acked(j) == old(self).flush_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -11141,6 +11175,7 @@ impl CapKernel {
             old(self).root_live(root),
             old(self).can_retype_table_page(root, from, base, level),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret,
             final(self).wf(),
             final(self).table_pages.maps@.contains_key(base),
@@ -11181,6 +11216,7 @@ impl CapKernel {
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
             !image_l4(image@, l4),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1 is Done,
             ret.2,
@@ -11528,6 +11564,7 @@ impl CapKernel {
             dead_table_ready(*old(self), process, u@, first@, big@),
             c1 == big@ + 66 * PROCESS_BYTES,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0 is Unlinked,
             ret.1 is Slice,
             ret.2 is Slice,
@@ -12416,6 +12453,7 @@ impl CapKernel {
             assert(s8.tlb_wf()) by {
                 reveal(CapKernel::wf);
             }
+            s8.lemma_page_span();
             let e = s8.stale_epoch.pages@[fp] as int;
             assert(e <= s8.flush_epoch);
             assert(s8.acknowledged(fp as usize)) by {
@@ -13278,6 +13316,7 @@ impl CapKernel {
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ({
@@ -13336,6 +13375,7 @@ impl CapKernel {
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             core < NUM_CPUS,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
             ({
@@ -13425,6 +13465,7 @@ impl CapKernel {
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
             assert(base == first.base + itb * PROCESS_BYTES);
             assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
+            s0.lemma_page_span();
             lemma_runs_blocks(free@, MAX_ORDER as nat, s0.blocks.page_count());
             let b0 = bs[0];
             assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));

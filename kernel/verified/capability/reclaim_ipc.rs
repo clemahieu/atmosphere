@@ -156,6 +156,7 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).queue_is_dead(page),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             old(self).object_block_freed(*final(self), c, page),
             final(self).endpoints.records@ == old(self).endpoints.records@.remove((page * PAGE_SZ) as usize),
@@ -220,6 +221,7 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).reply_is_dead(page),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             old(self).object_block_freed(*final(self), c, page),
             final(self).replies.records@ == old(self).replies.records@.remove((page * PAGE_SZ) as usize),
@@ -287,6 +289,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -353,6 +356,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),

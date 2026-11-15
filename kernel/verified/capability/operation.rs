@@ -507,6 +507,7 @@ impl CapKernel {
     pub open spec fn spec_registers_written(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let i = frame.slot() as usize;
         let input = pre.written_input(root, frame);
+        &&& Self::page_count_kept(pre, post)
         &&& Self::write_registers_kept(pre, post)
         &&& {
             ||| {
@@ -573,6 +574,7 @@ impl CapKernel {
     /// kernel with itself; inspect's payload is the one the position holds, and the frame read registers
     /// names is the saved frame when can_set_registers holds.
     pub open spec fn spec_outcome_carried(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        &&& Self::page_count_kept(pre, post)
         &&& post == pre
         &&& out == pre.spec_outcome(root, frame)
         &&& match spec_operation(frame.operation_number()) {
@@ -783,95 +785,98 @@ impl CapKernel {
         let base = frame.argument(2) as usize;
         let to = frame.argument(3) as usize;
         let level = frame.argument(4) as usize;
-        ||| !pre.allows_retype(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
-        ||| {
-            &&& frame.argument(1) == RETYPE_FRAME
-            &&& out == status_only(STATUS_OK)
-            &&& Self::frame_retype_answered(pre, post, root, from, to, base, true)
-            &&& Self::frame_retype_kept(pre, post)
-            &&& Self::frame_retyped(pre, post, root, from, to, base)
-            &&& Self::retype_keeps(pre, post, pre.tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None)
-            &&& Self::same_tree(pre, post)
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_LARGE_FRAME
-            &&& out == status_only(STATUS_AGAIN)
-            &&& Self::large_retype_answered(pre, post, root, from, to, base, 9, false)
-            &&& Self::large_retype_kept(pre, post)
-            &&& Self::large_retype_cursor(pre, post, base, false)
-            &&& Self::large_frame_zeroing(pre, post, root, from, to, base, 9)
-            &&& Self::same_tree(pre, post)
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_LARGE_FRAME
-            &&& out == status_only(STATUS_OK)
-            &&& Self::large_retype_answered(pre, post, root, from, to, base, 9, false)
-            &&& Self::large_retype_kept(pre, post)
-            &&& Self::large_retype_cursor(pre, post, base, false)
-            &&& Self::large_frame_retyped(pre, post, root, from, to, base, 9)
-            &&& Self::same_tree(pre, post)
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_TABLE_PAGE
-            &&& out == status_only(STATUS_OK)
-            &&& Self::table_page_retype_answered(pre, post, root, from, base, level, true)
-            &&& Self::table_page_retype_kept(pre, post)
-            &&& Self::table_page_retype_done(pre, post, root, from, base, level)
-            &&& Self::table_page_retyped(pre, post, root, from, base, level)
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_LEAF
-            &&& out == status_only(STATUS_OK)
-            &&& spec_position(frame.argument(3)) is Some
-            &&& Self::leaf_retype_answered(pre, post, root, from, spec_position(frame.argument(3))->0, base, true)
-            &&& Self::leaf_retype_kept(pre, post)
-            &&& Self::leaf_retyped(pre, post, root, from, spec_position(frame.argument(3))->0, base)
-            &&& Self::leaf_retype_spared(pre, post, base)
-            &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 1)
-            &&& Self::same_tree(pre, post)
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_FREE
-            &&& pre.allows_retype(root, frame)
-            &&& !pre.frame_free_acknowledged(base, level)
-            &&& out == status_only(STATUS_AGAIN)
-            &&& post == pre
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_FREE
-            &&& level == 0
-            &&& pre.allows_retype(root, frame)
-            &&& pre.frame_free_acknowledged(base, level)
-            &&& out == status_only(STATUS_OK)
-            &&& Self::frame_reclaim_answered(pre, post, root, from, base, FrameReclaimStep::Freed)
-            &&& exists|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed(post, c, root, from, base)
-            &&& Self::same_tree(pre, post)
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_FREE
-            &&& (level == 9 || level == 18)
-            &&& pre.allows_retype(root, frame)
-            &&& pre.frame_free_acknowledged(base, level)
-            &&& out == status_only(STATUS_OK)
-            &&& Self::large_reclaim_answered(pre, post, root, from, base, level as u8, FrameReclaimStep::Freed)
-            &&& exists|c: usize| c < NUM_CPUS && #[trigger] pre.large_frame_freed(post, c, root, from, base, level as u8)
-            &&& Self::same_tree(pre, post)
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_PROCESS
-            &&& out == status_only(STATUS_OK)
-            &&& Self::process_retype_answered(pre, post, root, from, to, base, true)
-            &&& Self::process_retype_kept(pre, post)
-            &&& Self::process_retype_done(pre, post, root, from, to, base)
-            &&& Self::process_retyped(pre, post, root, from, to, base)
-        }
-        ||| {
-            &&& frame.argument(1) == RETYPE_THREAD
-            &&& out == status_only(STATUS_OK)
-            &&& Self::thread_retype_answered(pre, post, root, from, to, base, level, true)
-            &&& Self::thread_retype_kept(pre, post)
-            &&& Self::thread_retype_done(pre, post, root, from, to, base, level)
-            &&& Self::thread_retyped(pre, post, root, from, to, base, level)
+        &&& Self::page_count_kept(pre, post)
+        &&& {
+            ||| !pre.allows_retype(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
+            ||| {
+                &&& frame.argument(1) == RETYPE_FRAME
+                &&& out == status_only(STATUS_OK)
+                &&& Self::frame_retype_answered(pre, post, root, from, to, base, true)
+                &&& Self::frame_retype_kept(pre, post)
+                &&& Self::frame_retyped(pre, post, root, from, to, base)
+                &&& Self::retype_keeps(pre, post, pre.tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None)
+                &&& Self::same_tree(pre, post)
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_LARGE_FRAME
+                &&& out == status_only(STATUS_AGAIN)
+                &&& Self::large_retype_answered(pre, post, root, from, to, base, 9, false)
+                &&& Self::large_retype_kept(pre, post)
+                &&& Self::large_retype_cursor(pre, post, base, false)
+                &&& Self::large_frame_zeroing(pre, post, root, from, to, base, 9)
+                &&& Self::same_tree(pre, post)
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_LARGE_FRAME
+                &&& out == status_only(STATUS_OK)
+                &&& Self::large_retype_answered(pre, post, root, from, to, base, 9, false)
+                &&& Self::large_retype_kept(pre, post)
+                &&& Self::large_retype_cursor(pre, post, base, false)
+                &&& Self::large_frame_retyped(pre, post, root, from, to, base, 9)
+                &&& Self::same_tree(pre, post)
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_TABLE_PAGE
+                &&& out == status_only(STATUS_OK)
+                &&& Self::table_page_retype_answered(pre, post, root, from, base, level, true)
+                &&& Self::table_page_retype_kept(pre, post)
+                &&& Self::table_page_retype_done(pre, post, root, from, base, level)
+                &&& Self::table_page_retyped(pre, post, root, from, base, level)
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_LEAF
+                &&& out == status_only(STATUS_OK)
+                &&& spec_position(frame.argument(3)) is Some
+                &&& Self::leaf_retype_answered(pre, post, root, from, spec_position(frame.argument(3))->0, base, true)
+                &&& Self::leaf_retype_kept(pre, post)
+                &&& Self::leaf_retyped(pre, post, root, from, spec_position(frame.argument(3))->0, base)
+                &&& Self::leaf_retype_spared(pre, post, base)
+                &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 1)
+                &&& Self::same_tree(pre, post)
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_FREE
+                &&& pre.allows_retype(root, frame)
+                &&& !pre.frame_free_acknowledged(base, level)
+                &&& out == status_only(STATUS_AGAIN)
+                &&& post == pre
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_FREE
+                &&& level == 0
+                &&& pre.allows_retype(root, frame)
+                &&& pre.frame_free_acknowledged(base, level)
+                &&& out == status_only(STATUS_OK)
+                &&& Self::frame_reclaim_answered(pre, post, root, from, base, FrameReclaimStep::Freed)
+                &&& exists|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed(post, c, root, from, base)
+                &&& Self::same_tree(pre, post)
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_FREE
+                &&& (level == 9 || level == 18)
+                &&& pre.allows_retype(root, frame)
+                &&& pre.frame_free_acknowledged(base, level)
+                &&& out == status_only(STATUS_OK)
+                &&& Self::large_reclaim_answered(pre, post, root, from, base, level as u8, FrameReclaimStep::Freed)
+                &&& exists|c: usize| c < NUM_CPUS && #[trigger] pre.large_frame_freed(post, c, root, from, base, level as u8)
+                &&& Self::same_tree(pre, post)
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_PROCESS
+                &&& out == status_only(STATUS_OK)
+                &&& Self::process_retype_answered(pre, post, root, from, to, base, true)
+                &&& Self::process_retype_kept(pre, post)
+                &&& Self::process_retype_done(pre, post, root, from, to, base)
+                &&& Self::process_retyped(pre, post, root, from, to, base)
+            }
+            ||| {
+                &&& frame.argument(1) == RETYPE_THREAD
+                &&& out == status_only(STATUS_OK)
+                &&& Self::thread_retype_answered(pre, post, root, from, to, base, level, true)
+                &&& Self::thread_retype_kept(pre, post)
+                &&& Self::thread_retype_done(pre, post, root, from, to, base, level)
+                &&& Self::thread_retyped(pre, post, root, from, to, base, level)
+            }
         }
     }
 
@@ -936,6 +941,7 @@ impl CapKernel {
         let level = frame.argument(2);
         let from = frame.argument(3) as usize;
         let child = frame.argument(4) as usize;
+        &&& Self::page_count_kept(pre, post)
         &&& Self::link_kept(pre, post)
         &&& {
             ||| out == status_only(STATUS_REFUSED) && Self::link_answered(pre, post, root, slot, va, level, from, child, false)
@@ -958,6 +964,7 @@ impl CapKernel {
         let level = frame.argument(2);
         let from = frame.argument(3) as usize;
         let page = frame.argument(4) as usize;
+        &&& Self::page_count_kept(pre, post)
         &&& Self::map_kept(pre, post)
         &&& {
             ||| out == status_only(STATUS_REFUSED) && Self::map_answered(pre, post, root, slot, va, level, from, page, false)
@@ -979,6 +986,7 @@ impl CapKernel {
         let slot = frame.slot() as usize;
         let va = frame.argument(1);
         let level = frame.argument(2);
+        &&& Self::page_count_kept(pre, post)
         &&& Self::unmap_kept(pre, post)
         &&& {
             ||| out == status_only(STATUS_REFUSED) && Self::unmap_answered(pre, post, root, slot, va, level, false)
@@ -1010,6 +1018,7 @@ impl CapKernel {
         let slot = frame.slot() as usize;
         let va = frame.argument(1);
         let count = frame.argument(2);
+        &&& Self::page_count_kept(pre, post)
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
         &&& Self::threads_bound_kept(pre, post)
         &&& {
@@ -1042,6 +1051,7 @@ impl CapKernel {
         let badge = frame.argument(5) as usize;
         let parent = pre.tables.node_of(root, from->0.index);
         let child = pre.tables.node_of(pre.table_at(root, to->0.through)->0, to->0.index);
+        &&& Self::page_count_kept(pre, post)
         &&& Self::derive_kept(pre, post)
         &&& Self::same_tree(pre, post)
         &&& {
@@ -1072,6 +1082,7 @@ impl CapKernel {
     pub open spec fn spec_moved(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
+        &&& Self::page_count_kept(pre, post)
         &&& Self::move_kept(pre, post)
         &&& {
             ||| {
@@ -1097,6 +1108,7 @@ impl CapKernel {
     /// out; either way what delete_kept says is kept.
     pub open spec fn spec_deleted(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
+        &&& Self::page_count_kept(pre, post)
         &&& Self::delete_kept(pre, post, root)
         &&& {
             ||| at is None && out == status_only(STATUS_REFUSED) && post == pre
@@ -1122,6 +1134,7 @@ impl CapKernel {
     /// design/revoke-by-depth-first-list/ and design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
+        &&& Self::page_count_kept(pre, post)
         &&& Self::revoke_preserved(pre, post)
         &&& Self::mappings_shrunk(pre, post)
         &&& Self::records_shrunk(pre, post)
@@ -1236,6 +1249,7 @@ impl CapKernel {
     /// says; either way what destroy_kept says is kept. c is the core the caller runs on.
     pub open spec fn spec_destroyed(pre: Self, post: Self, c: usize, root: usize, frame: Registers, out: Outcome) -> bool {
         let i = frame.slot() as usize;
+        &&& Self::page_count_kept(pre, post)
         &&& c < NUM_CPUS
         &&& Self::destroy_kept(pre, post)
         &&& {
@@ -1269,6 +1283,7 @@ impl CapKernel {
         let i = frame.slot() as usize;
         let j = frame.argument(1) as usize;
         let priority = frame.argument(2) as usize;
+        &&& Self::page_count_kept(pre, post)
         &&& Self::place_kept(pre, post, root)
         &&& {
             ||| {
@@ -1298,6 +1313,7 @@ impl CapKernel {
     /// what start_kept says is kept. design/cpu-time-as-capability/.
     pub open spec fn spec_started(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let i = frame.slot() as usize;
+        &&& Self::page_count_kept(pre, post)
         &&& Self::start_kept(pre, post)
         &&& {
             ||| {
@@ -1339,7 +1355,8 @@ impl CapKernel {
     /// arm calls suspend_answered for the step the outcome names, the predicate suspend's ensures
     /// calls. design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn spec_suspended(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        exists|c: usize| {
+        &&& Self::page_count_kept(pre, post)
+        &&& exists|c: usize| {
             let i = frame.slot() as usize;
             &&& c < NUM_CPUS
             &&& #[trigger] Self::suspended_from(pre, post, c, root, frame, out)
@@ -2251,6 +2268,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + DISPATCH_STEPS,
             Self::dispatched(*old(self), *final(self), c as int, frame, ret),
     {
@@ -2398,6 +2416,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= ENTRY_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             Self::consumed_kept(*old(self), *final(self)),
@@ -2439,6 +2458,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= ENTRY_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             Self::only_core_changed(*old(self), *final(self), c as int),
@@ -2466,6 +2486,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_RETYPE_STEPS,
             final(self).wf(),
@@ -2561,6 +2582,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_DERIVE_STEPS,
             final(self).wf(),
@@ -2586,6 +2608,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_MOVE_STEPS,
             final(self).wf(),
@@ -2606,6 +2629,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_DELETE_STEPS,
             final(self).wf(),
@@ -2651,6 +2675,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2684,6 +2709,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_DESTROY_STEPS,
             final(self).wf(),
@@ -2710,6 +2736,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2726,6 +2753,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -2743,6 +2771,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(self).wf(),
             final(self).cores@[c as int].space == old(self).cores@[c as int].space,
@@ -2763,6 +2792,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_REVOKE_STEPS,
             final(self).wf(),
@@ -2802,6 +2832,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_LINK_STEPS,
             final(self).wf(),
@@ -2819,6 +2850,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_MAP_STEPS,
             final(self).wf(),
@@ -2836,6 +2868,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_UNMAP_STEPS,
             final(self).wf(),
@@ -2862,6 +2895,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::consumed_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + INVOKE_PROBE_STEPS,
             final(self).wf(),

@@ -454,6 +454,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::derive_answered(*old(self), *final(self), root, from, to, rights, base, order, badge, ret),
             Self::derive_kept(*old(self), *final(self)),
@@ -511,6 +512,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(src),
             old(self).tables.roots@.contains_key(dst),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -547,6 +549,8 @@ impl CapKernel {
             final(self).threads.queues == old(self).threads.queues,
             final(self).endpoints.records == old(self).endpoints.records,
     {
+        // The block table's counts stay folded: nothing here reads them.
+        hide(crate::capability::block::BlockTable::counts_wf);
         let ghost pre = *old(self);
         let (parent, payload) = match self.tables.lookup(&self.list, src, from) {
             Some(found) => found,
@@ -703,6 +707,15 @@ impl CapKernel {
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, parent, child);
             Self::lemma_tlb_same(pre, post);
+            if let Some(br) = block {
+                crate::capability::kernel::lemma_refs_changed_translatable(
+                    &pre.blocks,
+                    &post.blocks,
+                    br,
+                    (block_refs(&pre.blocks, br) + 1) as usize,
+                    block_dead(&pre.blocks, br),
+                );
+            }
             Self::lemma_bound_threads_same(pre, post);
             assert(pre.view().holds(src, parent));
             assert(post.is_cap(child));
@@ -716,6 +729,7 @@ impl CapKernel {
     /// holds nothing. With them, what the blocks owe the rest of the invariant.
     proof fn lemma_derive_holders(pre: Self, post: Self, parent: usize, child: usize, block: Option<BlockRef>)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::derive_step(pre, post, child),
             pre.is_cap(parent),
             post.is_cap(child),

@@ -208,6 +208,7 @@ impl CapKernel {
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
             assert(base == first.base + itb * PROCESS_BYTES);
             assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
+            s0.lemma_page_span();
             lemma_runs_blocks(free@, MAX_ORDER as nat, s0.blocks.page_count());
             let b0 = bs[0];
             assert(b0.1 <= MAX_ORDER && s0.blocks.tracks_run(b0.0 as int, pow2(b0.1) as int));
@@ -677,6 +678,7 @@ impl CapKernel {
         let mut done = false;
         while !done
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 self.wf(),
                 at == (Position { through: None, index: ROOT_CORE_SLOT }),
                 s1.list.seq@.len() <= NODE_SPACE,

@@ -15,7 +15,7 @@ verus! {
 use crate::capability::block::*;
 use crate::column::Column;
 #[cfg(verus_keep_ghost)]
-use crate::column::{lemma_byte_aligned, lemma_word_aligned};
+use crate::column::lemma_byte_aligned;
 use crate::define::*;
 use crate::pptr::*;
 use crate::capability::steps::Steps;
@@ -280,21 +280,7 @@ impl Zeroing {
         let l = metadata_layout(pages);
         let ghost c = carve as int;
         proof {
-            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(c, PAGE_SZ as int);
-            let m = c / PAGE_SZ as int;
-            let two = (pages / PAGES_PER_2M) as int;
-            let one = (pages / PAGES_PER_1G) as int;
-            let k = (PAGE_SZ / 8) as int;
-            assert(PAGE_SZ as int == (PAGE_SZ / 8) as int * 8) by (compute_only);
-            let q = m * k + pages + two + one;
-            assert(c + l.zero_cursor == q * 8) by (nonlinear_arith)
-                requires
-                    c == m * PAGE_SZ as int,
-                    PAGE_SZ as int == k * 8,
-                    l.zero_cursor == pages * 8 + two * 8 + one * 8,
-                    q == m * k + pages + two + one;
-            vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q, 8);
-            lemma_word_aligned(c + l.zero_cursor);
+            lemma_metadata_aligned(c, l, pages);
             lemma_byte_aligned::<bool>(c + l.active_2m);
             lemma_byte_aligned::<bool>(c + l.active_1g);
         }

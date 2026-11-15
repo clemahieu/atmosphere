@@ -1437,6 +1437,7 @@ impl CapKernel {
             old(self).blocks.tracks_addr(child),
             old(self).blocks.span_wf(),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).table_pages.maps == old(self).table_pages.maps,
             final(self).table_pages.spare == old(self).table_pages.spare,
             final(self).spaces == old(self).spaces,
@@ -1497,6 +1498,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).level + 1
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1590,6 +1592,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).level + 1
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1792,6 +1795,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
@@ -2171,6 +2175,7 @@ impl CapKernel {
             old(self).table_pages.maps@.contains_key(t),
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
             Self::cut_stale_noted(*old(self), *final(self), t),
@@ -2389,6 +2394,8 @@ impl CapKernel {
     /// What a recorded cut says stays true while nothing it names changes.
     pub proof fn lemma_cut_recorded_same(pre: Self, mid: Self, post: Self, t: usize)
         requires
+            post.blocks.pages@.len() == mid.blocks.pages@.len(),
+            mid.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.table_pages.maps@.contains_key(t),
             Self::cut_recorded(pre, mid, t),
@@ -2512,6 +2519,7 @@ impl CapKernel {
             old(self).list.nodes@[n as int].live,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
@@ -2554,6 +2562,7 @@ impl CapKernel {
             old(self).table_pages.maps@.contains_key(t),
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
@@ -2588,6 +2597,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).table_pages.maps@.contains_key(t),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).wf(),
             Self::detach_done(*old(self), *final(self), t),
@@ -2640,6 +2650,7 @@ impl CapKernel {
             old(self).blocks.tracks_addr(child),
             old(self).blocks.span_wf(),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).table_pages.maps == old(self).table_pages.maps,
             final(self).table_pages.spare == old(self).table_pages.spare,
@@ -2804,6 +2815,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent == Some(TableParent { table: parent, entry }),
             child != parent,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).wf(),
             Self::detach_done(*old(self), *final(self), child),
@@ -2854,6 +2866,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent == Some(TableParent { table: parent, entry }),
             child != parent,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).wf(),
             Self::detach_done(*old(self), *final(self), child),

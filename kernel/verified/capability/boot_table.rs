@@ -614,6 +614,7 @@ impl CapKernel {
     /// A free block outside the one a step used stays free and in the root's untyped.
     pub proof fn lemma_block_kept(pre: Self, post: Self, process: usize, b: usize, used: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.root_table_block(process, b),
             post.tables == pre.tables,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
@@ -721,6 +722,7 @@ impl CapKernel {
             !(tree_of(&old(self).table_pages, &old(self).spaces).entry(t, i).perm.present
                 && tree_of(&old(self).table_pages, &old(self).spaces).entry(t, i).perm.ps),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -775,6 +777,8 @@ impl CapKernel {
             pre.lemma_entry_shape(t, i);
             assert(steps_kept(a, a));
             assert(nodes_kept(pre.list, pre.list));
+            pre.lemma_page_span();
+            pre.blocks.lemma_addr_fits(cursor);
         }
         let e = self.table_entry(t, is_root, i);
         if e.perm.present {
@@ -883,6 +887,7 @@ impl CapKernel {
             forall|k: int| 0 <= k < 3 ==> #[trigger] old(self).root_table_block(process, cursor_block(cursor, k)),
             !space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), s).contains_key(SpacePath { l4, l3, l2, l1: 0 }),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -950,6 +955,7 @@ impl CapKernel {
             assert(a.is_root(s));
             assert(!a.is_page(s));
             pre.lemma_entry_shape(s, l4);
+            pre.lemma_page_span();
             assert(pre.root_table_block(process, cursor_block(cursor, 0)));
             assert(cursor_block(cursor, 0) == cursor);
         }
@@ -1110,6 +1116,7 @@ impl CapKernel {
     /// A free block at or past the blocks a step used stays free and in the root's untyped.
     pub proof fn lemma_block_past(pre: Self, post: Self, process: usize, b: usize, lo: usize, hi: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.root_table_block(process, b),
             post.tables == pre.tables,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
@@ -1130,6 +1137,7 @@ impl CapKernel {
     /// more after it, are free in the root's untyped and lie inside the page array.
     pub proof fn lemma_region_blocks(&self, process: usize, u: Payload, cap: int, k: int, cursor: usize)
         requires
+            self.blocks.span_wf(),
             payload_wf(u),
             cap == untyped_tables(u),
             0 <= k,
@@ -1149,6 +1157,7 @@ impl CapKernel {
         vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(TABLE_PAGE_BYTES as int, k, 2);
         let b2 = cursor_block(u.base, k + 2);
         assert(self.root_table_block(process, b2));
+        self.blocks.lemma_count_fits();
         lemma_mod_mod(b2 as int, PAGE_SZ as int, 8);
         lemma_fundamental_div_mod(b2 as int, PAGE_SZ as int);
     }
@@ -1159,6 +1168,8 @@ impl CapKernel {
     pub proof fn lemma_region_after(pre: Self, cur: Self, post: Self, process: usize, u: Payload, cap: int, k: int, cursor: usize, next: usize)
         -> (k2: int)
         requires
+            post.blocks.pages@.len() == cur.blocks.pages@.len(),
+            cur.blocks.pages@.len() == pre.blocks.pages@.len(),
             payload_wf(u),
             cap == untyped_tables(u),
             0 <= k,
@@ -1233,6 +1244,7 @@ impl CapKernel {
             image_runs_wf(runs@, old(self).blocks.page_count()),
             forall|p: SpacePath| !#[trigger] space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), old(self).root_space(process)).contains_key(p),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -1317,6 +1329,8 @@ impl CapKernel {
         let mut r: usize = 0;
         while r < runs.len()
             invariant
+                self.blocks.pages@.len() == pre.blocks.pages@.len(),
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
                 self.cores == pre.cores,
@@ -1374,6 +1388,8 @@ impl CapKernel {
             }
             while q <= last
                 invariant
+                    self.blocks.pages@.len() == pre.blocks.pages@.len(),
+                    self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                     self.stale_epoch == pre.stale_epoch,
                     self.flush_epoch == pre.flush_epoch,
                     self.cores == pre.cores,
@@ -1436,6 +1452,7 @@ impl CapKernel {
                 proof {
                     assert(k + 3 <= cap);
                     lemma_region_l4(v, n, q);
+                    cur.lemma_page_span();
                     cur.lemma_region_blocks(process, u, cap as int, k, cursor);
                     assert(space_mapping(c, s) == space_mapping(a, s));
                     assert(!space_mapping(a, s).contains_key(SpacePath { l4, l3, l2, l1: 0 }));

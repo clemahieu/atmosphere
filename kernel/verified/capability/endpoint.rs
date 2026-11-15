@@ -471,6 +471,7 @@ pub proof fn lemma_endpoints_same_caps(
 /// And nothing of the block table but its page entries.
 pub proof fn lemma_endpoints_same_pages(list: &Tree, tables: &Tables, endpoints: &Endpoints, a: &BlockTable, b: &BlockTable)
     requires
+        b.pages@.len() == a.pages@.len(),
         endpoints_wf(list, tables, endpoints, a),
         b.pages@ == a.pages@,
     ensures
@@ -499,6 +500,7 @@ pub proof fn lemma_endpoints_refs_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         endpoints_wf(list_a, tables_a, endpoints, a),
         blocks_refs_changed(a, b, br, refs, dead),
         match br {
@@ -537,6 +539,7 @@ pub proof fn lemma_endpoints_small_typed(
     size: int,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         endpoints_wf(list_a, tables_a, endpoints, a),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
         forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
@@ -606,6 +609,7 @@ pub proof fn lemma_endpoints_small_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         endpoints_wf(list_a, tables_a, endpoints, a),
         a.wf(),
         a.tracks(base as int),
@@ -648,6 +652,7 @@ pub proof fn lemma_endpoints_own_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         endpoints_wf(list_a, tables_a, ea, a),
         a.wf(),
         a.tracks(base as int),
@@ -971,6 +976,7 @@ impl CapKernel {
     /// and holds its one capability, and every other lay outside the page and keeps its holders.
     proof fn lemma_endpoints_endpoint_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::space_step(pre, post, child),
             base % PAGE_SZ == 0,
             base / PAGE_SZ == page,
@@ -1187,6 +1193,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + RETYPE_ENDPOINT_STEPS,
             final(self).wf(),
             Self::queue_retype_keeps(*old(self), *final(self)),
@@ -1207,6 +1214,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + RETYPE_NOTIFICATION_STEPS,
             final(self).wf(),
             Self::queue_retype_keeps(*old(self), *final(self)),
@@ -1226,6 +1234,7 @@ impl CapKernel {
             old(self).root_live(root),
             queue_kind(kind),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + 2 * SMALL_PAGES_MAX,
             final(self).wf(),
             Self::queue_retype_keeps(*old(self), *final(self)),

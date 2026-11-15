@@ -299,6 +299,7 @@ impl CapKernel {
             old(self).list.nodes@[t as int].live,
             old(self).list.nodes@[t as int].kind is Binding,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count == old(steps).count,
             final(self).wf(),
             Self::unbound(*old(self), *final(self), t),
@@ -582,6 +583,7 @@ impl CapKernel {
     /// and its node page are as they were, and no capability named the one that went.
     proof fn lemma_threads_freed(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.thread_is_spent(base),
             forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
@@ -638,6 +640,7 @@ impl CapKernel {
     /// pages are free, and every other block, leaf, list page and object is as it was.
     proof fn lemma_thread_freed_blocks(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.thread_is_spent(base),
             post.blocks.wf(),
@@ -745,6 +748,7 @@ impl CapKernel {
     /// saved registers showed.
     proof fn lemma_thread_freed(pre: Self, post: Self, base: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.thread_is_spent(base),
             post.blocks.wf(),
@@ -908,6 +912,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).thread_is_spent(base),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -986,6 +991,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),

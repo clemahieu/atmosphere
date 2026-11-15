@@ -2195,6 +2195,7 @@ proof fn lemma_distinct_slots_distinct_nodes(k: CapKernel, root: usize, i: usize
 /// Physical address and page-alignment facts for page `idx` of a `TABLE_PAGES`-page-aligned untyped.
 proof fn lemma_untyped_page_facts(k: CapKernel, memory: u64, pages: usize, idx: int)
     requires
+        k.wf(),
         memory as int % (TABLE_PAGES * PAGE_BYTES) as int == 0,
         memory + pages * PAGE_BYTES <= u64::MAX,
         0 <= idx < pages,
@@ -2225,9 +2226,10 @@ proof fn lemma_untyped_page_facts(k: CapKernel, memory: u64, pages: usize, idx: 
             memory as int / (PAGE_SZ as int) == 8 * q8,
             p == memory as int / (PAGE_SZ as int) + idx,
     ;
-    assert((verified::define::NUM_PAGES as int) * (PAGE_SZ as int) <= NODE_SPACE as int);
-    vstd::arithmetic::mul::lemma_mul_strict_inequality(p, verified::define::NUM_PAGES as int, PAGE_SZ as int);
-    vstd::arithmetic::mul::lemma_mul_nonnegative(p, PAGE_SZ as int);
+    k.lemma_page_span();
+    k.blocks.lemma_tracked_in_span(p);
+    assert(verified::define::IDENTITY_SPAN <= NODE_SPACE) by (compute_only);
+    assert((p + 1) * (PAGE_SZ as int) == p * (PAGE_SZ as int) + PAGE_SZ as int) by (nonlinear_arith);
     assert(0 <= p * (PAGE_SZ as int) < NODE_SPACE as int);
     lemma_mod_multiples_basic(p, PAGE_SZ as int);
     lemma_div_by_multiple(p, PAGE_SZ as int);
@@ -2874,6 +2876,7 @@ proof fn lemma_retype_table_kept(k0: CapKernel, km: CapKernel, child: usize)
         km.tables == k0.tables,
         km.spaces == k0.spaces,
         km.processes == k0.processes,
+        km.blocks.pages@.len() == k0.blocks.pages@.len(),
         km.blocks.regions_2m@ == k0.blocks.regions_2m@,
         km.blocks.regions_1g@ == k0.blocks.regions_1g@,
         !km.blocks.pages@[(child / PAGE_SZ) as int].dead,
@@ -2970,6 +2973,7 @@ proof fn lemma_retyped_frames_kept(
     group: usize,
 )
     requires
+        k0.wf(),
         CapKernel::retype_table_contract_fields(k0, km, untyped_page(memory, group as int) as usize),
         km.table_view(root) == k0.table_view(root),
         pages <= MAX_PAGES,
@@ -3766,23 +3770,17 @@ proof fn lemma_refs_changed_covered(
     p: int,
 )
     requires
+        a.span_wf(),
         blocks_refs_changed(a, b, br, refs, dead),
         a.tracks(p),
     ensures
         b.covered(p) == a.covered(p),
 {
-    use verified::capability::block::{NUM_1G, NUM_2M};
-    use verified::define::{NUM_PAGES, PAGES_PER_1G, PAGES_PER_2M};
     let r2 = verified::capability::block::region_2m(p);
     let r1 = verified::capability::block::region_1g(p);
-    assert(NUM_PAGES as int == (PAGES_PER_2M as int) * (NUM_2M as int));
-    assert(NUM_PAGES as int == (PAGES_PER_1G as int) * (NUM_1G as int));
-    vstd::arithmetic::div_mod::lemma_multiply_divide_lt(p, PAGES_PER_2M as int, NUM_2M as int);
-    vstd::arithmetic::div_mod::lemma_multiply_divide_lt(p, PAGES_PER_1G as int, NUM_1G as int);
-    vstd::arithmetic::div_mod::lemma_div_pos_is_pos(p, PAGES_PER_2M as int);
-    vstd::arithmetic::div_mod::lemma_div_pos_is_pos(p, PAGES_PER_1G as int);
-    assert(0 <= r2 < NUM_2M as int);
-    assert(0 <= r1 < NUM_1G as int);
+    a.lemma_tracked_regions(p);
+    assert(0 <= r2 < b.num_2m());
+    assert(0 <= r1 < b.num_1g());
     assert(b.regions_2m@[r2].typed == a.regions_2m@[r2].typed);
     assert(b.regions_1g@[r1].typed == a.regions_1g@[r1].typed);
 }
@@ -3986,6 +3984,7 @@ pub(crate) proof fn lemma_ready_map_page(
         assert(k1.tables.has_slot(&k1.list, root, si));
         let p = memory as int / PAGE_SZ as int + i;
         assert(k2.blocks.pages@[p].kind == k1.blocks.pages@[p].kind);
+        k1.lemma_page_span();
         lemma_refs_changed_covered(&k1.blocks, &k2.blocks, br, 2usize, false, p);
     }
 
@@ -4320,6 +4319,7 @@ pub(crate) proof fn lemma_ready_unmap_page(
         assert(k0.tables.has_slot(&k0.list, root, si));
         let p = memory as int / PAGE_SZ as int + i;
         assert(k1.blocks.pages@[p].kind == k0.blocks.pages@[p].kind);
+        k0.lemma_page_span();
         lemma_refs_changed_covered(&k0.blocks, &k1.blocks, br, 1usize, false, p);
     }
 

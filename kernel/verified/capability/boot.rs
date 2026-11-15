@@ -168,6 +168,7 @@ impl CapKernel {
             forall|i: usize| base / PAGE_SZ <= i < base / PAGE_SZ + 8 || leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
                 ==> #[trigger] holds(pages, i),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -451,6 +452,7 @@ impl CapKernel {
             kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (t / PAGE_SZ) as int, 2),
             forall|i: usize| t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -523,6 +525,12 @@ impl CapKernel {
         hide(CapKernel::wf);
         let ghost pre = *old(self);
         let tb = t / PAGE_SZ;
+        proof {
+            assert(pre.blocks.span_wf()) by {
+                reveal(CapKernel::wf);
+            }
+            pre.blocks.lemma_addr_fits(leaf);
+        }
         let n = leaf + 1;
         let cap = leaf + 2;
         proof {
@@ -755,6 +763,7 @@ impl CapKernel {
             kernel_root_apart(&old(self).blocks, old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
             forall|i: usize| leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -896,6 +905,7 @@ impl CapKernel {
             forall|i: usize| process / PAGE_SZ <= i < process / PAGE_SZ + 8 || leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
                 || frames / PAGE_SZ <= i < frames / PAGE_SZ + 2 || t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -1060,6 +1070,10 @@ impl CapKernel {
                 assert(first.blocks.pages@[i] == pre.blocks.pages@[i]);
             }
             assert(!first.blocks.covered(fb as int)) by {
+                assert(pre.blocks.span_wf()) by {
+                    reveal(CapKernel::wf);
+                }
+                pre.blocks.lemma_tracked_regions(fb as int);
                 assert(!pre.blocks.regions_2m@[region_2m(fb as int)].typed);
                 assert(!pre.blocks.regions_1g@[region_1g(fb as int)].typed);
             }
@@ -1078,6 +1092,12 @@ impl CapKernel {
         self.boot_root_leaf(root, process, 1, frames, Tracked(frame_pages));
         let ghost mid = *self;
         proof {
+            assert(pre.blocks.span_wf()) by {
+                reveal(CapKernel::wf);
+            }
+            pre.blocks.lemma_addr_fits(leaf);
+            assert(leaf + 3 < NODE_SPACE);
+            pre.blocks.lemma_tracked_regions(tb as int);
             lemma_slot_in_leaf(leaf, 1);
             lemma_slot_in_leaf(leaf, 2);
             lemma_slot_in_leaf(leaf, 3);
@@ -1246,6 +1266,7 @@ impl CapKernel {
             !old(self).list.nodes@[leaf + i].live,
             no_device_space(&old(self).spaces),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -1357,6 +1378,7 @@ impl CapKernel {
             forall|j: int| leaf + ROOT_CORE_SLOT <= j < leaf + ROOT_CORE_SLOT + NUM_CPUS ==> !#[trigger] old(self).list.nodes@[j].live,
             no_device_space(&old(self).spaces),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -1633,6 +1655,7 @@ impl CapKernel {
             payload_wf(untyped_payload(base, order)),
             no_device_space(&old(self).spaces),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -1850,6 +1873,7 @@ impl CapKernel {
     /// synthetic root in place of an untyped.
     proof fn lemma_boot_thread_typed(pre: Self, post: Self, mid: Tree, root: usize, process: usize, leaf: usize, t: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             root == pre.list.seq@[0],
             root < NODE_SPACE,
@@ -2100,6 +2124,7 @@ impl CapKernel {
     /// frame or list page lies in a reserved page, so every clause reads what it read before.
     pub proof fn lemma_reserved_freed(pre: Self, post: Self, start: usize, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             post.blocks.wf(),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
@@ -2354,6 +2379,8 @@ impl CapKernel {
         leaf_typed: BlockTable,
     )
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            leaf_typed.pages@.len() == freed.pages@.len(),
             pre.wf(),
             pre.boot_empty(),
             root == pre.list.seq@[0],
@@ -2917,6 +2944,7 @@ pub fn add_free_run(blocks: &mut BlockTable, start: usize, n: usize, Tracked(pag
         forall|i: int| start <= i < start + n ==> #[trigger] old(blocks).pages@[i].kind is Reserved,
         forall|i: usize| start <= i < start + n ==> #[trigger] holds(*old(pages), i),
     ensures
+        final(blocks).pages@.len() == old(blocks).pages@.len(),
         final(blocks).wf(),
         final(blocks).regions_2m@ == old(blocks).regions_2m@,
         final(blocks).regions_1g@ == old(blocks).regions_1g@,
@@ -2928,8 +2956,14 @@ pub fn add_free_run(blocks: &mut BlockTable, start: usize, n: usize, Tracked(pag
     let ghost pre = *old(blocks);
     let ghost given = *old(pages);
     let mut k = 0;
+    proof {
+        pre.lemma_count_fits();
+    }
     while k != n
         invariant
+            blocks.pages@.len() == pre.pages@.len(),
+            blocks.pages@.len() == old(blocks).pages@.len(),
+            start + n <= usize::MAX,
             0 <= k <= n,
             pre.tracks_run(start as int, n as int),
             blocks.wf(),

@@ -1201,6 +1201,7 @@ pub proof fn lemma_threads_same_caps(
 /// And nothing of the block table but its page entries.
 pub proof fn lemma_threads_same_pages(list: &Tree, tables: &Tables, threads: &Threads, a: &BlockTable, b: &BlockTable)
     requires
+        b.pages@.len() == a.pages@.len(),
         threads_wf(list, tables, threads, a),
         b.pages@ == a.pages@,
     ensures
@@ -1228,6 +1229,7 @@ pub proof fn lemma_threads_refs_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         threads_wf(list_a, tables_a, threads, a),
         blocks_refs_changed(a, b, br, refs, dead),
         match br {
@@ -1267,6 +1269,7 @@ pub proof fn lemma_threads_small_typed(
     size: int,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         threads_wf(list_a, tables_a, threads, a),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
         forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
@@ -1307,6 +1310,7 @@ pub proof fn lemma_threads_small_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         threads_wf(list_a, tables_a, threads, a),
         forall|p: usize| #[trigger] list_b.pages@.dom().contains(p) && a.tracks_addr(p)
             ==> !a.in_block(base as int, (p / PAGE_SZ) as int),
@@ -1695,6 +1699,7 @@ impl CapKernel {
             old(self).list.nodes@[t as int].live,
             old(self).list.nodes@[t as int].kind is Binding,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::unbound(*old(self), *final(self), t),
             final(self).blocks.wf(),
             final(self).list == old(self).list,
@@ -1832,6 +1837,7 @@ impl CapKernel {
             old(self).list.nodes@[x as int].live,
             old(self).list.nodes@[x as int].kind is Placement,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::unplaced(*old(self), *final(self), x),
             final(self).blocks == old(self).blocks,
             final(self).holders == old(self).holders,
@@ -2199,6 +2205,7 @@ impl CapKernel {
     /// holds its one capability, and every other lay outside the block and keeps its holders.
     pub proof fn lemma_threads_thread_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::space_step(pre, post, child),
             base % THREAD_BYTES == 0,
             base / PAGE_SZ == page,
@@ -2367,6 +2374,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(steps).count <= old(steps).count + TYPE_THREAD_STEPS,
             final(self).wf(),
@@ -2970,6 +2978,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + RETYPE_THREAD_STEPS,
             final(self).wf(),
             Self::thread_retype_answered(*old(self), *final(self), root, from, to, base, j, ret),
@@ -3063,6 +3072,8 @@ impl CapKernel {
     /// table changes only a reference count.
     proof fn lemma_bind_keeps(pre: Self, mid: Self, post: Self, child: usize, page: int, n: usize, t: usize)
         requires
+            post.blocks.pages@.len() == mid.blocks.pages@.len(),
+            mid.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             Self::retype_keeps(pre, mid, child, page, 1, None),
             Self::bound_to(mid, post, n, t),
@@ -3165,6 +3176,7 @@ impl CapKernel {
     /// A switch keeps wf when it leaves the current threads matching the Running states.
     pub(crate) proof fn lemma_switch_wf(pre: Self, post: Self, c: int, t: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             0 <= c < NUM_CPUS,
             pre.threads.records@.contains_key(t),
@@ -3267,6 +3279,7 @@ impl CapKernel {
             old(self).threads.records@[t].value().state == (ThreadState::Runnable { core: c }),
             runs_in_space(old(self).cores@, old(self).threads.records@, c as int, t),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
             Self::switch_frame(*old(self), *final(self), c as int, t),
             dequeued_from(
@@ -3375,6 +3388,7 @@ impl CapKernel {
             old(self).threads.records@[t].value().placement->Some_0.core == c,
             runs_in_space(old(self).cores@, old(self).threads.records@, c as int, t),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             Self::switch_frame(*old(self), *final(self), c as int, t),
             final(self).threads.queues == old(self).threads.queues,
@@ -3482,6 +3496,7 @@ impl CapKernel {
             old(self).cores@[c as int].current_thread is Some,
             !old(self).threads.records@[old(self).cores@[c as int].current_thread->Some_0].value().pending_stop,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ({
                 let t = old(self).cores@[c as int].current_thread->Some_0;
                 let prio = thread_priority(old(self).threads.records@[t].value());
@@ -3791,6 +3806,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::write_registers_answered(*old(self), *final(self), root, i, frame, ret),
             Self::write_registers_kept(*old(self), *final(self)),
@@ -3966,6 +3982,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::start_answered(*old(self), *final(self), root, i, ret),
             Self::start_kept(*old(self), *final(self)),
@@ -4184,6 +4201,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::suspend_answered(*old(self), *final(self), c, root, i, ret),
     {
@@ -4374,6 +4392,7 @@ impl CapKernel {
             old(self).threads.records@.contains_key(t),
             old(self).threads.records@[t].value().state is Runnable,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             Self::record_written(*old(self), *final(self), t, Self::dropped_record(old(self).threads.records@[t].value())),
             dequeued_from(
@@ -4473,6 +4492,7 @@ impl CapKernel {
             old(self).threads.records@.contains_key(t),
             old(self).threads.records@[t].value().state == (ThreadState::Running { core: d }),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             Self::record_written(*old(self), *final(self), t, ThreadRecord { pending_stop: true, ..old(self).threads.records@[t].value() }),
             final(self).stop_ipis@ == old(self).stop_ipis@.push(d),
@@ -4567,6 +4587,7 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).threads.records@.contains_key(t),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             Self::thread_destroyed(*old(self), *final(self), c, t),
     {
@@ -4838,6 +4859,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + CHECK_CURRENT_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             ret is MovedOff == old(self).must_leave(c as int),
@@ -5184,6 +5206,7 @@ impl CapKernel {
     /// bindings, and no capability, holder, leaf, table page or mapping changed.
     proof fn lemma_bind_objects(pre: Self, post: Self, n: usize, t: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.is_cap(n),
             pre.payload_of(n).kind is Process,
@@ -5322,6 +5345,7 @@ impl CapKernel {
     /// Everything the invariant says after a bind.
     proof fn lemma_bind_wf(pre: Self, post: Self, n: usize, t: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.is_cap(n),
             pre.payload_of(n).kind is Process,
@@ -5439,6 +5463,7 @@ impl CapKernel {
             old(self).threads.records@[t].value().process is None,
             !old(self).list.nodes@[t as int].live,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -5822,6 +5847,7 @@ impl CapKernel {
     /// mapping changed, and thread t's record was updated in place.
     proof fn lemma_place_objects(pre: Self, post: Self, m: usize, t: usize, pl: Placement)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.is_cap(m),
             Self::placed(pre, post, m, t, pl),
@@ -5935,6 +5961,7 @@ impl CapKernel {
     /// Everything the invariant says after a place.
     proof fn lemma_place_wf(pre: Self, post: Self, m: usize, t: usize, pl: Placement)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.is_cap(m),
             pre.payload_of(m).kind is Core,
@@ -6148,6 +6175,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::place_answered(*old(self), *final(self), root, i, j, priority, ret),
             Self::place_kept(*old(self), *final(self), root),

@@ -1062,6 +1062,7 @@ impl CapKernel {
             base_record.process is Some,
             frame_save_wf(base_record),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             queues_wf(&final(self).threads.queues, final(self).threads.records@),
             threads_wf(&final(self).list, &final(self).tables, &final(self).threads, &final(self).blocks),
             queued_at_back(&old(self).threads.queues, &final(self).threads.queues, c as int, p as int, t),
@@ -1978,6 +1979,7 @@ impl CapKernel {
             !(base_record.state is Runnable),
             frame_save_wf(base_record),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             c < NUM_CPUS,
             p <= MAX_PRIORITY,
             queues_wf(&final(self).threads.queues, final(self).threads.records@),

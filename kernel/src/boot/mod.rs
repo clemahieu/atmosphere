@@ -18,12 +18,8 @@ const _: () = {
         free_ranges::MAX_PAGE_ADDRESS
             == verified::define::NUM_PAGES as u64 * astd::boot::PAGE_BYTES
     );
-    {
-        use verified::capability::block::{NUM_1G, NUM_2M};
-        use verified::define::{PAGES_PER_1G, PAGES_PER_2M};
-        assert!(NUM_2M * PAGES_PER_2M == verified::define::NUM_PAGES);
-        assert!(NUM_1G * PAGES_PER_1G == verified::define::NUM_PAGES);
-    }
+    assert!(verified::define::NUM_PAGES % verified::define::PAGES_PER_1G == 0);
+    assert!(free_ranges::MAX_PAGE_ADDRESS <= free_ranges::IDENTITY_SPAN);
     assert!(free_ranges::NODE_SPACE == verified::capability::list::NODE_SPACE as u64);
     assert!(free_ranges::IDENTITY_SPAN == verified::define::IDENTITY_SPAN as u64);
     assert!(

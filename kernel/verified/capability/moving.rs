@@ -334,6 +334,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::move_answered(*old(self), *final(self), root, from, to, ret),
             Self::same_tree(*old(self), *final(self)),
@@ -418,6 +419,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(src),
             old(self).tables.roots@.contains_key(dst),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).wf(),
             final(self).cores == old(self).cores,

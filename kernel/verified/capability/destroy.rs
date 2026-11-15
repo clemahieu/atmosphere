@@ -306,6 +306,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + NUM_CPUS,
             final(self).wf(),
             Self::destroy_answered(*old(self), *final(self), root, i, ret),
@@ -391,6 +392,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).processes.records@.contains_key(p),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + NUM_CPUS,
             final(self).wf(),
             Self::process_destroyed(*old(self), *final(self), p),

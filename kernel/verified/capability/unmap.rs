@@ -218,6 +218,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + UNMAP_AT_STEPS,
             final(self).wf(),
             Self::unmap_answered(*old(self), *final(self), root, slot, va, level, ret is Some),
@@ -239,6 +240,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + UNMAP_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -262,6 +264,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + UNMAP_KIND_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
@@ -315,6 +318,7 @@ impl CapKernel {
     /// A change to the flush record alone keeps what clearing the entry left.
     pub proof fn lemma_flush_frame(pre: Self, mid: Self, post: Self, root: usize, slot: usize, p: SpacePath)
         requires
+            mid.blocks.pages@.len() == post.blocks.pages@.len(),
             Self::entry_unmapped(pre, mid, root, slot, p),
             post == (CapKernel { flush_ipis: post.flush_ipis, ..mid }),
         ensures
@@ -356,6 +360,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).spaces.roots@.contains_key(s),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SEND_FLUSH_STEPS,
             final(self).wf(),
             *final(self) == (CapKernel { flush_ipis: Ghost(sent + old(self).flush_targets(s)), ..*old(self) }),
@@ -380,6 +385,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + UNMAP_ENTRY_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,

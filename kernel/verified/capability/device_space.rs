@@ -93,6 +93,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).stale_epoch == old(self).stale_epoch,

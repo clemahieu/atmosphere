@@ -945,6 +945,7 @@ pub proof fn lemma_holders_mapping_added(
     br: BlockRef,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         holders_wf(list_a, tables, blocks_a, zeroing, holders),
         n < NODE_SPACE,
         !list_a.nodes@[n as int].live,
@@ -1181,6 +1182,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
@@ -1280,6 +1282,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::link_answered(*old(self), *final(self), root, slot, va, level, from, child, ret),
             ret ==> Self::table_linked(*old(self), *final(self), root, slot, va, level, from, child),
@@ -1420,6 +1423,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::map_answered(*old(self), *final(self), root, slot, va, level, from, page, ret),
             ret ==> Self::page_mapped(*old(self), *final(self), root, slot, va, level, from, page),
@@ -1446,6 +1450,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
@@ -1588,6 +1593,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1609,6 +1615,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1749,6 +1756,7 @@ impl CapKernel {
             Self::map_from(*old(self), t, e, f, frame, large),
             rights == old(self).payload_of(f).rights,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1858,6 +1866,7 @@ impl CapKernel {
             old(self).blocks.span_wf(),
             old(self).blocks.tracks(frame as int),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::entry_set(old(self).table_pages, final(self).table_pages, t, e, frame_map_entry(frame, rights, large)),
             final(self).list == old(self).list,
             final(self).cores == old(self).cores,
@@ -2608,6 +2617,7 @@ impl CapKernel {
     /// node, and no other block changed.
     proof fn lemma_map_blocks(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             Self::map_from(pre, t, e, f, frame, large),
             Self::map_written(pre, post, t, e, f, frame, large),
@@ -2637,6 +2647,7 @@ impl CapKernel {
     /// none of them reads beyond the holders.
     proof fn lemma_map_objects(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             Self::map_from(pre, t, e, f, frame, large),
             Self::map_written(pre, post, t, e, f, frame, large),
@@ -2685,6 +2696,7 @@ impl CapKernel {
     /// written is at level 1, below every link.
     proof fn lemma_map_tables(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             Self::map_from(pre, t, e, f, frame, large),
             Self::map_written(pre, post, t, e, f, frame, large),
@@ -2714,6 +2726,7 @@ impl CapKernel {
     /// entry, node, parent and holding are as they were.
     proof fn lemma_map_mappings(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             Self::map_from(pre, t, e, f, frame, large),
             Self::map_written(pre, post, t, e, f, frame, large),
@@ -2808,6 +2821,7 @@ impl CapKernel {
     /// Everything the invariant says after the writes of a map.
     proof fn lemma_map_wf(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             Self::map_from(pre, t, e, f, frame, large),
             Self::map_written(pre, post, t, e, f, frame, large),

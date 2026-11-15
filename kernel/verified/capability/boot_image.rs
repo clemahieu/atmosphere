@@ -350,6 +350,8 @@ impl CapKernel {
         left: Map<usize, PagePerm4k>,
     )
         requires
+            post.blocks.pages@.len() == cur.blocks.pages@.len(),
+            cur.blocks.pages@.len() == pre.blocks.pages@.len(),
             image_progress(cur, pre, root, process, leaf2, runs, bs, k, perms),
             0 <= k < bs.len(),
             bs.len() <= ROOT_FRAME_SLOTS,
@@ -555,6 +557,7 @@ impl CapKernel {
         perms: Map<usize, PagePerm4k>,
     )
         requires
+            cur.blocks.pages@.len() == pre.blocks.pages@.len(),
             image_progress(cur, pre, root, process, leaf2, runs, bs, k, perms),
             0 <= k < bs.len(),
             bs.len() <= ROOT_FRAME_SLOTS,
@@ -788,6 +791,7 @@ impl CapKernel {
                 ==> !image_region(runs@, region_2m((old(self).spaces.kernel_root@ / PAGE_SZ) as int)),
             no_device_space(&old(self).spaces),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -867,6 +871,7 @@ impl CapKernel {
         let ghost bs = image_blocks(runs@);
         let tracked mut perms = perms;
         proof {
+            pre.lemma_page_span();
             lemma_runs_blocks(phys, IMAGE_ORDER as nat, pre.blocks.page_count());
             assert(index_entry(255usize) == 1) by (compute_only);
             assert(index_slot(255usize) == 127) by (compute_only);
@@ -888,6 +893,8 @@ impl CapKernel {
         let mut r: usize = 0;
         while r < runs.len()
             invariant
+                self.blocks.pages@.len() == pre.blocks.pages@.len(),
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
                 self.cores == pre.cores,
@@ -895,6 +902,8 @@ impl CapKernel {
                 self.iommus.present == pre.iommus.present,
                 r <= runs@.len(),
                 image_runs_wf(runs@, pre.blocks.page_count()),
+                pre.blocks.span_wf(),
+                pre.blocks.page_count() == pre.blocks.pages@.len(),
                 phys == image_phys(runs@),
                 bs == image_blocks(runs@),
                 bs == runs_blocks(phys, IMAGE_ORDER as nat),
@@ -955,6 +964,8 @@ impl CapKernel {
             let mut m = n;
             while m > 0
                 invariant
+                    self.blocks.pages@.len() == pre.blocks.pages@.len(),
+                    self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                     self.stale_epoch == pre.stale_epoch,
                     self.flush_epoch == pre.flush_epoch,
                     self.cores == pre.cores,
@@ -962,6 +973,8 @@ impl CapKernel {
                     self.iommus.present == pre.iommus.present,
                     r < runs@.len(),
                     image_runs_wf(runs@, pre.blocks.page_count()),
+                    pre.blocks.span_wf(),
+                    pre.blocks.page_count() == pre.blocks.pages@.len(),
                     phys == image_phys(runs@),
                     bs == image_blocks(runs@),
                     bs == runs_blocks(phys, IMAGE_ORDER as nat),

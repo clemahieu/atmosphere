@@ -378,6 +378,7 @@ impl CapKernel {
             old(self).blocks.tracks_addr(old(self).spaces.kernel_root@)
                 ==> !in_runs(runs@, runs@.len() as int, (old(self).spaces.kernel_root@ / PAGE_SZ) as int),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
@@ -401,6 +402,7 @@ impl CapKernel {
         let ghost pre = *old(self);
         let tracked mut pages = pages;
         proof {
+            pre.lemma_page_span();
             assert forall|a: int, i: usize| 0 <= a < runs@.len() && #[trigger] in_run_at(runs@, a, i as int)
                 implies #[trigger] holds(pages, i) by {
                 assert(in_runs(runs@, runs@.len() as int, i as int));
@@ -409,6 +411,9 @@ impl CapKernel {
         let mut r: usize = 0;
         while r < runs.len()
             invariant
+                pre.blocks.page_count() == pre.blocks.pages@.len(),
+                self.blocks.pages@.len() == pre.blocks.pages@.len(),
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 r <= runs@.len(),
                 runs_wf(runs@, pre.blocks.page_count()),
                 self.wf(),
@@ -525,6 +530,7 @@ impl CapKernel {
             runs_blocks(runs@, MAX_ORDER as nat).len() <= ROOT_UNTYPED_SLOTS,
             no_device_space(&old(self).spaces),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -877,6 +883,7 @@ impl CapKernel {
                 ==> !in_runs(runs@, runs@.len() as int, (old(self).spaces.kernel_root@ / PAGE_SZ) as int),
             no_device_space(&old(self).spaces),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,

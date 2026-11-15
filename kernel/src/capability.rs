@@ -232,6 +232,8 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         // Nothing is unmapped yet, so each IOMMU's IOTLB model is empty, and this is the one place that
         // model is made: design/flush-without-waiting/.
         Tracked::assume_new(),
+        // The pages the block table tracks, the compile-time count until boot takes it from the map.
+        NUM_PAGES,
         // The carve's bytes, which only the columns placed in it touch, and the provenance of the
         // identity map they are read through: design/page-metadata-sized-from-the-memory-map/.
         carve as usize,

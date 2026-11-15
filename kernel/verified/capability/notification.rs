@@ -171,6 +171,7 @@ impl CapKernel {
             old(self).blocks.pages@[(e / PAGE_SZ) as int].object is Notification,
             word & WAITER_BIT == old(self).endpoints.records@[e].value().word & WAITER_BIT,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             Self::word_written(*old(self), *final(self), e, word),
             final(self).view() == old(self).view(),
@@ -232,6 +233,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             ret == old(self).can_signal(root, i),
             !ret ==> *final(self) == *old(self),
@@ -284,6 +286,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             ret is Some == old(self).can_wait(root, i),
             ret is None ==> *final(self) == *old(self),

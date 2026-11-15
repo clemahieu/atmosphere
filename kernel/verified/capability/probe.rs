@@ -344,6 +344,7 @@ impl CapKernel {
     /// well formed, every entry and table walk, and the view.
     pub proof fn lemma_status_only(pre: Self, post: Self, t: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             Self::status_only(pre, post, t),
         ensures
@@ -375,6 +376,7 @@ impl CapKernel {
     /// first count entries from the path's level 1 index into r, is done.
     pub proof fn lemma_probe_done(pre: Self, post: Self, root: usize, slot: usize, va: u64, count: u64, t: usize, r: Probed)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.can_probe(root, slot, va, count),
             tree_of(&pre.table_pages, &pre.spaces).is_page(t),
@@ -411,6 +413,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + PROBE_MAX,
             final(self).wf(),
             Self::probe_answered(*old(self), *final(self), root, slot, va, count, ret is Some),
@@ -493,6 +496,7 @@ impl CapKernel {
         let ghost start = steps.count;
         while i < count
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 0 <= i <= count <= PROBE_MAX,
                 steps.count == start + i,
                 l1 + count <= ENTRIES,

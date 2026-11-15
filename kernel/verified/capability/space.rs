@@ -387,6 +387,7 @@ pub proof fn lemma_spaces_same_caps(
 /// And nothing of the block table but its page entries.
 pub proof fn lemma_spaces_same_pages(list: &Tree, tables: &Tables, spaces: &Spaces, a: &BlockTable, b: &BlockTable)
     requires
+        b.pages@.len() == a.pages@.len(),
         spaces_wf(list, tables, spaces, a),
         b.pages@ == a.pages@,
     ensures
@@ -414,6 +415,7 @@ pub proof fn lemma_spaces_refs_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         spaces_wf(list_a, tables_a, spaces, a),
         blocks_refs_changed(a, b, br, refs, dead),
         match br {
@@ -455,6 +457,7 @@ pub proof fn lemma_spaces_small_typed(
     size: int,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         spaces_wf(list_a, tables_a, spaces, a),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
         forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
@@ -495,6 +498,7 @@ pub proof fn lemma_spaces_small_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         spaces_wf(list_a, tables_a, spaces, a),
         a.wf(),
         a.tracks(base as int),
@@ -969,6 +973,7 @@ pub proof fn lemma_table_pages_same_nodes(list_a: &Tree, list_b: &Tree, pages: &
 /// And nothing of the block table but its page entries.
 pub proof fn lemma_table_pages_same_pages(list: &Tree, pages: &TablePages, a: &BlockTable, b: &BlockTable)
     requires
+        b.pages@.len() == a.pages@.len(),
         table_pages_wf(list, pages, a),
         b.pages@ == a.pages@,
     ensures
@@ -1019,6 +1024,7 @@ pub proof fn lemma_table_pages_refs_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         table_pages_wf(list_a, pages, a),
         blocks_refs_changed(a, b, br, refs, dead),
         match br {
@@ -1055,6 +1061,7 @@ pub proof fn lemma_table_page_dropped(
     t: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         table_pages_wf(list_a, pages, a),
         pages.maps@.contains_key(t),
         pages.records@[t].value().parent is None,
@@ -1099,6 +1106,7 @@ pub proof fn lemma_table_pages_small_typed(
     size: int,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         table_pages_wf(list, pages, a),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
         forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
@@ -1136,6 +1144,7 @@ pub proof fn lemma_spaces_space_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         spaces_wf(list_a, tables_a, sa, a),
         sa.roots@.contains_key(base),
         sa.holders@[base] == Set::<usize>::empty(),
@@ -1229,6 +1238,7 @@ pub proof fn lemma_table_pages_small_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         table_pages_wf(list_a, pages, a),
         forall|p: usize| #[trigger] list_b.pages@.dom().contains(p) && a.tracks_addr(p)
             ==> !a.in_block(base as int, (p / PAGE_SZ) as int),
@@ -1297,6 +1307,7 @@ pub proof fn lemma_table_node_pages_kept(
 /// base is a base, so not in it either.
 pub proof fn lemma_list_pages_used_small_typed(list: &Tree, a: &BlockTable, b: &BlockTable, base: usize, size: int)
     requires
+        b.pages@.len() == a.pages@.len(),
         list_pages_used(list, a),
         a.member_bases_wf(),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
@@ -1331,6 +1342,7 @@ pub proof fn lemma_list_pages_used_small_typed(list: &Tree, a: &BlockTable, b: &
 /// a base in the same block, so not in it either.
 pub proof fn lemma_list_pages_used_small_freed(list: &Tree, a: &BlockTable, b: &BlockTable, base: usize)
     requires
+        b.pages@.len() == a.pages@.len(),
         list_pages_used(list, a),
         a.wf(),
         a.tracks(base as int),
@@ -2325,6 +2337,7 @@ impl CapKernel {
         level: usize,
     )
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
@@ -2509,6 +2522,7 @@ impl CapKernel {
     /// `base`: no leaf, frame or list page lay in it, and the list's new pages are its first five.
     proof fn lemma_table_page_blocks(pre: Self, post: Self, base: usize, page: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::table_page_step(pre, post),
             same_mapping_nodes(&pre.list, &post.list),
             post.holders == pre.holders,
@@ -2633,6 +2647,7 @@ impl CapKernel {
     /// new block's first five are its base and members.
     proof fn lemma_table_page_list_pages_used(pre: Self, post: Self, base: usize, page: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             post.blocks.wf(),
             base % TABLE_PAGE_BYTES == 0,
@@ -2673,6 +2688,7 @@ impl CapKernel {
     /// lay outside the block, keeps its node and keeps its permissions, since no spare page is shared.
     proof fn lemma_table_page_pages(pre: Self, post: Self, base: usize, page: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::table_page_step(pre, post),
             base % TABLE_PAGE_BYTES == 0,
             base / PAGE_SZ == page,
@@ -3036,6 +3052,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(steps).count <= old(steps).count + RETYPE_TABLE_PAGE_STEPS,
             final(self).wf(),
             Self::table_page_retype_answered(*old(self), *final(self), root, from, base, level, ret),
@@ -3322,6 +3339,7 @@ impl CapKernel {
     /// capability, and every other lay outside the block, keeps its pages and keeps its holders.
     proof fn lemma_spaces_space_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::space_step(pre, post, child),
             base % TABLE_PAGE_BYTES == 0,
             base / PAGE_SZ == page,
@@ -3450,6 +3468,7 @@ impl CapKernel {
     /// holder changed.
     proof fn lemma_space_blocks(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::space_step(pre, post, child),
             same_mapping_nodes(&pre.list, &post.list),
             post.holders == pre.holders,
@@ -3553,6 +3572,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + RETYPE_SPACE_STEPS,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),

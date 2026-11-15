@@ -240,6 +240,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            Self::page_count_kept(*old(self), *final(self)),
             final(self).wf(),
             Self::delete_answered(*old(self), *final(self), root, at, ret),
             ret is Some ==> Self::cap_deleted_at(*old(self), *final(self), root, at),
@@ -351,6 +352,7 @@ impl CapKernel {
     /// blocks owe the rest of the invariant.
     pub proof fn lemma_delete_holders(pre: Self, post: Self, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
             pre.list.nodes@[n as int].live,
@@ -639,6 +641,7 @@ impl CapKernel {
     /// parent, and it was no mapping, so no mapping's frame lost its holder.
     pub proof fn lemma_delete_mappings(pre: Self, post: Self, n: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
             pre.list.nodes@[n as int].live,

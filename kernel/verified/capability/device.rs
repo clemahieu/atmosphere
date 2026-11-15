@@ -726,11 +726,13 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is DeviceBinding,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + UNBIND_DEVICE_STEPS,
             Self::device_unbound(*old(self), *final(self), n),
             final(self).blocks.wf(),
             final(self).devices.wf(),
             final(self).stale_epoch.wf(),
+            final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
@@ -851,6 +853,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             first == old(self).list.seq@[0],
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + MAX_DEVICES,
             final(self).wf(),
             ret == old(self).can_add_device(root, slot, info),
@@ -1113,6 +1116,7 @@ impl CapKernel {
             count <= MAX_DEVICES,
             slot + count <= usize::MAX,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + MAX_DEVICES * (MAX_DEVICES + 1),
             final(self).wf(),
             ret == old(self).can_add_devices(root, slot, devices@, count),
@@ -1162,6 +1166,7 @@ impl CapKernel {
         let mut k = 0;
         while k != count
             invariant
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 self.wf(),
                 0 <= k <= count,
                 start == old(steps).count,
@@ -1687,6 +1692,7 @@ impl CapKernel {
     /// devices, and no capability, holder, leaf, table page, thread, process or mapping changed.
     proof fn lemma_bind_device_objects(pre: Self, post: Self, m: usize, d: int)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.is_cap(m),
             pre.payload_of(m).kind is Space,
@@ -1887,6 +1893,7 @@ impl CapKernel {
     /// last unbind, as devices_placed asks of a bound device.
     proof fn lemma_bind_device_wf(pre: Self, post: Self, m: usize, d: int)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.is_cap(m),
             pre.payload_of(m).kind is Space,
@@ -1961,6 +1968,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             ret == old(self).can_bind_device(root, i, j),
             !ret ==> *final(self) == *old(self),
@@ -2133,6 +2141,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             final(steps).count <= old(steps).count + UNLINK_ARM_STEPS,
             ret == old(self).can_unbind_device(root, i),

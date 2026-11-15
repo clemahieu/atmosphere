@@ -105,6 +105,7 @@ impl CapKernel {
     /// what it read before but the region's own, which reads as a block retype has typed and zeroed.
     pub proof fn lemma_reserved_typed_2m(pre: Self, post: Self, r: usize)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             post.blocks.wf(),
             r < pre.blocks.num_2m(),
@@ -617,6 +618,7 @@ impl CapKernel {
                     ==> region_2m((old(self).spaces.kernel_root@ / PAGE_SZ) as int) != frame_region(base)
             },
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,

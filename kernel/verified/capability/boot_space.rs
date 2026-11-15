@@ -147,6 +147,7 @@ impl CapKernel {
     /// block table types nothing more.
     proof fn lemma_table_block_kept(pre: Self, post: Self, process: usize, b: usize)
         requires
+            pre.blocks.span_wf(),
             pre.root_table_block(process, b),
             post.tables == pre.tables,
             kinds_kept(&pre.blocks, &post.blocks),
@@ -212,6 +213,7 @@ impl CapKernel {
                 old(self).root_space(process),
             ).contains_key(p),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -414,6 +416,7 @@ impl CapKernel {
             }
             // The untyped's blocks the tables left: the maps type nothing.
             let u = pre.payload_of(pre.root_untyped(process));
+            tab.lemma_page_span();
             assert forall|j: int| image_tables_bound(runs@) <= j < untyped_tables(u)
                 implies #[trigger] post.root_table_block(process, cursor_block(u.base, j)) by {
                 assert(tab.root_table_block(process, cursor_block(u.base, j)));

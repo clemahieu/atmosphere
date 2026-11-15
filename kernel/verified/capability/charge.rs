@@ -95,6 +95,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             Self::step_ok(*old(self), *final(self), c as int),
             Self::charged_entry(*old(self), *final(self), c as int, now),
             final(self).view() == old(self).view(),
@@ -180,6 +181,7 @@ impl CapKernel {
     /// Core c's state changed in since only: still well formed, and no process sees it.
     proof fn lemma_since_written(pre: Self, post: Self, c: int)
         requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             0 <= c < NUM_CPUS,
             post == (Self { cores: post.cores, ..pre }),

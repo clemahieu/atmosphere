@@ -254,6 +254,7 @@ pub proof fn lemma_page_base(blocks: &BlockTable, b: usize)
 /// A step that changes no page's kind or object keeps every table leaf block owned.
 pub proof fn lemma_leaf_blocks_owned_same_types(tables: &Tables, a: &BlockTable, b: &BlockTable)
     requires
+        b.pages@.len() == a.pages@.len(),
         leaf_blocks_owned(tables, a),
         forall|i: int| a.tracks(i) ==> {
             &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
@@ -280,6 +281,7 @@ pub proof fn lemma_leaf_blocks_same_nodes(list_a: &Tree, list_b: &Tree, tables: 
 /// And nothing of the block table but its page entries.
 pub proof fn lemma_leaf_blocks_same_pages(list: &Tree, tables: &Tables, a: &BlockTable, b: &BlockTable)
     requires
+        b.pages@.len() == a.pages@.len(),
         leaf_blocks_wf(list, tables, a),
         b.pages@ == a.pages@,
     ensures
@@ -315,6 +317,7 @@ pub proof fn lemma_leaf_blocks_refs_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         leaf_blocks_wf(list_a, tables, a),
         objects_wf(tables, a, holders),
         holders.contains_key(br),
@@ -348,6 +351,7 @@ pub proof fn lemma_holders_unkeyed_small_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         holders_wf(list, tables, a, zeroing, holders),
         !holders.contains_key(BlockRef::Small(base)),
         blocks_refs_changed(a, b, BlockRef::Small(base), refs, dead),
@@ -407,6 +411,7 @@ pub proof fn lemma_zeroing_typed_small_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         zeroing.wf(),
         zeroing_typed(zeroing, a),
         blocks_refs_changed(a, b, BlockRef::Small(base), refs, dead),
@@ -448,6 +453,7 @@ pub proof fn lemma_objects_unframed_block_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         objects_wf(tables, a, holders),
         !(a.pages@[p as int].object is Frame),
         blocks_refs_changed(a, b, BlockRef::Small(p), refs, dead),
@@ -507,6 +513,7 @@ pub proof fn lemma_leaf_blocks_other_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         leaf_blocks_wf(list_a, tables, a),
         objects_wf(tables, a, holders),
         !(a.pages@[p as int].object is TableLeaf),
@@ -540,6 +547,7 @@ pub proof fn lemma_leaf_blocks_leaf_dropped(
     n: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         tables.leaves_wf(list_a),
         leaf_blocks_wf(list_a, tables, a),
         objects_wf(tables, a, holders),
@@ -580,6 +588,7 @@ pub proof fn lemma_leaf_blocks_small_typed(
     size: int,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         leaf_blocks_wf(list, tables, a),
         objects_wf(tables, a, holders),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
@@ -606,6 +615,7 @@ pub proof fn lemma_leaf_blocks_small_freed(
     base: usize,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         tables.leaves_wf(list),
         leaf_blocks_wf(list, tables, a),
         objects_wf(tables, a, holders),
@@ -653,6 +663,7 @@ pub proof fn lemma_objects_refs_changed(
     dead: bool,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         objects_wf(tables, a, ha),
         blocks_refs_changed(a, b, br, refs, dead),
         forall|x: BlockRef| #[trigger] hb.contains_key(x) == ha.contains_key(x),
@@ -771,6 +782,7 @@ pub proof fn lemma_objects_small_typed(
     size: int,
 )
     requires
+        b.pages@.len() == a.pages@.len(),
         objects_wf(ta, a, holders),
         forall|br: BlockRef| #[trigger] holders.contains_key(br) ==> block_typed(a, br),
         a.span_wf(),
@@ -860,6 +872,7 @@ pub fn add_block_ref(blocks: &mut BlockTable, br: BlockRef) -> (added: bool)
         old(blocks).wf(),
         block_typed(old(blocks), br),
     ensures
+        final(blocks).pages@.len() == old(blocks).pages@.len(),
         final(blocks).wf(),
         added == (block_refs(old(blocks), br) != usize::MAX),
         !added ==> *final(blocks) == *old(blocks),
@@ -892,6 +905,7 @@ pub fn drop_block_ref(blocks: &mut BlockTable, br: BlockRef)
         block_typed(old(blocks), br),
         block_refs(old(blocks), br) > 0,
     ensures
+        final(blocks).pages@.len() == old(blocks).pages@.len(),
         final(blocks).wf(),
         blocks_refs_changed(
             old(blocks),
@@ -929,6 +943,7 @@ pub fn drop_block_ref(blocks: &mut BlockTable, br: BlockRef)
 
 /// Only br's count and dead flag differ between a and b, so every page's block is as it was.
 pub open spec fn blocks_refs_changed(a: &BlockTable, b: &BlockTable, br: BlockRef, refs: usize, dead: bool) -> bool {
+    &&& b.pages@.len() == a.pages@.len()
     &&& block_refs(b, br) == refs
     &&& block_dead(b, br) == dead
     &&& forall|i: usize| a.tracks(i as int) ==> #[trigger] block_ref(b, i) == block_ref(a, i)
@@ -948,6 +963,7 @@ pub open spec fn blocks_refs_changed(a: &BlockTable, b: &BlockTable, br: BlockRe
 /// block in that block, at the count it had: a typed block's pages are not free, and neither is its base.
 pub proof fn lemma_run_keeps_block(a: &BlockTable, b: &BlockTable, page: int, order: usize, i: usize)
     requires
+        b.pages@.len() == a.pages@.len(),
         forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] a.pages@[page + k].kind is Free,
         a.kept_but_run(*b, page, order),
         a.tracks(i as int),
@@ -976,6 +992,8 @@ pub proof fn lemma_run_keeps_block(a: &BlockTable, b: &BlockTable, page: int, or
 /// have typed the same blocks.
 pub proof fn lemma_same_structure(a: &BlockTable, b: &BlockTable)
     requires
+        a.span_wf(),
+        b.pages@.len() == a.pages@.len(),
         forall|i: int| a.tracks(i) ==> {
             &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
             &&& b.pages@[i].base == a.pages@[i].base
@@ -1021,6 +1039,7 @@ proof fn lemma_region_of_bytes(addr: int, r: int, pages: int, regions: int)
 /// The 2M region of a byte address, from the region's bounds: the address is on a tracked page.
 pub proof fn lemma_region_2m_of_bytes(blocks: &BlockTable, addr: int, r: usize)
     requires
+        blocks.span_wf(),
         r < blocks.num_2m(),
         r * SIZE_2M <= addr < (r + 1) * SIZE_2M,
     ensures
@@ -1035,6 +1054,7 @@ pub proof fn lemma_region_2m_of_bytes(blocks: &BlockTable, addr: int, r: usize)
 /// The 1G region of a byte address, from the region's bounds: the address is on a tracked page.
 pub proof fn lemma_region_1g_of_bytes(blocks: &BlockTable, addr: int, r: usize)
     requires
+        blocks.span_wf(),
         r < blocks.num_1g(),
         r * SIZE_1G <= addr < (r + 1) * SIZE_1G,
     ensures
@@ -1221,6 +1241,7 @@ pub proof fn lemma_holders_frame_added(
     br: BlockRef,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         holders_wf(list_a, tables_a, blocks_a, zeroing, holders),
         forall|x: usize| x != n ==> #[trigger] tables_b.is_cap(list_b, x) == tables_a.is_cap(list_a, x),
         forall|x: usize| x != n && #[trigger] tables_a.is_cap(list_a, x) ==> tables_b.payload_of(x) == tables_a.payload_of(x),
@@ -1311,6 +1332,7 @@ pub proof fn lemma_holders_frame_dropped(
     br: BlockRef,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         holders_wf(list_a, tables_a, blocks_a, zeroing, holders),
         forall|x: usize| x != n ==> #[trigger] tables_b.is_cap(list_b, x) == tables_a.is_cap(list_a, x),
         forall|x: usize| x != n && #[trigger] tables_a.is_cap(list_a, x) ==> tables_b.payload_of(x) == tables_a.payload_of(x),
@@ -1399,6 +1421,7 @@ pub proof fn lemma_holders_mapping_dropped(
     br: BlockRef,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         holders_wf(list_a, tables, blocks_a, zeroing, holders),
         n < NODE_SPACE,
         list_a.nodes@[n as int].live,
@@ -1498,6 +1521,7 @@ pub proof fn lemma_zeroing_typed_refs_changed(
     dead: bool,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         zeroing.wf(),
         holders_wf(list, tables, blocks_a, zeroing, holders),
         holders.contains_key(br),
@@ -1583,6 +1607,7 @@ pub proof fn lemma_holders_small_freed(
     base: usize,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing, holders),
         blocks_a.tracks(base as int),
@@ -1643,6 +1668,7 @@ pub proof fn lemma_holders_2m_freed(
     r: usize,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing, holders),
         r < blocks_a.num_2m(),
@@ -1699,6 +1725,7 @@ pub proof fn lemma_holders_1g_freed(
     r: usize,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing, holders),
         r < blocks_a.num_1g(),
@@ -1871,6 +1898,7 @@ pub proof fn lemma_holders_small_typed(
     order: usize,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing, holders),
         small_order(order),
@@ -1941,6 +1969,7 @@ pub proof fn lemma_holders_region_typed(
     r: usize,
 )
     requires
+        blocks_b.pages@.len() == blocks_a.pages@.len(),
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing_a, holders),
         r < blocks_a.level_regions(level),
@@ -2063,6 +2092,7 @@ pub proof fn lemma_holders_region_done(
 /// A page outside the small block being freed is read in the same block after.
 pub proof fn lemma_block_ref_small_freed(a: &BlockTable, b: &BlockTable, base: usize, i: usize)
     requires
+        b.pages@.len() == a.pages@.len(),
         a.wf(),
         a.tracks(base as int),
         a.tracks(i as int),
@@ -2084,6 +2114,7 @@ pub proof fn lemma_block_ref_small_freed(a: &BlockTable, b: &BlockTable, base: u
 /// A page of a typed block is read in the same block after a free small block is typed.
 pub proof fn lemma_block_ref_small_typed(a: &BlockTable, b: &BlockTable, base: usize, order: usize, i: usize)
     requires
+        b.pages@.len() == a.pages@.len(),
         small_order(order),
         base % (order_pages(order) as usize) == 0,
         a.tracks_run(base as int, order_pages(order)),
@@ -2109,6 +2140,7 @@ pub proof fn lemma_block_ref_small_typed(a: &BlockTable, b: &BlockTable, base: u
 /// A page outside the 2M block being freed is read in the same block after.
 pub proof fn lemma_block_ref_2m_freed(a: &BlockTable, b: &BlockTable, r: usize, i: usize)
     requires
+        b.pages@.len() == a.pages@.len(),
         r < a.num_2m(),
         a.regions_2m@[r as int].typed,
         b.pages@ == a.pages@,
@@ -2125,6 +2157,7 @@ pub proof fn lemma_block_ref_2m_freed(a: &BlockTable, b: &BlockTable, r: usize, 
 /// A page outside the 1G block being freed is read in the same block after.
 pub proof fn lemma_block_ref_1g_freed(a: &BlockTable, b: &BlockTable, r: usize, i: usize)
     requires
+        b.pages@.len() == a.pages@.len(),
         a.wf(),
         r < a.num_1g(),
         a.regions_1g@[r as int].typed,

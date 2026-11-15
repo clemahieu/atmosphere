@@ -114,6 +114,7 @@ pub open spec fn nodes_kept(a: Tree, b: Tree) -> bool {
 /// Block table b has typed what a had and no more: every tracked page has the kind it had and every
 /// large region is typed or not as it was, so a block free in a is free in b.
 pub open spec fn kinds_kept(a: &BlockTable, b: &BlockTable) -> bool {
+    &&& b.pages@.len() == a.pages@.len()
     &&& forall|i: int| a.tracks(i) ==> (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
     &&& forall|x: int| 0 <= x < b.num_2m() ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed
     &&& forall|x: int| 0 <= x < b.num_1g() ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed
@@ -414,6 +415,7 @@ impl CapKernel {
         done: int,
     )
         requires
+            cur.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.maps_ready(root, process, leaf2, runs),
             Self::maps_progress(cur, pre, process, runs, r, k, i, v, added, done),
             0 <= r < runs.len(),
@@ -468,6 +470,7 @@ impl CapKernel {
         }
         let phys = image_phys(runs);
         assert(phys[r] == (runs[r].phys, runs[r].pages));
+        pre.lemma_page_span();
         assert(cur.blocks.tracks_run(runs[r].phys as int, runs[r].pages as int));
         let g = image_frame(runs[r], v);
         assert(g == b.0 + i);
@@ -500,6 +503,8 @@ impl CapKernel {
         done: int,
     )
         requires
+            post.blocks.pages@.len() == cur.blocks.pages@.len(),
+            cur.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.maps_ready(root, process, leaf2, runs),
             Self::maps_progress(cur, pre, process, runs, r, k, i, v, added, done),
             0 <= r < runs.len(),
@@ -527,6 +532,8 @@ impl CapKernel {
     {
         hide(CapKernel::wf);
         Self::lemma_step_ready(pre, cur, root, process, leaf2, runs, r, k, i, v, added, done);
+        pre.lemma_page_span();
+        cur.lemma_page_span();
         reveal(CapKernel::maps_progress);
         let a0 = tree_of(&pre.table_pages, &pre.spaces);
         let c0 = tree_of(&cur.table_pages, &cur.spaces);
@@ -583,8 +590,7 @@ impl CapKernel {
             assert(image_phys(runs)[a] == (runs[a].phys, runs[a].pages));
             assert(cur.blocks.tracks_run(runs[a].phys as int, runs[a].pages as int));
             let q = g / PAGES_PER_2M as int;
-            lemma_div_pos_is_pos(g, PAGES_PER_2M as int);
-            lemma_div_is_ordered(g, cur.blocks.page_count() as int - 1, PAGES_PER_2M as int);
+            cur.blocks.lemma_tracked_regions(g);
             assert(0 <= q < cur.blocks.num_2m());
             assert(post.blocks.regions_2m@[q].typed == cur.blocks.regions_2m@[q].typed);
             if q != g0 / PAGES_PER_2M {
@@ -746,6 +752,7 @@ impl CapKernel {
         requires
             old(self).maps_ready(root, process, leaf2, runs@),
         ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
@@ -765,6 +772,8 @@ impl CapKernel {
         let mut r: usize = 0;
         while r < runs.len()
             invariant
+                self.blocks.pages@.len() == pre.blocks.pages@.len(),
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
                 self.cores == pre.cores,
@@ -783,6 +792,8 @@ impl CapKernel {
             proof {
                 reveal(CapKernel::maps_ready);
                 assert(image_phys(runs@)[r as int] == (phys, pages));
+                pre.lemma_page_span();
+                assert(phys + pages <= pre.blocks.page_count());
                 assert(pre.blocks.tracks_run(phys as int, pages as int));
                 assert(pages > 0);
                 assert(in_virt_at(runs@, r as int, virt + pages - 1));
@@ -795,6 +806,8 @@ impl CapKernel {
             let ghost mut k: int = 0;
             while m > 0
                 invariant
+                    self.blocks.pages@.len() == pre.blocks.pages@.len(),
+                    self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                     self.stale_epoch == pre.stale_epoch,
                     self.flush_epoch == pre.flush_epoch,
                     self.cores == pre.cores,
@@ -806,6 +819,7 @@ impl CapKernel {
                     virt == runs@[r as int].virt,
                     pages == runs@[r as int].pages,
                     pre.blocks.tracks_run(phys as int, pages as int),
+                    phys + pages <= usize::MAX,
                     virt + pages <= ENTRIES * PAGES_PER_L4,
                     virt <= w,
                     ps == phys + (w - virt),
@@ -846,6 +860,8 @@ impl CapKernel {
                 let mut j: usize = 0;
                 while j < size
                     invariant
+                        self.blocks.pages@.len() == pre.blocks.pages@.len(),
+                        self.blocks.pages@.len() == old(self).blocks.pages@.len(),
                         self.stale_epoch == pre.stale_epoch,
                         self.flush_epoch == pre.flush_epoch,
                         self.cores == pre.cores,
