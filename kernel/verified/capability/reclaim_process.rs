@@ -46,8 +46,9 @@ use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;
 
-/// The units of a retire: two checks of each core, and a flush IPI to each core on the list.
-pub const RETIRE_STEPS: usize = 2 * NUM_CPUS + SEND_FLUSH_STEPS;
+/// The units of a retire: two checks of each core, a flush IPI to each core on the list, and naming each
+/// core on it a flush target.
+pub const RETIRE_STEPS: usize = 3 * NUM_CPUS + SEND_FLUSH_STEPS;
 
 impl CapKernel {
     /// The process at `base` is dead with zero references: no capability names it and no thread is
@@ -88,12 +89,14 @@ impl CapKernel {
     }
 
     /// What retiring the space of the dead process at `base` did to self: the flush epoch rose by one,
-    /// the space's retire epoch is the new epoch, a flush IPI went to each core on its list, and nothing
-    /// else changed, so every core depends on what it did before. The core that acknowledges the new
-    /// epoch no longer depends on the space.
+    /// the space's retire epoch is the new epoch, a flush IPI went to each core on its list, each such core
+    /// was named a flush target at the new epoch, and nothing else changed, so every core depends on what
+    /// it did before. The core that acknowledges the new epoch no longer depends on the space.
     pub open spec fn process_retired(&self, post: Self, base: usize) -> bool {
-        &&& post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, ..*self })
+        &&& post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, targeted: post.targeted, ..*self })
         &&& post.flush_epoch == self.flush_epoch + 1
+        &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d]
+            == if self.loaded(d, base) { post.flush_epoch } else { self.targeted@[d] }
         &&& post.flush_ipis@ == self.flush_ipis@ + self.flush_targets(base)
         &&& post.spaces == (Spaces { loaded: post.spaces.loaded, ..self.spaces })
         &&& post.spaces.loaded@ == self.spaces.loaded@.insert(base, post.spaces.loaded@[base])
@@ -327,8 +330,11 @@ impl CapKernel {
             pre.flush_epoch < usize::MAX,
             pre.spaces.loaded@[s].value().retired == 0,
             forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] pre.cores@[d].space != Some(s),
-            post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, ..pre }),
+            post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, targeted: post.targeted, ..pre }),
             post.flush_epoch == pre.flush_epoch + 1,
+            post.targeted.wf(),
+            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d]
+                == if core_listed(pre.spaces.loaded@[s].value().list, d) { post.flush_epoch } else { pre.targeted@[d] },
             post.spaces == (Spaces { loaded: post.spaces.loaded, ..pre.spaces }),
             post.spaces.loaded@ == pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]),
             post.spaces.loaded@[s].addr() == pre.spaces.loaded@[s].addr(),
@@ -388,6 +394,22 @@ impl CapKernel {
             assert(pre.tlb@[d].contains(e));
             assert(pre.acked(d) == post.acked(d));
         }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && post.left_stale(e)
+            implies post.owes(d) by {
+            assert(pre.tlb@[d].contains(e));
+            assert(pre.acked(d) == post.acked(d));
+            assert(pre.acked(d) <= pre.flush_epoch);
+            assert(pre.targeted_at(d) <= post.targeted_at(d));
+            if e.space == s {
+                assert(pre.depends(d, s));
+                assert(pre.loaded(d, s));
+                assert(post.targeted_at(d) == post.flush_epoch);
+            } else {
+                assert(sb.loaded@[e.space] == sa.loaded@[e.space]);
+                assert(pre.left_stale(e));
+                assert(pre.owes(d));
+            }
+        }
         Self::lemma_iommus_same(pre, post);
         assert(post.tlb_wf());
     }
@@ -446,6 +468,7 @@ impl CapKernel {
         self.send_flush(base, Ghost(sent), Tracked(&mut *steps));
         let ghost mid = *self;
         self.flush_epoch = self.flush_epoch + 1;
+        self.target_listed(cores.list, Tracked(&mut *steps));
         let mut next = cores;
         next.retired = self.flush_epoch;
         let tracked mut perm = self.spaces.loaded.borrow_mut().tracked_remove(base);
@@ -626,6 +649,7 @@ impl CapKernel {
         &&& post.holders == pre.holders
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -975,6 +999,32 @@ impl CapKernel {
         Self::lemma_process_freed_pages(pre, post, base);
         Self::lemma_process_freed_objects(pre, post, base);
         Self::lemma_devices_same_caps(pre, post);
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies pre.left_stale(e) || pre.owes(c) by {
+            let a = tree_of(&pre.table_pages, &pre.spaces);
+            let b = tree_of(&post.table_pages, &post.spaces);
+            assert(pre.tlb@[c].contains(e));
+            assert(e.space != base);
+            assert(post.spaces.loaded@[e.space] == pre.spaces.loaded@[e.space]);
+            if !pre.left_stale(e) {
+                assert forall|t: usize| #![trigger a.record(t)]
+                    a.is_table(t) && a.record(t).space == Some(e.space) && (a.is_root(t) || a.record(t).parent is Some)
+                        && t / PAGE_SZ == e.page
+                    implies b.is_table(t) && b.record(t).space == Some(e.space) && (b.is_root(t) || b.record(t).parent is Some) by {
+                    if t == base {
+                        assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, t));
+                        assert(root_record_wf(&pre.spaces, t));
+                        assert(t == e.space);
+                    } else {
+                        lemma_space_removed_others(a, b, base, t);
+                    }
+                }
+                assert forall|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page) implies walk(b, e.space, p) == walk(a, e.space, p) by {
+                    lemma_walk_space_removed(a, b, base, e.space, p);
+                }
+                lemma_says_kept(a, b, e.space, e.page);
+            }
+        }
         Self::lemma_tlb_space_removed(pre, post, base);
         assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] pre.cores@[c].space != Some(base) by {
             if pre.cores@[c].space == Some(base) {
@@ -1240,9 +1290,9 @@ impl CapKernel {
         }
         proof {
             pre.lemma_process_page_unmapped(page);
-            pre.lemma_acknowledged_is_clean(page);
             pre.lemma_spent_process(base);
             pre.lemma_process_released(base);
+            pre.lemma_acknowledged_is_clean(page);
         }
         self.free_spent_process(base, Tracked(steps));
         proof {

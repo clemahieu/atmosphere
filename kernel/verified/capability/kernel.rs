@@ -1217,6 +1217,11 @@ pub struct CapKernel {
     pub list: Tree,
     pub cores: Array<CoreState, NUM_CPUS>,
     pub flush_epoch: usize,
+    /// For each core, the latest flush epoch at which a step that moved the epoch named it a target: an
+    /// unmap, a cut or a retire in a space the core is listed on. A core holds an entry its space's tables
+    /// no longer say only while it is behind this epoch (targets_wf), so a free waits for no other core
+    /// and the flush IPI goes to these cores alone. See design/flush-without-waiting/.
+    pub targeted: Array<usize, NUM_CPUS>,
     /// For each core, what it may still hold that its space's tables no longer say. What they do say,
     /// a core that loaded the space may hold too: see core_may_hold. Only a flush of a core empties its
     /// set: TlbModel.
@@ -1573,6 +1578,35 @@ impl CapKernel {
         self.cores@[c].acked_epoch as int
     }
 
+    /// The latest epoch at which a step named core c a flush target.
+    pub open spec fn targeted_at(&self, c: int) -> int {
+        self.targeted@[c] as int
+    }
+
+    /// Core c was named a flush target at an epoch it has not acknowledged, so it was sent the flush IPI
+    /// and has not yet taken it.
+    pub open spec fn owes(&self, c: int) -> bool {
+        self.acked(c) < self.targeted_at(c)
+    }
+
+    /// Entry e is one its space's tables no longer say, or of a space a retire has left for teardown.
+    pub open spec fn left_stale(&self, e: TlbEntry) -> bool {
+        ||| !space_says(tree_of(&self.table_pages, &self.spaces), e.space, e.page)
+        ||| self.spaces.loaded@[e.space].value().retired != 0
+    }
+
+    /// No core is named a target past the epoch, and a core that holds an entry its space's tables no
+    /// longer say owes a flush: the step that left the entry stale named the core, since a core holds
+    /// entries only of spaces it is listed on, and only the core's flush, which empties its model, takes
+    /// the debt away. A core that owes nothing holds only what the tables say, so a free need not wait
+    /// for it. See design/flush-without-waiting/.
+    pub open spec fn targets_wf(&self) -> bool {
+        &&& self.targeted.wf()
+        &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] self.targeted@[c] <= self.flush_epoch
+        &&& forall|c: int, e: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && self.left_stale(e) ==> self.owes(c)
+    }
+
     /// The epoch IOMMU i's last finished invalidate started at.
     pub open spec fn iommu_acked(&self, i: int) -> int {
         self.iommus.acked@[i] as int
@@ -1708,6 +1742,7 @@ impl CapKernel {
         &&& self.stale_epoch.wf()
         &&& self.stale_epoch.pages@.len() == self.blocks.pages@.len()
         &&& self.tlb_wf()
+        &&& self.targets_wf()
         &&& entries_translatable(&self.blocks, self.tlb@, self.iommus.tlb@)
         &&& ids_wf(self.cores@, self.spaces.loaded@)
         &&& registers_wf(self.spaces.registers@, self.cores@, self.spaces.loaded@, self.spaces.kernel_root@)
@@ -1934,21 +1969,22 @@ impl CapKernel {
         }
     }
 
-    /// Every core that has loaded a space and every present IOMMU has acknowledged this epoch. A core
-    /// that has not loaded one holds no translation of any space (lemma_loaded_a_space), an absent IOMMU
-    /// holds none either, and neither is sent a flush, so neither has anything to acknowledge. Either
-    /// kind of space may have mapped a page, and the word records only when.
+    /// Every core that has loaded a space and owes a flush, and every present IOMMU, has acknowledged
+    /// this epoch. A core that has not loaded one holds no translation of any space
+    /// (lemma_loaded_a_space), one that owes no flush holds only what the tables say (targets_wf), an
+    /// absent IOMMU holds nothing, and none of them is sent a flush, so none has anything to
+    /// acknowledge. Either kind of space may have mapped a page, and the word records only when.
     /// See design/flush-without-waiting/.
     pub open spec fn all_acknowledged(&self, epoch: int) -> bool {
-        &&& forall|c: int| 0 <= c < NUM_CPUS && has_loaded(self.cores@[c]) ==> epoch <= #[trigger] self.acked(c)
+        &&& forall|c: int| 0 <= c < NUM_CPUS && has_loaded(self.cores@[c]) && self.owes(c) ==> epoch <= #[trigger] self.acked(c)
         &&& forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] self.iommu_present(i) ==> epoch <= self.iommu_acked(i)
     }
 
-    /// Something can hold a translation: a core has loaded a space, or an IOMMU is present. An unmap
-    /// then leaves its pages unacknowledged; with neither, nothing holds a translation of any space
-    /// and no acknowledgement is waited for.
+    /// Something can hold a stale translation: a core that has loaded a space owes a flush, or an IOMMU
+    /// is present. An unmap then leaves its pages unacknowledged; with neither, nothing holds a
+    /// translation the tables no longer say and no acknowledgement is waited for.
     pub open spec fn flush_awaited(&self) -> bool {
-        ||| exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] self.cores@[c])
+        ||| exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] self.cores@[c]) && self.owes(c)
         ||| exists|i: int| 0 <= i < NUM_IOMMUS && #[trigger] self.iommu_present(i)
     }
 
@@ -1965,8 +2001,8 @@ impl CapKernel {
             !post.acknowledged(f),
     {
         let epoch = post.stale_epoch.pages@[f as int] as int;
-        if exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]) {
-            let c = choose|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]);
+        if exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]) && post.owes(c) {
+            let c = choose|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]) && post.owes(c);
             assert(pre.acked(c) <= pre.flush_epoch);
             assert(post.acked(c) < epoch);
         } else {
@@ -2061,6 +2097,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
@@ -2081,6 +2118,7 @@ impl CapKernel {
         &&& post.list == pre.list
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.mapped == pre.mapped
         &&& post.blocks == pre.blocks
@@ -2127,14 +2165,54 @@ impl CapKernel {
     pub proof fn lemma_acknowledged_is_clean(&self, f: usize)
         requires
             self.wf(),
+            self.blocks.tracks(f as int),
+            (self.blocks.pages@[f as int].kind is Base && self.blocks.pages@[f as int].object is TablePage)
+                ==> self.blocks.pages@[f as int].dead,
+            (self.blocks.pages@[f as int].kind is Base && self.blocks.pages@[f as int].object is Process)
+                ==> forall|d: int| 0 <= d < NUM_CPUS ==> !#[trigger] self.depends(d, (f * PAGE_SZ) as usize),
             !self.mapped@.contains(f),
             self.acknowledged(f),
         ensures
             self.no_stale_translation(f),
     {
+        let tree = tree_of(&self.table_pages, &self.spaces);
         assert forall|c: int, s: usize| 0 <= c < NUM_CPUS implies !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: f }) by {
-            if self.tlb@[c].contains(TlbEntry { space: s, page: f }) {
+            let e = TlbEntry { space: s, page: f };
+            if self.tlb@[c].contains(e) {
                 self.lemma_loaded_a_space(c);
+                assert(self.depends(c, s));
+                if !self.left_stale(e) {
+                    assert(space_says(tree, s, f));
+                    if exists|p: SpacePath| #[trigger] walk_finds(tree, s, p, f) {
+                        let p = choose|p: SpacePath| #[trigger] walk_finds(tree, s, p, f);
+                        self.lemma_walk_mapped(s, p, f);
+                    } else {
+                        let t = choose|t: usize| #![trigger tree.record(t)]
+                            tree.is_table(t) && tree.record(t).space == Some(s)
+                            && (tree.is_root(t) || tree.record(t).parent is Some) && t / PAGE_SZ == f;
+                        if tree.is_page(t) {
+                            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, t));
+                            lemma_table_page_aligned(t);
+                            if tree.is_root(t) {
+                                assert(space_wf(&self.list, &self.spaces, &self.blocks, t));
+                            }
+                            assert(self.blocks.pages@[f as int].dead);
+                            assert(!self.list.nodes@[t as int].live);
+                            assert(tree.record(t).parent is None);
+                        } else {
+                            assert(space_wf(&self.list, &self.spaces, &self.blocks, t));
+                            lemma_table_page_aligned(t);
+                            assert(t as int == f as int * PAGE_SZ as int);
+                            assert(root_record_wf(&self.spaces, t));
+                            assert(s == t);
+                            if !(self.spaces.records@[t].value().kind is Process) {
+                                assert(self.spaces.loaded@[t].value().list == 0u32);
+                                lemma_no_core_listed(c as u32);
+                            }
+                        }
+                    }
+                }
+                assert(self.owes(c));
                 assert(self.stale_epoch.above(self.acked(c), f));
                 assert(self.stale_epoch.pages@[f as int] <= self.acked(c));
             }
@@ -2148,21 +2226,25 @@ impl CapKernel {
         }
     }
 
-    /// A step that leaves the stale epochs, the cores and the IOMMUs as they were leaves every page
-    /// acknowledged that was.
+    /// A step that leaves the stale epochs, the cores, the targets and the IOMMUs as they were leaves
+    /// every page acknowledged that was.
     pub proof fn lemma_acknowledged_kept(pre: Self, post: Self, f: usize)
         requires
             post.blocks.pages@.len() == pre.blocks.pages@.len(),
             post.stale_epoch == pre.stale_epoch,
             post.cores == pre.cores,
+            post.targeted == pre.targeted,
             post.iommus == pre.iommus,
             pre.acknowledged(f),
         ensures
             post.acknowledged(f),
     {
         let epoch = pre.stale_epoch.pages@[f as int] as int;
-        assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(post.cores@[c]) implies epoch <= #[trigger] post.acked(c) by {
+        assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(post.cores@[c]) && post.owes(c)
+            implies epoch <= #[trigger] post.acked(c) by {
             assert(pre.acked(c) == post.acked(c));
+            assert(pre.targeted_at(c) == post.targeted_at(c));
+            assert(pre.owes(c));
         }
         assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] post.iommu_present(i) implies epoch <= post.iommu_acked(i) by {
             assert(pre.iommu_present(i) && pre.iommu_acked(i) == post.iommu_acked(i));
@@ -2174,11 +2256,14 @@ impl CapKernel {
     pub proof fn lemma_region_acknowledged_is_clean(&self, level: Large, r: usize)
         requires
             self.wf(),
+            r < self.blocks.level_regions(level),
+            block_typed(&self.blocks, level_ref(level, r)),
             self.region_unmapped(level, r),
             self.region_acknowledged(level, r),
         ensures
             self.region_clean(level, r),
     {
+        let tree = tree_of(&self.table_pages, &self.spaces);
         assert forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) implies self.no_stale_translation(i) by {
             assert(i / level_pages(level) == r) by {
                 match level {
@@ -2195,9 +2280,30 @@ impl CapKernel {
                 }
             }
             assert forall|c: int, s: usize| 0 <= c < NUM_CPUS implies !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: i }) by {
-                if self.tlb@[c].contains(TlbEntry { space: s, page: i }) {
+                let e = TlbEntry { space: s, page: i };
+                if self.tlb@[c].contains(e) {
                     self.lemma_loaded_a_space(c);
                     assert(!self.mapped@.contains(i));
+                    if !self.left_stale(e) {
+                        assert(space_says(tree, s, i));
+                        if exists|p: SpacePath| #[trigger] walk_finds(tree, s, p, i) {
+                            let p = choose|p: SpacePath| #[trigger] walk_finds(tree, s, p, i);
+                            self.lemma_walk_mapped(s, p, i);
+                        } else {
+                            let t = choose|t: usize| #![trigger tree.record(t)]
+                                tree.is_table(t) && tree.record(t).space == Some(s)
+                                && (tree.is_root(t) || tree.record(t).parent is Some) && t / PAGE_SZ == i;
+                            if tree.is_page(t) {
+                                assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, t));
+                                lemma_table_page_aligned(t);
+                            } else {
+                                assert(space_wf(&self.list, &self.spaces, &self.blocks, t));
+                                lemma_table_page_aligned(t);
+                            }
+                            lemma_large_block_alone(&self.blocks, level, r, BlockRef::Small(i), i);
+                        }
+                    }
+                    assert(self.owes(c));
                     assert(self.stale_epoch.above(self.acked(c), i));
                     assert(self.stale_epoch.region(level, r) <= self.acked(c));
                 }
@@ -2314,6 +2420,7 @@ impl CapKernel {
             }
         }
         self.flush_epoch = 0;
+        self.targeted = Array::new(0);
         self.tlb = Tracked(tlb);
         self.mapped = Ghost(Set::empty());
         proof {
@@ -2389,8 +2496,70 @@ impl CapKernel {
         self.has_acknowledged(epoch, Tracked(steps))
     }
 
-    /// Whether every core that has loaded a space and every present IOMMU has reached this epoch, which
-    /// is a bounded number of loads.
+    /// Names each core on `list`, a space's list of cores read before the epoch moved, a flush target at
+    /// the current epoch: one bounded loop over the cores, one unit per core. Every other core's record
+    /// is kept. See design/flush-without-waiting/.
+    pub(crate) fn target_listed(&mut self, list: u32, Tracked(steps): Tracked<&mut Steps>)
+        requires
+            old(self).targeted.wf(),
+        ensures
+            final(steps).count <= old(steps).count + NUM_CPUS,
+            final(self).targeted.wf(),
+            *final(self) == (CapKernel { targeted: final(self).targeted, ..*old(self) }),
+            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] final(self).targeted@[d]
+                == if core_listed(list, d) { old(self).flush_epoch } else { old(self).targeted@[d] },
+    {
+        let ghost pre = *self;
+        let mut c: usize = 0;
+        let ghost start = steps.count;
+        while c != NUM_CPUS
+            invariant
+                0 <= c <= NUM_CPUS,
+                steps.count == start + c,
+                start == old(steps).count,
+                self.targeted.wf(),
+                *self == (CapKernel { targeted: self.targeted, ..pre }),
+                forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] self.targeted@[d]
+                    == if d < c && core_listed(list, d) { pre.flush_epoch } else { pre.targeted@[d] },
+            decreases NUM_CPUS - c,
+        {
+            let ghost before = *self;
+            if (list >> (c as u32)) & 1u32 == 1u32 {
+                assert(core_listed(list, c as int));
+                self.targeted.set(c, self.flush_epoch);
+            } else {
+                assert(!core_listed(list, c as int));
+            }
+            proof {
+                assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.targeted@[d]
+                    == if d < c + 1 && core_listed(list, d) { pre.flush_epoch } else { pre.targeted@[d] } by {
+                    assert(before.targeted@[d]
+                        == if d < c && core_listed(list, d) { pre.flush_epoch } else { pre.targeted@[d] });
+                }
+            }
+            c = c + 1;
+            proof {
+                steps.step();
+            }
+        }
+    }
+
+    /// Whether core d was named a flush target after `epoch`, the epoch before an operation, and has not
+    /// acknowledged it: the cores the operation's unmaps, cuts and retires named, which the glue sends
+    /// the flush IPI. See design/flush-without-waiting/.
+    pub fn targeted_since(&self, d: usize, epoch: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            d < NUM_CPUS,
+        ensures
+            ret == (epoch < self.targeted_at(d as int) && self.owes(d as int)),
+    {
+        let targeted = *self.targeted.get(d);
+        epoch < targeted && self.cores.get(d).acked_epoch < targeted
+    }
+
+    /// Whether every core that has loaded a space and owes a flush, and every present IOMMU, has reached
+    /// this epoch, which is a bounded number of loads.
     fn has_acknowledged(&self, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
@@ -2406,12 +2575,13 @@ impl CapKernel {
                 0 <= c <= NUM_CPUS,
                 steps.count == start + c,
                 start == old(steps).count,
-                forall|d: int| 0 <= d < c && has_loaded(self.cores@[d]) ==> epoch <= #[trigger] self.acked(d),
+                forall|d: int| 0 <= d < c && has_loaded(self.cores@[d]) && self.owes(d) ==> epoch <= #[trigger] self.acked(d),
             decreases NUM_CPUS - c,
         {
             let state = self.cores.get(c);
-            if state.loaded_a_space() && state.acked_epoch < epoch {
+            if state.loaded_a_space() && state.acked_epoch < *self.targeted.get(c) && state.acked_epoch < epoch {
                 assert(has_loaded(self.cores@[c as int]));
+                assert(self.owes(c as int));
                 assert(self.acked(c as int) < epoch);
                 return false;
             }
@@ -2427,7 +2597,7 @@ impl CapKernel {
                 0 <= i <= NUM_IOMMUS,
                 steps.count == start + NUM_CPUS + i,
                 start == old(steps).count,
-                forall|d: int| 0 <= d < NUM_CPUS && has_loaded(self.cores@[d]) ==> epoch <= #[trigger] self.acked(d),
+                forall|d: int| 0 <= d < NUM_CPUS && has_loaded(self.cores@[d]) && self.owes(d) ==> epoch <= #[trigger] self.acked(d),
                 forall|j: int| 0 <= j < i && #[trigger] self.iommu_present(j) ==> epoch <= self.iommu_acked(j),
             decreases NUM_IOMMUS - i,
         {
@@ -2444,15 +2614,69 @@ impl CapKernel {
         true
     }
 
-    /// The TLB model reads nothing but the cores, the epoch, the staleness record and the core lists it
-    /// has entries for.
+    /// Adding fresh unlinked roots or table pages leaves every prior walk and linked table intact, and
+    /// keeping loaded records intact leaves retired epochs unchanged, so no TLB entry becomes newly stale.
+    pub proof fn lemma_tree_extended_left_stale(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.tlb == pre.tlb,
+            tree_extended(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces)),
+            forall|s: usize| #[trigger] pre.spaces.loaded@.contains_key(s) ==> {
+                &&& post.spaces.loaded@.contains_key(s)
+                &&& post.spaces.loaded@[s].value() == pre.spaces.loaded@[s].value()
+            },
+        ensures
+            forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+                ==> pre.left_stale(e) || pre.owes(c),
+    {
+        reveal(CapKernel::wf);
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies pre.left_stale(e) || pre.owes(c) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(pre.spaces.loaded@.contains_key(e.space));
+            assert(post.spaces.loaded@[e.space].value() == pre.spaces.loaded@[e.space].value());
+            if !pre.left_stale(e) {
+                assert(space_says(a, e.space, e.page));
+                if exists|t: usize| #![trigger a.record(t)] a.is_table(t) && a.record(t).space == Some(e.space)
+                    && (a.is_root(t) || a.record(t).parent is Some) && t / PAGE_SZ == e.page {
+                    let t = choose|t: usize| #![trigger a.record(t)] a.is_table(t) && a.record(t).space == Some(e.space)
+                        && (a.is_root(t) || a.record(t).parent is Some) && t / PAGE_SZ == e.page;
+                    assert(a.is_table(t));
+                    assert(b.is_table(t));
+                    assert(b.record(t) == a.record(t));
+                    assert(b.is_root(t) == a.is_root(t));
+                    assert(space_says(b, e.space, e.page));
+                } else {
+                    let p = choose|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page);
+                    assert(walk(a, e.space, p) is Some);
+                    assert(a.is_root(e.space));
+                    lemma_mapping_extended(a, b, e.space);
+                    assert(space_mapping(b, e.space) =~= space_mapping(a, e.space));
+                    assert(space_mapping(a, e.space).contains_key(p));
+                    assert(space_mapping(b, e.space).contains_key(p));
+                    assert(space_mapping(b, e.space)[p] == space_mapping(a, e.space)[p]);
+                    assert(walk(b, e.space, p) == walk(a, e.space, p));
+                    assert(walk_finds(b, e.space, p, e.page));
+                    assert(space_says(b, e.space, e.page));
+                }
+                assert(!post.left_stale(e));
+            }
+        }
+    }
+
+    /// The TLB model reads nothing but the cores, the epoch, the targets, the staleness record and the
+    /// core lists it has entries for, and the targets nothing more but which entries the tables say.
     pub proof fn lemma_tlb_same(pre: Self, post: Self)
         requires
             post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.tlb_wf(),
+            pre.targets_wf(),
             post.cores == pre.cores,
             post.iommus == pre.iommus,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2461,8 +2685,12 @@ impl CapKernel {
                 &&& post.spaces.loaded@.contains_key(s)
                 &&& post.spaces.loaded@[s].value() == pre.spaces.loaded@[s].value()
             },
+            forall|c: int, e: TlbEntry|
+                0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+                ==> pre.left_stale(e) || pre.owes(c),
         ensures
             post.tlb_wf(),
+            post.targets_wf(),
     {
         assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.acked(c) <= post.flush_epoch by {
             assert(pre.acked(c) <= pre.flush_epoch);
@@ -2478,6 +2706,15 @@ impl CapKernel {
             assert(pre.tlb@[c].contains(e));
             assert(pre.acked(c) == post.acked(c));
         }
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies post.owes(c) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(pre.acked(c) == post.acked(c));
+            assert(pre.targeted_at(c) == post.targeted_at(c));
+            if pre.left_stale(e) {
+                assert(pre.owes(c));
+            }
+        }
         Self::lemma_iommus_same(pre, post);
     }
 
@@ -2486,16 +2723,22 @@ impl CapKernel {
         requires
             post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.tlb_wf(),
+            pre.targets_wf(),
             post.cores == pre.cores,
             post.iommus == pre.iommus,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.spaces.loaded@ == pre.spaces.loaded@.remove(base),
             forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && e.space == base ==> !#[trigger] pre.tlb@[c].contains(e),
+            forall|c: int, e: TlbEntry|
+                0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+                ==> pre.left_stale(e) || pre.owes(c),
         ensures
             post.tlb_wf(),
+            post.targets_wf(),
     {
         assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.acked(c) <= post.flush_epoch by {
             assert(pre.acked(c) <= pre.flush_epoch);
@@ -2513,7 +2756,39 @@ impl CapKernel {
             assert(pre.tlb@[c].contains(e));
             assert(pre.acked(c) == post.acked(c));
         }
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies post.owes(c) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(pre.acked(c) == post.acked(c));
+            assert(pre.targeted_at(c) == post.targeted_at(c));
+            if pre.left_stale(e) {
+                assert(pre.owes(c));
+            }
+        }
         Self::lemma_iommus_same(pre, post);
+    }
+
+    /// A step that leaves the tables, the spaces, the targets and each core's acknowledgement as they
+    /// were, lowers no epoch and gives no core an entry keeps the targets well formed.
+    pub proof fn lemma_targets_same(pre: Self, post: Self)
+        requires
+            pre.targets_wf(),
+            post.targeted == pre.targeted,
+            pre.flush_epoch <= post.flush_epoch,
+            post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] post.acked(c) == pre.acked(c),
+            forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) ==> pre.tlb@[c].contains(e),
+        ensures
+            post.targets_wf(),
+    {
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies post.owes(c) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(pre.left_stale(e));
+            assert(pre.owes(c));
+            assert(post.acked(c) == pre.acked(c));
+        }
     }
 
     /// More pages being mapped keeps the TLB model: it says least about a mapped page.
@@ -2521,16 +2796,22 @@ impl CapKernel {
         requires
             post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.tlb_wf(),
+            pre.targets_wf(),
             post.cores == pre.cores,
             post.iommus == pre.iommus,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             forall|g: usize| #[trigger] pre.mapped@.contains(g) ==> post.mapped@.contains(g),
             post.stale_epoch == pre.stale_epoch,
             post.spaces.loaded == pre.spaces.loaded,
+            forall|c: int, e: TlbEntry|
+                0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+                ==> pre.left_stale(e) || pre.owes(c),
         ensures
             post.tlb_wf(),
+            post.targets_wf(),
     {
         assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.acked(c) <= post.flush_epoch by {
             assert(pre.acked(c) <= pre.flush_epoch);
@@ -2545,6 +2826,15 @@ impl CapKernel {
             assert(pre.tlb@[c].contains(e));
             assert(!pre.mapped@.contains(e.page));
             assert(pre.acked(c) == post.acked(c));
+        }
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies post.owes(c) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(pre.acked(c) == post.acked(c));
+            assert(pre.targeted_at(c) == post.targeted_at(c));
+            if pre.left_stale(e) {
+                assert(pre.owes(c));
+            }
         }
         assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] post.iommus.tlb@[i].contains(e) implies post.iommu_present(i) by {
             assert(pre.iommus.tlb@[i].contains(e));
@@ -2672,6 +2962,7 @@ impl CapKernel {
             post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2710,6 +3001,7 @@ impl CapKernel {
             post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2902,6 +3194,7 @@ impl CapKernel {
             post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -3032,6 +3325,7 @@ impl CapKernel {
             post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -3145,6 +3439,11 @@ impl CapKernel {
                 assert(pre.iommus.tlb@[j].contains(e));
                 assert(pre.iommu_acked(j) == self.iommu_acked(j));
             }
+            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && self.left_stale(e)
+                implies self.owes(c) by {
+                assert(pre.tlb@[c].contains(e) && pre.left_stale(e));
+                assert(pre.owes(c));
+            }
             // An acknowledgement only rises, so a bound device's IOMMU still acknowledged its last unbind.
             assert(pre.iommu_acked(i as int) <= pre.flush_epoch);
             assert forall|d: int| 0 <= d < self.devices.count && (#[trigger] self.devices.records@[d]).space is Some implies {
@@ -3234,6 +3533,14 @@ impl CapKernel {
                 assert(self.tlb@[d] == pre.tlb@[d]);
                 assert(pre.acked(d) == self.acked(d));
                 assert(pre.tlb@[d].contains(f));
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && self.left_stale(e)
+                implies self.owes(d) by {
+                assert(d != c as int);
+                assert(self.cores@[d] == pre.cores@[d]);
+                assert(self.tlb@[d] == pre.tlb@[d]);
+                assert(pre.tlb@[d].contains(e) && pre.left_stale(e));
+                assert(pre.owes(d));
             }
         }
     }

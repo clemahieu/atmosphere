@@ -39,9 +39,10 @@ use crate::pptr::*;
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 
-/// The steps of noting one table page's cut stale: the one page its record_run writes.
+/// The steps of noting one table page's cut stale: the one page its record_run writes, and one per core
+/// for naming the space's cores flush targets.
 /// See design/one-lock-bounded-steps/.
-pub const CUT_NOTE_STEPS: usize = 1;
+pub const CUT_NOTE_STEPS: usize = 1 + NUM_CPUS;
 
 /// Every table the kernel holds, whether a table page or a space's root, by its block's address.
 pub ghost struct TableTree {
@@ -1135,6 +1136,7 @@ impl CapKernel {
         &&& tree.record(child).level == tree_of(&pre.table_pages, &pre.spaces).record(child).level
         &&& tree.record(parent).written
         &&& linked(tree_of(&pre.table_pages, &pre.spaces), tree, parent, entry, child, s)
+        &&& post.targeted == pre.targeted
     }
 
     /// The invariant after a link, given what the tables' own invariants say. The entry written was
@@ -1151,6 +1153,11 @@ impl CapKernel {
             tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
             tree_of(&pre.table_pages, &pre.spaces).record(parent).level >= 2,
             tree_of(&pre.table_pages, &pre.spaces).entry(parent, entry).is_empty(),
+            tree_of(&pre.table_pages, &pre.spaces).child_slot(parent, entry),
+            pre.table_pages.maps@.contains_key(child),
+            child != parent,
+            tree_of(&pre.table_pages, &pre.spaces).record(child).space is None,
+            !tree_of(&pre.table_pages, &pre.spaces).record(child).written,
             post.list == pre.list,
             post.tables == pre.tables,
             post.blocks == pre.blocks,
@@ -1163,6 +1170,7 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.cores == pre.cores,
+            post.targeted == pre.targeted,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
@@ -1175,7 +1183,36 @@ impl CapKernel {
         ensures
             post.wf(),
     {
-        lemma_frame_entries_linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s);
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        lemma_frame_entries_linked(a, b, parent, entry, child, s);
+        assert(a.is_page(child));
+        assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
+        assert(table_record_wf(&pre.table_pages, child));
+        assert forall|i: usize| i < ENTRIES implies #[trigger] a.entry(child, i).is_empty() by {
+            assert(pre.table_pages.maps@[child].value()[i].is_empty());
+        }
+        lemma_table_bound(&pre.blocks, child);
+        assert forall|c: int, e: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies pre.left_stale(e) || pre.owes(c) by {
+            if !pre.left_stale(e) {
+                assert forall|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page)
+                    implies walk(b, e.space, p) == walk(a, e.space, p) by {
+                    lemma_walk_linked(a, b, parent, entry, child, s, e.space, p);
+                }
+                assert forall|u: usize| #![trigger a.record(u)]
+                    a.is_table(u) && a.record(u).space == Some(e.space) && (a.is_root(u) || a.record(u).parent is Some)
+                        && u / PAGE_SZ == e.page
+                    implies b.is_table(u) && b.record(u).space == Some(e.space) && (b.is_root(u) || b.record(u).parent is Some) by {
+                    assert(u != child);
+                    assert(b.maps.contains_key(u) == a.maps.contains_key(u));
+                    assert(b.roots.contains_key(u) == a.roots.contains_key(u));
+                    assert(b.record(u).space == a.record(u).space && b.record(u).parent == a.record(u).parent);
+                }
+                lemma_says_kept(a, b, e.space, e.page);
+            }
+        }
         Self::lemma_tables_changed_wf(pre, post);
     }
 
@@ -1197,6 +1234,7 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.cores == pre.cores,
+            post.targeted == pre.targeted,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
@@ -1211,6 +1249,9 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             table_links_wf(tree_of(&post.table_pages, &post.spaces)),
+            forall|c: int, e: TlbEntry|
+                0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+                ==> pre.left_stale(e) || pre.owes(c),
         ensures
             post.wf(),
     {
@@ -1454,6 +1495,7 @@ impl CapKernel {
             final(self).endpoints == old(self).endpoints,
             final(self).replies == old(self).replies,
             final(self).cores == old(self).cores,
+            final(self).targeted == old(self).targeted,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
             final(self).iommus == old(self).iommus,
@@ -1501,6 +1543,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -1595,6 +1638,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -1797,6 +1841,7 @@ impl CapKernel {
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -2015,6 +2060,7 @@ impl CapKernel {
     /// A detach alone: only the tables changed.
     pub open spec fn detach_done(pre: Self, post: Self, t: usize) -> bool {
         &&& Self::tables_cut(pre, post, t)
+        &&& post.targeted == pre.targeted
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
@@ -2035,6 +2081,8 @@ impl CapKernel {
         &&& post.flush_epoch == pre.flush_epoch + 1
         &&& post.stale_epoch.written(post.flush_epoch, t / PAGE_SZ)
         &&& post.flush_awaited() ==> !post.acknowledged(t / PAGE_SZ)
+        &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d]
+            == if space is Some && pre.loaded(d, space->Some_0) { post.flush_epoch } else { pre.targeted@[d] }
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
             0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
@@ -2178,6 +2226,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
+            final(self).targets_wf(),
             Self::cut_stale_noted(*old(self), *final(self), t),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
@@ -2202,13 +2251,21 @@ impl CapKernel {
         let ghost space = tree.record(t).space;
         proof {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
+            lemma_table_bound(&pre.blocks, t);
         }
+        // The space's list of cores, read before the epoch moves: each core on it is named a target.
+        let list = self.listed_on(
+            PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ)
+                .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
+                .space,
+        );
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
         proof {
             assert(pre.stale_epoch.bounded(epoch as int));
         }
         self.stale_epoch.record_run(t / PAGE_SZ, 1, epoch, Tracked(steps));
+        self.target_listed(list, Tracked(steps));
         proof {
             self.tlb.borrow_mut().grow(Seq::new(NUM_CPUS as nat, |d: int|
                 if space is Some && pre.depends(d, space->Some_0) {
@@ -2283,6 +2340,28 @@ impl CapKernel {
                 }
             }
             assert(self.tlb_wf());
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.targeted@[d]
+                == if space is Some && pre.loaded(d, space->Some_0) { self.flush_epoch } else { pre.targeted@[d] } by {
+                assert(core_listed(list, d) == (space is Some && pre.loaded(d, space->Some_0)));
+            }
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.targeted@[d] <= self.flush_epoch by {
+                assert(pre.targeted@[d] <= pre.flush_epoch);
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && self.left_stale(e)
+                implies self.owes(d) by {
+                assert(self.acked(d) == pre.acked(d));
+                assert(pre.acked(d) <= pre.flush_epoch);
+                assert(pre.targeted@[d] <= pre.flush_epoch);
+                if pre.tlb@[d].contains(e) {
+                    assert(pre.left_stale(e));
+                    assert(pre.owes(d));
+                } else {
+                    assert(space is Some && pre.depends(d, space->Some_0));
+                    assert(pre.loaded(d, space->Some_0));
+                    assert(self.targeted@[d] == self.flush_epoch);
+                }
+            }
+            assert(self.targets_wf());
             assert forall|d: int, g: usize| #![trigger self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
                 0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
                 implies self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g }) by {
@@ -2350,12 +2429,27 @@ impl CapKernel {
         let parent = q->0.table;
         let entry = q->0.entry;
         assert(detached(a, b, parent, entry, t));
-        if exists|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space) && u / PAGE_SZ == e.page {
-            let u = choose|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space) && u / PAGE_SZ == e.page;
+        if exists|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space)
+            && (a.is_root(u) || a.record(u).parent is Some) && u / PAGE_SZ == e.page {
+            let u = choose|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space)
+                && (a.is_root(u) || a.record(u).parent is Some) && u / PAGE_SZ == e.page;
             assert(b.maps.contains_key(u) == a.maps.contains_key(u));
             assert(b.roots.contains_key(u) == a.roots.contains_key(u));
             assert(b.record(u).space == a.record(u).space);
-            assert(b.is_table(u) && b.record(u).space == Some(e.space) && u / PAGE_SZ == e.page);
+            if u != t {
+                assert(b.record(u).parent == a.record(u).parent);
+                assert(b.is_table(u) && b.record(u).space == Some(e.space) && (b.is_root(u) || b.record(u).parent is Some)
+                    && u / PAGE_SZ == e.page);
+            } else {
+                // The cut table's own page: the record put it in the TLB of every core on its space.
+                assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
+                lemma_table_bound(&pre.blocks, t);
+                assert(t / PAGE_SZ < IDENTITY_SPAN / PAGE_SZ);
+                lemma_cut_pages(a, t, e.page);
+                assert(pre.depends(c, e.space));
+                assert(post.tlb@[c].contains(TlbEntry { space: e.space, page: e.page }));
+                assert(TlbEntry { space: e.space, page: e.page } == e);
+            }
             return;
         }
         let p = choose|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page);
@@ -2403,6 +2497,7 @@ impl CapKernel {
             post.table_pages == mid.table_pages,
             post.spaces == mid.spaces,
             post.cores == mid.cores,
+            post.targeted == mid.targeted,
             post.flush_epoch == mid.flush_epoch,
             post.tlb == mid.tlb,
             post.iommus == mid.iommus,
@@ -2570,6 +2665,23 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         self.note_cut_stale(t, Tracked(steps));
+        let ghost mid = *self;
+        proof {
+            let tree = tree_of(&pre.table_pages, &pre.spaces);
+            assert(tree_of(&mid.table_pages, &mid.spaces) == tree);
+            assert forall|d: int, s: usize|
+                0 <= d < NUM_CPUS
+                && tree.record(t).parent is Some
+                && tree.record(t).space == Some(s)
+                && #[trigger] mid.depends(d, s)
+                implies mid.owes(d) by {
+                assert(pre.depends(d, s));
+                assert(pre.loaded(d, s));
+                assert(mid.targeted@[d] == mid.flush_epoch);
+                assert(pre.acked(d) <= pre.flush_epoch);
+                assert(mid.acked(d) == pre.acked(d));
+            }
+        }
         self.detach_table(t);
         proof {
             let a = tree_of(&pre.table_pages, &pre.spaces);
@@ -2596,6 +2708,12 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).table_pages.maps@.contains_key(t),
+            forall|d: int, s: usize|
+                0 <= d < NUM_CPUS
+                && tree_of(&old(self).table_pages, &old(self).spaces).record(t).parent is Some
+                && tree_of(&old(self).table_pages, &old(self).spaces).record(t).space == Some(s)
+                && #[trigger] old(self).depends(d, s)
+                ==> old(self).owes(d),
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
@@ -2668,6 +2786,7 @@ impl CapKernel {
             final(self).endpoints == old(self).endpoints,
             final(self).replies == old(self).replies,
             final(self).cores == old(self).cores,
+            final(self).targeted == old(self).targeted,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
             final(self).iommus == old(self).iommus,
@@ -2767,6 +2886,7 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.cores == pre.cores,
+            post.targeted == pre.targeted,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
@@ -2783,6 +2903,11 @@ impl CapKernel {
             detached(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            forall|d: int, s: usize|
+                0 <= d < NUM_CPUS
+                && tree_of(&pre.table_pages, &pre.spaces).record(child).space == Some(s)
+                && #[trigger] pre.depends(d, s)
+                ==> pre.owes(d),
         ensures
             post.wf(),
             walks_detached(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry),
@@ -2795,7 +2920,6 @@ impl CapKernel {
         }
         lemma_links_detached(a, b, parent, entry, child);
         lemma_frame_entries_detached(a, b, parent, entry, child);
-        Self::lemma_tables_changed_wf(pre, post);
         assert forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p)
             == (if passes_through(a, r, p, parent, entry) { None } else { walk(a, r, p) }) by {
             lemma_walk_detached(a, b, parent, entry, child, r, p);
@@ -2803,6 +2927,36 @@ impl CapKernel {
         assert(walks_detached(a, b, parent, entry)) by {
             reveal(walks_detached);
         }
+        assert forall|c: int, e: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies pre.left_stale(e) || pre.owes(c) by {
+            if !pre.left_stale(e) && !pre.owes(c) {
+                assert(pre.tlb@[c].contains(e));
+                assert(pre.depends(c, e.space));
+                assert(a.record(child).space != Some(e.space));
+                assert forall|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page)
+                    implies walk(b, e.space, p) == walk(a, e.space, p) by {
+                    if passes_through(a, e.space, p, parent, entry) {
+                        pre.lemma_passes_in_space(e.space, p, parent, entry);
+                        reveal(table_links_wf);
+                        assert(a.maps.contains_key(child));
+                        assert(a.record(child).space == Some(e.space));
+                    }
+                }
+                assert forall|u: usize| #![trigger a.record(u)]
+                    a.is_table(u) && a.record(u).space == Some(e.space) && (a.is_root(u) || a.record(u).parent is Some)
+                        && u / PAGE_SZ == e.page
+                    implies b.is_table(u) && b.record(u).space == Some(e.space) && (b.is_root(u) || b.record(u).parent is Some) by {
+                    assert(u != child);
+                    assert(b.maps.contains_key(u) == a.maps.contains_key(u));
+                    assert(b.roots.contains_key(u) == a.roots.contains_key(u));
+                    assert(b.record(u).space == a.record(u).space);
+                    assert(b.record(u).parent == a.record(u).parent);
+                }
+                lemma_says_kept(a, b, e.space, e.page);
+            }
+        }
+        Self::lemma_tables_changed_wf(pre, post);
     }
 
     /// Cuts `child` from `entry` of the table page `parent`, whose entry names it.
@@ -2814,6 +2968,11 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).names_child(parent, entry),
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent == Some(TableParent { table: parent, entry }),
             child != parent,
+            forall|d: int, s: usize|
+                0 <= d < NUM_CPUS
+                && tree_of(&old(self).table_pages, &old(self).spaces).record(child).space == Some(s)
+                && #[trigger] old(self).depends(d, s)
+                ==> old(self).owes(d),
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
@@ -2865,6 +3024,11 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).names_child(parent, entry),
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent == Some(TableParent { table: parent, entry }),
             child != parent,
+            forall|d: int, s: usize|
+                0 <= d < NUM_CPUS
+                && tree_of(&old(self).table_pages, &old(self).spaces).record(child).space == Some(s)
+                && #[trigger] old(self).depends(d, s)
+                ==> old(self).owes(d),
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,

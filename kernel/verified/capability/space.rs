@@ -2400,6 +2400,7 @@ impl CapKernel {
             post.table_pages.spare@[(base + 7 * PAGE_SZ) as usize].is_uninit(),
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2454,6 +2455,9 @@ impl CapKernel {
             lemma_small_typed_translatable(&pre.blocks, &post.blocks, page, 3);
             lemma_entries_translatable_kept(&pre.blocks, &post.blocks, pre.tlb@, pre.iommus.tlb@);
             Self::lemma_devices_same_caps(pre, post);
+            pre.lemma_free_not_table(base, page);
+            assert(tree_extended(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces)));
+            Self::lemma_tree_extended_left_stale(pre, post);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_table_page_nodes(pre, post, mid, parent, base);
             Self::lemma_table_nodes_page_added(pre, post, base);
@@ -2988,6 +2992,7 @@ impl CapKernel {
     pub open spec fn table_page_retype_kept(pre: Self, post: Self) -> bool {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.devices == pre.devices
         &&& post.iommus.present == pre.iommus.present
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
@@ -3587,6 +3592,7 @@ impl CapKernel {
             final(self).table_pages == old(self).table_pages,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
@@ -3752,6 +3758,10 @@ impl CapKernel {
                 assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
                 assert(s != base);
             }
+            pre.lemma_free_not_table(base, page);
+            assert(post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]));
+            assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));
+            Self::lemma_tree_extended_left_stale(pre, post);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
             Self::lemma_table_nodes_frame(pre, post, child, child);

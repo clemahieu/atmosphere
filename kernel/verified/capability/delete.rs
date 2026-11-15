@@ -218,6 +218,7 @@ impl CapKernel {
         &&& Self::same_tree(pre, post)
         &&& post.list.parent@ == pre.list.parent@
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -331,6 +332,7 @@ impl CapKernel {
             assert(Self::same_tree(pre, post));
             assert(post.list.parent@ == pre.list.parent@);
             assert(post.flush_epoch == pre.flush_epoch);
+            assert(post.targeted == pre.targeted);
             assert(post.tlb == pre.tlb);
             assert(post.iommus == pre.iommus);
             assert(post.mapped == pre.mapped);

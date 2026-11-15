@@ -173,6 +173,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -457,6 +458,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -768,6 +770,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -908,6 +911,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).spaces.registers == old(self).spaces.registers,
@@ -1269,6 +1273,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -1381,6 +1386,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -1439,6 +1445,7 @@ impl CapKernel {
                 forall|j: int| leaf + ROOT_CORE_SLOT + c <= j < leaf + ROOT_CORE_SLOT + NUM_CPUS ==> !#[trigger] self.list.nodes@[j].live,
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
+                self.targeted == pre.targeted,
                 self.cores == pre.cores,
                 self.devices == pre.devices,
                 self.iommus.present == pre.iommus.present,
@@ -1658,6 +1665,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -1946,6 +1954,7 @@ impl CapKernel {
             // Everything else is as it was.
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2143,6 +2152,7 @@ impl CapKernel {
             post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2506,6 +2516,7 @@ impl CapKernel {
             // Everything else is as init left it.
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2901,6 +2912,16 @@ impl CapKernel {
             assert(!b.is_page(base));
         }
         lemma_links_root_added(a, b, base);
+        assert forall|s: usize| #[trigger] pre.spaces.loaded@.contains_key(s) implies {
+            &&& post.spaces.loaded@.contains_key(s)
+            &&& post.spaces.loaded@[s].value() == pre.spaces.loaded@[s].value()
+        } by {
+            assert(pre.spaces.roots@.contains_key(s));
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+            assert(s != base);
+        }
+        assert(tree_extended(a, b));
+        Self::lemma_tree_extended_left_stale(pre, post);
         Self::lemma_tlb_same(pre, post);
         lemma_ids_space_added(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
         lemma_registers_lists(pre.spaces.registers@, pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, pre.spaces.kernel_root@);

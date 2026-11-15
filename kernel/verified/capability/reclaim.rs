@@ -311,6 +311,7 @@ impl CapKernel {
         &&& post.zeroing == self.zeroing
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
+        &&& post.targeted == self.targeted
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.blocks.regions_2m@ == self.blocks.regions_2m@
@@ -353,6 +354,7 @@ impl CapKernel {
         &&& post.table_pages == self.table_pages
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
+        &&& post.targeted == self.targeted
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& Self::caps_frame(*self, post, base, base)
@@ -454,6 +456,7 @@ impl CapKernel {
             ==> #[trigger] post.blocks.pages@[i] == self.blocks.pages@[i]
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
+        &&& post.targeted == self.targeted
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.spaces == self.spaces
@@ -1104,6 +1107,7 @@ impl CapKernel {
         &&& post.table_pages == self.table_pages
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
+        &&& post.targeted == self.targeted
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.tables == self.tables
@@ -1369,6 +1373,7 @@ impl CapKernel {
             post.table_pages == mid.table_pages,
             post.stale_epoch == mid.stale_epoch,
             post.flush_epoch == mid.flush_epoch,
+            post.targeted == mid.targeted,
             post.tables == mid.tables,
             post.cores == mid.cores,
             post.iommus == mid.iommus,
@@ -1545,6 +1550,7 @@ impl CapKernel {
             final(self).table_pages == old(self).table_pages,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             forall|x: usize| x != n && x < NODE_SPACE && old(self).list.nodes@[x as int].live && old(self).list.childless(x)
                 ==> #[trigger] final(self).list.childless(x),
             final(self).cores == old(self).cores,
@@ -1663,6 +1669,7 @@ impl CapKernel {
             pre.lemma_leaf_unmapped(page, page);
             pre.lemma_leaf_unmapped(page, (page + 1) as usize);
             pre.lemma_acknowledged_is_clean(page);
+            pre.blocks.lemma_member_of(page as int, page + 1);
             pre.lemma_acknowledged_is_clean((page + 1) as usize);
         }
         self.free_empty_leaf(base, Tracked(steps));
@@ -1985,6 +1992,7 @@ impl CapKernel {
                 ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
@@ -2378,6 +2386,7 @@ impl CapKernel {
             post.holders == pre.holders,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2595,6 +2604,7 @@ impl CapKernel {
         &&& post.holders == pre.holders
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -2922,6 +2932,27 @@ impl CapKernel {
         assert(post.view() == pre.view());
         Self::lemma_table_freed_pages(pre, post, base);
         Self::lemma_node_block_objects(pre, post, base);
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies pre.left_stale(e) || pre.owes(c) by {
+            let a = tree_of(&pre.table_pages, &pre.spaces);
+            let b = tree_of(&post.table_pages, &post.spaces);
+            assert(pre.tlb@[c].contains(e));
+            assert(post.spaces.loaded == pre.spaces.loaded);
+            if !pre.left_stale(e) {
+                assert forall|t: usize| #![trigger a.record(t)]
+                    a.is_table(t) && a.record(t).space == Some(e.space) && (a.is_root(t) || a.record(t).parent is Some)
+                        && t / PAGE_SZ == e.page
+                    implies b.is_table(t) && b.record(t).space == Some(e.space) && (b.is_root(t) || b.record(t).parent is Some) by {
+                    if t != base {
+                        lemma_table_removed_others(a, b, base, t);
+                    }
+                }
+                assert forall|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page) implies walk(b, e.space, p) == walk(a, e.space, p) by {
+                    lemma_walk_table_removed(a, b, base, e.space, p);
+                }
+                lemma_says_kept(a, b, e.space, e.page);
+            }
+        }
         Self::lemma_tlb_same(pre, post);
         assert forall|n: usize| n < NODE_SPACE && (#[trigger] post.list.nodes@[n as int]).live
             && post.list.nodes@[n as int].kind is Hidden
@@ -3246,6 +3277,32 @@ impl CapKernel {
         assert(post.view() == pre.view());
         Self::lemma_space_freed_pages(pre, post, base);
         Self::lemma_node_block_objects(pre, post, base);
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies pre.left_stale(e) || pre.owes(c) by {
+            let a = tree_of(&pre.table_pages, &pre.spaces);
+            let b = tree_of(&post.table_pages, &post.spaces);
+            assert(pre.tlb@[c].contains(e));
+            assert(e.space != base);
+            assert(post.spaces.loaded@[e.space] == pre.spaces.loaded@[e.space]);
+            if !pre.left_stale(e) {
+                assert forall|t: usize| #![trigger a.record(t)]
+                    a.is_table(t) && a.record(t).space == Some(e.space) && (a.is_root(t) || a.record(t).parent is Some)
+                        && t / PAGE_SZ == e.page
+                    implies b.is_table(t) && b.record(t).space == Some(e.space) && (b.is_root(t) || b.record(t).parent is Some) by {
+                    if t == base {
+                        assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, t));
+                        assert(root_record_wf(&pre.spaces, t));
+                        assert(t == e.space);
+                    } else {
+                        lemma_space_removed_others(a, b, base, t);
+                    }
+                }
+                assert forall|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page) implies walk(b, e.space, p) == walk(a, e.space, p) by {
+                    lemma_walk_space_removed(a, b, base, e.space, p);
+                }
+                lemma_says_kept(a, b, e.space, e.page);
+            }
+        }
         Self::lemma_tlb_space_removed(pre, post, base);
         assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] pre.cores@[c].space != Some(base) by {
             if pre.cores@[c].space == Some(base) {
@@ -4379,11 +4436,16 @@ impl CapKernel {
                 } else {
                     assert(exists|i: usize| #[trigger] a.names_child(base, i));
                 }
+                assert((cut + 1) * CUT_NOTE_STEPS == cut * CUT_NOTE_STEPS + CUT_NOTE_STEPS) by (nonlinear_arith);
             }
             cut = cut + 1;
             e = e + 1;
         }
         proof {
+            assert(cut * CUT_NOTE_STEPS <= TABLE_SLICE_BUDGET * CUT_NOTE_STEPS) by (nonlinear_arith)
+                requires
+                    cut <= TABLE_SLICE_BUDGET,
+            ;
             if cut == 0 {
                 assert(*self == pre);
                 assert(e == ENTRIES);
@@ -5344,6 +5406,7 @@ impl CapKernel {
             final(self).zeroing == old(self).zeroing,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,

@@ -1709,6 +1709,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).tlb == old(self).tlb,
             final(self).iommus == old(self).iommus,
             final(self).mapped == old(self).mapped,
@@ -1851,6 +1852,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).tlb == old(self).tlb,
             final(self).iommus == old(self).iommus,
             final(self).mapped == old(self).mapped,
@@ -2380,6 +2382,7 @@ impl CapKernel {
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
@@ -2921,6 +2924,7 @@ impl CapKernel {
     pub open spec fn thread_retype_kept(pre: Self, post: Self) -> bool {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.cores == pre.cores
         &&& post.iommus == pre.iommus
         &&& post.spaces == pre.spaces
@@ -3160,6 +3164,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
         &&& post.tlb == pre.tlb
@@ -3272,6 +3277,7 @@ impl CapKernel {
             assert(pre.tlb@[d].contains(e));
         }
         assert(post.tlb_wf());
+        Self::lemma_targets_same(pre, post);
     }
 
     /// Core c, running nothing, makes thread t, Runnable on c, its current thread. Which thread is the
@@ -3649,6 +3655,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
         &&& post.tlb == pre.tlb
@@ -4120,6 +4127,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
         &&& post.tlb == pre.tlb
@@ -5129,6 +5137,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.devices == pre.devices
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -5477,6 +5486,7 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
@@ -5770,6 +5780,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.devices == pre.devices
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped

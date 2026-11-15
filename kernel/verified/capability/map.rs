@@ -577,6 +577,37 @@ pub proof fn lemma_walk_entry_written(a: TableTree, b: TableTree, t: usize, e: u
     }
 }
 
+/// Writing frame mapping e of table t takes nothing from what a space's tables say: no table's link
+/// changes, and a walk that found a page read no empty entry.
+pub proof fn lemma_says_entry_written(a: TableTree, b: TableTree, t: usize, e: usize, s: usize, g: usize)
+    requires
+        entry_written(a, b, t, e),
+        space_says(a, s, g),
+    ensures
+        space_says(b, s, g),
+{
+    assert forall|u: usize| #![trigger a.record(u)]
+        a.is_table(u) && a.record(u).space == Some(s) && (a.is_root(u) || a.record(u).parent is Some) && u / PAGE_SZ == g
+        implies b.is_table(u) && b.record(u).space == Some(s) && (b.is_root(u) || b.record(u).parent is Some) by {
+        assert(b.maps.contains_key(u) == a.maps.contains_key(u));
+        if u != t {
+            assert(b.record(u) == a.record(u));
+        }
+    }
+    assert forall|p: SpacePath| #[trigger] walk_finds(a, s, p, g) implies walk(b, s, p) == walk(a, s, p) by {
+        lemma_walk_entry_written(a, b, t, e, s, p);
+        if reaches(a, s, p, t, e) {
+            assert(!a.entry(t, e).perm.present);
+            assert(!a.names_child(t, e));
+            assert(step(a, t, e) is None);
+            assert(frame_entry(a, t, e) is None);
+            assert(large_entry(a, t, e) is None);
+            assert(walk(a, s, p) is None);
+        }
+    }
+    lemma_says_kept(a, b, s, g);
+}
+
 /// Writing frame mapping e of table t moves no table walk: a step reads only entries that name a child,
 /// which the entry does in neither tree.
 pub proof fn lemma_walk_table_entry_written(a: TableTree, b: TableTree, t: usize, e: usize)
@@ -1138,6 +1169,7 @@ impl CapKernel {
         &&& post.mappings@ == pre.mappings@.insert(node, MappingRecord { table: t, entry: e, frame, large })
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
+        &&& post.targeted == pre.targeted
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
@@ -1185,6 +1217,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
@@ -1247,6 +1280,7 @@ impl CapKernel {
                 &&& pre.can_link(root, slot, place.table, place.entry, from, child)
                 &&& Self::link_done(pre, post, place.table, place.entry, child, s)
                 &&& post.flush_epoch == pre.flush_epoch
+                &&& post.targeted == pre.targeted
                 &&& discharges(pre.view(), post.view(), root, Effect::Local)
             },
         }
@@ -1268,6 +1302,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
     }
 
@@ -1391,6 +1426,7 @@ impl CapKernel {
             }
         }
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
@@ -1410,6 +1446,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
     }
 
@@ -1453,6 +1490,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
@@ -1597,6 +1635,7 @@ impl CapKernel {
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             ret == old(self).can_map_large(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -1619,6 +1658,7 @@ impl CapKernel {
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).iommus.present == old(self).iommus.present,
             ret == old(self).can_map_large(root, slot, kind, SpacePath { l4, l3, l2, l1: 0 }, from, page),
@@ -1760,6 +1800,7 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
@@ -1871,6 +1912,7 @@ impl CapKernel {
             final(self).list == old(self).list,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).iommus == old(self).iommus,
             final(self).tlb == old(self).tlb,
             final(self).mapped == old(self).mapped,
@@ -2826,6 +2868,33 @@ impl CapKernel {
         }
     }
 
+    /// A map writes one empty entry, so a core's entry that the tables no longer say was already so, or
+    /// the core already owed the flush. Proved apart from lemma_map_wf: that body is at the solver's
+    /// budget on aarch64 once this quantifier is inlined into it.
+    #[verifier::spinoff_prover]
+    proof fn lemma_map_keeps_stale(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
+        requires
+            pre.wf(),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
+            post.tlb == pre.tlb,
+        ensures
+            forall|c: int, ent: TlbEntry|
+                0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(ent) && post.left_stale(ent)
+                ==> pre.left_stale(ent) || pre.owes(c),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        Self::lemma_map_tree(pre, post, t, e, f, frame, large);
+        assert forall|c: int, ent: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(ent) && post.left_stale(ent)
+            implies pre.left_stale(ent) || pre.owes(c) by {
+            if !pre.left_stale(ent) {
+                lemma_says_entry_written(a, b, t, e, ent.space, ent.page);
+            }
+        }
+    }
+
     /// Everything the invariant says after the writes of a map.
     #[verifier::spinoff_prover]
     proof fn lemma_map_wf(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
@@ -2836,6 +2905,7 @@ impl CapKernel {
             Self::map_written(pre, post, t, e, f, frame, large),
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped@ == pre.mapped@.union(map_pages(frame, large)),
@@ -2849,6 +2919,7 @@ impl CapKernel {
         Self::lemma_map_objects(pre, post, t, e, f, frame, large);
         Self::lemma_map_tables(pre, post, t, e, f, frame, large);
         Self::lemma_map_mappings(pre, post, t, e, f, frame, large);
+        Self::lemma_map_keeps_stale(pre, post, t, e, f, frame, large);
         Self::lemma_tlb_more_mapped(pre, post);
         assert(!pre.mappings@.contains_key(mapping_node(t, e)));
         lemma_mapped_inserted(pre.mapped@, pre.mappings@, mapping_node(t, e), MappingRecord { table: t, entry: e, frame, large });

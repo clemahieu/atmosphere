@@ -79,8 +79,8 @@ pub fn handle_ipi() {
 /// entry, which has that core acknowledge whenever it is behind the epoch. An unmap bumps the epoch and
 /// records an IPI to each core that loaded the space, in ghost state only; when the epoch moved, every
 /// other core that has loaded a space and has not reached it is owed the IPI, a superset of the cores
-/// the unmaps listed. These are the cores a free waits for, by the same test of the core's state:
-/// CapKernel::all_acknowledged.
+/// the unmaps listed and of the cores a free waits for, CapKernel::all_acknowledged: those that loaded a
+/// space and owe a flush, each behind the epoch.
 pub fn owed(kernel: &CapKernel, epoch: usize) -> u64 {
     if kernel.flush_epoch == epoch {
         return 0;

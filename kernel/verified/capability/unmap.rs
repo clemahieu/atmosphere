@@ -333,11 +333,11 @@ impl CapKernel {
         let pages = record_pages(pre.mappings@[node]);
         assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&mid.table_pages, &mid.spaces));
         assert(Self::mapping_unlinked(pre, post, node));
-        assert(post.cores == mid.cores && post.iommus == mid.iommus && post.stale_epoch == mid.stale_epoch && post.blocks == mid.blocks);
+        assert(post.cores == mid.cores && post.targeted == mid.targeted && post.iommus == mid.iommus && post.stale_epoch == mid.stale_epoch && post.blocks == mid.blocks);
         if post.flush_awaited() {
-            if exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]) {
-                let c = choose|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]);
-                assert(has_loaded(mid.cores@[c]));
+            if exists|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]) && post.owes(c) {
+                let c = choose|c: int| 0 <= c < NUM_CPUS && has_loaded(#[trigger] post.cores@[c]) && post.owes(c);
+                assert(has_loaded(mid.cores@[c]) && mid.owes(c));
             } else {
                 let i = choose|i: int| 0 <= i < NUM_IOMMUS && #[trigger] post.iommu_present(i);
                 assert(mid.iommu_present(i));

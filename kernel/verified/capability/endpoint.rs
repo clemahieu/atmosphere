@@ -1176,6 +1176,7 @@ impl CapKernel {
         &&& Self::same_tree(pre, post)
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.cores == pre.cores
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices

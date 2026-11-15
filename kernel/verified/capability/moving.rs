@@ -94,6 +94,7 @@ impl CapKernel {
     pub open spec fn move_frame(pre: Self, post: Self, i: usize, n: usize) -> bool {
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -319,6 +320,7 @@ impl CapKernel {
         &&& post.spaces.records == pre.spaces.records
         &&& post.spaces.bound == pre.spaces.bound
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
     }
 
@@ -455,6 +457,7 @@ impl CapKernel {
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.bound == old(self).spaces.bound,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
     {
         let ghost pre = *old(self);
         let (i, payload) = match self.tables.lookup(&self.list, src, from) {

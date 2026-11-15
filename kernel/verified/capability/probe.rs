@@ -297,6 +297,7 @@ impl CapKernel {
         &&& post.list == pre.list
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -376,6 +377,19 @@ impl CapKernel {
         assert forall|u: usize| #[trigger] post.table_pages.maps@.contains_key(u) == pre.table_pages.maps@.contains_key(u) by {}
         assert(hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages));
         assert(table_nodes_are_mappings(&post.list, &post.table_pages));
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && post.left_stale(e)
+            implies pre.left_stale(e) || pre.owes(c) by {
+            if !pre.left_stale(e) {
+                assert forall|u: usize| #![trigger a.record(u)]
+                    a.is_table(u) && a.record(u).space == Some(e.space) && (a.is_root(u) || a.record(u).parent is Some)
+                        && u / PAGE_SZ == e.page
+                    implies b.is_table(u) && b.record(u).space == Some(e.space) && (b.is_root(u) || b.record(u).parent is Some) by {
+                    assert(b.maps.contains_key(u) == a.maps.contains_key(u));
+                    assert(b.record(u) == a.record(u));
+                }
+                lemma_says_kept(a, b, e.space, e.page);
+            }
+        }
         Self::lemma_tlb_same(pre, post);
         assert forall|s: usize, q: SpacePath| #[trigger] walk(b, s, q) == walk(a, s, q) by {}
         lemma_same_walks_same_shares(a, b);

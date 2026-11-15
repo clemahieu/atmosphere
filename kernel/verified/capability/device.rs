@@ -734,6 +734,8 @@ impl CapKernel {
             final(self).stale_epoch.wf(),
             final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
+            final(self).targets_wf(),
+            final(self).targeted == old(self).targeted,
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).frames == old(self).frames,
@@ -808,6 +810,11 @@ impl CapKernel {
                 assert(pre.iommus.tlb@[i].contains(e));
                 assert(pre.stale_epoch.above(pre.iommu_acked(i), e.page));
             }
+            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && self.left_stale(e)
+                implies self.owes(c) by {
+                assert(pre.tlb@[c].contains(e) && pre.left_stale(e));
+                assert(pre.owes(c));
+            }
         }
     }
 
@@ -868,6 +875,7 @@ impl CapKernel {
             final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             ret ==> final(self).list.parent@ == old(self).list.parent@.insert(old(self).tables.node_of(root, slot), first),
             ret ==> {
                 let n = old(self).tables.node_of(root, slot);
@@ -1131,6 +1139,7 @@ impl CapKernel {
             final(self).replies == old(self).replies,
             final(self).spaces == old(self).spaces,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             ret ==> {
                 &&& final(self).devices.count == count
                 &&& forall|k: int| 0 <= k < count ==> {
@@ -1197,6 +1206,7 @@ impl CapKernel {
                 self.replies == pre.replies,
                 self.spaces == pre.spaces,
                 self.flush_epoch == pre.flush_epoch,
+                self.targeted == pre.targeted,
                 forall|j: int| 0 <= j < k ==> #[trigger] pre.can_add_device_at(root, slot, devices@, j),
                 self.devices.records@.len() == pre.devices.records@.len(),
                 forall|j: int| k <= j < pre.devices.records@.len() ==> #[trigger] self.devices.records@[j] == pre.devices.records@[j],
@@ -1594,6 +1604,7 @@ impl CapKernel {
         &&& post.endpoints == pre.endpoints
         &&& post.replies == pre.replies
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped

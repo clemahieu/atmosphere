@@ -528,6 +528,7 @@ impl CapKernel {
             final(self).mapped == old(self).mapped,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,

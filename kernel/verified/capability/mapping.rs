@@ -14,6 +14,7 @@ use crate::arch::load_translation_root;
 use crate::arch::tag_written;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
+use crate::capability::block::{ObjectType, PageKind};
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
 #[cfg(verus_keep_ghost)]
@@ -42,7 +43,7 @@ use crate::pptr::*;
 
 /// The steps of noting a mapping's unmap stale: the pages its record_run writes, a 2M mapping's
 /// PAGES_PER_2M at most. See design/one-lock-bounded-steps/.
-pub const MAPPING_NOTE_STEPS: usize = PAGES_PER_2M;
+pub const MAPPING_NOTE_STEPS: usize = PAGES_PER_2M + NUM_CPUS;
 
 /// fresh_pcid's bound in the step counter: the acknowledgement of a flush of every context, when the
 /// core's PCIDs run out.
@@ -163,10 +164,34 @@ pub open spec fn walk_finds(tree: TableTree, s: usize, p: SpacePath, g: usize) -
     &&& g < walk(tree, s, p)->0.addr / PAGE_SZ + entry_pages(if walk(tree, s, p)->0.perm.ps { 2usize } else { 1usize })
 }
 
-/// The space's tables say page g: g is the base page of a table of the space, or a page a walk finds.
+/// The space's tables say page g: g is the base page of a linked table of the space, or a page a
+/// walk finds.
 pub open spec fn space_says(tree: TableTree, s: usize, g: usize) -> bool {
-    ||| exists|t: usize| #![trigger tree.record(t)] tree.is_table(t) && tree.record(t).space == Some(s) && t / PAGE_SZ == g
+    ||| exists|t: usize| #![trigger tree.record(t)] tree.is_table(t) && tree.record(t).space == Some(s)
+        && (tree.is_root(t) || tree.record(t).parent is Some) && t / PAGE_SZ == g
     ||| exists|p: SpacePath| #[trigger] walk_finds(tree, s, p, g)
+}
+
+/// What tree a's tables say of page g in space s, tree b's say too, when b has each linked table of the
+/// space at that page as a had it and each walk of the space that found the page in a.
+pub proof fn lemma_says_kept(a: TableTree, b: TableTree, s: usize, g: usize)
+    requires
+        space_says(a, s, g),
+        forall|t: usize| #![trigger a.record(t)]
+            a.is_table(t) && a.record(t).space == Some(s) && (a.is_root(t) || a.record(t).parent is Some) && t / PAGE_SZ == g
+            ==> b.is_table(t) && b.record(t).space == Some(s) && (b.is_root(t) || b.record(t).parent is Some),
+        forall|p: SpacePath| #[trigger] walk_finds(a, s, p, g) ==> walk(b, s, p) == walk(a, s, p),
+    ensures
+        space_says(b, s, g),
+{
+    if exists|p: SpacePath| #[trigger] walk_finds(a, s, p, g) {
+        let p = choose|p: SpacePath| #[trigger] walk_finds(a, s, p, g);
+        assert(walk_finds(b, s, p, g));
+    } else {
+        let t = choose|t: usize| #![trigger a.record(t)]
+            a.is_table(t) && a.record(t).space == Some(s) && (a.is_root(t) || a.record(t).parent is Some) && t / PAGE_SZ == g;
+        assert(b.is_table(t) && b.record(t).space == Some(s) && (b.is_root(t) || b.record(t).parent is Some) && t / PAGE_SZ == g);
+    }
 }
 
 impl CapKernel {
@@ -302,6 +327,7 @@ impl CapKernel {
             final(self).mapped == old(self).mapped,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
@@ -497,6 +523,7 @@ impl CapKernel {
             final(self).mapped == old(self).mapped,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
@@ -586,6 +613,12 @@ impl CapKernel {
                 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
                 implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(d), e.page) by {
                 assert(post.acked(d) == pre.acked(d));
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && post.left_stale(e)
+                implies post.owes(d) by {
+                assert(pre.tlb@[d].contains(e) && pre.left_stale(e));
+                assert(pre.acked(d) == post.acked(d));
+                assert(pre.owes(d));
             }
         }
     }
@@ -710,6 +743,12 @@ impl CapKernel {
             implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(d), e.page) by {
             assert(pre.tlb@[d].contains(e));
         }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && post.left_stale(e)
+            implies post.owes(d) by {
+            assert(pre.tlb@[d].contains(e) && pre.left_stale(e));
+            assert(pre.acked(d) == post.acked(d));
+            assert(pre.owes(d));
+        }
     }
 
     /// The invariant after core c joins space s's list of cores: the spaces keep theirs, since only the
@@ -753,6 +792,7 @@ impl CapKernel {
             post.endpoints == pre.endpoints,
             post.replies == pre.replies,
             post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
         ensures
             post.wf(),
             post.loaded(c, s),
@@ -814,6 +854,16 @@ impl CapKernel {
             assert(pre.tlb@[d].contains(e));
             assert(pre.acked(d) == post.acked(d));
         }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && post.left_stale(e)
+            implies post.owes(d) by {
+            assert(pre.tlb@[d].contains(e));
+            if sb.loaded@[e.space].value().retired != 0 {
+                assert(e.space != s);
+                assert(sb.loaded@[e.space] == sa.loaded@[e.space]);
+            }
+            assert(pre.left_stale(e));
+            assert(pre.owes(d));
+        }
         Self::lemma_iommus_same(pre, post);
         assert(post.tlb_wf());
     }
@@ -848,6 +898,8 @@ impl CapKernel {
         &&& forall|a: int, g: usize| a < post.flush_epoch && pre.blocks.tracks(g as int) && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
         &&& forall|g: usize| #[trigger] pages.contains(g) && post.flush_awaited() ==> !post.acknowledged(g)
+        &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d]
+            == if space is Some && pre.loaded(d, space->Some_0) { post.flush_epoch } else { pre.targeted@[d] }
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
             0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
@@ -1717,6 +1769,7 @@ impl CapKernel {
             final(self).stale_epoch.wf(),
             final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
+            final(self).targets_wf(),
             entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             mapped_wf(final(self).mapped@, final(self).mappings@),
             final(self).tables == old(self).tables,
@@ -1764,7 +1817,7 @@ impl CapKernel {
         }
         let frame = entry.addr / PAGE_SZ;
         let large = entry.perm.ps;
-        self.note_mapping_stale(n, frame, large, Tracked(steps));
+        self.note_mapping_stale(n, t, frame, large, Tracked(steps));
         let ghost noted = *self;
         let br = locate(&self.blocks, frame);
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(t);
@@ -1786,14 +1839,105 @@ impl CapKernel {
                 implies self.table_pages.maps@[m.table].value()[i] == pre.table_pages.maps@[m.table].value()[i] by {
                 assert(map.value()[i] =~= pre.table_pages.maps@[m.table].value()[i]);
             }
+            Self::lemma_clear_mapping_post(pre, *self, n);
+            Self::lemma_unlinked_left_stale(pre, noted, *self, n);
             Self::lemma_tlb_same(noted, *self);
             Self::lemma_stale_noted_same(pre, noted, *self, n);
             lemma_mapped_removed(pre.mapped@, self.mapped@, pre.mappings@, n);
-            Self::lemma_clear_mapping_post(pre, *self, n);
             assert(pre.table_pages.maps@[t].value()@[e as int] == entry);
             assert(self.table_pages.maps@[m.table].value().exchanged@[m.entry] == word);
         }
         word
+    }
+
+    /// A walk that ends at entry e of table t reads only tables of its own space, so t is one of r's.
+    pub proof fn lemma_ends_in_space(&self, r: usize, p: SpacePath, t: usize, e: usize)
+        requires
+            self.wf(),
+            ends_at(tree_of(&self.table_pages, &self.spaces), r, p, t, e),
+        ensures
+            tree_of(&self.table_pages, &self.spaces).record(t).space == Some(r),
+    {
+        reveal(table_links_wf);
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        assert(self.spaces.roots@.contains_key(r));
+        assert(space_wf(&self.list, &self.spaces, &self.blocks, r));
+        if self.table_pages.maps@.contains_key(r) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, r));
+        }
+        assert(tree.record(r).space == Some(r));
+        let t3 = step(tree, r, p.l4)->0;
+        assert(tree.names_child(r, p.l4));
+        assert(tree.maps.contains_key(t3));
+        assert(tree.record(t3).space == Some(r));
+        let t2 = step(tree, t3, p.l3)->0;
+        assert(tree.names_child(t3, p.l3));
+        assert(tree.maps.contains_key(t2));
+        assert(tree.record(t2).space == Some(r));
+        if t2 != t {
+            assert(step(tree, t2, p.l2) == Some(t));
+            assert(tree.names_child(t2, p.l2));
+            assert(tree.maps.contains_key(t));
+        }
+    }
+
+    /// Unlinking mapping node n, after its unmap was noted, leaves stale only what a core named by the
+    /// note holds: a walk the unlink ended is one of the table's space, a core holding an entry of that
+    /// space is on its list, and the note named each core on the list. Every other entry the tables said,
+    /// they say still.
+    proof fn lemma_unlinked_left_stale(pre: Self, noted: Self, post: Self, n: usize)
+        requires
+            pre.wf(),
+            pre.mappings@.contains_key(n),
+            Self::mapping_stale_noted(pre, noted, n),
+            Self::mapping_unlinked(pre, post, n),
+            noted.tlb_wf(),
+            noted.table_pages == pre.table_pages,
+            noted.spaces == pre.spaces,
+            noted.cores == pre.cores,
+            post.spaces == pre.spaces,
+            post.tlb == noted.tlb,
+            post.table_pages.records == pre.table_pages.records,
+        ensures
+            forall|d: int, ent: TlbEntry|
+                0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(ent) && post.left_stale(ent)
+                ==> noted.left_stale(ent) || noted.owes(d),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let m = pre.mappings@[n];
+        assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, n));
+        assert(a.is_page(m.table));
+        reveal(walks_cut);
+        assert forall|d: int, ent: TlbEntry|
+            0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(ent) && post.left_stale(ent)
+            implies noted.left_stale(ent) || noted.owes(d) by {
+            if !noted.left_stale(ent) {
+                assert(space_says(a, ent.space, ent.page));
+                if exists|p: SpacePath| #[trigger] walk_finds(a, ent.space, p, ent.page) && ends_at(a, ent.space, p, m.table, m.entry) {
+                    let p = choose|p: SpacePath| #[trigger] walk_finds(a, ent.space, p, ent.page) && ends_at(a, ent.space, p, m.table, m.entry);
+                    pre.lemma_ends_in_space(ent.space, p, m.table, m.entry);
+                    assert(noted.tlb@[d].contains(ent));
+                    assert(noted.depends(d, ent.space));
+                    assert(pre.loaded(d, ent.space));
+                    assert(pre.acked(d) <= pre.flush_epoch);
+                    assert(noted.acked(d) == pre.acked(d));
+                    assert(noted.targeted@[d] == noted.flush_epoch);
+                } else {
+                    assert forall|p: SpacePath| #[trigger] walk_finds(a, ent.space, p, ent.page)
+                        implies walk(b, ent.space, p) == walk(a, ent.space, p) by {
+                        assert(!ends_at(a, ent.space, p, m.table, m.entry));
+                    }
+                    assert forall|u: usize| #![trigger a.record(u)]
+                        a.is_table(u) && a.record(u).space == Some(ent.space) && (a.is_root(u) || a.record(u).parent is Some)
+                            && u / PAGE_SZ == ent.page
+                        implies b.is_table(u) && b.record(u).space == Some(ent.space) && (b.is_root(u) || b.record(u).parent is Some) by {
+                        assert(b.maps.contains_key(u) == a.maps.contains_key(u));
+                    }
+                    lemma_says_kept(a, b, ent.space, ent.page);
+                }
+            }
+        }
     }
 
     /// What recorded node n's unmap stays true while nothing the record names changes.
@@ -1804,6 +1948,7 @@ impl CapKernel {
             post.cores == pre.cores,
             mid.cores == pre.cores,
             post.flush_epoch == mid.flush_epoch,
+            post.targeted == mid.targeted,
             post.tlb == mid.tlb,
             post.iommus == mid.iommus,
             post.mapped == mid.mapped,
@@ -1871,12 +2016,84 @@ impl CapKernel {
         br
     }
 
+    /// A space with a list of cores is at a tracked, page-aligned base whose block holds a space or a
+    /// process.
+    proof fn lemma_loaded_space_block(&self, s: usize)
+        requires
+            self.wf(),
+            self.spaces.loaded@.contains_key(s),
+        ensures
+            s % PAGE_SZ == 0,
+            self.blocks.tracks((s / PAGE_SZ) as int),
+            self.blocks.pages@[(s / PAGE_SZ) as int].kind is Base,
+            self.blocks.pages@[(s / PAGE_SZ) as int].object is Space || self.blocks.pages@[(s / PAGE_SZ) as int].object is Process,
+    {
+        assert(self.spaces.roots@.contains_key(s));
+        assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+        lemma_table_page_aligned(s);
+    }
+
+    /// The cores on the list of the space a table's record names, for a stale note to name them flush
+    /// targets: one load of the list. A cut-off table can outlast the space it names, so the block table
+    /// decides whether the space is there, by the object its base page's block holds; a record that names
+    /// no space, or one that is gone, gives the empty list, since no core is listed on it.
+    pub(crate) fn listed_on(&self, space: Option<usize>) -> (list: u32)
+        requires
+            self.wf(),
+        ensures
+            forall|d: int| 0 <= d < NUM_CPUS
+                ==> #[trigger] core_listed(list, d) == (space is Some && self.loaded(d, space->Some_0)),
+    {
+        proof {
+            assert forall|d: int| 0 <= d < NUM_CPUS implies !#[trigger] core_listed(0u32, d) by {
+                lemma_no_core_listed(d as u32);
+            }
+        }
+        let s = match space {
+            Some(s) => s,
+            None => { return 0; },
+        };
+        proof {
+            if self.spaces.loaded@.contains_key(s) {
+                self.lemma_loaded_space_block(s);
+            }
+        }
+        if s % PAGE_SZ != 0 || !self.blocks.page_tracked(s / PAGE_SZ) {
+            return 0;
+        }
+        let entry = *self.blocks.pages.get(s / PAGE_SZ);
+        let holds_space = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::Space) => true,
+            (PageKind::Base, ObjectType::Process) => true,
+            _ => false,
+        };
+        if !holds_space {
+            return 0;
+        }
+        proof {
+            let b = s / PAGE_SZ;
+            assert((b * PAGE_SZ) as usize == s);
+            if entry.object is Space {
+                assert(space_block(&self.blocks, b));
+            } else {
+                assert(crate::capability::process::process_block(&self.blocks, b));
+                assert(self.processes.records@.contains_key(s));
+            }
+            assert(self.spaces.roots@.contains_key(s));
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+        }
+        PPtr::<SpaceCores>::from_usize(s + SPACE_CORES_PAGE * PAGE_SZ)
+            .borrow(Tracked(self.spaces.loaded.borrow().tracked_borrow(s)))
+            .list
+    }
+
     /// Records node n's unmap, while its entry still stands: the epoch is bumped first, so no core has
     /// acknowledged this one however recently it flushed. A large mapping's 512 pages take one epoch.
-    fn note_mapping_stale(&mut self, n: usize, frame: usize, large: bool, Tracked(steps): Tracked<&mut Steps>)
+    fn note_mapping_stale(&mut self, n: usize, t: usize, frame: usize, large: bool, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).mappings@.contains_key(n),
+            old(self).mappings@[n].table == t,
             old(self).mappings@[n].frame == frame,
             old(self).mappings@[n].large == large,
             old(self).flush_epoch < usize::MAX,
@@ -1886,6 +2103,7 @@ impl CapKernel {
             final(self).stale_epoch.wf(),
             final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
+            final(self).targets_wf(),
             entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             Self::mapping_stale_noted(*old(self), *final(self), n),
             final(self).list == old(self).list,
@@ -1914,12 +2132,23 @@ impl CapKernel {
             assert(pre.blocks.tracks_run(frame as int, entry_pages(tree.record(m.table).level)));
         }
         let count: usize = if large { PAGES_PER_2M } else { 1 };
+        proof {
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
+            lemma_table_bound(&pre.blocks, t);
+        }
+        // The space's list of cores, read before the epoch moves: each core on it is named a target.
+        let list = self.listed_on(
+            PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ)
+                .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
+                .space,
+        );
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
         proof {
             assert(pre.stale_epoch.bounded(epoch as int));
         }
         self.stale_epoch.record_run(frame, count, epoch, Tracked(steps));
+        self.target_listed(list, Tracked(steps));
         proof {
             self.tlb.borrow_mut().grow(Seq::new(NUM_CPUS as nat, |d: int|
                 if space is Some && pre.depends(d, space->Some_0) {
@@ -2007,6 +2236,28 @@ impl CapKernel {
                 }
             }
             assert(self.tlb_wf());
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.targeted@[d]
+                == if space is Some && pre.loaded(d, space->Some_0) { self.flush_epoch } else { pre.targeted@[d] } by {
+                assert(core_listed(list, d) == (space is Some && pre.loaded(d, space->Some_0)));
+            }
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.targeted@[d] <= self.flush_epoch by {
+                assert(pre.targeted@[d] <= pre.flush_epoch);
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && self.left_stale(e)
+                implies self.owes(d) by {
+                assert(self.acked(d) == pre.acked(d));
+                assert(pre.acked(d) <= pre.flush_epoch);
+                assert(pre.targeted@[d] <= pre.flush_epoch);
+                if pre.tlb@[d].contains(e) {
+                    assert(pre.left_stale(e));
+                    assert(pre.owes(d));
+                } else {
+                    assert(space is Some && pre.depends(d, space->Some_0));
+                    assert(pre.loaded(d, space->Some_0));
+                    assert(self.targeted@[d] == self.flush_epoch);
+                }
+            }
+            assert(self.targets_wf());
             assert forall|d: int, g: usize| #![trigger self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
                 0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
                 implies self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g }) by {

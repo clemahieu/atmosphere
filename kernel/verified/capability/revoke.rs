@@ -113,9 +113,11 @@ impl CapKernel {
             final(self).stale_epoch.wf(),
             final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
+            final(self).targets_wf(),
             entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             mapped_wf(final(self).mapped@, final(self).mappings@),
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
+                &&& final(self).targeted == old(self).targeted
                 &&& final(self).tlb == old(self).tlb
                 &&& final(self).iommus == old(self).iommus
                 &&& final(self).mapped == old(self).mapped
@@ -566,6 +568,161 @@ impl CapKernel {
             ==> pre.mappings@.contains_key(n) && post.mappings@[n] == pre.mappings@[n]
     }
 
+    /// The space the table of mapping n's entry names.
+    pub open spec fn mapping_space(&self, n: usize) -> Option<usize> {
+        tree_of(&self.table_pages, &self.spaces).record(self.mappings@[n].table).space
+    }
+
+    /// What revoke steps leave of what names a flush target: each space's list of cores and the space
+    /// each table names are as they were, and no core's targeted epoch is lower.
+    pub open spec fn targets_kept(pre: Self, post: Self) -> bool {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        &&& post.spaces.loaded == pre.spaces.loaded
+        &&& forall|t: usize| #![trigger b.record(t)] a.is_table(t) ==> b.is_table(t) && b.record(t).space == a.record(t).space
+        &&& forall|d: int| 0 <= d < NUM_CPUS ==> pre.targeted@[d] <= #[trigger] post.targeted@[d]
+    }
+
+    /// Every core on the list of the space a mapping the steps took was in is named a flush target past
+    /// the epoch they began at, so a free of a page the mapping named asks that core. See
+    /// design/flush-without-waiting/.
+    pub open spec fn unmaps_targeted(pre: Self, post: Self) -> bool {
+        forall|n: usize, d: int| #![trigger pre.mappings@.contains_key(n), post.targeted@[d]]
+            pre.mappings@.contains_key(n) && !post.mappings@.contains_key(n) && 0 <= d < NUM_CPUS
+                && pre.mapping_space(n) is Some && pre.loaded(d, pre.mapping_space(n)->Some_0)
+            ==> pre.flush_epoch < post.targeted@[d]
+    }
+
+    /// Revoke steps after revoke steps: what the first targeted stays targeted, since the second lower
+    /// no target, and what the second took they targeted on the lists and the tables the first kept.
+    pub proof fn lemma_unmaps_targeted_compose(pre: Self, mid: Self, post: Self)
+        requires
+            pre.wf(),
+            Self::records_shrunk(pre, mid),
+            Self::targets_kept(pre, mid),
+            Self::unmaps_targeted(pre, mid),
+            pre.flush_epoch <= mid.flush_epoch,
+            Self::targets_kept(mid, post),
+            Self::unmaps_targeted(mid, post),
+        ensures
+            Self::targets_kept(pre, post),
+            Self::unmaps_targeted(pre, post),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let m = tree_of(&mid.table_pages, &mid.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert forall|t: usize| #![trigger b.record(t)] a.is_table(t) implies b.is_table(t) && b.record(t).space == a.record(t).space by {
+            assert(m.is_table(t) && m.record(t).space == a.record(t).space);
+        }
+        assert forall|d: int| 0 <= d < NUM_CPUS implies pre.targeted@[d] <= #[trigger] post.targeted@[d] by {
+            assert(mid.targeted@[d] <= post.targeted@[d]);
+        }
+        assert forall|n: usize, d: int| #![trigger pre.mappings@.contains_key(n), post.targeted@[d]]
+            pre.mappings@.contains_key(n) && !post.mappings@.contains_key(n) && 0 <= d < NUM_CPUS
+                && pre.mapping_space(n) is Some && pre.loaded(d, pre.mapping_space(n)->Some_0)
+            implies pre.flush_epoch < post.targeted@[d] by {
+            if mid.mappings@.contains_key(n) {
+                let t = pre.mappings@[n].table;
+                assert(mid.mappings@[n] == pre.mappings@[n]);
+                assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, n));
+                assert(a.is_table(t));
+                assert(m.record(t).space == a.record(t).space);
+                assert(mid.mapping_space(n) == pre.mapping_space(n));
+                assert(mid.loaded(d, mid.mapping_space(n)->Some_0));
+                assert(mid.flush_epoch < post.targeted@[d]);
+            } else {
+                assert(pre.flush_epoch < mid.targeted@[d]);
+                assert(mid.targeted@[d] <= post.targeted@[d]);
+            }
+        }
+    }
+
+    /// One revoke step keeps what names a flush target and targets what it unmapped: a hidden table's
+    /// cut and a mapping's arm each name the cores on their space's list at the new epoch and leave
+    /// every other core's, and nothing else of the step touches a target, a list or a table's space.
+    proof fn lemma_revoke_step_targets(pre: Self, cut: Self, mid: Self, post: Self, r: usize)
+        requires
+            pre.wf(),
+            cut.wf(),
+            r < NODE_SPACE,
+            cut.list.nodes@[r as int].live,
+            pre.hidden_table(r) ==> Self::detach_recorded(pre, cut, r),
+            !pre.hidden_table(r) ==> cut == pre,
+            cut.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(cut, mid, r),
+            cut.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(cut, mid, r),
+            !(cut.list.nodes@[r as int].kind is Mapping) ==> {
+                &&& mid.targeted == cut.targeted
+                &&& mid.table_pages == cut.table_pages
+                &&& mid.mappings == cut.mappings
+            },
+            mid.spaces.roots == cut.spaces.roots,
+            mid.spaces.records == cut.spaces.records,
+            mid.spaces.loaded == cut.spaces.loaded,
+            mid.table_pages.records == cut.table_pages.records,
+            post.table_pages == mid.table_pages,
+            post.spaces == mid.spaces,
+            post.targeted == mid.targeted,
+            post.mappings == mid.mappings,
+            post.flush_epoch == mid.flush_epoch,
+        ensures
+            Self::targets_kept(pre, post),
+            Self::unmaps_targeted(pre, post),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let k = tree_of(&cut.table_pages, &cut.spaces);
+        let m = tree_of(&mid.table_pages, &mid.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert(b == m);
+        // The cut keeps each table with the space it names, and lowers no target.
+        assert forall|t: usize| #![trigger k.record(t)] a.is_table(t) implies k.is_table(t) && k.record(t).space == a.record(t).space by {
+            if pre.hidden_table(r) && a.record(r).parent is Some {
+                let q = a.record(r).parent->0;
+                assert(detached(a, k, q.table, q.entry, r));
+                assert(k.maps.contains_key(t) == a.maps.contains_key(t));
+                assert(k.roots.contains_key(t) == a.roots.contains_key(t));
+            }
+        }
+        assert forall|d: int| 0 <= d < NUM_CPUS implies pre.targeted@[d] <= #[trigger] cut.targeted@[d] by {
+            assert(pre.targeted@[d] <= pre.flush_epoch);
+        }
+        // So does the arm: a mapping's writes one entry of a table page, and the others write none.
+        assert forall|t: usize| #![trigger m.record(t)] k.is_table(t) implies m.is_table(t) && m.record(t).space == k.record(t).space by {
+            if cut.list.nodes@[r as int].kind is Mapping {
+                assert(cut.mappings@.contains_key(r));
+                assert(mapping_wf(&cut.list, &cut.tables, k, &cut.blocks, cut.holders@, cut.mappings@, r));
+                assert(k.is_page(cut.mappings@[r].table));
+                assert(m.maps.contains_key(t) == k.maps.contains_key(t));
+            }
+        }
+        assert forall|d: int| 0 <= d < NUM_CPUS implies cut.targeted@[d] <= #[trigger] mid.targeted@[d] by {
+            assert(cut.targeted@[d] <= cut.flush_epoch);
+        }
+        assert forall|t: usize| #![trigger b.record(t)] a.is_table(t) implies b.is_table(t) && b.record(t).space == a.record(t).space by {
+            assert(k.is_table(t) && k.record(t).space == a.record(t).space);
+            assert(m.is_table(t) && m.record(t).space == k.record(t).space);
+        }
+        assert forall|d: int| 0 <= d < NUM_CPUS implies pre.targeted@[d] <= #[trigger] post.targeted@[d] by {
+            assert(pre.targeted@[d] <= cut.targeted@[d]);
+            assert(cut.targeted@[d] <= mid.targeted@[d]);
+        }
+        // Only a mapping's own arm takes a record, and its note names the cores on its space's list.
+        assert forall|n: usize, d: int| #![trigger pre.mappings@.contains_key(n), post.targeted@[d]]
+            pre.mappings@.contains_key(n) && !post.mappings@.contains_key(n) && 0 <= d < NUM_CPUS
+                && pre.mapping_space(n) is Some && pre.loaded(d, pre.mapping_space(n)->Some_0)
+            implies pre.flush_epoch < post.targeted@[d] by {
+            if pre.hidden_table(r) {
+                assert(cut.mappings == pre.mappings);
+                assert(!(cut.list.nodes@[r as int].kind is Mapping));
+                assert(false);
+            } else {
+                assert(cut.list.nodes@[r as int].kind is Mapping);
+                assert(mid.mappings@ == pre.mappings@.remove(r));
+                assert(n == r);
+                assert(mid.targeted@[d] == mid.flush_epoch);
+            }
+        }
+    }
+
     /// What every revoke leaves as it was: the cores, which IOMMUs are present and what they have
     /// acknowledged, and every process's record. revoke's ensures and spec_revoked both call it:
     /// design/invoked-arm-is-the-operation-postcondition/.
@@ -599,6 +756,7 @@ impl CapKernel {
             pre.mappings@.contains_key(n) && !post.mappings@.contains_key(n)
             && #[trigger] record_pages(pre.mappings@[n]).contains(g)
             ==> post.stale_epoch.above(pre.flush_epoch as int, g)
+        &&& Self::unmaps_targeted(pre, post)
     }
 
     /// The facts a return of revoke already has are revoke_answered. Unfolding that predicate in the
@@ -625,6 +783,7 @@ impl CapKernel {
                 pre.mappings@.contains_key(n) && !post.mappings@.contains_key(n)
                 && #[trigger] record_pages(pre.mappings@[n]).contains(g)
                 ==> post.stale_epoch.above(pre.flush_epoch as int, g),
+            Self::unmaps_targeted(pre, post),
         ensures
             Self::revoke_answered(pre, post, root, at, ret),
     {
@@ -718,6 +877,9 @@ impl CapKernel {
                 self.iommus.acked == pre.iommus.acked,
                 self.iommus.present == pre.iommus.present,
                 self.processes.records == pre.processes.records,
+                pre.wf(),
+                Self::targets_kept(pre, *self),
+                Self::unmaps_targeted(pre, *self),
             decreases REVOKE_BUDGET - taken,
         {
             let ghost mid = *self;
@@ -793,6 +955,7 @@ impl CapKernel {
                         assert(mid.stale_epoch.above(pre.flush_epoch as int, g));
                     }
                 }
+                Self::lemma_unmaps_targeted_compose(pre, mid, *self);
             }
             taken = taken + 1;
         }
@@ -879,6 +1042,8 @@ impl CapKernel {
             final(self).iommus.acked == old(self).iommus.acked,
             final(self).iommus.present == old(self).iommus.present,
             final(self).processes.records == old(self).processes.records,
+            Self::targets_kept(*old(self), *final(self)),
+            Self::unmaps_targeted(*old(self), *final(self)),
     {
         let ghost pre = *old(self);
         proof {
@@ -922,6 +1087,7 @@ impl CapKernel {
             assert(saved_registers(&mid.threads) =~= saved_registers(&cut.threads));
             Self::lemma_revoke_step_wf(cut, mid, *self, root, c, r);
             Self::lemma_revoke_step_links(pre, cut, mid, *self, r);
+            Self::lemma_revoke_step_targets(pre, cut, mid, *self, r);
             if pre.hidden_table(r) {
                 assert(cut.blocks == pre.blocks && cut.holders == pre.holders);
             }
@@ -1137,6 +1303,7 @@ impl CapKernel {
             mid.cores == pre.cores,
             mid.stale_epoch.wf(),
             mid.tlb_wf(),
+            mid.targets_wf(),
             entries_translatable(&mid.blocks, mid.tlb@, mid.iommus.tlb@),
             mapped_wf(mid.mapped@, mid.mappings@),
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, mid, r),
@@ -1277,6 +1444,7 @@ impl CapKernel {
             },
             post.cores == mid.cores,
             post.flush_epoch == mid.flush_epoch,
+            post.targeted == mid.targeted,
             post.tlb == mid.tlb,
             post.iommus == mid.iommus,
             post.mapped == mid.mapped,

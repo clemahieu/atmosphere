@@ -981,6 +981,7 @@ impl CapKernel {
     pub open spec fn table_page_retyped_fields(pre: Self, post: Self, base: usize) -> bool {
         &&& !post.blocks.pages@[(base / PAGE_SZ) as int].dead
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base])
         &&& post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base])
         &&& forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base

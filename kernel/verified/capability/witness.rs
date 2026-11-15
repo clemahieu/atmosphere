@@ -638,6 +638,7 @@ pub open spec fn dead_table_mapped(k: CapKernel, process: usize, u: usize, first
     &&& k.tables.owner@.contains_key(page_of(lb))
     &&& k.blocks.tracks((c1 / PAGE_SZ) as int)
     &&& a.is_page(c1) && a.record(c1).level == 2
+    &&& a.record(c1).space == Some(process)
     &&& a.record(c1).parent == Some(TableParent { table: c0, entry: 0 })
     &&& a.names_child(c0, 0) && a.names_child(c1, 0)
     &&& a.entry(c1, 1).perm.present && a.entry(c1, 1).perm.ps
@@ -647,10 +648,12 @@ pub open spec fn dead_table_mapped(k: CapKernel, process: usize, u: usize, first
 }
 
 /// What the teardown of witness_dead_table_page_freed needs: what its setup leaves, and core 0 having
-/// loaded a space, so that an unmap has a core's acknowledgement to wait for.
+/// loaded the root's space, whose table it tears down, so that an unmap there names core 0 a flush
+/// target and has its acknowledgement to wait for.
 pub open spec fn dead_table_ready(k: CapKernel, process: usize, u: usize, first: Payload, big: usize) -> bool {
     &&& dead_table_mapped(k, process, u, first, big)
     &&& has_loaded(k.cores@[0])
+    &&& k.depends(0, process)
 }
 
 /// A free block stays free across a step that kept the regions and every page's kind outside lo up to
@@ -11118,7 +11121,7 @@ impl CapKernel {
             assert(s9.flush_epoch >= s8.flush_epoch);
             assert(s8.flush_epoch == e);
             assert(s10.acknowledged(p as usize)) by {
-                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(s10.cores@[c]) implies e <= #[trigger] s10.acked(c) by {}
+                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(s10.cores@[c]) && s10.owes(c) implies e <= #[trigger] s10.acked(c) by {}
                 assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] s10.iommu_present(i) implies e <= s10.iommu_acked(i) by {}
             }
             assert(s10.space_is_empty(base));
@@ -11507,6 +11510,12 @@ impl CapKernel {
             assert(a4.record(c1).parent == Some(TableParent { table: c0, entry: 0 }));
             lemma_table_parent(a4, c1);
             assert(a4.names_child(c0, 0));
+            // The level 2 table is one of the root's space: the path that maps the frame ends in it.
+            assert(walk_large_table(a4, process, SpacePath { l4, l3: 0, l2: 1, l1: 0 }) == Some(c1));
+            assert(large_entry(a4, c1, 1) is Some);
+            assert(ends_at(a4, process, SpacePath { l4, l3: 0, l2: 1, l1: 0 }, c1, 1));
+            s4.lemma_ends_in_space(process, SpacePath { l4, l3: 0, l2: 1, l1: 0 }, c1, 1);
+            assert(a4.record(c1).space == Some(process));
             // The page is live, the root's untyped is where it was.
             assert(table_page_wf(&s4.list, &s4.table_pages, &s4.blocks, c1)) by {
                 reveal(CapKernel::wf);
@@ -11600,9 +11609,14 @@ impl CapKernel {
         let ghost c0 = (big + 65 * PROCESS_BYTES) as usize;
         let ghost p = (c1 / PAGE_SZ) as int;
         let ghost mn = mapping_node(c1, 1);
+        // What core 0 may hold of the root's space: the table's own page, which the tables say.
+        let ghost held = TlbEntry { space: process, page: (c1 / PAGE_SZ) as usize };
         proof {
             lemma2_to64();
             assert(mn == c1 + 2);
+            assert(a4.is_table(c1) && a4.record(c1).space == Some(process) && a4.record(c1).parent is Some);
+            assert(space_says(a4, process, held.page));
+            assert(s4.core_may_hold(0, held));
         }
 
         // The first retype of the table's block unlinks it from its parent.
@@ -11618,6 +11632,8 @@ impl CapKernel {
             assert(detached(a4, au, c0, 0, c1));
             assert forall|i: usize| i < ENTRIES implies #[trigger] au.entry(c1, i) == a4.entry(c1, i) by {}
             assert(au.record(c1).level == 2);
+            assert(au.record(c1).space == Some(process));
+            assert(su.core_may_hold(0, held));
             assert(au.names_child(c1, 0));
             assert(au.is_page(c1));
             assert(!su.list.nodes@[c1 as int].live);
@@ -11681,6 +11697,10 @@ impl CapKernel {
             assert(sc.list == su.list && sc.tables == su.tables && sc.mappings == su.mappings);
             assert(sc.can_retype_under(process, ROOT_UNTYPED_SLOT, c1, 3));
             assert(sc.root_live(process));
+            // Core 0 is still on the list of the root's space, which the table still names.
+            assert(sc.core_may_hold(0, held));
+            sc.lemma_may_hold_loaded(0, held);
+            assert(ac.record(c1).space == Some(process));
             assert(sc.stale_epoch.pages@[p] == e);
             assert(e <= sc.flush_epoch);
             // The frame's mapping stays, at a present entry of the page.
@@ -11785,9 +11805,13 @@ impl CapKernel {
                 reveal(CapKernel::wf);
             }
             assert(sp.acked(0) < e);
+            assert(e < sp.flush_epoch);
+            // The unlink named core 0 a target: it is on the list of the space the table names.
+            assert(sc.mappings@[mn].table == c1);
+            assert(sp.targeted@[0] == sp.flush_epoch);
+            assert(sp.owes(0));
             assert(!sp.all_acknowledged(e as int));
             assert(!sp.acknowledged(p as usize));
-            assert(e < sp.flush_epoch);
         }
 
         // The fourth waits: core 0 has not acknowledged the unlink's epoch.
@@ -11802,7 +11826,7 @@ impl CapKernel {
         let ghost sa = *self;
         proof {
             assert(sa.acknowledged(p as usize)) by {
-                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(sa.cores@[c]) implies e <= #[trigger] sa.acked(c) by {}
+                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(sa.cores@[c]) && sa.owes(c) implies e <= #[trigger] sa.acked(c) by {}
                 assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] sa.iommu_present(i) implies e <= sa.iommu_acked(i) by {}
             }
             assert(sa.table_is_empty(c1));
@@ -12301,6 +12325,15 @@ impl CapKernel {
             assert(s5.acked(0) <= 0);
             assert(s5.root_live(process));
             assert(s5.tables.roots@.contains_key(process));
+            // The mapping's table is one of the root's space, whose list core 0 is on.
+            let a5 = tree_of(&s5.table_pages, &s5.spaces);
+            assert(a5 == tree_of(&s4.table_pages, &s4.spaces));
+            assert(walk_table(a5, process, path) == Some(c2));
+            assert(ends_at(a5, process, path, c2, 0));
+            s5.lemma_ends_in_space(process, path, c2, 0);
+            assert(s5.mappings@[m] == s4.mappings@[m]);
+            assert(s5.mapping_space(m) == Some(process));
+            assert(s5.loaded(0, process));
         }
 
         // Revoke the frame capability, which unlinks the mapping.
@@ -12435,6 +12468,11 @@ impl CapKernel {
             assert(has_loaded(s7.cores@[0]));
             assert(s7.acked(0) <= 0);
             assert(s7.stale_epoch.pages@[fp] > 0);
+            // The revoke named core 0 a target when it took the mapping.
+            assert(s5.mappings@.contains_key(m) && !s6.mappings@.contains_key(m));
+            assert(s5.flush_epoch < s6.targeted@[0]);
+            assert(s7.targeted == s6.targeted);
+            assert(s7.owes(0));
             assert(!s7.all_acknowledged(s7.stale_epoch.pages@[fp] as int));
             assert(!s7.acknowledged(fp as usize));
         }
@@ -12463,7 +12501,7 @@ impl CapKernel {
             let e = s8.stale_epoch.pages@[fp] as int;
             assert(e <= s8.flush_epoch);
             assert(s8.acknowledged(fp as usize)) by {
-                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(s8.cores@[c]) implies e <= #[trigger] s8.acked(c) by {}
+                assert forall|c: int| 0 <= c < NUM_CPUS && has_loaded(s8.cores@[c]) && s8.owes(c) implies e <= #[trigger] s8.acked(c) by {}
                 assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] s8.iommu_present(i) implies e <= s8.iommu_acked(i) by {}
             }
         }
@@ -12916,6 +12954,12 @@ impl CapKernel {
             assert(Self::mapping_unlinked(s5, s6, m));
             assert(Self::mapping_stale_noted(s5, s6, m));
             assert(s5.mappings@[m] == (MappingRecord { table: c2, entry: 0, frame: fp, large: false }));
+            // The unmap named core 0 a target: it is on the list of the root's space, whose table the
+            // entry was in.
+            assert(ends_at(a5, process, path, c2, 0));
+            s5.lemma_ends_in_space(process, path, c2, 0);
+            assert(s5.loaded(0, process));
+            assert(s6.targeted@[0] == s6.flush_epoch);
             assert(block_ref(&s5.blocks, fp) == br);
             assert(blocks_refs_changed(&s5.blocks, &s6.blocks, br, 1, false));
             assert(block_typed(&s6.blocks, br));
@@ -13001,6 +13045,8 @@ impl CapKernel {
             assert(has_loaded(s7.cores@[0]));
             assert(s7.acked(0) <= 0);
             assert(s7.stale_epoch.region(Large::Two, r) == 1);
+            assert(s7.targeted == s6.targeted);
+            assert(s7.owes(0));
             assert(!s7.all_acknowledged(s7.stale_epoch.region(Large::Two, r) as int));
             assert(!s7.region_acknowledged(Large::Two, r));
         }

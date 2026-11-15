@@ -44,6 +44,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
         &&& post.tlb == pre.tlb
@@ -227,6 +228,7 @@ impl CapKernel {
             implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(d), e.page) by {
             assert(pre.tlb@[d].contains(e));
         }
+        Self::lemma_targets_same(pre, post);
         reveal(CapKernel::wf);
         assert(post.view() =~= pre.view());
     }

@@ -1271,6 +1271,7 @@ impl CapKernel {
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.cores == pre.cores
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
@@ -1494,6 +1495,10 @@ impl CapKernel {
                 assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
                 assert(s != base);
             }
+            pre.lemma_free_not_table(base, page);
+            assert(post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]));
+            assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));
+            Self::lemma_tree_extended_left_stale(pre, post);
             Self::lemma_tlb_same(pre, post);
             assert(list_grown(pre.list, mid));
             Self::lemma_space_nodes(pre, post, mid, parent, child);

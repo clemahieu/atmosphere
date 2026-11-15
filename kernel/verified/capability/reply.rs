@@ -774,6 +774,7 @@ impl CapKernel {
             Self::same_tree(*old(self), *final(self)),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,

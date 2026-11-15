@@ -482,6 +482,7 @@ impl CapKernel {
             final(self).zeroing == old(self).zeroing,
             final(self).holders@ == old(self).holders@.insert(block_ref(&old(self).blocks, base / PAGE_SZ), set![child]),
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).mappings == old(self).mappings,
             final(self).view().holds(root, child),
             final(self).payload_of(child) == large_frame_of(base, order),
@@ -709,6 +710,7 @@ impl CapKernel {
     pub open spec fn frame_retyped_fields(pre: Self, post: Self, root: usize, to: usize, base: usize) -> bool {
         let child = pre.tables.node_of(root, to);
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.blocks.pages@[(base / PAGE_SZ) as int].object is Frame
         &&& Self::retype_keeps(pre, post, child, (base / PAGE_SZ) as int, 0, None)
     }
@@ -793,6 +795,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.iommus == pre.iommus
         &&& post.mappings == pre.mappings
     }
@@ -818,6 +821,7 @@ impl CapKernel {
         &&& post.endpoints == pre.endpoints
         &&& post.replies == pre.replies
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.iommus == pre.iommus
     }
@@ -984,6 +988,7 @@ impl CapKernel {
             final(self).replies == old(self).replies,
             final(self).threads == old(self).threads,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).iommus == old(self).iommus,
             ret is Refused == (!old(self).zeroing.active(level, r) && !old(self).blocks.large_free(level, r as int)),
@@ -1296,6 +1301,7 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
     }
@@ -1417,6 +1423,7 @@ impl CapKernel {
             final(steps).count <= old(steps).count + PLACE_LEAF_STEPS,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).devices == old(self).devices,
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,

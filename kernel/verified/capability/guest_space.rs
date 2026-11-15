@@ -117,6 +117,7 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).wf(),
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).targeted == old(self).targeted,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).cores == old(self).cores,
             final(self).iommus.present == old(self).iommus.present,
