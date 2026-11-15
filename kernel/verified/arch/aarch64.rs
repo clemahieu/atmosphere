@@ -326,6 +326,8 @@ pub proof fn lemma_without_status(v: usize, level: usize)
 /// descriptor, DBM set with AP[2] set, to writable-dirty by clearing AP[2] (D8.5.2.1), each in an
 /// atomic read-modify-write of the descriptor: another core's walk changes nothing in the word but
 /// those bits, before the exchange or after it, so the word returned is the table's but for them.
+/// The table's ghost record of exchanges takes the word returned, as the word this exchange read; it
+/// is ghost, so it claims nothing of the processor.
 // cite: arm-arm D8.5.1.2 Hardware management of the Access flag
 // cite: arm-arm D8.5.2.1 Hardware management of the dirty state
 pub assume_specification[exchange_table_word](table: &mut PageMap, index: usize, word: usize) -> (ret: usize)
@@ -337,6 +339,7 @@ pub assume_specification[exchange_table_word](table: &mut PageMap, index: usize,
         final(table).ar@ == old(table).ar@.update(index as int, word),
         final(table).spec_seq == old(table).spec_seq,
         final(table).level == old(table).level,
+        final(table).exchanged@ == old(table).exchanged@.insert(index, ret),
         spec_without_status(ret) == spec_without_status(old(table).ar@[index as int]);
 
 /// The zero word is the empty entry with its status clear, at every level.

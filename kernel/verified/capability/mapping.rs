@@ -1690,6 +1690,14 @@ impl CapKernel {
         crate::arch::spec_usize2page_entry(w, pre.table_pages.maps@[m.table].value().level@) == tree_of(&pre.table_pages, &pre.spaces).entry(m.table, m.entry)
     }
 
+    /// The word w is the one the exchange that cleared mapping node n's entry returned: post's table
+    /// records it as that entry's last exchanged word, so its accessed and dirty bits are the ones the
+    /// exchange read.
+    pub open spec fn mapping_exchanged(pre: Self, post: Self, n: usize, w: usize) -> bool {
+        let m = pre.mappings@[n];
+        post.table_pages.maps@[m.table].value().exchanged@[m.entry] == w
+    }
+
     /// Undoes mapping node n: its entry and its reference go in one step, and nothing else. The node's
     /// own page says where its entry is. Returns the entry's word as read in the step that cleared it.
     pub(crate) fn clear_mapping(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
@@ -1705,6 +1713,7 @@ impl CapKernel {
             Self::mapping_unlinked(*old(self), *final(self), n),
             Self::mapping_stale_noted(*old(self), *final(self), n),
             Self::mapping_word(*old(self), n, ret),
+            Self::mapping_exchanged(*old(self), *final(self), n, ret),
             final(self).stale_epoch.wf(),
             final(self).stale_epoch.pages@.len() == old(self).stale_epoch.pages@.len(),
             final(self).tlb_wf(),
@@ -1782,6 +1791,7 @@ impl CapKernel {
             lemma_mapped_removed(pre.mapped@, self.mapped@, pre.mappings@, n);
             Self::lemma_clear_mapping_post(pre, *self, n);
             assert(pre.table_pages.maps@[t].value()@[e as int] == entry);
+            assert(self.table_pages.maps@[m.table].value().exchanged@[m.entry] == word);
         }
         word
     }

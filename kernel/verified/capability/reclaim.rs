@@ -4649,6 +4649,7 @@ impl CapKernel {
             Self::mapping_unlinked(*old(self), *final(self), n),
             Self::mapping_stale_noted(*old(self), *final(self), n),
             Self::mapping_word(*old(self), n, ret),
+            Self::mapping_exchanged(*old(self), *final(self), n, ret),
             Self::caps_frame(*old(self), *final(self), n, n),
             !final(self).list.nodes@[n as int].live,
             final(self).list.seq@.len() == old(self).list.seq@.len() - 1,

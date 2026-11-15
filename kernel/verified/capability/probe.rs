@@ -85,11 +85,13 @@ pub proof fn lemma_mask_empty()
     }
 }
 
-/// Entry e of table t of the tree as the probe found it has been probed, leaving the table's words as
-/// `after`: when it is present, `word` is the word read and decodes to the entry, a and d are the word's
-/// accessed and dirty bits, and the entry's bits are clear; when it is not, a and d are false.
+/// Entry e of table t of the tree as the probe found it has been probed, leaving the table as `after`:
+/// when it is present, `word` is the word the exchange that cleared its bits returned, as `after`
+/// records it, and decodes to the entry, a and d are the word's accessed and dirty bits, and the entry's
+/// bits are clear; when it is not, a and d are false.
 pub open spec fn probed_entry(tree: TableTree, after: PageMap, t: usize, e: usize, word: usize, a: bool, d: bool) -> bool {
     let present = tree.entry(t, e).perm.present;
+    &&& present ==> word == after.exchanged@[e]
     &&& present ==> spec_usize2page_entry(word, after.level@) == tree.entry(t, e)
     &&& a == (present && spec_usize2page_entry_status(word, after.level@).accessed)
     &&& d == (present && spec_usize2page_entry_status(word, after.level@).dirty)
@@ -102,6 +104,12 @@ pub open spec fn probed_prefix(tree: TableTree, after: PageMap, t: usize, l1: us
     &&& read.len() == n
     &&& forall|j: int| #![trigger read[j]] 0 <= j < n
         ==> probed_entry(tree, after, t, (l1 + j) as usize, read[j], mask_bit(accessed, j), mask_bit(dirty, j))
+}
+
+/// Every word of `after` outside the count entries from l1 is the word of `before`, accessed and dirty
+/// bits included: a probe writes no entry outside its range.
+pub open spec fn words_kept_outside(before: PageMap, after: PageMap, l1: usize, count: int) -> bool {
+    forall|j: int| #![trigger after.ar@[j]] 0 <= j < ENTRIES && !(l1 <= j < l1 + count) ==> after.ar@[j] == before.ar@[j]
 }
 
 /// b is a with table page t's words changed in their accessed and dirty bits alone: t keeps its view.
@@ -320,9 +328,9 @@ impl CapKernel {
     /// What a probe of count entries from the address va, in the space of the capability at index slot of
     /// the table at root, left: only the accessed and dirty bits of the level 1 table's words changed, so
     /// every entry, every table walk and the view are as they were; each entry in the range was probed
-    /// (probed_entry: its word as read is its entry's, bit i of each mask is its bit as read when it is
-    /// present, and its bits are clear); the masks have no bit past the range; and the two facts are the
-    /// target's.
+    /// (probed_entry: its word as read is the one its exchange returned and its entry's, bit i of each
+    /// mask is its bit as read when it is present, and its bits are clear); every word outside the range
+    /// is as it was; the masks have no bit past the range; and the two facts are the target's.
     pub open spec fn probe_done(pre: Self, post: Self, root: usize, slot: usize, va: u64, count: u64, r: Probed) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -334,6 +342,7 @@ impl CapKernel {
         &&& forall|s: usize, q: SpacePath| #[trigger] walk(b, s, q) == walk(a, s, q)
         &&& post.view() == pre.view()
         &&& probed_prefix(a, post.table_pages.maps@[t].value(), t, p.l1, r.read@, r.accessed, r.dirty, count as int)
+        &&& words_kept_outside(pre.table_pages.maps@[t].value(), post.table_pages.maps@[t].value(), p.l1, count as int)
         &&& forall|i: int| count <= i < 64 ==> !#[trigger] mask_bit(r.accessed, i)
         &&& forall|i: int| count <= i < 64 ==> !#[trigger] mask_bit(r.dirty, i)
         &&& r.accessed_maintained == maintains_accessed()
@@ -392,6 +401,7 @@ impl CapKernel {
                 r.dirty,
                 count as int,
             ),
+            words_kept_outside(pre.table_pages.maps@[t].value(), post.table_pages.maps@[t].value(), address_path(va).l1, count as int),
             forall|j: int| count <= j < 64 ==> !#[trigger] mask_bit(r.accessed, j),
             forall|j: int| count <= j < 64 ==> !#[trigger] mask_bit(r.dirty, j),
             r.accessed_maintained == maintains_accessed(),
@@ -512,6 +522,7 @@ impl CapKernel {
                 m0.value().level@ == 1,
                 map.value()@ == m0.value()@,
                 probed_prefix(tree, map.value(), t, l1, read, accessed, dirty, i as int),
+                words_kept_outside(m0.value(), map.value(), l1, i as int),
                 forall|j: int| i <= j < 64 ==> !#[trigger] mask_bit(accessed, j),
                 forall|j: int| i <= j < 64 ==> !#[trigger] mask_bit(dirty, j),
             decreases count - i,
@@ -564,6 +575,7 @@ impl CapKernel {
                         assert(mask_bit(dirty, j) == mask_bit(dirty0, j));
                         assert(f != e);
                         assert(map.value().ar@[f as int] == before.ar@[f as int]);
+                        assert(map.value().exchanged@[f] == before.exchanged@[f]);
                     } else {
                         assert(j == i);
                         assert(f == e);
@@ -571,6 +583,11 @@ impl CapKernel {
                     }
                 }
                 assert(probed_prefix(tree, map.value(), t, l1, read, accessed, dirty, i + 1));
+                assert forall|j: int| #![trigger map.value().ar@[j]] 0 <= j < ENTRIES && !(l1 <= j < l1 + i + 1)
+                    implies map.value().ar@[j] == m0.value().ar@[j] by {
+                    assert(j != e as int);
+                    assert(before.ar@[j] == m0.value().ar@[j]);
+                }
                 assert forall|j: int| i + 1 <= j < 64 implies !#[trigger] mask_bit(accessed, j) by {
                     assert(mask_bit(accessed, j) == mask_bit(accessed0, j));
                 }

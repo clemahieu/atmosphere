@@ -2496,6 +2496,11 @@ impl CapKernel {
         lemma_mul_is_associative(PAGES_PER_2M as int, PAGE_SZ as int, q2);
         assert(fr * PAGE_SZ == (PAGES_PER_2M * PAGE_SZ) * q2);
         lemma_mod_multiples_basic(fr / (PAGES_PER_2M as int), (PAGES_PER_2M as int) * (PAGE_SZ as int));
+        lemma_mul_is_commutative(q2, (PAGES_PER_2M as int) * (PAGE_SZ as int));
+        assert(((PAGES_PER_2M * PAGE_SZ) * q2) % ((PAGES_PER_2M as int) * (PAGE_SZ as int)) == 0);
+        assert(0 <= fr * PAGE_SZ <= usize::MAX);
+        assert(child.base as int == fr * PAGE_SZ);
+        assert(child.base as int % block_bytes(child.order) == 0);
         lemma_child_same_block(&self.blocks, cap, child);
         lemma_div_multiples_vanish(fr, (PAGE_SZ as int));
         assert(child.base as int / (PAGE_SZ as int) == fr);

@@ -138,12 +138,14 @@ impl CapKernel {
         &&& post.view().shares == shares_surviving(tree, |r: usize, q: SpacePath| ends_at(tree, r, q, t, p.l1))
     }
 
-    /// What an unmap at path p of the space named at index slot of the table at root returned: the word
-    /// read decodes to the entry the path reached, the bits are that word's accessed and dirty bits as
-    /// read before it was cleared, and the two facts are this target's.
-    pub open spec fn unmapped_read(pre: Self, root: usize, slot: usize, p: SpacePath, r: Unmapped) -> bool {
+    /// What an unmap at path p of the space named at index slot of the table at root, from pre to post,
+    /// returned: the word read is the one the exchange that cleared the entry returned, as post's table
+    /// records it, and decodes to the entry the path reached; the bits are that word's accessed and dirty
+    /// bits; and the two facts are this target's.
+    pub open spec fn unmapped_read(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, r: Unmapped) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
         let t = walk_table(tree, pre.payload_of(pre.tables.node_of(root, slot)).base, p)->0;
+        &&& r.read@ == post.table_pages.maps@[t].value().exchanged@[p.l1]
         &&& spec_usize2page_entry(r.read@, tree.record(t).level) == tree.entry(t, p.l1)
         &&& r.accessed == spec_usize2page_entry_status(r.read@, tree.record(t).level).accessed
         &&& r.dirty == spec_usize2page_entry_status(r.read@, tree.record(t).level).dirty
@@ -169,7 +171,7 @@ impl CapKernel {
         &&& names_entry(va, level)
         &&& pre.can_unmap(root, slot, SpaceKind::Process, p)
         &&& Self::unmap_done(pre, post, root, slot, p)
-        &&& Self::unmapped_read(pre, root, slot, p, r)
+        &&& Self::unmapped_read(pre, post, root, slot, p, r)
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
@@ -249,7 +251,7 @@ impl CapKernel {
             final(self).table_pages.records == old(self).table_pages.records,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> Self::unmap_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }),
-            ret is Some ==> Self::unmapped_read(*old(self), root, slot, SpacePath { l4, l3, l2, l1 }, ret->0),
+            ret is Some ==> Self::unmapped_read(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, ret->0),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -273,7 +275,7 @@ impl CapKernel {
             final(self).table_pages.records == old(self).table_pages.records,
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> Self::unmap_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }),
-            ret is Some ==> Self::unmapped_read(*old(self), root, slot, SpacePath { l4, l3, l2, l1 }, ret->0),
+            ret is Some ==> Self::unmapped_read(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, ret->0),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -401,7 +403,7 @@ impl CapKernel {
                 &&& (ret->0).0 == old(self).payload_of(old(self).tables.node_of(root, slot)).base
                 &&& old(self).spaces.roots@.contains_key((ret->0).0)
                 &&& Self::entry_unmapped(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 })
-                &&& Self::unmapped_read(*old(self), root, slot, SpacePath { l4, l3, l2, l1 }, (ret->0).1)
+                &&& Self::unmapped_read(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, (ret->0).1)
             },
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
@@ -474,6 +476,7 @@ impl CapKernel {
         }
         let word = self.unlink_mapping_node(node, Tracked(steps));
         proof {
+            assert(pre.mappings@[node].table == t && pre.mappings@[node].entry == l1);
             Self::lemma_mapping_view_same(pre, *self, node);
             lemma_sheds_shares_discharges_local(pre.view(), self.view(), root);
             Self::lemma_unlinked_shrunk(pre, *self, node);

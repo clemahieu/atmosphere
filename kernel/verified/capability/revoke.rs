@@ -130,6 +130,7 @@ impl CapKernel {
             },
             old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), n),
             old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_word(*old(self), n, ret),
+            old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_exchanged(*old(self), *final(self), n, ret),
             final(self).tables.owner == old(self).tables.owner,
             final(self).tables.roots@.dom() == old(self).tables.roots@.dom(),
             forall|x: usize| x != n ==> #[trigger] final(self).tables.payload_of(x) == old(self).tables.payload_of(x),

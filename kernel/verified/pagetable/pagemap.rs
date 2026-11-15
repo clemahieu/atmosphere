@@ -17,6 +17,10 @@ pub struct PageMap {
     /// The table's level in the kernel's numbering on every target: 4 for a root, 1 for a table of 4K
     /// leaves. Ghost, so the struct stays the hardware page.
     pub level: Ghost<usize>,
+    /// For each entry, the word the last exchange_table_word of it returned: the word the processor's
+    /// memory held at that moment, accessed and dirty bits included. Only the arch module's exchange
+    /// writes it, so a bit read from it is one the exchange read, not one the kernel chose. Ghost.
+    pub exchanged: Ghost<Map<usize, usize>>,
 }
 
 impl PageMap {

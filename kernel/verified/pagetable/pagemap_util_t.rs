@@ -137,6 +137,7 @@ pub fn page_map_take_status(
         final(page_map_perm).value().spec_seq == old(page_map_perm).value().spec_seq,
         spec_without_status(ret) == spec_without_status(old(page_map_perm).value().ar@[index as int]),
         final(page_map_perm).value().ar@ == old(page_map_perm).value().ar@.update(index as int, spec_without_status(ret)),
+        final(page_map_perm).value().exchanged@ == old(page_map_perm).value().exchanged@.insert(index, ret),
 {
     let page_map = PPtr::<PageMap>::from_usize(page_map_ptr).borrow_mut(Tracked(page_map_perm));
     let cleared = without_status(*page_map.ar.get(index));
@@ -167,6 +168,7 @@ pub fn page_map_clear_status(
             #![trigger final(page_map_perm).value().ar@[j]]
             0 <= j < ENTRIES && j != index ==> final(page_map_perm).value().ar@[j] == old(page_map_perm).value().ar@[j],
         spec_usize2page_entry(ret, old(page_map_perm).value().level@) == old(page_map_perm).value()@[index as int],
+        final(page_map_perm).value().exchanged@ == old(page_map_perm).value().exchanged@.insert(index, ret),
 {
     let ghost before = page_map_perm.value();
     let ret = page_map_take_status(page_map_ptr, Tracked(page_map_perm), index);
@@ -204,6 +206,7 @@ pub fn page_map_take(
         final(page_map_perm).value().spec_seq@ == old(page_map_perm).value().spec_seq@.update(index as int, usize2page_entry(0usize, old(page_map_perm).value().level@)),
         spec_without_status(ret) == spec_without_status(old(page_map_perm).value().ar@[index as int]),
         final(page_map_perm).value().ar@ == old(page_map_perm).value().ar@.update(index as int, 0usize),
+        final(page_map_perm).value().exchanged@ == old(page_map_perm).value().exchanged@.insert(index, ret),
 {
     let page_map = PPtr::<PageMap>::from_usize(page_map_ptr).borrow_mut(Tracked(page_map_perm));
     let ret = exchange_table_word(page_map, index, 0);
@@ -238,6 +241,7 @@ pub fn page_map_clear_take(
         final(page_map_perm).value()[index].is_empty(),
         final(page_map_perm).value().status(index as int).is_clear(),
         spec_usize2page_entry(ret, old(page_map_perm).value().level@) == old(page_map_perm).value()@[index as int],
+        final(page_map_perm).value().exchanged@ == old(page_map_perm).value().exchanged@.insert(index, ret),
 {
     let ghost before = page_map_perm.value();
     let ret = page_map_take(page_map_ptr, Tracked(page_map_perm), index);
@@ -283,7 +287,7 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(pag
 {
     let ar = Array::<usize, ENTRIES>::new(0usize);
     let ghost empty = usize2page_entry(0usize, level@);
-    let map = PageMap { ar, spec_seq: Ghost(Seq::new(ENTRIES as nat, |i: int| empty)), level };
+    let map = PageMap { ar, spec_seq: Ghost(Seq::new(ENTRIES as nat, |i: int| empty)), level, exchanged: Ghost(Map::empty()) };
     proof {
         zero_leads_is_empty_page_entry(level@);
         assert(map.wf());

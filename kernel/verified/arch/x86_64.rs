@@ -183,6 +183,8 @@ pub proof fn lemma_without_status(v: usize, level: usize)
 /// a walk sets them in an atomic read-modify-write, as XCHG is one (7.3.2, Table 7-1): another core's
 /// walk changes nothing in the word but those bits, before the exchange or after it, so the word
 /// returned is the table's but for them.
+/// The table's ghost record of exchanges takes the word returned, as the word this exchange read; it
+/// is ghost, so it claims nothing of the processor.
 // cite: amd-apm2 5.4.1 Field Definitions, Accessed (A) Bit and Dirty (D) Bit
 // cite: amd-apm2 7.3.2 Access Atomicity, Table 7-1
 pub assume_specification[exchange_table_word](table: &mut PageMap, index: usize, word: usize) -> (ret: usize)
@@ -194,6 +196,7 @@ pub assume_specification[exchange_table_word](table: &mut PageMap, index: usize,
         final(table).ar@ == old(table).ar@.update(index as int, word),
         final(table).spec_seq == old(table).spec_seq,
         final(table).level == old(table).level,
+        final(table).exchanged@ == old(table).exchanged@.insert(index, ret),
         spec_without_status(ret) == spec_without_status(old(table).ar@[index as int]);
 
 /// The zero word is the empty entry with its status clear, at every level.
