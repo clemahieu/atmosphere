@@ -22,7 +22,14 @@ A site is one of:
   and a let binding to the first call that takes it, and 'none' stands for the call when nothing does.
 - raw: a raw pointer to a type a marked crate defines, made by an `as` cast or by core's cast,
   transmute or provenance functions. Its callee field is the pointee type.
-- call: a call into a marked crate whose specification has a requires. Not counted yet.
+- call: a call of an exec function of a marked crate whose specification has a requires, on the
+  function itself or on an assume_specification in its module's file that states it. Its callee field
+  is the function as '<crate>::<module path>::<name>', with the impl index dropped and one arch
+  module. Whether the function has a requires is read from the marked crate's source: the module
+  path's file, and in it the function of that name inside the impl block rustc numbers {impl#N}, the
+  N-th impl in the file, or inside the trait the path names, or outside both; a name starting with a
+  capital is a constructor and one in braces a closure, and neither has one. A callee the source does
+  not show is a finding.
 
 tools/boundary-list holds one line per site, fields separated by tabs: the path, the enclosing
 function as rustc names it without the crate hash, the kind, the callee, the occurrence among sites
@@ -257,8 +264,9 @@ class Body:
             return None
         return None
 
-    def sites(self, marked):
-        """The conjure and raw sites of this body."""
+    def sites(self, marked, requires):
+        """The conjure, raw and call sites of this body; requires(crate, path) says whether a marked
+        crate's function has a requires."""
         found = []
         for index, kind in enumerate(self.kinds):
             item = self.exprs[index]
@@ -266,6 +274,10 @@ class Body:
             where = span(field(item, 12, "span"))
             if kind == "Call":
                 callee = self.callee(index)
+                if callee and callee[0] in marked and requires(*callee):
+                    where = span(field(item, 16, "fn_span")) or where
+                    found.append(Site(where[0], self.function, "call", plain_path(*callee), where[1], where[2]))
+                    continue
                 if callee and callee[1].split("::")[-1] == "assume_new":
                     where = span(field(item, 16, "fn_span")) or where
                     taker = self.taker(index)
@@ -286,11 +298,11 @@ class Body:
         return found
 
 
-def thir_sites(text, marked):
-    """Every conjure and raw site of a dump."""
+def thir_sites(text, marked, requires):
+    """Every site of a dump."""
     found = []
     for crate, path, lines in bodies(text):
-        found += Body(crate, path, lines).sites(marked)
+        found += Body(crate, path, lines).sites(marked, requires)
     return found
 
 
@@ -330,6 +342,115 @@ def crates(meta):
 def marked_directories(meta):
     return [Path(package["manifest_path"]).parent for package in meta["packages"]
             if ((package.get("metadata") or {}).get("atmosphere") or {}).get("verified")]
+
+
+def marked_roots(meta):
+    """Each marked crate's root file, by the name rustc gives the crate."""
+    return {package["name"].replace("-", "_"): Path(target["src_path"])
+            for package in meta["packages"]
+            if ((package.get("metadata") or {}).get("atmosphere") or {}).get("verified")
+            for target in package["targets"] if "lib" in target["kind"]}
+
+
+# An item that opens an impl block, at the start of its line.
+IMPL_ITEM = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?impl\b")
+# An item that opens a trait, and an inline module, at the start of its line.
+TRAIT_ITEM = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?trait\s+(\w+)")
+INLINE_MODULE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*\{")
+# The words that end a function's signature, or open its specification: requires among them.
+SIGNATURE_END = re.compile(r"\b(?:requires|ensures|recommends|returns|decreases|opens_invariants|no_unwind)\b|[{;]")
+
+
+class Definitions:
+    """Whether a function of a marked crate has a requires, read from the crate's source."""
+
+    def __init__(self, roots, code_lines, body_lines):
+        self.roots, self.code_lines, self.body_lines = roots, code_lines, body_lines
+        self.known = {}
+
+    def __call__(self, crate, path):
+        if (crate, path) not in self.known:
+            self.known[(crate, path)] = self.read(crate, path)
+        return self.known[(crate, path)]
+
+    def module(self, crate, parts):
+        """The file of the longest module path among parts' prefixes, and the parts after it."""
+        file = self.roots[crate]
+        for taken, part in enumerate(parts):
+            directory = file.parent if file.name in ("lib.rs", "main.rs", "mod.rs") else file.parent / file.stem
+            following = next((candidate for candidate in (directory / f"{part}.rs", directory / part / "mod.rs")
+                              if candidate.is_file()), None)
+            if following is None:
+                return file, parts[taken:]
+            file = following
+        return file, []
+
+    def read(self, crate, path):
+        parts = path.split("::")
+        name = parts[-1]
+        if name[:1].isupper() or name.startswith("{"):
+            return False
+        file, rest = self.module(crate, parts[:-1])
+        code = self.code_lines(file.read_text(encoding="utf-8"))
+        text = "\n".join(code)
+        offsets = [0]
+        for line in code:
+            offsets.append(offsets[-1] + len(line) + 1)
+        modules = {}
+        for index, line in enumerate(code):
+            match = INLINE_MODULE.match(line)
+            if match:
+                modules[index] = (match.group(1), self.body_lines(code, index))
+        scope = set(range(len(code)))
+        while rest:
+            inner = [body for index, (module, body) in modules.items() if module == rest[0] and index in scope]
+            if not inner:
+                break
+            scope, rest = inner[0] - {min(inner[0])}, rest[1:]
+        for index, (_, body) in modules.items():
+            if index in scope:
+                scope -= body | {index}
+        impls = [index for index in sorted(scope) if IMPL_ITEM.match(code[index])]
+        traits = {match.group(1): index for index in sorted(scope)
+                  for match in [TRAIT_ITEM.match(code[index])] if match}
+        blocks = [self.body_lines(code, index) for index in impls + list(traits.values())]
+        declared = [index for index in sorted(scope)
+                    if re.search(rf"\bfn\s+{re.escape(name)}\b", code[index])
+                    and not re.search(r"\b(?:spec|proof)\s+fn\b", code[index])]
+        if rest and rest[0].startswith("{impl#"):
+            number = int(rest[0][len("{impl#"):-1])
+            inside = self.body_lines(code, impls[number]) if number < len(impls) else set()
+            chosen = [index for index in declared if index in inside]
+        elif rest:
+            inside = self.body_lines(code, traits[rest[0]]) if rest[0] in traits else set()
+            chosen = [index for index in declared if index in inside]
+        else:
+            chosen = [index for index in declared if not any(index in block for block in blocks)]
+        if len(chosen) != 1:
+            raise Unreadable(f"{crate}::{path}: {len(chosen)} declarations of fn {name} in {file} where rustc's path"
+                             " names one")
+        found = re.search(rf"\bfn\s+{re.escape(name)}\b", code[chosen[0]])
+        if self.clause(text, offsets[chosen[0]] + found.end()) == "requires":
+            return True
+        for match in re.finditer(r"\bassume_specification\b[^\[]*\[([^\]]+)\]", text):
+            if re.sub(r"\s", "", match.group(1)).rsplit("::", 1)[-1] == name:
+                return self.clause(text, match.end()) == "requires"
+        return False
+
+    @staticmethod
+    def clause(text, start):
+        """The first word or brace that ends the signature starting at start, outside its parentheses
+        and brackets."""
+        depth = 0
+        for match in re.finditer(r"[()\[\]]|" + SIGNATURE_END.pattern, text[start:]):
+            token = match.group(0)
+            if token in "([":
+                depth += 1
+            elif token in ")]":
+                depth -= 1
+            elif depth == 0:
+                return token
+        return None
 
 
 def dump(repo, name, target):
@@ -466,11 +587,11 @@ def compare(found, entries, rules):
     return findings
 
 
-def with_starts(text, marked):
+def with_starts(text, marked, requires):
     """Every site of a dump, with the first line of its body in the site's file."""
     found = []
     for crate, path, lines in bodies(text):
-        body_sites = Body(crate, path, lines).sites(marked)
+        body_sites = Body(crate, path, lines).sites(marked, requires)
         if not body_sites:
             continue
         for site in body_sites:
@@ -504,10 +625,12 @@ def main(argv):
         missing = sorted(boundary - set(CRATES))
         if missing:
             raise Unreadable("a boundary crate CRATES does not say how to compile: " + ", ".join(missing))
+        module = external_body()
+        requires = Definitions(marked_roots(meta), module.code_lines, module.body_lines)
         sites = []
         for name in CRATES:
             for target in TARGETS:
-                sites += with_starts(dump(REPO, name, target), marked)
+                sites += with_starts(dump(REPO, name, target), marked, requires)
         found = numbered(sites)
         entries, findings = parse_list((REPO / LIST).read_text(encoding="utf-8"))
     except (Unreadable, OSError) as error:
@@ -519,7 +642,6 @@ def main(argv):
             entry = listed.get(key)
             print("\t".join(map(str, key)) + "\t" + ("\t".join(entry[5:]) if entry else "?\t?"))
         return 0
-    module = external_body()
     try:
         documents = module.parse_documents((REPO / module.DOCUMENTS_PATH).read_text(encoding="utf-8"))
     except module.Unreadable as error:
@@ -617,6 +739,69 @@ def raw_dump():
 
 
 MARKED = {"verified", "acall", "aeager", "aheap"}
+# Whether a marked crate's function has a requires: none has, or only enter has.
+NONE = lambda crate, path: False
+ENTER_REQUIRES = lambda crate, path: path.endswith("::enter")
+CALL = ("kernel/src/capability.rs", "kernel::capability::dispatch", "call", "verified::capability::operation::enter", 1)
+# A marked crate's root file, with the shapes Definitions reads: impl blocks numbered past one in an
+# inline module, a trait, a free function, and one whose requires is on an assume_specification.
+DEFINITIONS = """// SPDX-License-Identifier: MIT
+verus! {
+impl<A, const N: usize> Array<A, N> {
+    pub fn get(&self, i: usize) -> (out: &A)
+        requires
+            0 <= i < N,
+    {
+        &self.seq[i]
+    }
+
+    pub fn len(&self) -> (n: usize)
+        ensures n == N,
+    {
+        N
+    }
+}
+
+mod queue {
+    impl Queue {
+        pub fn push(&mut self, item: (u8, u8))
+            requires old(self).wf(),
+        {
+        }
+    }
+}
+
+impl Kernel {
+    pub fn enter(&mut self, c: usize) -> (r: Option<(u8, u8)>) // requires nothing: comments are not read.
+        ensures r is None,
+    {
+        None
+    }
+
+    spec fn get(&self) -> bool { true }
+}
+
+pub trait Source {
+    fn reserve(&mut self, blocks: usize) -> (r: Option<*mut u8>)
+        requires blocks > 0;
+}
+
+pub fn exercise<S: Source>(src: &mut S, token: &mut [u8; 4]) -> (seen: u8)
+    requires
+        old(src).wf(),
+{
+    0
+}
+}
+
+pub fn flush(core: usize) {
+}
+
+verus! {
+pub assume_specification[ crate::flush ](core: usize)
+    requires core < 4;
+}
+"""
 DISPATCH = ("kernel/src/capability.rs", "kernel::capability::dispatch", "conjure",
             "verified::capability::operation::enter argument 3: Tracked<&mut verified::capability::steps::Steps>", 1)
 
@@ -654,7 +839,7 @@ class Tests(unittest.TestCase):
         self.rules = Rules(self.repo, {"amd-apm2": ("t", "p", "n", "r")}, None, {"witness_boot_state"}, FakeModule)
 
     def found(self):
-        return numbered(with_starts(conjure_dump(), MARKED))
+        return numbered(with_starts(conjure_dump(), MARKED, NONE))
 
     def entries(self, guarantor, text, key=DISPATCH):
         return parse_list("\t".join(map(str, key)) + f"\t{guarantor}\t{text}\n")[0]
@@ -664,17 +849,17 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.found()[DISPATCH].line, 53)
 
     def test_a_conjured_value_is_followed_through_a_let_binding(self):
-        (key,) = numbered(thir_sites(let_dump(), MARKED))
+        (key,) = numbered(thir_sites(let_dump(), MARKED, NONE))
         self.assertEqual(key[3], "verified::queue_lock::acquire argument 2: Tracked<&mut verified::queue_lock::Core>")
 
     def test_a_conjured_value_no_call_takes_is_still_a_site(self):
         text = dump_text("kernel[ff92]::f", [simple("ZstLiteral", "FnDef(", "kernel/src/a.rs:1:1: 1:2"),
                                              call(ASSUME, 0, [], "kernel/src/a.rs:1:1: 1:5", STEPS)])
-        (site,) = thir_sites(text, MARKED)
+        (site,) = thir_sites(text, MARKED, NONE)
         self.assertTrue(site.callee.startswith("none: "))
 
     def test_a_raw_pointer_to_a_marked_type_is_a_site_and_one_to_another_type_is_not(self):
-        (site,) = thir_sites(raw_dump(), MARKED)
+        (site,) = thir_sites(raw_dump(), MARKED, NONE)
         self.assertEqual((site.kind, site.callee, site.line), ("raw", "verified::capability::kernel::CapKernel", 190))
 
     def test_a_callee_in_the_arch_module_is_named_the_same_on_both_targets(self):
@@ -753,6 +938,58 @@ class Tests(unittest.TestCase):
         meta = {"packages": [package("verified", True), package("pager-policy", True),
                              package("kernel", dependencies=["verified"]), package("aloader")]}
         self.assertEqual(crates(meta), ({"verified", "pager_policy"}, {"kernel"}))
+
+    def test_a_call_of_a_marked_function_with_a_requires_is_a_site_and_one_without_is_not(self):
+        sites = [site for site in thir_sites(conjure_dump(), MARKED, ENTER_REQUIRES) if site.kind == "call"]
+        self.assertEqual([(site.callee, site.line, site.column) for site in sites],
+                         [("verified::capability::operation::enter", 53, 24)])
+        self.assertEqual([site for site in thir_sites(conjure_dump(), MARKED, NONE) if site.kind == "call"], [])
+        self.assertEqual(thir_sites(conjure_dump(), {"acall"}, ENTER_REQUIRES)[0].kind, "conjure")
+
+    def test_an_unlisted_call_fails(self):
+        found = numbered(with_starts(conjure_dump(), MARKED, ENTER_REQUIRES))
+        (finding,) = compare(found, self.entries("nothing", '"x"'), self.rules)
+        self.assertIn("kernel/src/capability.rs:53: a call site the list does not hold", finding)
+        self.assertIn("verified::capability::operation::enter\t1", finding)
+        self.assertEqual(compare(found, self.entries("nothing", '"x"') + self.entries("nothing", '"x"', CALL),
+                                 self.rules), [])
+
+    def test_a_listed_call_the_source_lacks_fails(self):
+        entries = self.entries("nothing", '"x"') + self.entries("nothing", '"x"', CALL)
+        (finding,) = compare(self.found(), entries, self.rules)
+        self.assertIn(f"{LIST}:1: the source holds no such site", finding)
+        self.assertIn("\tcall\tverified::capability::operation::enter\t1", finding)
+
+    def definitions(self):
+        root = self.repo / "verified/src/lib.rs"
+        root.parent.mkdir(parents=True)
+        root.write_text(DEFINITIONS)
+        module = external_body()
+        return Definitions({"verified": root}, module.code_lines, module.body_lines)
+
+    def test_a_requires_is_read_from_the_function_rustc_names(self):
+        requires = self.definitions()
+        cases = {
+            "{impl#0}::get": True,
+            "{impl#0}::len": False,
+            "queue::{impl#0}::push": True,
+            "{impl#1}::enter": False,
+            "Source::reserve": True,
+            "exercise": True,
+            "flush": True,
+            "Array": False,
+            "{impl#0}::get::{closure#0}": False,
+        }
+        for path, expected in cases.items():
+            with self.subTest(path):
+                self.assertEqual(requires("verified", path), expected)
+
+    def test_a_callee_the_source_does_not_show_fails(self):
+        requires = self.definitions()
+        for path in ("{impl#2}::get", "{impl#1}::push", "missing", "Sink::reserve"):
+            with self.subTest(path):
+                with self.assertRaises(Unreadable):
+                    requires("verified", path)
 
     def test_every_boundary_crate_of_the_tree_is_compiled(self):
         _, boundary = crates(metadata(REPO))

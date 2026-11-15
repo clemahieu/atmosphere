@@ -1,13 +1,141 @@
-# Every site where an unverified crate hands verified code a value the proof cannot check, each with
-# who vouches for it, held to the source by tools/check-boundary.py, whose opening comment says what a
-# site is and what each class's text must be: design/boundary-into-verified-code-counted/. Fields,
-# separated by tabs: path, enclosing function, kind, callee, occurrence, guarantor's class, its text.
+# Every site where an unverified crate hands verified code a value the proof cannot check or calls a
+# verified function whose requires no proof meets there, each with who vouches for it, held to the
+# source by tools/check-boundary.py, whose opening comment says what a site is and what each class's
+# text must be: design/boundary-into-verified-code-counted/. Fields, separated by tabs: path,
+# enclosing function, kind, callee, occurrence, guarantor's class, its text.
 # A 'nothing' line is debt: no document, proof or check vouches for it.
+astd/src/heap.rs	astd::heap::{impl#1}::alloc	call	aheap::heap::alloc	1	nothing	"the heap and its Eager sit together under one mutex from install, each alloc and free leaving the heap well-formed over the source and the source serving the caller, as their ensures say, and no system call between them takes away a frame the source holds; layout_fits above checks the layout"
+astd/src/heap.rs	astd::heap::{impl#1}::dealloc	call	aheap::heap::free	1	nothing	"as alloc's, and the object and its layout are ones alloc on this heap returned and nobody freed since, as GlobalAlloc::dealloc's contract has its caller promise"
 astd/src/heap.rs	astd::heap::{impl#1}::dealloc	conjure	aheap::heap::free argument 6: Tracked<vstd::raw_ptr::PointsToRaw>	1	language	library/core/src/alloc/global.rs "`ptr` is a block of memory currently allocated via this allocator and, * `layout` is the same layout that was used to allocate that block of memory."
+dom0/src/main.rs	dom0::inspect	call	acall::memory::inspect	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::retyped_frame_held::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::retyped_table_pages::{closure#1}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::linked_path_held::{closure#0}	call	acall::memory::link	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::mapped_frame_held::{closure#0}	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::remapped_frame_held	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::moved_frame_held::{closure#0}	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::moved_frame_held	call	acall::capability::move_cap	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::moved_frame_held	call	acall::capability::move_cap	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::moved_frame_held	call	acall::capability::move_cap	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::timed_beside_before	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::probed_bits_held	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::unmapped_bits_held	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::remapped_other_frame_held	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::remapped_other_frame_held	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::remapped_other_frame_held	call	acall::memory::map	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::freed_frame_retyped::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::freed_frame_retyped::{closure#1}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::freed_frame_retyped::{closure#2}	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::freed_frame_retyped	call	acall::capability::delete	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::retyped_process_held::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::retyped_threads_held::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::read_window	call	acall::capability::read_registers	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::set_frame_word	call	acall::capability::write_registers	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::capability::read_registers	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::capability::read_registers	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::capability::write_registers	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::capability::write_registers	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::capability::write_registers	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::capability::read_registers	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::capability::write_registers	4	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::registers_held	call	acall::capability::delete	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::placed_thread_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::placed_thread_held	call	acall::capability::place	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::placed_thread_held	call	acall::capability::place	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::placed_thread_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::placed_thread_held	call	acall::capability::place	4	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::placed_thread_held	call	acall::capability::delete	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::placed_thread_held	call	acall::capability::place	5	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::placed_thread_held	call	acall::capability::place	6	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::image_page	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::image_page	call	acall::memory::unmap	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held::{closure#0}	call	acall::memory::link	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held	call	acall::memory::map	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held	call	acall::memory::map	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held	call	acall::memory::retype	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::switched_thread_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_thread_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_thread_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_thread_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_counting_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_counting_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::invoked_beside_core_1_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::invoked_beside_core_1_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::invoked_beside_core_1_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_unmap_held::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_unmap_held::{closure#1}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_unmap_held	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_unmap_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_unmap_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_unmap_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_unmap_held	call	acall::memory::unmap	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_unmap_held	call	acall::capability::delete	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::started_thread_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::started_thread_held	call	acall::capability::start	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::started_thread_held	call	acall::capability::start	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::started_thread_held	call	acall::capability::start	4	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::started_thread_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::suspended_thread_held	call	acall::capability::suspend	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::suspended_thread_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::suspended_thread_held	call	acall::capability::suspend	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::suspended_thread_held	call	acall::capability::delete	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::suspended_thread_held	call	acall::capability::suspend	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::suspended_thread_held	call	acall::capability::suspend	4	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::suspended_thread_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held::{closure#0}	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::capability::destroy	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::capability::destroy	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::capability::destroy	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::capability::destroy	4	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::capability::destroy	5	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::capability::destroy	6	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::destroyed_process_held	call	acall::capability::move_cap	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::retyped_large_frame_held::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_frame_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_frame_held	call	acall::memory::derive	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_frame_held	call	acall::memory::derive	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_frame_held	call	acall::memory::derive	4	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_frame_held	call	acall::memory::derive	5	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::revoked_frame_held::{closure#1}	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::revoked_frame_held	call	acall::capability::revoke	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::revoked_frame_held	call	acall::capability::revoke	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::revoked_frame_held	call	acall::capability::revoke	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::deleted_frames_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::deleted_frames_held	call	acall::capability::delete	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::deleted_frames_held	call	acall::capability::delete	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::deleted_frames_held	call	acall::capability::delete	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::deleted_frames_held	call	acall::capability::delete	4	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::deleted_frames_held	call	acall::capability::delete	5	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_power_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_power_held	call	acall::memory::derive	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_power_held	call	acall::memory::derive	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::derived_power_held	call	acall::capability::delete	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::leaf_slot_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::retyped_leaves_held::{closure#1}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::eager_source_held	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::eager_source_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::eager_source_held	call	aeager::exercise::exercise	1	nothing	"the Eager is new from Eager::new, whose ensures make its view well-formed holding no frame, and the caller token is the process's own, kept well-formed by each acall wrapper's ensures; that the Eager names the process's own space is the retype and derive above returning OK"
+dom0/src/main.rs	dom0::heap_source	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::heap_source	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::main	conjure	astd::heap::keep_caller argument 0: Tracked<acall::step::Caller>	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 kernel/src/arch/aarch64/exception.rs	kernel::arch::aarch64::exception::enter	raw	verified::arch::Registers	1	check	"stack % 16 == 0"
+kernel/src/capability.rs	kernel::capability::dispatch	call	verified::capability::charge::charge	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; the core is the one cpu::get_cpu_id() returned, below NUM_CPUS"
+kernel/src/capability.rs	kernel::capability::dispatch	call	verified::capability::operation::enter	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; the core is the one cpu::get_cpu_id() returned, below NUM_CPUS"
 kernel/src/capability.rs	kernel::capability::dispatch	conjure	verified::capability::operation::enter argument 3: Tracked<&mut verified::capability::steps::Steps>	1	nothing	"a fresh step counter, which says nothing of the machine: the operation counts its own steps in it"
+kernel/src/capability.rs	kernel::capability::dispatch::{closure#0}	call	verified::capability::switch::current_frame	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; the core is the one cpu::get_cpu_id() returned, below NUM_CPUS"
+kernel/src/capability.rs	kernel::capability::power_off_accepted::{closure#0}	call	verified::arch::argument	1	nothing	"the literal 1 is an argument register the ABI has, between 1 and 5"
+kernel/src/capability.rs	kernel::capability::boot	call	verified::capability::block::metadata_layout	1	nothing	"NUM_PAGES pages of PAGE_SZ bytes lie within the identity-mapped span: constants nothing compares"
 kernel/src/capability.rs	kernel::capability::boot	raw	verified::capability::kernel::CapKernel	1	nothing	"the stretch it is placed on is free memory nobody else holds, as the firmware's memory map says and the loader reads it, and zero bytes are a valid CapKernel, which the constant above boot makes the compiler check"
+kernel/src/capability.rs	kernel::capability::boot	call	verified::array::set	1	nothing	"the index runs over 0..KERNEL_MEM_END_L4INDEX, the array's length, and the array is new from Array::new"
+kernel/src/capability.rs	kernel::capability::boot	call	verified::capability::boot_kernel::kernel_init	1	boot	witness_kernel_init
 kernel/src/capability.rs	kernel::capability::boot	conjure	verified::capability::boot_kernel::kernel_init argument 2: Tracked<verified::pptr::PointsTo<verified::capability::list::NodePage>>	1	nothing	"the list's root page is free memory nobody else holds, as the firmware's memory map says and the loader reads it"
 kernel/src/capability.rs	kernel::capability::boot	conjure	verified::capability::boot_kernel::kernel_init argument 5: Tracked<vstd::map::Map<(int, usize), verified::capability::kernel::CommandPage>>	1	nothing	"the IOMMU command buffers' pages are memory nobody else holds; boot tells kernel_init that no IOMMU is present, so nothing is read of them yet"
 kernel/src/capability.rs	kernel::capability::boot	conjure	verified::capability::boot_kernel::kernel_init argument 5: Tracked<vstd::map::Map<int, verified::capability::kernel::IommuRegisters>>	1	nothing	"the IOMMU registers are memory-mapped I/O at the addresses the firmware's tables name; boot tells kernel_init that no IOMMU is present, so nothing is read of them yet"
@@ -17,10 +145,28 @@ kernel/src/capability.rs	kernel::capability::boot	conjure	verified::capability::
 kernel/src/capability.rs	kernel::capability::boot	conjure	verified::capability::boot_kernel::kernel_init argument 16: Tracked<verified::arch::IotlbModel>	1	nothing	"no IOMMU holds a cached translation the kernel will hand out; boot tells kernel_init that no IOMMU is present"
 kernel/src/capability.rs	kernel::capability::boot	conjure	verified::capability::boot_kernel::kernel_init argument 19: Tracked<vstd::raw_ptr::PointsToRaw>	1	nothing	"the page metadata's carve is free memory nobody else holds, as the firmware's memory map says and the loader reads it"
 kernel/src/capability.rs	kernel::capability::boot	conjure	verified::capability::boot_kernel::kernel_init argument 20: Tracked<vstd::raw_ptr::IsExposed>	1	nothing	"the carve is read through the identity map, whose provenance is exposed because the carve is memory outside what the abstract machine uses"
+kernel/src/capability.rs	kernel::capability::boot	call	verified::capability::table::lookup	1	nothing	"kernel_init returned Some, whose ensures make CapKernel well-formed with the root process's table among the roots"
+kernel/src/capability.rs	kernel::capability::boot	call	verified::capability::list::get	1	nothing	"the node is one lookup returned, which its ensures make a valid node of the well-formed list"
+kernel/src/capability.rs	kernel::capability::boot	call	verified::capability::thread::place	1	boot	witness_root_thread_enters
+kernel/src/capability.rs	kernel::capability::boot	call	verified::capability::mapping::load_space	1	boot	witness_root_thread_enters
 kernel/src/capability.rs	kernel::capability::boot	conjure	verified::capability::mapping::load_space argument 3: Tracked<&mut verified::capability::steps::Steps>	1	nothing	"a fresh step counter, which says nothing of the machine: the operation counts its own steps in it"
+kernel/src/capability.rs	kernel::capability::boot	call	verified::capability::mapping::switch_space	1	boot	witness_root_thread_enters
+kernel/src/capability.rs	kernel::capability::boot	call	verified::capability::thread::enter_boot_thread	1	boot	witness_root_thread_enters
+kernel/src/capability.rs	kernel::capability::largest_blocks	call	verified::capability::decompose::first_block	1	check	"left > 0"
 kernel/src/capability.rs	kernel::capability::largest_blocks	conjure	verified::capability::decompose::first_block argument 3: Tracked<&mut verified::capability::steps::Steps>	1	nothing	"a fresh step counter, which says nothing of the machine: the operation counts its own steps in it"
 kernel/src/flush.rs	kernel::flush::handle_ipi	conjure	verified::arch::flush_every_context argument 0: Tracked<&mut verified::arch::TlbModel>	1	nothing	"a model of a TLB that is dropped after the flush, so it claims nothing kept; that the flush runs on the core it names is the caller's word"
+kernel/src/flush.rs	kernel::flush::handle_ipi	call	verified::capability::charge::charge	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; the core is the one cpu::get_cpu_id() returned, below NUM_CPUS"
+kernel/src/flush.rs	kernel::flush::handle_ipi	call	verified::array::get	1	nothing	"the core is the one cpu::get_cpu_id() returned, below NUM_CPUS, the cores array's length, and the array is well-formed by CapKernel's well-formedness"
+kernel/src/flush.rs	kernel::flush::handle_ipi	call	verified::capability::operation::enter_flush	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; the core is the one cpu::get_cpu_id() returned, below NUM_CPUS"
 kernel/src/flush.rs	kernel::flush::handle_ipi	conjure	verified::capability::operation::enter_flush argument 2: Tracked<&mut verified::capability::steps::Steps>	1	nothing	"a fresh step counter, which says nothing of the machine: the operation counts its own steps in it"
+kernel/src/flush.rs	kernel::flush::owed	call	verified::array::get	1	nothing	"d runs over 0..NUM_CPUS, the cores array's length, and the array is well-formed by CapKernel's well-formedness"
 kernel/src/lock.rs	kernel::lock::{impl#1}::lock	conjure	verified::queue_lock::acquire argument 2: Tracked<&mut verified::queue_lock::Core>	1	nothing	"the code runs on the core cpu::get_cpu_id() returned, and that core does not hold this lock when it acquires it and holds it when it releases it"
+kernel/src/lock.rs	kernel::lock::{impl#1}::lock	call	verified::queue_lock::acquire	1	nothing	"the lock is well-formed as its constructor made it, the core is the one cpu::get_cpu_id() returned, below NUM_CPUS, and the token conjured for that core is idle at acquire and holding at release"
 kernel/src/lock.rs	kernel::lock::{impl#4}::drop	conjure	verified::queue_lock::release argument 2: Tracked<&mut verified::queue_lock::Core>	1	nothing	"the code runs on the core cpu::get_cpu_id() returned, and that core does not hold this lock when it acquires it and holds it when it releases it"
+kernel/src/lock.rs	kernel::lock::{impl#4}::drop	call	verified::queue_lock::release	1	nothing	"the lock is well-formed as its constructor made it, the core is the one cpu::get_cpu_id() returned, below NUM_CPUS, and the token conjured for that core is idle at acquire and holding at release"
+kernel/src/schedule.rs	kernel::schedule::due	call	verified::capability::switch::selection_due	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; d runs over 0..NUM_CPUS"
+kernel/src/schedule.rs	kernel::schedule::due	call	verified::capability::thread::current_must_leave	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; d runs over 0..NUM_CPUS"
+kernel/src/schedule.rs	kernel::schedule::handle_selection	call	verified::capability::charge::charge	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; the core is the one cpu::get_cpu_id() returned, below NUM_CPUS"
+kernel/src/schedule.rs	kernel::schedule::handle_selection	call	verified::capability::switch::tick	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; the core is the one cpu::get_cpu_id() returned, below NUM_CPUS, and the kernel's root is the loader's root table boot gave kernel_init, a page the base register can name"
 kernel/src/schedule.rs	kernel::schedule::handle_selection	conjure	verified::capability::switch::tick argument 4: Tracked<&mut verified::capability::steps::Steps>	1	nothing	"a fresh step counter, which says nothing of the machine: the operation counts its own steps in it"
+kernel/src/schedule.rs	kernel::schedule::handle_selection	call	verified::capability::switch::current_frame	1	nothing	"CapKernel is well-formed between calls, as kernel_init's ensures make it and each verified operation's keep it, and nothing else writes it while the lock is held; the core is the one cpu::get_cpu_id() returned, below NUM_CPUS"
