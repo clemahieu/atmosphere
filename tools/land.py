@@ -12,7 +12,7 @@ with whatever change is gated on top of it next (design/land-without-regating/).
 
 A change that touches only what no gate step reads, UNREAD below, and leaves no source there that
 fails to state an allowed license, lands without a gate: the gate would say of it what it says of the base
-(design/no-gate-for-what-no-step-reads/). Its tree joins
+(design/gate-runs-steps-whose-inputs-changed/). Its tree joins
 the ledger with the base's verdict when the base has one.
 
 When the gate fails, the question is whether the change fails or the main it was rebased onto does.
@@ -89,7 +89,7 @@ PUSH_TRIES = 3
 # How far back a broken base's suspects are listed when no tree before them passed.
 SUSPECT_LIMIT = 50
 # What no gate step reads, so a change to these alone cannot move the gate's result: a file, or with
-# a closing slash everything under a directory (design/no-gate-for-what-no-step-reads/). The tools
+# a closing slash everything under a directory (design/gate-runs-steps-whose-inputs-changed/). The tools
 # here are run by people and by loops, and import only one another.
 UNREAD = (
     ".claude/agents/",
