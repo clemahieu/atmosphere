@@ -37,6 +37,8 @@ BOOT_TIMEOUT = 120
 # The largest file the tree may hold. The largest source is a seventh of this, so anything over it is
 # a build or solver output that .gitignore missed.
 MAX_FILE_BYTES = 1 << 20
+# Everything `git add -A` would take, tracked or not, NUL-separated.
+FILE_LISTING = ("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
 VERIFY = "tools/verify.py"
 # The number of verification errors the gate accepts, for each target alone.
 VERIFY_ALLOWANCE = "tools/verify-allowance"
@@ -167,7 +169,7 @@ def oversized(sizes):
 def file_sizes(gate):
     """Looks at everything `git add -A` would take, tracked or not, since the gate runs before the
     commit."""
-    ran = gate.call(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture=True)
+    ran = gate.call(list(FILE_LISTING), capture=True)
     if ran.code != 0:
         raise Failure(f"git ls-files: {status(ran.code)}")
     sizes = []
@@ -583,9 +585,10 @@ def main(argv):
 
 
 class FakeGate(Gate):
-    """A gate whose programs answer from a table, a command line or a program to (exit status,
-    stdout), with every other program exiting 0 with nothing to say; a boot that exits 0 leaves an
-    empty serial log. It records each call."""
+    """A gate whose programs answer from a table, a whole command line to (exit status, stdout),
+    with every other command line exiting 0 with nothing to say; a boot that exits 0 leaves an empty
+    serial log. It records each call. An answer is for the one command line it names, so a failure
+    meant for a check does not also fail the check's own tests."""
 
     def __init__(self, root, answers=None, boot_timeout=BOOT_TIMEOUT):
         super().__init__(root, boot_timeout)
@@ -596,7 +599,7 @@ class FakeGate(Gate):
     def call(self, argv, capture=False, merge=False, stdin=None, cwd=None, env=None):
         self.calls.append(list(argv))
         self.contexts.append((list(argv), cwd, env))
-        code, stdout = self.answers.get(" ".join(argv), self.answers.get(argv[0], (0, "")))
+        code, stdout = self.answers.get(" ".join(argv), (0, ""))
         if argv[0] == "timeout" and code == 0:
             (self.root / SERIAL_LOG).write_text("")
         return Ran(code, stdout if capture else "")
@@ -651,9 +654,9 @@ class Tests(unittest.TestCase):
         (self.root / "small.rs").write_bytes(b"x")
         (self.root / "solver.profile").write_bytes(b"x" * (MAX_FILE_BYTES + 1))
         listing = "small.rs\0gone.rs\0"
-        self.assertEqual(file_sizes(FakeGate(self.root, {"git": (0, listing)})), f"1 files, none over {MAX_FILE_BYTES} bytes")
+        self.assertEqual(file_sizes(FakeGate(self.root, {" ".join(FILE_LISTING): (0, listing)})), f"1 files, none over {MAX_FILE_BYTES} bytes")
         with self.assertRaisesRegex(Failure, "over 1048576 bytes: solver.profile$"):
-            file_sizes(FakeGate(self.root, {"git": (0, listing + "solver.profile\0")}))
+            file_sizes(FakeGate(self.root, {" ".join(FILE_LISTING): (0, listing + "solver.profile\0")}))
 
     def test_allowance_is_one_number(self):
         self.assertEqual(parse_allowance("2\n"), 2)
@@ -676,7 +679,7 @@ class Tests(unittest.TestCase):
                          "2 errors, allowance 2\n  verification results:: 9 verified, 1 errors\n  verification results:: 5 verified, 1 errors")
         three = two + "verification results:: 1 verified, 1 errors\n"
         with self.assertRaisesRegex(Failure, "^tools/verify.py --target aarch64: 3 errors, allowance 2"):
-            verify_for("--target", AARCH64)(FakeGate(self.root, {VERIFY: (1, three)}))
+            verify_for("--target", AARCH64)(FakeGate(self.root, {f"{VERIFY} --target {AARCH64}": (1, three)}))
         with self.assertRaisesRegex(Failure, "no verification results line: error: aborting$"):
             verify_for()(FakeGate(self.root, {VERIFY: (1, "error: aborting\n")}))
         with self.assertRaisesRegex(Failure, "exit status: 1 with no errors counted"):
@@ -744,12 +747,11 @@ class Tests(unittest.TestCase):
         self.assertEqual(invoked_arms(gate), "every arm of invoked carries its operation's ensures")
         self.assertEqual(gate.calls, [[INVOKED_ARMS_CHECK, "--test"], [INVOKED_ARMS_CHECK]])
         dropped = "kernel/verified/capability/revoke.rs:revoke:final(self).flush_epoch >= old(self).flush_epoch\n"
-        tested = {f"{INVOKED_ARMS_CHECK} --test": (0, "")}
         with self.assertRaisesRegex(Failure, "^tools/check-invoked-arms.py: exit status: 1\n  kernel/verified/capability/revoke.rs:revoke:final"):
-            invoked_arms(FakeGate(self.root, {**tested, INVOKED_ARMS_CHECK: (1, dropped)}))
+            invoked_arms(FakeGate(self.root, {INVOKED_ARMS_CHECK: (1, dropped)}))
         # A line printed is a conjunct not carried, whatever the status says.
         with self.assertRaisesRegex(Failure, "^tools/check-invoked-arms.py: exit status: 0\n  kernel/"):
-            invoked_arms(FakeGate(self.root, {**tested, INVOKED_ARMS_CHECK: (0, dropped)}))
+            invoked_arms(FakeGate(self.root, {INVOKED_ARMS_CHECK: (0, dropped)}))
         self.assertIn("invoked arms", [step.name for step in chosen(X86_64)])
 
     def test_test_totals_add_up_each_binarys_line(self):
@@ -782,7 +784,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(in_tree_messages("\n".join([outside, inside, inside]), self.root),
                          [("kernel/verified/pptr.rs:12: warning: field `perm` is never read", "warning: field `perm` is never read\n")])
         members = {" ".join(WORKSPACE_MEMBERS): (0, self.workspace("aheap", "kernel/verified"))}
-        clean = FakeGate(self.root, {**members, "cargo": (0, outside + "\n")})
+        clean = FakeGate(self.root, {**members, " ".join(FORCED_LINT_CHECK): (0, outside + "\n")})
         self.assertEqual(forced_lints(clean),
                          "no warning located in the tree: 2 workspace members, each from its own directory, "
                          "and kernel/verified, kernel, dom0, user/hello, aloader for aarch64")
@@ -794,10 +796,10 @@ class Tests(unittest.TestCase):
                          + [([*FORCED_LINT_CHECK, *FORCED_LINT_TARGET, target], directory, FORCED_LINT_ENV)
                             for directory, target in FORCED_LINT_AARCH64])
         with self.assertRaisesRegex(Failure, "^1 warning located in the tree:\n  kernel/verified/pptr.rs:12: warning: field `perm` is never read$"):
-            forced_lints(FakeGate(self.root, {**members, "cargo": (0, inside + "\n")}))
+            forced_lints(FakeGate(self.root, {**members, " ".join(FORCED_LINT_CHECK): (0, inside + "\n")}))
         error = message("error", "kernel/src/main.rs", 3, "cannot find value `x`")
         with self.assertRaisesRegex(Failure, "in aheap: exit status: 101\n  kernel/src/main.rs:3: error: cannot find value `x`$"):
-            forced_lints(FakeGate(self.root, {**members, "cargo": (101, error + "\n")}))
+            forced_lints(FakeGate(self.root, {**members, " ".join(FORCED_LINT_CHECK): (101, error + "\n")}))
         with self.assertRaisesRegex(Failure, "^cargo metadata --no-deps --format-version 1: exit status: 101$"):
             forced_lints(FakeGate(self.root, {" ".join(WORKSPACE_MEMBERS): (101, "")}))
 
@@ -836,15 +838,15 @@ class Tests(unittest.TestCase):
 
     def test_a_boot_that_hangs_or_fails_its_log_check_fails(self):
         (self.root / SERIAL_LOG).write_text("old\n")
-        hang = FakeGate(self.root, {"timeout": (TIMED_OUT, "")}, boot_timeout=7)
+        hang = FakeGate(self.root, {f"timeout 7 {RUN}": (TIMED_OUT, "")}, boot_timeout=7)
         with self.assertRaisesRegex(Failure, "^no exit within 7 s$"):
             boot_with()(hang)
         self.assertFalse((self.root / SERIAL_LOG).exists())
-        held = FakeGate(self.root, {BOOT_LOG_CHECK: (0, "exit status 0, translation enabled\n")})
+        held = FakeGate(self.root, {f"{BOOT_LOG_CHECK} --arch {X86_64} --translation -": (0, "exit status 0, translation enabled\n")})
         self.assertEqual(boot_with("--iommu")(held), "exit status 0, translation enabled")
         self.assertEqual(held.calls[-1], [BOOT_LOG_CHECK, "--arch", X86_64, "--translation", "-"])
         with self.assertRaisesRegex(Failure, "^no exit marker$"):
-            boot_with()(FakeGate(self.root, {BOOT_LOG_CHECK: (1, "no exit marker\n")}))
+            boot_with()(FakeGate(self.root, {f"{BOOT_LOG_CHECK} --arch {X86_64} -": (1, "no exit marker\n")}))
 
     def test_the_faq_step_runs_the_scripts_tests_then_holds_docs_faq_to_what_it_writes(self):
         gate = FakeGate(self.root, {f"{FAQ_RENDER} --check": (0, "docs/faq is what tools/faq.py writes\n")})
@@ -856,22 +858,29 @@ class Tests(unittest.TestCase):
 
     def test_every_step_fails_the_gate_when_a_program_it_runs_fails(self):
         """One failing run per step: each program a step runs, in turn, exits 1 with nothing said."""
-        good = {VERIFY: (0, "verification results:: 1 verified, 0 errors\n"),
+        verified = (0, "verification results:: 1 verified, 0 errors\n")
+        good = {VERIFY: verified, f"{VERIFY} --target {AARCH64}": verified,
                 "cargo " + " ".join(WORKSPACE_TESTS): (0, "test result: ok. 1 passed; 0 failed\n"),
                 " ".join(WORKSPACE_MEMBERS): (0, self.workspace("aheap"))}
         for step in STEPS:
             passing = FakeGate(self.root, dict(good))
             lines, code = run_gate(passing, [step])
             self.assertEqual(code, 0, lines)
-            for program in [" ".join(argv) for argv in passing.calls]:
+            for at, argv in enumerate(passing.calls):
+                program = " ".join(argv)
+                if argv in passing.calls[:at]:
+                    continue
                 with self.subTest(step=step.name, program=program):
-                    lines, code = run_gate(FakeGate(self.root, {**good, program: (1, "")}), [step])
+                    failing = FakeGate(self.root, {**good, program: (1, "")})
+                    lines, code = run_gate(failing, [step])
                     self.assertEqual(code, 1)
                     self.assertRegex(lines[0], f"^gate {step.name}: FAIL in ")
+                    # The program itself ran and failed the step, after every call before it passed.
+                    self.assertEqual(failing.calls, passing.calls[:at + 1])
 
     def test_a_failing_step_does_not_stop_the_steps_after_it(self):
         ticks = iter(range(100))
-        lines, code = run_gate(FakeGate(self.root, {"git": (128, "")}), chosen(names=["file sizes", "hooks"]), lambda: next(ticks))
+        lines, code = run_gate(FakeGate(self.root, {" ".join(FILE_LISTING): (128, "")}), chosen(names=["file sizes", "hooks"]), lambda: next(ticks))
         self.assertEqual(code, 1)
         self.assertEqual(lines, ["gate file sizes: FAIL in 1.0 s: git ls-files: exit status: 128",
                                  "gate hooks: ok in 1.0 s: the license guard refuses what it must; the actor hook names the session",
