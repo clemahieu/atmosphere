@@ -1123,12 +1123,13 @@ const SWITCH_READS: u64 = 1 << 24;
 // child's space. From dom0_child_entry a thread stores its second argument at its first, then suspends
 // its own thread through the slot its third names, which leaves its core running nothing; from
 // dom0_child_count it adds one to the word at its first argument, for good, and enters the kernel only
-// when the timer takes the core from it; from dom0_child_invoke it inspects the capability at the slot its
-// third argument names and adds one to the word at its first after each inspect accepted, until that word
+// when the timer takes the core from it; from dom0_child_count_thread_pointer, on aarch64, it does the
+// same and after each count stores the TPIDR_EL0 it finds in the word four after its first argument;
+// from dom0_child_invoke it inspects the capability at the slot its third argument names and adds one to the word at its first after each inspect accepted, until that word
 // reaches its second argument or an inspect is refused, then suspends its own thread through that slot;
 // from dom0_child_hold it stores its second argument at its first, then its first at its second, waits
 // until the word at its second no longer holds its first, and suspends its own thread through the slot
-// its third names. All four fit in 256 bytes, aligned so they stay in one page. The invoking loop keeps
+// its third names. All of them fit in 256 bytes, aligned so they stay in one page. The invoking loop keeps
 // its arguments in registers the invocation keeps: r12 to r14 on x86_64, x19 to x21 on aarch64.
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
@@ -1192,6 +1193,14 @@ core::arch::global_asm!(
     "add x3, x3, #1",
     "str x3, [x0]",
     "b dom0_child_count",
+    ".global dom0_child_count_thread_pointer",
+    "dom0_child_count_thread_pointer:",
+    "ldr x3, [x0]",
+    "add x3, x3, #1",
+    "str x3, [x0]",
+    "mrs x4, TPIDR_EL0",
+    "str x4, [x0, #{thread_pointer}]",
+    "b dom0_child_count_thread_pointer",
     ".global dom0_child_invoke",
     "dom0_child_invoke:",
     "mov x19, x0",
@@ -1226,6 +1235,7 @@ core::arch::global_asm!(
     "7: b 7b",
     inspect = const operation::INSPECT,
     suspend = const operation::SUSPEND,
+    thread_pointer = const CHILD_THREAD_POINTER_ADDRESS - CHILD_COUNT_ADDRESS,
 );
 
 unsafe extern "C" {
@@ -1233,6 +1243,9 @@ unsafe extern "C" {
     fn dom0_child_entry();
     /// The first instruction of the child's code above that counts.
     fn dom0_child_count();
+    /// The first instruction of the child's code above that counts and stores the TPIDR_EL0 it finds.
+    #[cfg(target_arch = "aarch64")]
+    fn dom0_child_count_thread_pointer();
     /// The first instruction of the child's code above that invokes and counts its invocations.
     fn dom0_child_invoke();
     /// The first instruction of the child's code above that writes a page and waits for dom0.
@@ -1530,6 +1543,11 @@ const CHILD_HELD_ADDRESS: u64 = CHILD_DATA_ADDRESS + 4096;
 /// sixth, after CHILD_INVOKED_ADDRESS's.
 const CHILD_HOLD_ADDRESS: u64 = CHILD_INVOKED_ADDRESS + 8;
 
+/// Where the thread started_thread_held starts stores, on aarch64, the TPIDR_EL0 it finds: the seventh
+/// word of the frame both spaces map, after CHILD_HOLD_ADDRESS's.
+#[cfg(target_arch = "aarch64")]
+const CHILD_THREAD_POINTER_ADDRESS: u64 = CHILD_HOLD_ADDRESS + 8;
+
 /// How far below the top of the gigabyte untyped the frame the thread on core 1 writes is: the page after
 /// the switch check's table leaf, below CHILD_LEAF_BELOW_TOP, where nothing else retypes.
 const CORE_1_FRAME_BELOW_TOP: u64 = SWITCH_BELOW_TOP - 3 * TABLE_PAGE_BYTES - 2 * LEAF_BYTES;
@@ -1619,16 +1637,19 @@ const STARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread started\n");
 
 /// Whether dom0 starts the thread the place check placed on core 0 at dom0's own priority, 0, so that
 /// thread is Runnable behind dom0, which outranks it in nothing, and the core gets no reschedule IPI.
-/// First its frame gets the entry dom0_child_count in the child's space, where switched_thread_held
-/// mapped dom0's code and the shared frame, and CHILD_COUNT_ADDRESS as its first argument, so it counts
-/// whenever the timer gives it the core. A start of the console slot, which holds no thread, is refused,
+/// First its frame gets the entry dom0_child_count in the child's space, dom0_child_count_thread_pointer
+/// on aarch64, where switched_thread_held mapped dom0's code and the shared frame, and CHILD_COUNT_ADDRESS
+/// as its first argument, so it counts whenever the timer gives it the core. A start of the console slot, which holds no thread, is refused,
 /// and so is one of the second thread the thread check retyped, which is not placed. The start is
 /// accepted and a second refused, the thread being Runnable. dom0 then places the third thread on core
 /// 0 without starting it, for destroyed_process_held to find its start refused once the child is dead,
 /// and prints that it held.
 fn started_thread_held(caller: &mut Tracked<Caller>) -> bool {
     let thread = first_slot(FIRST_EMPTY_ENTRY) + 1;
+    #[cfg(target_arch = "x86_64")]
     let count = dom0_child_count as *const () as u64;
+    #[cfg(target_arch = "aarch64")]
+    let count = dom0_child_count_thread_pointer as *const () as u64;
     let entry = dom0_child_entry as *const () as u64;
     count & !0xfff == entry & !0xfff
         && set_frame_word(caller, thread, operation::PC_WORD, CHILD_CODE_ADDRESS + (count & 0xfff)) == operation::STATUS_OK
@@ -1677,6 +1698,61 @@ fn preempted_thread_held() -> bool {
     turns == PREEMPT_TURNS
         && print_count(PREEMPTED_DOM0_HEAD, ours, PREEMPTED_TAIL) == operation::STATUS_OK
         && print_count(PREEMPTED_THREAD_HEAD, last, PREEMPTED_TAIL) == operation::STATUS_OK
+}
+
+/// What dom0 prints once a thread of its child, resumed on core 0 after dom0 wrote TPIDR_EL0, found it
+/// 0, which the gate looks for on aarch64.
+#[cfg(target_arch = "aarch64")]
+const THREAD_POINTER_CLEARED_HELD: [u64; 5] = operation::print_words(b"dom0 tpidr_el0 not passed on\n");
+
+/// What dom0 writes in TPIDR_EL0, for the thread to find if a switch passed it on.
+#[cfg(target_arch = "aarch64")]
+const THREAD_POINTER_WRITTEN: u64 = 0x7470_6964_725f_656c;
+
+/// What dom0 writes over the thread's word before it waits for the thread to store it again: neither 0
+/// nor THREAD_POINTER_WRITTEN.
+#[cfg(target_arch = "aarch64")]
+const THREAD_POINTER_UNSEEN: u64 = u64::MAX;
+
+/// Whether a process's TPIDR_EL0 ends with its thread's turn at a core, on aarch64. dom0 writes
+/// THREAD_POINTER_WRITTEN in it, which the next thread the core resumes must not see
+/// (design/thread-pointer-cleared-on-switch/). It then writes THREAD_POINTER_UNSEEN over the word the
+/// thread started_thread_held started stores, and counts until the thread stored it again, which it
+/// does only while the timer has taken core 0 from dom0; twice, since the thread may store at the
+/// start of a turn what it read before dom0's write, but not at the start of the next. The thread is
+/// of dom0's child, so each of its turns follows a switch between processes, and it must have found 0.
+/// dom0 then writes 0 itself and prints that it held, or what the thread found. x86_64 has no
+/// TPIDR_EL0.
+fn thread_pointer_cleared_held() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let found = (entry_address(SHARED_ENTRY) + (CHILD_THREAD_POINTER_ADDRESS - CHILD_DATA_ADDRESS)) as *mut u64;
+        // TPIDR_EL0, Arm ARM D24.2.203: EL0 reads and writes it, and nothing of dom0's reads it.
+        unsafe {
+            core::arch::asm!("msr TPIDR_EL0, {0}", in(reg) THREAD_POINTER_WRITTEN, options(nomem, nostack, preserves_flags))
+        };
+        // switched_thread_held mapped the shared frame at SHARED_ENTRY; the thread is its only other writer.
+        let stored = (0..2).all(|_| {
+            unsafe { found.write_volatile(THREAD_POINTER_UNSEEN) };
+            let mut ours = 0;
+            while ours < PREEMPT_COUNTS && unsafe { found.read_volatile() } == THREAD_POINTER_UNSEEN {
+                ours += 1;
+            }
+            ours < PREEMPT_COUNTS
+        });
+        let read = unsafe { found.read_volatile() };
+        unsafe { core::arch::asm!("msr TPIDR_EL0, xzr", options(nomem, nostack, preserves_flags)) };
+        if stored && read != 0 {
+            print_count(b"tpidr_el0 found ", read, b"\n");
+        }
+        stored
+            && read == 0
+            && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, THREAD_POINTER_CLEARED_HELD) } == operation::STATUS_OK
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        true
+    }
 }
 
 /// What dom0 prints once it suspended the thread it started and started it again, which the gate
@@ -2269,6 +2345,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && core_1_unmap_held(caller, empty, empty + 4, empty + 7)
                                 && started_thread_held(caller)
                                 && preempted_thread_held()
+                                && thread_pointer_cleared_held()
                                 && suspended_thread_held(caller, empty + 5)
                                 && core_1_counting_held(caller)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)

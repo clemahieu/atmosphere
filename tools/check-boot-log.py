@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
-line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -93,6 +93,10 @@ CORE_1_ACKNOWLEDGED = "CPU 1 acknowledged flush epoch "
 # the timer handed the core between them, until dom0 saw the thread's count change three times: dom0's count,
 # then the thread's, neither zero.
 PREEMPTED_COUNTS = re.compile(r"^dom0 counted [1-9][0-9]* in 3 turns\r?\nthread counted [1-9][0-9]* in 3 turns\r?$", re.M)
+
+# The line dom0 prints on aarch64 once a thread of its child, resumed on core 0 after dom0 wrote TPIDR_EL0, found
+# it 0: a core does not pass a thread's TPIDR_EL0 to the next thread it resumes. design/thread-pointer-cleared-on-switch/.
+THREAD_POINTER_LINE = "dom0 tpidr_el0 not passed on"
 
 # The line dom0 prints once it suspended the thread it started, twice, and started it again, after the
 # suspends a slot without a thread and a copy without control must refuse were refused.
@@ -274,6 +278,8 @@ def boot_log_accepted(serial, arch, translation=False):
                       f'on CPU 1 wrote, between "{CORE_1_UNMAP_LINE}" and "{CORE_1_FREED_LINE}"')
     if not PREEMPTED_COUNTS.search(serial):
         raise Refused("the serial log does not show dom0 and a thread of its child both counting on core 0 under the timer")
+    if arch == "aarch64" and not line_printed(serial, THREAD_POINTER_LINE):
+        raise Refused(f'the serial log does not show a thread finding TPIDR_EL0 0 after dom0 wrote it: "{THREAD_POINTER_LINE}"')
     if not line_printed(serial, SUSPENDED_LINE):
         raise Refused(f'the serial log does not show dom0 suspending a thread: "{SUSPENDED_LINE}"')
     if not line_printed(serial, DESTROYED_LINE):
@@ -291,7 +297,8 @@ def boot_log_accepted(serial, arch, translation=False):
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, suspended thread line, killed thread line and its lag, destroyed process line, "
+            f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
+            f"{'thread pointer line, ' if arch == 'aarch64' else ''}suspended thread line, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
@@ -350,6 +357,7 @@ def boot_log():
             "dom0 thread started\n"
             "dom0 counted 41000000 in 3 turns\n"
             "thread counted 39000000 in 3 turns\n"
+            "dom0 tpidr_el0 not passed on\n"
             "dom0 thread suspended\n"
             "dom0 thread killed on core 1\n"
             "core 1 lag 2000 counts\n"
@@ -412,6 +420,14 @@ class Tests(unittest.TestCase):
             self.assertIn(removed, log)
             self.assertIn(named, self.refused(log.replace(removed, "")), removed)
         self.refused(log.replace(" INFO root slot 2: thread\n", ""))
+
+    def test_the_thread_pointer_line_is_asked_only_on_aarch64(self):
+        virt = boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
+        self.assertIn("thread pointer line", boot_log_accepted(virt, "aarch64"))
+        without = "dom0 tpidr_el0 not passed on\n"
+        self.assertIn("TPIDR_EL0", self.refused(virt.replace(without, ""), "aarch64"))
+        held = boot_log_accepted(boot_log().replace(without, ""), "x86_64")
+        self.assertNotIn("thread pointer line", held)
 
     def test_the_eager_line_names_forty_pages(self):
         self.assertIn("eager source", self.refused(boot_log().replace("backed 40\n", "backed 39\n")))

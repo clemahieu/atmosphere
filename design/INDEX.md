@@ -2,7 +2,7 @@
 
 # Design decisions
 
-48 records: 48 active, 0 superseded.
+49 records: 49 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -136,6 +136,9 @@ in `revisit if` what would make it worth reopening.
 - **[thread-bound-at-retype](./thread-bound-at-retype/DECISION.md)** (2026-11-14): Retyping a thread names a process capability too: the thread capability goes under the untyped and the process binding under the process capability in one step, so the only holder of the new control capability already controls the process and no reach grows. There is no bind operation. Revoking the binding leaves an inert thread that cannot be bound again; its registers stay readable, and its untyped's holder retypes its block.
   - *confidence:* Reasoned over kernel/verified/capability/reach.rs and the landed retype and bind, not yet proven: the widened retype lemma and the fact it needs are named below. That the step grows no reach is arithmetic on the model. Choosing construction over a sole-holder bind, which keeps the same theorem, is judgement.
   - *revisit if:* A workload needs a thread moved to another process without being recreated, carrying its registers in the kernel rather than through its supervisor reading and writing them; or a binding that reach reads must be set on an object that exists before the authority it binds, as a device does, for which the sole-holder rule below is the shape to use instead.
+- **[thread-pointer-cleared-on-switch](./thread-pointer-cleared-on-switch/DECISION.md)** (2026-11-15): TPIDR_EL0, the thread pointer EL0 reads and writes, is not saved with a thread. A core that enters a thread through a selection, after a tick, a reschedule IPI or its wait, and the first entry into dom0, write it 0 first, so a value one thread writes reaches no other; a thread that returns from its own system call, or from an interrupt that left it current, keeps what it wrote.
+  - *confidence:* dom0's thread pointer check in the gate's aarch64 boot writes TPIDR_EL0 and finds 0 in another process's thread resumed on the same core. Clearing rather than saving is a judgement that no native process needs a thread pointer of its own yet.
+  - *revisit if:* A process needs a thread pointer that survives a switch (a runtime that keeps thread-local storage in TPIDR_EL0, as the AArch64 ELF TLS convention does), or a core the project runs implements FEAT_SME, whose TPIDR2_EL0 EL0 can also write.
 - **[trust-boundary](./trust-boundary/DECISION.md)** (2026-11-10): The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided the machine between them; that component is tier 1 by design/divider-proven-by-invariant/, and until its stage-one statement verifies the security claim states the dependence on unproven code.
   - *confidence:* The divider's tier is the human's choice. That the kernel theorem needs nothing of user code is the form of design/theorem-over-reach/.
   - *revisit if:* The divider's stage-one statement verifies, when the claim's dependence becomes the proven statement and this record says so; or the divider's tier is lowered, which is the human's decision.
@@ -159,7 +162,7 @@ in `revisit if` what would make it worth reopening.
 
 A view of the lists above. Nothing is reachable only through a tag.
 
-- `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
+- `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers, thread-pointer-cleared-on-switch
 - `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
 - `arch`: who-vouches-for-an-unproven-claim
 - `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, root-process-at-boot, test-guest-memory
@@ -178,12 +181,12 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, region-map-owns-the-address-space, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
-- `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
+- `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps, thread-pointer-cleared-on-switch
 - `network`: network-stack-proven-at-tier-1, wire-combinators-written-here
 - `notification`: notification-word-reserves-the-waiter-bit
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1, wire-combinators-written-here
-- `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
+- `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers, thread-pointer-cleared-on-switch
 - `process`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, loops-select-by-work-kind-and-stage, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human, thread-bound-at-retype
 - `proof`: boundary-into-verified-code-counted, divider-proven-by-invariant, isolation-claim, region-map-owns-the-address-space, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
 - `purity`: untyped-memory

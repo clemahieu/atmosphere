@@ -184,9 +184,12 @@ pub unsafe fn install() {
 /// Leaves EL1 for the thread whose frame is `frame`, as the return from an exception taken from the
 /// thread would: the frame goes under `stack`'s top, where a vector would have saved it, and the
 /// stub restores it and returns. SP_EL1 is `stack`'s top again once the frame is restored, so the
-/// thread's next exception saves its frame there.
+/// thread's next exception saves its frame there. The thread finds TPIDR_EL0 0, not what the core's
+/// last thread wrote: it is not a thread's saved state (Arm ARM D24.2.203,
+/// design/thread-pointer-cleared-on-switch/).
 pub unsafe fn enter(frame: &Registers, stack: u64) -> ! {
     assert!(stack % 16 == 0, "a stack's top is 16-byte aligned");
+    asm!("msr TPIDR_EL0, xzr", options(nomem, nostack, preserves_flags));
     let saved = (stack as *mut Registers).sub(1);
     saved.write(*frame);
     asm!("mov sp, {saved}", "b exception_return", saved = in(reg) saved, options(noreturn));
