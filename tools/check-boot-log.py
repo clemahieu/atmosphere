@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
-line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line and the segments line, suspended thread line, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line and the segments line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -112,6 +112,11 @@ SUSPENDED_LINE = "dom0 thread suspended"
 # The line dom0 prints once it destroyed its child process and claimed a capability from the dead child's
 # table by a move, after the destroys and the derive a dead process must refuse were refused.
 DESTROYED_LINE = "dom0 process destroyed"
+
+# The lines dom0 prints once it stopped a thread of its child counting on core 1 from core 0 and started it
+# again: how many again returns the suspend took, at least one since the thread was Running on another
+# core, before it returned ok and the count held still; then that the count moved after the start.
+CORE_1_RESTARTED = re.compile(r"^core 1 stop took [1-9][0-9]* again\r?\ndom0 thread restarted on core 1\r?$", re.M)
 
 # The lines dom0 prints once a thread of its child counting on core 1 stopped counting after dom0 destroyed
 # the child: destroy's IPI reached CPU 1, which moved the thread off at that entry. Then how far the count
@@ -293,6 +298,8 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused(f'the serial log does not show a thread finding null segments after dom0 loaded them: "{SEGMENTS_LINE}"')
     if not line_printed(serial, SUSPENDED_LINE):
         raise Refused(f'the serial log does not show dom0 suspending a thread: "{SUSPENDED_LINE}"')
+    if not CORE_1_RESTARTED.search(serial):
+        raise Refused("the serial log does not show dom0 stopping a thread on core 1, after again, and restarting it")
     if not line_printed(serial, DESTROYED_LINE):
         raise Refused(f'the serial log does not show dom0 destroying its child and claiming a slot: "{DESTROYED_LINE}"')
     if not line_printed(serial, KILLED_LINE):
@@ -309,7 +316,7 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
             f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
-            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}suspended thread line, killed thread line and its lag, destroyed process line, "
+            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
@@ -372,6 +379,8 @@ def boot_log():
             "dom0 gs loaded across entries\n"
             "dom0 segments not passed on\n"
             "dom0 thread suspended\n"
+            "core 1 stop took 2 again\n"
+            "dom0 thread restarted on core 1\n"
             "dom0 thread killed on core 1\n"
             "core 1 lag 2000 counts\n"
             "dom0 process destroyed\n"
@@ -422,6 +431,8 @@ class Tests(unittest.TestCase):
             ("dom0 gs loaded across entries\n", "GS loaded"),
             ("dom0 segments not passed on\n", "null segments"),
             ("dom0 thread suspended\n", "suspending a thread"),
+            ("core 1 stop took 2 again\n", "stopping a thread on core 1"),
+            ("dom0 thread restarted on core 1\n", "stopping a thread on core 1"),
             ("dom0 thread killed on core 1\n", "stopped by the destroy"),
             ("core 1 lag 2000 counts\n", "past the destroy"),
             ("dom0 process destroyed\n", "destroying its child"),
@@ -461,6 +472,9 @@ class Tests(unittest.TestCase):
         self.assertIn("both counting", self.refused(boot_log().replace("thread counted 39000000", "thread counted 0")))
         self.assertIn("both counting", self.refused(boot_log().replace("dom0 counted 41000000", "dom0 counted 0")))
         self.assertIn("both counting", self.refused(boot_log().replace("41000000 in 3 turns", "41000000 in 2 turns")))
+
+    def test_the_stop_on_core_1_returned_again(self):
+        self.assertIn("stopping a thread on core 1", self.refused(boot_log().replace("took 2 again", "took 0 again")))
 
     def test_both_cores_invoked(self):
         self.assertIn("both invoking", self.refused(boot_log().replace("invoked 4096 times", "invoked 0 times")))

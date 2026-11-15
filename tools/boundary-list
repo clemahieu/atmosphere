@@ -53,6 +53,10 @@ dom0/src/main.rs	dom0::core_1_thread_held	call	acall::capability::place	1	kernel
 dom0/src/main.rs	dom0::core_1_thread_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::core_1_counting_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::core_1_counting_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_restarted_held	call	acall::capability::suspend	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_restarted_held	call	acall::capability::suspend	2	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_restarted_held	call	acall::capability::suspend	3	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/main.rs	dom0::core_1_restarted_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::invoked_beside_core_1_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::invoked_beside_core_1_held	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::invoked_beside_core_1_held	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter

@@ -105,6 +105,11 @@
 //! places the third thread without starting it and prints that it held. dom0 then counts too, without
 //! entering the kernel, until it has seen the thread's count change three times, each a turn the timer
 //! gave the thread at core 0, and prints both counts.
+//! It starts the sixth thread on core 1 with an entry that counts in the shared frame for good, never
+//! entering the kernel, and stops it from core 0: the first suspend returns again, the stop pending and
+//! CPU 1 sent the reschedule IPI, and dom0 suspends again until it returns ok. Once the count holds still
+//! dom0 prints how many again returns the stop took, starts the thread again, and prints that it held
+//! once the count moves.
 //! It retypes a table leaf into root entry 0 of the child's table, through the child's process
 //! capability, and derives its power capability into that entry's first slot, which inspect finds there.
 //! A destroy of an empty slot, of the console and of the power capability is refused; the destroy of the
@@ -1430,12 +1435,12 @@ fn core_1_count() -> u64 {
     unsafe { count.read_volatile() }
 }
 
-/// Whether a thread of dom0's child counts on core 1, for destroyed_process_held to kill by destroying
-/// the child. The sixth thread the thread check bound to the child gets the entry dom0_child_count in
-/// the child's space and CORE_1_COUNT_ADDRESS as its first argument; dom0 places it through the root's
-/// capability for core 1, reads its count as zero and starts it. Core 1 runs nothing, so the reschedule
-/// IPI reaches CPU 1, which runs the thread for good: it never enters the kernel. dom0 reads the count
-/// moving on core 0 without entering the kernel.
+/// Whether a thread of dom0's child counts on core 1, for core_1_restarted_held to stop and start again
+/// and destroyed_process_held to kill by destroying the child. The sixth thread the thread check bound
+/// to the child gets the entry dom0_child_count in the child's space and CORE_1_COUNT_ADDRESS as its
+/// first argument; dom0 places it through the root's capability for core 1, reads its count as zero
+/// and starts it. Core 1 runs nothing, so the reschedule IPI reaches CPU 1, which runs the thread for
+/// good: it never enters the kernel. dom0 reads the count moving on core 0 without entering the kernel.
 fn core_1_counting_held(caller: &mut Tracked<Caller>) -> bool {
     let thread = first_slot(FIRST_EMPTY_ENTRY) + 6;
     let count = dom0_child_count as *const () as u64;
@@ -1445,6 +1450,48 @@ fn core_1_counting_held(caller: &mut Tracked<Caller>) -> bool {
         && core_1_count() == 0
         && start(caller, thread).status == operation::STATUS_OK
         && (0..SWITCH_READS).any(|_| core_1_count() != 0)
+}
+
+/// What dom0 prints once it started again the thread it stopped on core 1 and saw it count, which the
+/// gate looks for after the line saying how many again returns the stop took.
+const RESTARTED_HELD: [u64; 5] = operation::print_words(b"dom0 thread restarted on core 1\n");
+
+/// The head of the line that says how many again returns dom0's suspend of the thread on core 1 took.
+const CORE_1_STOP_HEAD: &[u8] = b"core 1 stop took ";
+
+/// How many again returns dom0's suspend of the thread on core 1 may take before dom0 gives up on CPU 1
+/// taking the reschedule IPI each one sends: far more than the IPI's latency in suspends.
+const CORE_1_STOP_AGAIN_MAX: u64 = 1 << 20;
+
+/// Whether dom0 stops the thread core_1_counting_held left counting on core 1, from core 0, and starts it
+/// again, as a user-level scheduler stops and restarts a thread it placed, design/cpu-time-as-capability/.
+/// The thread is Running on core 1, so the first suspend through dom0's capability to it returns again:
+/// the stop is pending, and the entry sends core 1 the reschedule IPI. dom0 suspends again while it
+/// returns again, within CORE_1_STOP_AGAIN_MAX, until it returns ok, CPU 1 having taken the thread off
+/// at its entry, design/one-lock-bounded-steps/. The count then holds still for STILL_READS reads, and
+/// dom0 prints how many again returns the stop took. A start then returns ok, core 1 running nothing, so
+/// the reschedule IPI reaches CPU 1 and the thread counts on from where it stopped; once dom0 has seen
+/// the count move it prints that it held, and destroyed_process_held finds the thread counting.
+fn core_1_restarted_held(caller: &mut Tracked<Caller>) -> bool {
+    let thread = first_slot(FIRST_EMPTY_ENTRY) + 6;
+    if suspend(caller, thread).status != operation::STATUS_AGAIN {
+        return false;
+    }
+    let mut again = 1;
+    let mut status = suspend(caller, thread).status;
+    while status == operation::STATUS_AGAIN && again < CORE_1_STOP_AGAIN_MAX {
+        again += 1;
+        status = suspend(caller, thread).status;
+    }
+    if status != operation::STATUS_OK {
+        return false;
+    }
+    let stopped = core_1_count();
+    (0..STILL_READS).all(|_| core_1_count() == stopped)
+        && print_count(CORE_1_STOP_HEAD, again, AGAIN_TAIL) == operation::STATUS_OK
+        && start(caller, thread).status == operation::STATUS_OK
+        && (0..SWITCH_READS).any(|_| core_1_count() != stopped)
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, RESTARTED_HELD) } == operation::STATUS_OK
 }
 
 /// What dom0 prints once the count on core 1 stopped after the destroy, which the gate looks for.
@@ -2540,6 +2587,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && segments_cleared_held()
                                 && suspended_thread_held(caller, empty + 5)
                                 && core_1_counting_held(caller)
+                                && core_1_restarted_held(caller)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && eager_source_held(caller, empty)
                         })
