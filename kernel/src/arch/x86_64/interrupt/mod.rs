@@ -44,10 +44,15 @@ macro_rules! wrap_interrupt_with_error_code {
         unsafe extern "C" fn trampoline(_: TrampolineMarker) {
             // Figure 6-7. Stack Usage on Transfers to Interrupt and Exception Handling Routines
 
-            // Here rsp is at the frame the CPU pushed: [rip][cs][rflags][rsp][ss]
-            // Every gate is an interrupt gate (`idt.rs`), so the CPU cleared IF on the way in.
+            // Here rsp is at the frame the CPU pushed: [error_code][rip][cs][rflags][rsp][ss]
+            // Every gate is an interrupt gate (`idt.rs`), so the CPU cleared IF on the way in. From
+            // ring 3, SWAPGS makes the GS base the core's block (`this_core`).
             naked_asm!(
                 "cld",
+                "test byte ptr [rsp + 16], 3",
+                "jz 2f",
+                "swapgs",
+                "2:",
                 "push rax",
                 "push rdi",
                 "push rsi",
@@ -86,7 +91,12 @@ macro_rules! wrap_interrupt_with_error_code {
 
                 "add rsp, 8", // error_code
 
-                // iretq restores the interrupted RFLAGS, IF with them.
+                // To ring 3, which the frame may name though the entry came from ring 0, SWAPGS gives
+                // the process its GS base again. iretq restores the interrupted RFLAGS, IF with them.
+                "test byte ptr [rsp + 8], 3",
+                "jz 3f",
+                "swapgs",
+                "3:",
                 "iretq",
 
                 handler = sym $handler,
@@ -107,11 +117,17 @@ macro_rules! wrap_interrupt {
             // Figure 6-7. Stack Usage on Transfers to Interrupt and Exception Handling Routines
 
             // Here rsp is at the frame the CPU pushed: [rip][cs][rflags][rsp][ss]
-            // Every gate is an interrupt gate (`idt.rs`), so the CPU cleared IF on the way in.
+            // Every gate is an interrupt gate (`idt.rs`), so the CPU cleared IF on the way in. From
+            // ring 3, SWAPGS makes the GS base the core's block (`this_core`).
             naked_asm!(
                 "cld",
 
                 "push 0", // error_code
+
+                "test byte ptr [rsp + 16], 3",
+                "jz 2f",
+                "swapgs",
+                "2:",
 
                 "push rax",
                 "push rdi",
@@ -151,7 +167,12 @@ macro_rules! wrap_interrupt {
 
                 "add rsp, 8", // error_code
 
-                // iretq restores the interrupted RFLAGS, IF with them.
+                // To ring 3, which the frame may name though the entry came from ring 0, SWAPGS gives
+                // the process its GS base again. iretq restores the interrupted RFLAGS, IF with them.
+                "test byte ptr [rsp + 8], 3",
+                "jz 3f",
+                "swapgs",
+                "3:",
                 "iretq",
 
                 handler = sym $handler,
@@ -213,7 +234,7 @@ process_exception!(alignment_check, "Alignment Check");
 process_exception!(simd_floating_point, "SIMD Floating Point Exception");
 
 /// Double Fault handler.
-unsafe extern "C" fn double_fault(regs: &mut PtRegs) {
+unsafe extern "C" fn double_fault(regs: &mut Registers) {
     log::error!("CPU {}: Double Fault: {:#x?}", crate::cpu::get_cpu_id(), regs);
     crate::debugger::breakpoint(2);
     spin_forever();
@@ -296,7 +317,10 @@ unsafe fn resume_selected(regs: &mut Registers) {
     use crate::schedule::{handle_selection, Resume};
     match handle_selection(regs, from_process(regs)) {
         Resume::Interrupted => {},
-        Resume::Thread(resumed) => *regs = resumed,
+        Resume::Thread(resumed) => {
+            crate::arch::clear_process_gs();
+            *regs = resumed;
+        },
         Resume::Idle => crate::arch::idle_on(crate::cpu::get_current().syscall_sp),
     }
 }
@@ -385,7 +409,7 @@ pub unsafe fn init() {
     idt.alignment_check.set_handler_fn(wrap_interrupt_with_error_code!(alignment_check));
     idt.breakpoint.set_handler_fn(wrap_interrupt!(breakpoint));
     idt.breakpoint.attributes.set_privilege_level(Ring::Ring3);
-    idt.double_fault.set_handler_fn(double_fault);
+    idt.double_fault.set_handler_fn(wrap_interrupt_with_error_code!(double_fault));
     idt.stack_segment_fault.set_handler_fn(wrap_interrupt_with_error_code!(stack_segment_fault));
     idt.general_protection_fault
         .set_handler_fn(wrap_interrupt_with_error_code!(general_protection_fault));

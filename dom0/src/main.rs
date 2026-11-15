@@ -1755,6 +1755,52 @@ fn thread_pointer_cleared_held() -> bool {
     }
 }
 
+/// What dom0 prints once it entered the kernel by a system call and by a tick with GS loaded with its
+/// own data selector, which the gate looks for on x86_64.
+#[cfg(target_arch = "x86_64")]
+const GS_LOADED_HELD: [u64; 5] = operation::print_words(b"dom0 gs loaded across entries\n");
+
+/// The selector of the ring 3 data segment, `GlobalDescriptorTable::USER_SS` in the kernel: a flat
+/// segment of base 0, which ring 3 may load into GS (APM 2 §4.5.3).
+#[cfg(target_arch = "x86_64")]
+const USER_DATA_SELECTOR: u16 = 0x1b;
+
+/// Whether the kernel keeps its own GS base apart from a process's. dom0 loads GS with its data
+/// selector, which sets the GS base to 0, prints through its console, which must succeed, and counts
+/// until the thread started_thread_held started has counted again, which it does only while the timer
+/// has taken core 0 from dom0: a tick taken from dom0 with GS loaded. dom0 then loads GS's earlier
+/// selector again and prints that it held. A kernel that reached its core's block through a GS base a
+/// process set would take its stack and its core number from near address 0 of dom0's space and stop.
+/// On aarch64 a process cannot reach the register that finds the core's block, so there is nothing to
+/// load.
+fn gs_loaded_held() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let theirs = (entry_address(SHARED_ENTRY) + (CHILD_COUNT_ADDRESS - CHILD_DATA_ADDRESS)) as *const u64;
+        let earlier: u16;
+        unsafe {
+            core::arch::asm!("mov {0:x}, gs", out(reg) earlier, options(nomem, nostack, preserves_flags));
+            core::arch::asm!("mov gs, {0:x}", in(reg) USER_DATA_SELECTOR, options(nostack, preserves_flags));
+        }
+        let printed = unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, operation::print_words(b"dom0 gs loaded\n")) };
+        // switched_thread_held mapped the shared frame at SHARED_ENTRY; the thread is its only other writer.
+        let first = unsafe { theirs.read_volatile() };
+        let mut ours = 0;
+        while ours < PREEMPT_COUNTS && unsafe { theirs.read_volatile() } == first {
+            ours += 1;
+        }
+        let ticked = unsafe { theirs.read_volatile() } != first;
+        unsafe { core::arch::asm!("mov gs, {0:x}", in(reg) earlier, options(nostack, preserves_flags)) };
+        printed == operation::STATUS_OK
+            && ticked
+            && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, GS_LOADED_HELD) } == operation::STATUS_OK
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        true
+    }
+}
+
 /// What dom0 prints once it suspended the thread it started and started it again, which the gate
 /// looks for.
 const SUSPENDED_HELD: [u64; 5] = operation::print_words(b"dom0 thread suspended\n");
@@ -2348,6 +2394,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && started_thread_held(caller)
                                 && preempted_thread_held()
                                 && thread_pointer_cleared_held()
+                                && gs_loaded_held()
                                 && suspended_thread_held(caller, empty + 5)
                                 && core_1_counting_held(caller)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)

@@ -2,7 +2,7 @@
 
 # Design decisions
 
-49 records: 49 active, 0 superseded.
+50 records: 50 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -46,6 +46,9 @@ in `revisit if` what would make it worth reopening.
 - **[flush-without-waiting](./flush-without-waiting/DECISION.md)** (2026-11-12): A ghost per-core TLB model holds possibly stale translations keyed by space and core; unmap bumps a flush epoch, sends IPIs to exactly the cores that loaded the space and returns again; each core's handler flushes every context and records its acknowledgement on its own kernel entry; an IOMMU's invalidate waits for its completion inside the arch module's invalidate_iommu_all, since an IOMMU is not a core; retype requires the acknowledgement of every core that has loaded a space and of every present IOMMU to have reached the epoch, and only flush_every_context empties a core's model and only invalidate_iommu_all an IOMMU's.
   - *confidence:* The no-wait rule is forced by the lock, see reasoning; the epoch comparison and model are in kernel/verified/capability/kernel.rs and kernel/src/flush.rs, with the flush itself the arch module's flush_every_context, a cited hardware guarantee, and the IOMMU's invalidate_iommu_all, verified code over cited hardware leaves.
   - *revisit if:* The hardware gains a broadcast invalidation the kernel can rely on (this host reports no INVLPGB), a flush that returns again is measured as the cost that dominates unmap, or an IOMMU's completion wait is measured as the longest step under the lock.
+- **[gs-base-swapped-at-ring-3](./gs-base-swapped-at-ring-3/DECISION.md)** (2026-11-15): The core's block is the GS base only while the core runs the kernel: SWAPGS exchanges it with KERNEL_GS_BASE on every entry from ring 3 (syscall, and an interrupt or exception whose saved CS has RPL 3) and on every return there. A process may load GS; its selector and base are not saved with its thread, and a core clears both when it resumes a thread through a selection, so one thread's GS reaches no other.
+  - *confidence:* Arithmetic for the swap: ring 3 can set the GS base by loading a selector (APM 2 §4.5.3), so a base read before SWAPGS is the process's; dom0's GS check in the gate's boot loads GS across a system call and a tick. The clear on switch is a judgement that no native process needs GS.
+  - *revisit if:* A process needs a GS of its own that survives a switch (a runtime that keeps its thread pointer in GS), CR4.FSGSBASE is turned on so ring 3 can write the base with WRGSBASE, or a target's entry can find the core's block without a register ring 3 can set.
 - **[heap-size-classes](./heap-size-classes/DECISION.md)** (2026-11-11): aheap has CLASSES size classes: the first eight multiples of 16 bytes, then four classes an even step apart in each doubling up to the page (28 with a 4 KiB page); a class's slab is a run of the smallest order whose tail after the last slot is at most an eighth of it, as long as the run holds no more slots than a slab's bitmap has bits for.
   - *confidence:* The facts a slab needs are proven per class in aheap/src/class.rs (lemma_class, by computation over every class); the spacing and the eighth are a judgement, taken in the correctness phase without a workload to measure.
   - *revisit if:* A measured workload's internal fragmentation or slab count points at another spacing, a target's page is not 4 KiB (CLASSES and the slab bitmap follow the page, and lemma_class stops verifying until CLASSES is set for it), or the heap's front needs an alignment above 16 bytes from a class that is not a power of two.
@@ -162,7 +165,7 @@ in `revisit if` what would make it worth reopening.
 
 A view of the lists above. Nothing is reachable only through a tag.
 
-- `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers, thread-pointer-cleared-on-switch
+- `abi`: arch-module, gs-base-swapped-at-ring-3, one-kernel-instance, syscall-abi-in-registers, thread-pointer-cleared-on-switch
 - `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
 - `arch`: who-vouches-for-an-unproven-claim
 - `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, root-process-at-boot, test-guest-memory
@@ -181,12 +184,12 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, region-map-owns-the-address-space, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
-- `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps, thread-pointer-cleared-on-switch
+- `multicore`: flush-without-waiting, gs-base-swapped-at-ring-3, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps, thread-pointer-cleared-on-switch
 - `network`: network-stack-proven-at-tier-1, wire-combinators-written-here
 - `notification`: notification-word-reserves-the-waiter-bit
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1, wire-combinators-written-here
-- `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers, thread-pointer-cleared-on-switch
+- `portability`: arch-module, gs-base-swapped-at-ring-3, machine-glue-below-the-kernel, syscall-abi-in-registers, thread-pointer-cleared-on-switch
 - `process`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, loops-select-by-work-kind-and-stage, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human, thread-bound-at-retype
 - `proof`: boundary-into-verified-code-counted, divider-proven-by-invariant, isolation-claim, region-map-owns-the-address-space, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
 - `purity`: untyped-memory

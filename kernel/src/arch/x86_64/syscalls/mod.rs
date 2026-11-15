@@ -171,9 +171,11 @@ extern "C" fn entered_with_flags_set() -> ! {
 #[unsafe(naked)]
 unsafe extern "C" fn sys_entry() -> ! {
     naked_asm!(
-        // We may not have a valid rsp. Every register but rcx and r11 still holds the user's value,
-        // so the user's rsp waits in the Cpu while the stack switches.
+        // The GS base is the process's until SWAPGS makes it the core's block (`this_core`). We may
+        // not have a valid rsp. Every register but rcx and r11 still holds the user's value, so the
+        // user's rsp waits in the Cpu while the stack switches.
 
+        "swapgs",
         "mov gs:{user_rsp_offset}, rsp",
         "mov rsp, gs:{syscall_sp_offset}",
 
@@ -220,7 +222,9 @@ unsafe extern "C" fn sys_entry() -> ! {
 
         "xor r10d, r10d",
 
-        // sysretq loads RFLAGS, IF with them, from r11 (APM 3, SYSRET).
+        // The process's GS base again, then sysretq loads RFLAGS, IF with them, from r11 (APM 3,
+        // SYSRET).
+        "swapgs",
         "sysretq",
 
         user_ss = const GlobalDescriptorTable::USER_SS,

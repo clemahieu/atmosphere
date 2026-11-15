@@ -17,7 +17,8 @@ mod this_core;
 pub mod write_protect;
 
 pub use this_core::{
-    core_pointer, counters, init_boot_core, init_core, set_core_pointer, translation_root, CoreState,
+    clear_process_gs, core_pointer, counters, init_boot_core, init_core, set_core_pointer, translation_root,
+    CoreState,
 };
 
 /// A privilege level: a selector's RPL and a descriptor's DPL. APM 2 §4.9.1.
@@ -244,11 +245,13 @@ const RFLAGS_RESERVED_ONE: u64 = 1 << 1;
 
 /// Enters user code at `pc` with stack `sp` and two entry arguments, which it finds in `rdi` and `rsi`,
 /// and with interrupts unmasked, which the kernel kept masked: SYSRET loads RFLAGS from r11 (APM 3,
-/// SYSRET), so the process starts with IF set and no other flag.
+/// SYSRET), so the process starts with IF set and no other flag. The process starts with a null GS of
+/// base 0, and the core's block waits in KERNEL_GS_BASE for the next entry's SWAPGS.
 pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi: u64) -> ! {
     #[cfg(feature = "stray_timer")]
     crate::machine::set_timer(crate::STRAY_TIMER_TICKS);
     log::info!("Going to sysret into {:x?}", pc);
+    clear_process_gs();
     asm!(
         "mov rsp, {sp}",
         // dom0 gets its entry arguments in rdi and rsi and no kernel values.
@@ -263,6 +266,7 @@ pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi:
         "xor r13d, r13d",
         "xor r14d, r14d",
         "xor r15d, r15d",
+        "swapgs",
         "sysretq",
 
         in("rcx") pc,
@@ -290,6 +294,8 @@ pub mod msr {
     pub const SF_MASK: u32 = 0xC000_0084;
     /// APM 2 §4.5.3.
     pub const GS_BASE: u32 = 0xC000_0101;
+    /// The value SWAPGS exchanges with the GS base. APM 2 §4.5.3, and APM 3, SWAPGS.
+    pub const KERNEL_GS_BASE: u32 = 0xC000_0102;
 
     /// EFER.SCE, which enables SYSCALL and SYSRET. APM 2 §3.1.7, Figure 3-9.
     pub const EFER_SCE: u64 = 1 << 0;

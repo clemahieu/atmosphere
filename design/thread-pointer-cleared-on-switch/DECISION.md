@@ -18,7 +18,7 @@ confidence: "dom0's thread pointer check in the gate's aarch64 boot writes TPIDR
 
 ## Context
 
-A register a thread can write and the next thread on the core can read is a channel between processes, which the capability model does not grant. A kernel that neither saves `TPIDR_EL0` nor writes it hands what one thread wrote to the next thread the core resumes, whatever its process. x86_64 has the same question for its data segments and the FS and GS bases.
+A register a thread can write and the next thread on the core can read is a channel between processes, which the capability model does not grant. A kernel that neither saves `TPIDR_EL0` nor writes it hands what one thread wrote to the next thread the core resumes, whatever its process. x86_64 has the same question for its data segments and the FS and GS bases; for GS, `design/gs-base-swapped-at-ring-3/` answers it the same way.
 
 ## Reasoning
 

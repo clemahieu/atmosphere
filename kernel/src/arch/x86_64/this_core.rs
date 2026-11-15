@@ -2,6 +2,15 @@
 
 //! This core's x86_64 state: what the instruction set adds to its [`Cpu`], the GS base that finds
 //! the block, and the order a core is brought up in.
+//!
+//! Ring 3 can set the GS base, by loading GS with a selector (APM 2 §4.5.3), so the base that finds
+//! the block is the kernel's only while the core runs the kernel. Every entry from ring 3 starts with
+//! SWAPGS, which takes the block's address from KERNEL_GS_BASE and leaves the process's GS base
+//! there, and every return to ring 3 ends with SWAPGS, which puts them back: the syscall entry
+//! (`syscalls`), each interrupt and exception whose saved CS has RPL 3 (`interrupt`), and the first
+//! entry into dom0 (`enter_userspace`). The process's GS is not a thread's state: a core clears it when
+//! it resumes a thread through a selection, so one thread's GS reaches no other.
+//! design/gs-base-swapped-at-ring-3/.
 
 use core::arch::asm;
 
@@ -60,7 +69,16 @@ pub unsafe fn set_core_pointer(cpu: *const Cpu) {
     msr::wrmsr(msr::GS_BASE, cpu as u64);
 }
 
-/// This core's block, read from its own first field through GS.
+/// Gives the thread the core resumes next a null GS selector with a GS base of 0, while the core runs
+/// the kernel: the selector's load may change the GS base, so the block's address is written back.
+pub unsafe fn clear_process_gs() {
+    let cpu = core_pointer();
+    asm!("mov gs, {0:x}", in(reg) 0u16, options(nostack, preserves_flags));
+    msr::wrmsr(msr::GS_BASE, cpu as u64);
+    msr::wrmsr(msr::KERNEL_GS_BASE, 0);
+}
+
+/// This core's block, read from its own first field through GS, while the core runs the kernel.
 pub fn core_pointer() -> *mut Cpu {
     let address: u64;
     unsafe {

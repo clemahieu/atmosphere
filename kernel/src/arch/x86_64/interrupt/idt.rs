@@ -52,7 +52,7 @@ pub struct Idt {
     pub device_not_available: Entry<TrampolineHandlerFunc>,
 
     /// Double Fault (`#DF`)
-    pub double_fault: Entry<HandlerFunc>,
+    pub double_fault: Entry<TrampolineHandlerFunc>,
 
     /// Obsolete
     exception_9: Entry<HandlerFunc>,
@@ -242,7 +242,6 @@ macro_rules! impl_set_handler_fn {
     };
 }
 
-impl_set_handler_fn!(HandlerFunc);
 impl_set_handler_fn!(TrampolineHandlerFunc);
 
 /// Attributes of an IDT entry.
