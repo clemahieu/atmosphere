@@ -316,56 +316,48 @@ where
                     return Err(Error::MapFailed);
                 }
 
-                // FIXME: Unwritable memory
+                // The segment's bytes are p_filesz bytes from p_offset, and nothing after:
+                // the file may end there, or another image may follow. The rest of the
+                // file-backed pages, below the segment's page offset and past its bytes,
+                // reads as zero.
                 let dst = unsafe { slice::from_raw_parts_mut(mapping as *mut u8, file_map_size) };
+                let (below, rest) = dst.split_at_mut(vaddr - self.page_start(vaddr));
+                let (bytes, after) = rest.split_at_mut(core::cmp::min(filesz, memsz));
+                below.fill(0);
+                after.fill(0);
 
                 self.file
-                    .seek(SeekFrom::Start(
-                        self.start_pos + self.page_start(offset) as u64,
-                    ))
+                    .seek(SeekFrom::Start(self.start_pos + offset as u64))
                     .map_err(Into::into)?;
-                self.file.read_exact(dst).map_err(Into::into)?;
+                self.file.read_exact(bytes).map_err(Into::into)?;
             }
 
-            // Memory beyond memsz is zero-initialized
-            if memsz > filesz && (ph.p_flags & PF_W != 0) {
-                // Zero out the fractional page
-                let zero_addr = load_bias_loader + vaddr + filesz;
-                let zero_end = self.page_align(zero_addr);
-                if zero_end > zero_addr {
-                    let fractional_page = unsafe {
-                        slice::from_raw_parts_mut(zero_addr as *mut u8, zero_end - zero_addr)
-                    };
-                    fractional_page.fill(0);
+            // The pages past the file-backed ones, up to p_memsz, are zero-initialized.
+            if file_map_size < total_map_size {
+                let mapping = unsafe {
+                    let addr = self.page_start(load_bias + vaddr) + file_map_size;
+                    let size = total_map_size - file_map_size;
+                    log::trace!(
+                        "mmap [{ph}] [{addr:#x?}-0x{mend:x}] (vaddr=0x{vaddr:x}, anon)",
+                        mend = addr + size,
+                        ph = DisplayPFlags(ph),
+                    );
+
+                    memory
+                        .map_anonymous(VAddr::from_usize(addr), size, prot)
+                        .paddr
+                        .0 as *mut c_void
+                };
+
+                if mapping.is_null() {
+                    log::error!("Failed to map anonymous portion for segment 0x{:x}", vaddr);
+                    return Err(Error::MapFailed);
                 }
 
-                if file_map_size < total_map_size {
-                    let mapping = unsafe {
-                        // The mapper takes the virtual address; `zero_end` is the loader's view.
-                        let addr = zero_end - load_bias_loader + load_bias;
-                        let size = total_map_size - file_map_size;
-                        log::trace!(
-                            "mmap [{ph}] [{addr:#x?}-0x{mend:x}] (vaddr=0x{vaddr:x}, anon)",
-                            mend = addr as usize + size,
-                            ph = DisplayPFlags(ph),
-                        );
-
-                        memory.map_anonymous(VAddr(addr as u64), size, prot).paddr.0 as *mut c_void
-                    };
-
-                    if mapping.is_null() {
-                        log::error!("Failed to map anonymous portion for segment 0x{:x}", vaddr);
-                        return Err(Error::MapFailed);
-                    }
-
-                    let whole_pages = unsafe {
-                        slice::from_raw_parts_mut(
-                            mapping as *mut u8,
-                            total_map_size - file_map_size,
-                        )
-                    };
-                    whole_pages.fill(0);
-                }
+                let whole_pages = unsafe {
+                    slice::from_raw_parts_mut(mapping as *mut u8, total_map_size - file_map_size)
+                };
+                whole_pages.fill(0);
             }
         }
 
@@ -592,6 +584,82 @@ mod tests {
         assert_eq!(segments[0].memsz, 0x2000);
         assert!(!segments[0].writable);
         assert!(segments[0].executable);
+    }
+
+    // A mapper over one buffer, as the loader's mappers are over one reserved region: the
+    // first call with no base takes the region, and a call with a base returns where that
+    // address falls in it. The buffer starts filled with a pattern, so bytes the load leaves
+    // alone are told from bytes it zeroes.
+    struct BufferMapper {
+        buffer: Vec<u8>,
+        vbase: u64,
+    }
+
+    impl VirtualMapper for BufferMapper {
+        unsafe fn map_anonymous(
+            &mut self,
+            base: VAddr,
+            size: usize,
+            _protection: PageProtection,
+        ) -> ContiguousMapping {
+            let start = if base.0 == 0 {
+                assert!(size <= self.buffer.len());
+                self.vbase
+            } else {
+                base.0
+            };
+            let offset = (start - self.vbase) as usize;
+            assert!(offset + size <= self.buffer.len());
+            ContiguousMapping {
+                vaddr: VAddr(start),
+                paddr: PAddr(self.buffer.as_mut_ptr() as u64 + offset as u64),
+            }
+        }
+    }
+
+    #[test]
+    fn load_copies_a_last_segment_that_ends_the_file_unaligned() {
+        // One read-only segment whose bytes follow the program header table and end the
+        // file, 0x10 bytes into a page, as a stripped image's last segment ends an image
+        // with another image or nothing after it.
+        const OFFSET: usize = HEADER_SIZE + PROGRAM_HEADER_SIZE;
+        const FILESZ: usize = 0x10;
+        const VADDR: usize = 0x1000 + OFFSET;
+        let mut image = [0u8; OFFSET + FILESZ];
+        image[..HEADER_SIZE].copy_from_slice(&file_header_bytes(1));
+        image[HEADER_SIZE..OFFSET].copy_from_slice(&program_header_bytes(
+            PT_LOAD,
+            PF_R,
+            [
+                OFFSET as u64,
+                VADDR as u64,
+                VADDR as u64,
+                FILESZ as u64,
+                FILESZ as u64,
+                0x1000,
+            ],
+        ));
+        for (i, byte) in image[OFFSET..].iter_mut().enumerate() {
+            *byte = 0x40 + i as u8;
+        }
+
+        let mut mapper = BufferMapper {
+            buffer: vec![0xa5; 0x1000],
+            vbase: 0x10_0000,
+        };
+        let elf = ElfHandle::parse(Cursor::new(&image[..]), 0x1000).unwrap();
+        let (mapping, _) = elf.load(&mut mapper).unwrap();
+
+        assert_eq!(mapping.load_addr, 0x10_0000);
+        let page_offset = VADDR % 0x1000;
+        assert!(mapper.buffer[..page_offset].iter().all(|&b| b == 0));
+        assert_eq!(
+            mapper.buffer[page_offset..page_offset + FILESZ],
+            image[OFFSET..]
+        );
+        assert!(mapper.buffer[page_offset + FILESZ..]
+            .iter()
+            .all(|&b| b == 0));
     }
 
     #[test]
