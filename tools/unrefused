@@ -42,14 +42,7 @@ kernel/verified/capability/revoke.rs	revoke	Again
 kernel/verified/capability/revoke.rs	revoke	Exhausted
 kernel/verified/capability/space.rs	retype_table_page	true
 kernel/verified/capability/space.rs	retype_space	true
-kernel/verified/capability/switch.rs	tick	Switched
-kernel/verified/capability/switch.rs	tick	Kept
-kernel/verified/capability/switch.rs	tick	Dropped
-kernel/verified/capability/switch.rs	switch_thread	returns
 kernel/verified/capability/thread.rs	retype_thread	true
-kernel/verified/capability/thread.rs	enter_boot_thread	returns
-kernel/verified/capability/thread.rs	check_current	Kept
-kernel/verified/capability/thread.rs	check_current	MovedOff
 aring/src/lib.rs	Producer::new	returns
 aring/src/lib.rs	Producer::index	returns
 aring/src/lib.rs	Producer::free	returns
