@@ -58,9 +58,6 @@ kernel/verified/capability/thread.rs	retype_thread	true
 kernel/verified/capability/thread.rs	enter_boot_thread	returns
 kernel/verified/capability/thread.rs	check_current	Kept
 kernel/verified/capability/thread.rs	check_current	MovedOff
-kernel/verified/queue_lock.rs	QueueLock::new	returns
-kernel/verified/queue_lock.rs	QueueLock::acquire	returns
-kernel/verified/queue_lock.rs	QueueLock::release	returns
 aring/src/lib.rs	Producer::new	returns
 aring/src/lib.rs	Producer::index	returns
 aring/src/lib.rs	Producer::free	returns

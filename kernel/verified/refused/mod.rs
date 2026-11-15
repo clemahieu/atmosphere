@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-//! False claims for the caller's-view contracts, and for the operation ways whose contracts admit an
-//! unchanged table view. An unchanged kernel meets no ok or again arm whose specification does not
-//! admit it, and no success ensures of destroy, place, start, suspend, unmap or the register
-//! operations. No contract lets a slot it does not name change.
+//! False claims for the caller's-view contracts, for the operation ways whose contracts admit an
+//! unchanged table view, and for the queue lock. An unchanged kernel meets no ok or again arm whose
+//! specification does not admit it, and no success ensures of destroy, place, start, suspend, unmap
+//! or the register operations. No contract lets a slot it does not name change. QueueLock::new's
+//! ensures fails for a lock that is not well-formed, and acquire's and release's ensures fail for an
+//! unchanged core on the lock the operation borrows.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -48,6 +50,9 @@ pub mod unmap_ok;
 pub mod read_registers_none;
 pub mod write_registers_ok;
 pub mod unnamed_move;
+pub mod queue_lock_new;
+pub mod queue_lock_acquire;
+pub mod queue_lock_release;
 
 use vstd::prelude::*;
 
@@ -58,6 +63,7 @@ use crate::capability::thread::SuspendStep;
 use crate::capability::unmap::Unmapped;
 use crate::define::NUM_CPUS;
 use crate::capability::kernel::CapKernel;
+use crate::queue_lock::{Core, QueueLock};
 use crate::capability::operation::*;
 use crate::capability::position::{Position, spec_position};
 
@@ -466,6 +472,66 @@ pub trait UnnamedMove {
             CapKernel::spec_moved(pre, post, root, frame, out),
         ensures
             unnamed_move::unnamed(pre, post, root, frame),
+    ;
+}
+
+/// `QueueLock::new` at a lock that is not well-formed. The core map is the one new ensures.
+pub trait QueueLockNew {
+    proof fn wrong(lock: QueueLock, cores: Map<int, Core>)
+        requires
+            !lock.wf(),
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] cores.dom().contains(c) && cores[c].idle() && cores[c].cpu == c && cores[c].for_lock(lock),
+        ensures
+            lock.wf(),
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] cores.dom().contains(c) && cores[c].idle() && cores[c].cpu == c && cores[c].for_lock(lock),
+    ;
+}
+
+/// `QueueLock::acquire` at an unchanged lock and an unchanged core, still idle.
+pub trait QueueLockAcquire {
+    proof fn unchanged(lock: &QueueLock, cpu: usize, pre_core: Core, post_core: Core)
+        requires
+            lock.wf(),
+            cpu < NUM_CPUS,
+            pre_core.idle(),
+            pre_core.cpu == cpu,
+            pre_core.for_lock(*lock),
+            post_core.cpu == pre_core.cpu,
+            post_core.loc == pre_core.loc,
+            post_core.place_id == pre_core.place_id,
+            post_core.behind_id == pre_core.behind_id,
+            post_core.front_id == pre_core.front_id,
+            post_core.state.id() == pre_core.state.id(),
+            post_core.swapped == pre_core.swapped,
+            post_core.granted == pre_core.granted,
+            post_core.idle(),
+        ensures
+            post_core.holding() && post_core.swapped <= post_core.granted && post_core.granted <= post_core.swapped + NUM_CPUS - 1,
+            post_core.cpu == cpu,
+            post_core.for_lock(*lock),
+    ;
+}
+
+/// `QueueLock::release` at an unchanged lock and an unchanged core, still holding.
+pub trait QueueLockRelease {
+    proof fn unchanged(lock: &QueueLock, cpu: usize, pre_core: Core, post_core: Core)
+        requires
+            lock.wf(),
+            cpu < NUM_CPUS,
+            pre_core.holding(),
+            pre_core.cpu == cpu,
+            pre_core.for_lock(*lock),
+            post_core.cpu == pre_core.cpu,
+            post_core.loc == pre_core.loc,
+            post_core.place_id == pre_core.place_id,
+            post_core.behind_id == pre_core.behind_id,
+            post_core.front_id == pre_core.front_id,
+            post_core.state.id() == pre_core.state.id(),
+            post_core.holding(),
+        ensures
+            post_core.idle(),
+            post_core.cpu == cpu,
+            post_core.for_lock(*lock),
     ;
 }
 
