@@ -1,6 +1,6 @@
 ---
 title: "The kernel theorem assumes nothing about user code; the component that divides the machine is tier 1, and the claim depends on it until its first statement verifies"
-date: 2026-11-10
+date: 2026-11-15
 status: active
 tags: [security, proof, tiers]
 one_line: "The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided the machine between them; that component is tier 1 by design/divider-proven-by-invariant/, and until its stage-one statement verifies the security claim states the dependence on unproven code."
@@ -16,7 +16,7 @@ The kernel theorem assumes nothing about user code. A swapped pager needs no ass
 
 Isolation between two subsystems also depends on the component that divided the machine between them. That component, the divider, is tier 1: `design/divider-proven-by-invariant/` says what it proves and in what order. A server shared by several subsystems, such as a pager, is not part of the divider; it is a tenant bounded by its rows, and whether it leaks between its clients is its own correctness at its own tier.
 
-Until the divider's stage-one statement verifies, the root process that divides the machine is unproven code, and the security claim states that isolation between subsystems depends on it. Once it verifies, the claim is the composed statement: each tenant reaches only its rows and the declared overlap in every state after the divider's last step, over the trusted base that record names. The claims `tools/external-body-list` counts are trusted: hardware, kernel and language claims, and the `gap` and `unproven` debt, `design/who-vouches-for-an-unproven-claim/`.
+Until the divider's stage-one statement verifies, the root process that divides the machine is unproven code, and the security claim states that isolation between subsystems depends on it. Once it verifies, the claim is the composed statement: each tenant reaches only its rows and the declared overlap in every state after the divider's last step. Both claims rest on the trusted base enumerated in `design/divider-proven-by-invariant/`.
 
 ## Context
 

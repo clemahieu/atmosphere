@@ -1,8 +1,8 @@
 ---
 title: "The divider is proven: it establishes an invariant over a checked table of grants, static first, then dynamic on the same invariant"
-date: 2026-11-13
+date: 2026-11-15
 status: active
-tags: [security, proof, tiers, capability]
+tags: [security, proof, tiers, capability, trusted-base]
 one_line: "The rules that divide the machine between tenants are a table of grants with declared overlap, checked by a decidable layout_ok. A Verus-verified user crate establishes an invariant over the kernel's state and that table, with a state per block; with the kernel theorem it bounds each tenant from above by its rows over reach and from below by a capability for each row, and a witness shows it finishes for every layout that fits. Stage one divides at boot and ends dead while still holding; stage two serves create and destroy, then grow and shrink, then forced reclaim and core moves, each handler keeping the invariant."
 revisit_if: "The caller's-view contracts cannot be proven from the kernel's operation specifications at a cost the project will pay, or a handler stage two needs cannot be written to keep one invariant, which is when the dynamic stage is reconsidered and the statement stays the static one."
 confidence: "The human's choice among static only, static then dynamic, and dynamic from the start, after a survey of published initialiser and policy proofs (capDL, Boyton's verified initialisation, seL4's integrity and information-flow proofs, take-grant, EROS confinement) and of hypervisors' allocation. The sizes the choice weighed are reasoned from structure, not measured; that the static case can be carried to running code is the published result, and the dynamic case is new ground."
@@ -58,4 +58,4 @@ The kernel already makes reclaim clean, so the divider does not scrub: revoke un
 - What tenants do once they run, including whether a shared server leaks between its clients.
 - Termination of requests: the stage-two statement is that a handler given what it requires completes, not that every request is served.
 - That a layout says what the operator meant: a layout that declares the wrong overlap is enforced faithfully.
-- The trusted base: the claims `tools/external-body-list` counts (hardware, kernel and language claims, and `gap` and `unproven` debt), the loader, firmware, hardware and the IOMMU, Verus, Z3 and rustc.
+- The trusted base: the claims `tools/external-body-list` counts (`design/who-vouches-for-an-unproven-claim/`), the boundary sites `tools/boundary-list` counts where unverified crates hand values or calls into verified code (`design/boundary-into-verified-code-counted/`), the assembly leaves whose register convention a dom0 boot check holds (`design/register-convention-of-an-assembly-leaf/`), the rest of the unverified kernel and machine glue (`design/machine-glue-below-the-kernel/`), the loader, firmware, hardware and the IOMMU, and Verus, vstd, Z3 and rustc (`design/committer-is-not-the-adversary/`).
