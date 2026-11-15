@@ -16,7 +16,9 @@ rendering is docs/faq/<name>.md, under a line saying it is generated.
 A template may also name a plot, as a markdown image whose target is <file>.svg or ./<file>.svg and
 whose <file>.svg is a key of PLOTS. The plot is an SVG file written beside the rendering from the same
 numbers. Chart draws that figure with presentation attributes and no script or style element, which a
-later explainer reuses for its own plot. A target that is not a plot is refused.
+later explainer reuses for its own plot. A target that is not a plot is refused. table-growth.svg is
+each way of growing the capability table: its slot capacity, its smallest table, its full table and
+the memory that capacity holds at each block size.
 
 docs/faq/README.md is the index: every explainer by its first '# ' heading, in file-name order.
 
@@ -69,8 +71,14 @@ CONSTANTS = {
     "ROOT_FRAME_SLOTS": "kernel/verified/capability/boot_image.rs",
     "IMAGE_ORDER": "kernel/verified/capability/boot_image.rs",
     "PROCESS_ORDER": "kernel/verified/capability/process.rs",
+    "PROCESS_BYTES": "kernel/verified/capability/process.rs",
+    "PROCESS_RECORD_PAGE": "kernel/verified/capability/process.rs",
     "THREAD_ORDER": "kernel/verified/capability/thread.rs",
     "TABLE_PAGE_BYTES": "kernel/verified/capability/space.rs",
+    "SPACE_ROOT_PAGE": "kernel/verified/capability/space.rs",
+    "POSITION_INDEX_MASK": "kernel/verified/capability/position.rs",
+    "POSITION_THROUGH_SHIFT": "kernel/verified/capability/position.rs",
+    "POSITION_WIDTH": "kernel/verified/capability/position.rs",
 }
 
 # Boot's decomposition. order_below and run_blocks are the rule in
@@ -195,6 +203,43 @@ def reach(constants, size):
     return min(slots * constants[size], constants["NODE_SPACE"])
 
 
+def spare_pages(constants):
+    """Pages strictly between the process record and the address-space root.
+
+    spare_kept names each of them. The record's page index and the space root's page index are the
+    bounds, so the count is the pages a process block already keeps and does not use.
+    """
+    pages = constants["SPACE_ROOT_PAGE"] - constants["PROCESS_RECORD_PAGE"] - 1
+    if pages <= 0:
+        raise Refused(f"{pages} spare pages between the process record and the address space")
+    return pages
+
+
+def root_pages(constants):
+    """The root page before the record, plus the spare pages a larger root would use."""
+    return constants["PROCESS_RECORD_PAGE"] + spare_pages(constants)
+
+
+def leaf_pages(constants):
+    """Pages in a leaf. A leaf is one node page and one payload page, so the count is even."""
+    pages = constants["LEAF_BYTES"] // constants["PAGE_SZ"]
+    if pages <= 0 or pages % 2 or constants["LEAF_BYTES"] % constants["PAGE_SZ"]:
+        raise Refused(f"LEAF_BYTES is {constants['LEAF_BYTES']} bytes, not a node page and a payload page")
+    return pages
+
+
+def double_node_pages(constants):
+    """Node pages in a leaf of twice today's pages. Half of a leaf's pages are node pages."""
+    return 2 * (leaf_pages(constants) // 2)
+
+
+def big_nodes(constants):
+    """Nodes in one page of SIZE_2M at a node page's density, NODES_PER_PAGE per PAGE_SZ."""
+    if constants["SIZE_2M"] % constants["PAGE_SZ"]:
+        raise Refused("SIZE_2M is not a whole number of pages")
+    return (constants["SIZE_2M"] // constants["PAGE_SZ"]) * constants["NODES_PER_PAGE"]
+
+
 # Each number a template may name that no single constant holds.
 DERIVED = {
     "BLOCKS_PER_RUN": lambda c: 2 * (c["MAX_ORDER"] + 1),
@@ -236,6 +281,41 @@ DERIVED = {
     "REACH_1G": lambda c: reach(c, "SIZE_1G"),
     # NODE_SPACE is the end of the address space, one past its last byte, and a power of two.
     "ADDRESS_BITS": lambda c: c["NODE_SPACE"].bit_length() - 1,
+    # The position word's index field. The mask admits one index per value it covers.
+    "INDEX_FIELD_COUNT": lambda c: c["POSITION_INDEX_MASK"] + 1,
+    "INDEX_FIELD_BITS": lambda c: (c["POSITION_INDEX_MASK"] + 1).bit_length() - 1,
+    # Growing the root uses the spare pages the process block already keeps.
+    "SPARE_PAGES": spare_pages,
+    "ROOT_PAGES": root_pages,
+    "LEAF_PAGES": leaf_pages,
+    "PROCESS_PAGES": lambda c: c["PROCESS_BYTES"] // c["PAGE_SZ"],
+    "TABLE_BYTES": lambda c: c["ROOT_ENTRIES"] * c["LEAF_BYTES"],
+    "ROOTS_SLOTS": lambda c: root_pages(c) * c["ROOT_ENTRIES"] * (c["NODES_PER_PAGE"] - 1),
+    "ROOTS_FULL": lambda c: root_pages(c) * c["ROOT_ENTRIES"] * c["LEAF_BYTES"],
+    "ROOTS_INDICES": lambda c: root_pages(c) * c["ROOT_ENTRIES"] * c["NODES_PER_PAGE"],
+    # A leaf of twice the pages: the node pages double, and one hidden node remains.
+    "DOUBLE_NODE_PAGES": double_node_pages,
+    "DOUBLE_PAGES": lambda c: 2 * leaf_pages(c),
+    "DOUBLE_NODES": lambda c: double_node_pages(c) * c["NODES_PER_PAGE"],
+    "DOUBLE_SLOTS_PER": lambda c: double_node_pages(c) * c["NODES_PER_PAGE"] - 1,
+    "DOUBLE_TABLE_SLOTS": lambda c: c["ROOT_ENTRIES"] * (double_node_pages(c) * c["NODES_PER_PAGE"] - 1),
+    "DOUBLE_LEAF_BYTES": lambda c: 2 * leaf_pages(c) * c["PAGE_SZ"],
+    "DOUBLE_FULL": lambda c: c["ROOT_ENTRIES"] * 2 * leaf_pages(c) * c["PAGE_SZ"],
+    "DOUBLE_INDICES": lambda c: c["ROOT_ENTRIES"] * double_node_pages(c) * c["NODES_PER_PAGE"],
+    # A leaf whose node page and payload page are each the large page.
+    "BIG_NODES": big_nodes,
+    "BIG_SLOTS_PER": lambda c: big_nodes(c) - 1,
+    "BIG_TABLE_SLOTS": lambda c: c["ROOT_ENTRIES"] * (big_nodes(c) - 1),
+    "BIG_LEAF_BYTES": lambda c: 2 * c["SIZE_2M"],
+    "BIG_FULL": lambda c: c["ROOT_ENTRIES"] * 2 * c["SIZE_2M"],
+    "BIG_INDICES": lambda c: c["ROOT_ENTRIES"] * big_nodes(c),
+    # A page of pointers, the root's shape, between the root and the leaf.
+    "THIRD_SLOTS": lambda c: c["ROOT_ENTRIES"] * c["ENTRIES"] * (c["NODES_PER_PAGE"] - 1),
+    "THIRD_SMALLEST": lambda c: c["PAGE_SZ"] + c["LEAF_BYTES"],
+    "THIRD_LEAVES_BYTES": lambda c: c["ROOT_ENTRIES"] * c["ENTRIES"] * c["LEAF_BYTES"],
+    "THIRD_MIDDLE_BYTES": lambda c: c["ROOT_ENTRIES"] * c["PAGE_SZ"],
+    "THIRD_FULL": lambda c: c["ROOT_ENTRIES"] * c["ENTRIES"] * c["LEAF_BYTES"] + c["ROOT_ENTRIES"] * c["PAGE_SZ"],
+    "THIRD_INDICES": lambda c: c["ROOT_ENTRIES"] * c["ENTRIES"] * c["NODES_PER_PAGE"],
 }
 
 GENERATED = "<!-- GENERATED by tools/faq.py from {source}. Do not hand-edit. -->"
@@ -459,9 +539,75 @@ def slots_versus_memory_svg(numbers):
     return chart.document("Slots one process needs against the memory it holds", desc)
 
 
+def table_growth_svg(numbers):
+    """The slot capacity of each way of growing the table, and the memory that capacity holds.
+
+    One column per design, on a logarithmic axis of slots. Under the column is the smallest table,
+    the full table, and the memory one block per slot reaches at each block size, capped at the
+    address space. The same reach a full table has in slots_versus_memory_svg.
+    """
+    page, size_2m, size_1g = numbers["PAGE_SZ"], numbers["SIZE_2M"], numbers["SIZE_1G"]
+    space = numbers["NODE_SPACE"]
+    designs = (
+        ("today", numbers["TABLE_SLOTS"], numbers["LEAF_BYTES"], numbers["TABLE_BYTES"], "#222222", "#e6e6e6"),
+        ("root pages", numbers["ROOTS_SLOTS"], numbers["LEAF_BYTES"], numbers["ROOTS_FULL"], "#1f6aa5", "#d4e4f2"),
+        ("doubled leaf", numbers["DOUBLE_TABLE_SLOTS"], numbers["DOUBLE_LEAF_BYTES"], numbers["DOUBLE_FULL"], "#2a7f4f", "#d5eadc"),
+        ("large page", numbers["BIG_TABLE_SLOTS"], numbers["BIG_LEAF_BYTES"], numbers["BIG_FULL"], "#c45c26", "#f6ddd0"),
+        ("third level", numbers["THIRD_SLOTS"], numbers["THIRD_SMALLEST"], numbers["THIRD_FULL"], "#6a3d9a", "#e6d9f0"),
+    )
+    sizes = (page, size_2m, size_1g)
+    width, height = 780, 380
+    left, right, top, plot_h = 58, 16, 28, 220
+    plot_w = width - left - right
+    plot_bottom = top + plot_h
+    caps = [slots for _, slots, _, _, _, _ in designs]
+    y_lo = math.floor(log2_of(min(caps))) - 1
+    y_hi = math.ceil(log2_of(max(caps))) + 2
+
+    def sy(y):
+        return top + (y_hi - y) / (y_hi - y_lo) * plot_h
+
+    chart = Chart(width, height)
+    chart.rect(0, 0, width, height, "#ffffff")
+    y_tick = math.ceil(y_lo / 2) * 2
+    while y_tick <= y_hi:
+        chart.line(left, sy(y_tick), left + plot_w, sy(y_tick), "#ececec", width=1)
+        chart.text(left - 8, sy(y_tick) + 4, count_label(1 << y_tick), size=11, anchor="end", fill="#555555")
+        y_tick += 2
+    chart.line(left, plot_bottom, left + plot_w, plot_bottom, "#444444", width=1)
+    chart.line(left, top, left, plot_bottom, "#444444", width=1)
+    chart.text(left, top - 10, "slots", size=12, anchor="start", fill="#222222")
+    described = []
+    gap = plot_w / len(designs)
+    for index, (name, slots, small, full, color, light) in enumerate(designs):
+        cx = left + gap * (index + 0.5)
+        dot = sy(log2_of(slots))
+        chart.rect(cx - 16, dot, 32, plot_bottom - dot, light)
+        chart.circle(cx, dot, 4.5, color)
+        chart.text(cx, dot - 10, f"{slots:,}", size=11, anchor="middle", fill=color)
+        chart.text(cx, plot_bottom + 18, name, size=12, anchor="middle", fill=color)
+        chart.text(cx, plot_bottom + 36, f"smallest {bytes_label(small)}", size=10, anchor="middle", fill="#333333")
+        chart.text(cx, plot_bottom + 50, f"full {bytes_label(full)}", size=10, anchor="middle", fill="#333333")
+        reaches = []
+        for step, size in enumerate(sizes):
+            held = min(slots * size, space)
+            reaches.append(f"{bytes_label(size)} reaches {bytes_label(held)}")
+            chart.text(cx, plot_bottom + 70 + 14 * step, f"{bytes_label(size)}  {bytes_label(held)}",
+                       size=10, anchor="middle", fill="#555555")
+        described.append(
+            f"{name}: {slots:,} slots, smallest {bytes_label(small)}, full {bytes_label(full)}; "
+            + "; ".join(reaches)
+        )
+    return chart.document(
+        "Capacity of each way of growing the capability table",
+        "Each column is one design, on a logarithmic axis of slots. " + " ".join(described),
+    )
+
+
 # A plot a template may name. Each function takes the numbers values() returns and gives the SVG text.
 PLOTS = {
     "slots-versus-memory.svg": slots_versus_memory_svg,
+    "table-growth.svg": table_growth_svg,
 }
 
 SVG_REF = re.compile(r"\((?:\./)?([A-Za-z0-9][A-Za-z0-9._-]*)\.svg\)")
@@ -806,6 +952,85 @@ class Tests(unittest.TestCase):
         self.assertEqual(bytes_label(1 << 30), "1 GiB")
         self.assertEqual(bytes_label(65024 << 30), "65,024 GiB")
         self.assertEqual(bytes_label(3), "3 B")
+
+    def test_the_growth_explainer_types_no_number_and_renders_each_design(self):
+        text = (REPO / SOURCES / "growing-the-table.md").read_text(encoding="utf-8")
+        # A digit inside an item's name, such as SIZE_2M, is the name. A typed number stands alone.
+        self.assertIsNone(re.search(r"(?<![A-Za-z0-9_])\d", PLACEHOLDER.sub("", text)))
+        out = outputs(REPO)
+        page = out["growing-the-table.md"]
+        v = values(REPO)
+        for name, spec in PLACEHOLDER.findall(text):
+            self.assertIn(format(v[name], spec or ""), page)
+        self.assertEqual(v["PAGE_SZ"] // v["ENTRIES"], 8)
+        self.assertEqual(v["ROOT_ENTRIES"], v["ENTRIES"])
+        self.assertEqual(v["PAGE_SZ"] // v["NODES_PER_PAGE"], 32)
+        self.assertEqual(v["INDEX_FIELD_COUNT"], v["POSITION_INDEX_MASK"] + 1)
+        self.assertEqual(v["INDEX_FIELD_COUNT"], v["TABLE_INDICES"])
+        self.assertEqual(v["INDEX_FIELD_BITS"], (v["POSITION_INDEX_MASK"] + 1).bit_length() - 1)
+        self.assertEqual(v["POSITION_THROUGH_SHIFT"], v["INDEX_FIELD_BITS"])
+        self.assertEqual(v["SPARE_PAGES"], v["SPACE_ROOT_PAGE"] - v["PROCESS_RECORD_PAGE"] - 1)
+        self.assertEqual(v["ROOT_PAGES"], v["PROCESS_RECORD_PAGE"] + v["SPARE_PAGES"])
+        self.assertEqual(v["LEAF_PAGES"], v["LEAF_BYTES"] // v["PAGE_SZ"])
+        self.assertEqual(v["TABLE_BYTES"], v["ROOT_ENTRIES"] * v["LEAF_BYTES"])
+        self.assertEqual(v["ROOTS_SLOTS"], v["ROOT_PAGES"] * v["ROOT_ENTRIES"] * v["LEAF_SLOTS"])
+        self.assertEqual(v["ROOTS_FULL"], v["ROOT_PAGES"] * v["ROOT_ENTRIES"] * v["LEAF_BYTES"])
+        self.assertEqual(v["ROOTS_INDICES"], v["ROOT_PAGES"] * v["ROOT_ENTRIES"] * v["NODES_PER_PAGE"])
+        self.assertEqual(v["DOUBLE_NODE_PAGES"], v["LEAF_PAGES"])
+        self.assertEqual(v["DOUBLE_PAGES"], 2 * v["LEAF_PAGES"])
+        self.assertEqual(v["DOUBLE_NODES"], v["DOUBLE_NODE_PAGES"] * v["NODES_PER_PAGE"])
+        self.assertEqual(v["DOUBLE_SLOTS_PER"], v["DOUBLE_NODES"] - 1)
+        self.assertEqual(v["DOUBLE_TABLE_SLOTS"], v["ROOT_ENTRIES"] * v["DOUBLE_SLOTS_PER"])
+        self.assertEqual(v["DOUBLE_LEAF_BYTES"], v["DOUBLE_PAGES"] * v["PAGE_SZ"])
+        self.assertEqual(v["DOUBLE_FULL"], v["ROOT_ENTRIES"] * v["DOUBLE_LEAF_BYTES"])
+        self.assertEqual(v["DOUBLE_INDICES"], v["ROOT_ENTRIES"] * v["DOUBLE_NODES"])
+        self.assertEqual(v["BIG_NODES"], (v["SIZE_2M"] // v["PAGE_SZ"]) * v["NODES_PER_PAGE"])
+        self.assertEqual(v["BIG_SLOTS_PER"], v["BIG_NODES"] - 1)
+        self.assertEqual(v["BIG_TABLE_SLOTS"], v["ROOT_ENTRIES"] * v["BIG_SLOTS_PER"])
+        self.assertEqual(v["BIG_LEAF_BYTES"], 2 * v["SIZE_2M"])
+        self.assertEqual(v["BIG_FULL"], v["ROOT_ENTRIES"] * v["BIG_LEAF_BYTES"])
+        self.assertEqual(v["BIG_INDICES"], v["ROOT_ENTRIES"] * v["BIG_NODES"])
+        self.assertEqual(v["THIRD_SLOTS"], v["ROOT_ENTRIES"] * v["ENTRIES"] * v["LEAF_SLOTS"])
+        self.assertEqual(v["THIRD_SMALLEST"], v["PAGE_SZ"] + v["LEAF_BYTES"])
+        self.assertEqual(v["THIRD_LEAVES_BYTES"], v["ROOT_ENTRIES"] * v["ENTRIES"] * v["LEAF_BYTES"])
+        self.assertEqual(v["THIRD_MIDDLE_BYTES"], v["ROOT_ENTRIES"] * v["PAGE_SZ"])
+        self.assertEqual(v["THIRD_FULL"], v["THIRD_LEAVES_BYTES"] + v["THIRD_MIDDLE_BYTES"])
+        self.assertEqual(v["THIRD_INDICES"], v["ROOT_ENTRIES"] * v["ENTRIES"] * v["NODES_PER_PAGE"])
+        self.assertNotIn(v["DOUBLE_PAGES"], (1, v["LEAF_PAGES"], v["PROCESS_BYTES"] // v["PAGE_SZ"]))
+        process = (REPO / "kernel/verified/capability/process.rs").read_text(encoding="utf-8")
+        for page_index in range(v["PROCESS_RECORD_PAGE"] + 1, v["SPACE_ROOT_PAGE"]):
+            self.assertIn(f"spare_kept(processes, p, {page_index})", process)
+        block = (REPO / "kernel/verified/capability/block.rs").read_text(encoding="utf-8")
+        self.assertIn("order == 0 || order == 1 || order == 3", block)
+        self.assertIn("if order == 0 { 1 } else if order == 1 { 2 } else { 8 }", block)
+        self.assertIn("block cannot write its page entries in a bounded step", block)
+        self.assertEqual(v["PROCESS_PAGES"], v["PROCESS_BYTES"] // v["PAGE_SZ"])
+        self.assertEqual(v["LEAF_PAGES"], 2)
+        self.assertEqual(v["PROCESS_PAGES"], 8)
+        self.assertEqual(v["DOUBLE_PAGES"], 4)
+        table = (REPO / "kernel/verified/capability/table.rs").read_text(encoding="utf-8")
+        self.assertIn("32 bytes", table)
+        self.assertEqual(v["PAGE_SZ"] // v["NODES_PER_PAGE"], 32)
+        for name in ("TABLE_SLOTS", "ROOTS_SLOTS", "DOUBLE_TABLE_SLOTS", "BIG_TABLE_SLOTS", "THIRD_SLOTS",
+                     "LEAF_BYTES", "TABLE_BYTES", "ROOTS_FULL", "DOUBLE_LEAF_BYTES", "DOUBLE_FULL",
+                     "BIG_LEAF_BYTES", "BIG_FULL", "THIRD_SMALLEST", "THIRD_FULL", "THIRD_LEAVES_BYTES",
+                     "THIRD_MIDDLE_BYTES", "TABLE_INDICES", "ROOTS_INDICES", "DOUBLE_INDICES",
+                     "BIG_INDICES", "THIRD_INDICES", "INDEX_FIELD_COUNT", "SPARE_PAGES", "ROOT_PAGES",
+                     "DOUBLE_SLOTS_PER", "BIG_SLOTS_PER", "ENTRIES", "LEAF_SLOTS"):
+            self.assertIn(f"{v[name]:,}", page)
+        for name in ("ROOTS_INDICES", "DOUBLE_INDICES", "BIG_INDICES", "THIRD_INDICES"):
+            self.assertGreater(v[name], v["INDEX_FIELD_COUNT"])
+        self.assertIn("(./table-growth.svg)", page)
+        self.assertNotRegex(page, r"<\s*/?\s*(svg|script|html|iframe|style)\b")
+        svg = out["table-growth.svg"]
+        for name in ("TABLE_SLOTS", "ROOTS_SLOTS", "DOUBLE_TABLE_SLOTS", "BIG_TABLE_SLOTS", "THIRD_SLOTS"):
+            self.assertIn(f"{v[name]:,}", svg)
+        for name in ("LEAF_BYTES", "TABLE_BYTES", "ROOTS_FULL", "DOUBLE_LEAF_BYTES", "DOUBLE_FULL",
+                     "BIG_LEAF_BYTES", "BIG_FULL", "THIRD_SMALLEST", "THIRD_FULL"):
+            self.assertIn(bytes_label(v[name]), svg)
+        self.assertNotRegex(svg, r"<\s*/?\s*(script|style|html|iframe)\b")
+        self.assertEqual(svg, table_growth_svg(v))
+        self.assertIn("Growing the capability table, and what each way costs", out["README.md"])
 
     def test_the_budget_explainer_types_no_number_and_renders_its_reaches(self):
         text = (REPO / SOURCES / "where-the-budget-runs-out.md").read_text(encoding="utf-8")
