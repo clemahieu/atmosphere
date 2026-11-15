@@ -2,7 +2,7 @@
 
 # Design decisions
 
-51 records: 51 active, 0 superseded.
+52 records: 52 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -43,6 +43,9 @@ in `revisit if` what would make it worth reopening.
 - **[fan-in-over-private-rings](./fan-in-over-private-rings/DECISION.md)** (2026-11-09): Several untrusted producers feeding one consumer get one aring each, and afanin's scan finds the first ring with a slot available from a start the caller rotates. No word is written by two producers, so a wild index is rejected by its own ring alone and a producer that stops stalls only its own ring. A queue with one shared enqueue cursor is for producers inside one trust domain and is not built until a caller needs its total order.
   - *confidence:* The isolation is proven in afanin/src/lib.rs over aring's proven observe. That the shared cursor cannot reject a peer's store is an argument from the published algorithms' structure, not a proof; the cost comparison is not measured.
   - *revisit if:* A caller inside one trust domain needs one total order across producers, which the scan does not give; or the number of producers grows until a scan over every ring costs more than the shared cursor's contended line, which a measurement would show.
+- **[flush-on-a-change-of-core-share](./flush-on-a-change-of-core-share/DECISION.md)** (2026-11-15): A share of a core is a core capability, named by a 64-bit number boot or a derive gives it once, which a move keeps and a placement copies into the thread. Each core holds a flush token naming the share of the last thread it ran in user mode; switch_thread and boot's entry, making current a thread of another share, first run the arch module's flush, which returns the new token. On x86_64 the flush is IBPB through PRED_CMD and an L1D write-back and invalidate through FLUSH_CMD, each where CPUID reports it; on aarch64 it is CFP, DVP and CPP RCTX over every EL0 context where FEAT_SPECRES is reported, and no L1D command.
+  - *confidence:* The trigger is a judgement: it follows the hypervisor practice of flushing at a change of tenant, with the capability as the tenant's mark, and its cost is unmeasured. What each command clears is the manuals' word, cited below; whether a core honours it is the hardware's.
+  - *revisit if:* The flush is measured as a cost that matters on a workload whose shares within one tenant take turns on a core, which is when the share is widened to the holder of the parent capability the divider handed out; or a target gains an architectural command that clears what this flush leaves, such as a whole-core buffer clear, which is when the command is added here.
 - **[flush-without-waiting](./flush-without-waiting/DECISION.md)** (2026-11-12): A ghost per-core TLB model holds possibly stale translations keyed by space and core; unmap bumps a flush epoch, sends IPIs to exactly the cores that loaded the space and returns again; each core's handler flushes every context and records its acknowledgement on its own kernel entry; an IOMMU's invalidate waits for its completion inside the arch module's invalidate_iommu_all, since an IOMMU is not a core; retype requires the acknowledgement of every core that has loaded a space and of every present IOMMU to have reached the epoch, and only flush_every_context empties a core's model and only invalidate_iommu_all an IOMMU's.
   - *confidence:* The no-wait rule is forced by the lock, see reasoning; the epoch comparison and model are in kernel/verified/capability/kernel.rs and kernel/src/flush.rs, with the flush itself the arch module's flush_every_context, a cited hardware guarantee, and the IOMMU's invalidate_iommu_all, verified code over cited hardware leaves.
   - *revisit if:* The hardware gains a broadcast invalidation the kernel can rely on (this host reports no INVLPGB), a flush that returns again is measured as the cost that dominates unmap, or an IOMMU's completion wait is measured as the longest step under the lock.
@@ -172,7 +175,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
 - `arch`: who-vouches-for-an-unproven-claim
 - `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, root-process-at-boot, test-guest-memory
-- `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, invoked-arm-is-the-operation-postcondition, ipc-with-reply-object, notification-word-reserves-the-waiter-bit, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
+- `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, flush-on-a-change-of-core-share, invoked-arm-is-the-operation-postcondition, ipc-with-reply-object, notification-word-reserves-the-waiter-bit, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
 - `entry`: invoked-arm-is-the-operation-postcondition
 - `gate`: boundary-into-verified-code-counted, committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, witness-per-way-an-operation-succeeds
@@ -199,9 +202,10 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `reach`: device-binding-under-the-space-capability
 - `real-time`: schedulers-over-core-partitions
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
-- `scheduling`: core-names-a-space-while-running-its-thread, cpu-time-as-capability, schedulers-over-core-partitions
+- `scheduling`: core-names-a-space-while-running-its-thread, cpu-time-as-capability, flush-on-a-change-of-core-share, schedulers-over-core-partitions
 - `security`: divider-proven-by-invariant, fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
+- `side-channel`: flush-on-a-change-of-core-share
 - `skeptic`: committer-is-not-the-adversary, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
@@ -210,6 +214,6 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `tracker`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `trusted-base`: boundary-into-verified-code-counted, region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
-- `verified`: arch-module, boundary-into-verified-code-counted, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, invoked-arm-is-the-operation-postcondition, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, wire-combinators-written-here, witness-per-way-an-operation-succeeds
+- `verified`: arch-module, boundary-into-verified-code-counted, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-on-a-change-of-core-share, flush-without-waiting, heap-size-classes, invoked-arm-is-the-operation-postcondition, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, wire-combinators-written-here, witness-per-way-an-operation-succeeds
 - `virtualization`: vmm-over-svm
 - `witness`: witness-per-way-an-operation-succeeds
