@@ -2136,6 +2136,8 @@ impl CapKernel {
     /// device's binding. The device is not bound again until its IOMMU acknowledges an invalidate started
     /// at or past this unbind, since a rebind repeats its IOid. Clearing the IOMMU's device table entry is
     /// the glue's, on success. See design/device-binding-under-the-space-capability/.
+    // aarch64: the module solver cancels this function; its own solver verifies.
+    #[verifier::spinoff_prover]
     pub fn unbind_device_at(&mut self, root: usize, i: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),

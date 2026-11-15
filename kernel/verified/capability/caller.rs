@@ -1551,14 +1551,17 @@ impl CapKernel {
     /// as they were. A 4K frame: ok, with the caller's slot the word names now holding the frame, the
     /// untyped's child, its page a block with a count of one that no frame capability had a page in,
     /// and every other slot of every table as it was. A 2M frame: again, with every table's view as it
-    /// was, or ok as a 4K frame is with the 2M block. A table page: ok, with every table's view as it
-    /// was and an empty table page of the level at base. A leaf: ok, with every table's view as it was
-    /// and every index of the root entry it fills an empty slot of the position's table. The free kind:
-    /// again, with every table's view and the block table as they were, or ok, with every table's view
-    /// as it was. A process: ok, with the caller's slot the word names now holding the process
-    /// capability, the untyped's child, and every other slot of every table as it was. A thread: the
-    /// same with the thread capability, the thread bound to the process whose capability is at index
-    /// level and every other binding as it was, and no frame capability's block or count changed.
+    /// was and the block being zeroed, its cursor past where it was, as spec_retyped gives through
+    /// large_frame_zeroing, or ok as a 4K frame is with the 2M block. A table page: ok, with every
+    /// table's view as it was and an empty table page of the level at base. A leaf: ok, with every
+    /// table's view as it was and every index of the root entry it fills an empty slot of the
+    /// position's table. The free kind: again, while a core has not acknowledged the frame, with every
+    /// table's view and the block table as they were, or ok, with every table's view as it was. A
+    /// process: ok, with the caller's slot the word names now holding the process capability, the
+    /// untyped's child, and every other slot of every table as it was. A thread: the same with the
+    /// thread capability, the thread bound to the process whose capability is at index level and every
+    /// other binding as it was, and no frame capability's block or count changed. The zeroing cursor
+    /// and the acknowledgement read the kernel outside the view.
     pub open spec fn retype_contract(pre: Self, post: Self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize, out: Outcome) -> bool {
         let allowed = pre.retype_allowed(root, kind, from, base, word, level);
         let to = word as usize;
@@ -1584,11 +1587,17 @@ impl CapKernel {
                 &&& Self::retype_frame_contract_fields(pre, post, root, from, base, to)
             }
             ||| {
+                let page = base / PAGE_SZ;
+                let region = page / level_pages(Large::Two);
                 &&& kind == RETYPE_LARGE_FRAME
                 &&& allowed
                 &&& out == status_only(STATUS_AGAIN)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
                 &&& Self::frame_blocks_kept(pre, post)
+                &&& post.zeroing.active(Large::Two, region)
+                &&& pre.zeroing.active(Large::Two, region)
+                    ==> pre.zeroing.cursor@[page as int] < post.zeroing.cursor@[page as int]
+                &&& 0 < post.zeroing.cursor@[page as int] < level_pages(Large::Two)
             }
             ||| {
                 &&& kind == RETYPE_LARGE_FRAME
@@ -1622,6 +1631,7 @@ impl CapKernel {
             ||| {
                 &&& kind == RETYPE_FREE
                 &&& allowed
+                &&& !pre.frame_free_acknowledged(base, level)
                 &&& out == status_only(STATUS_AGAIN)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
                 &&& post.blocks == pre.blocks
@@ -2113,6 +2123,12 @@ impl CapKernel {
             Self::lemma_region_keeps_frame_blocks(pre, post, Large::Two, r);
             if out == status_only(STATUS_AGAIN) {
                 Self::lemma_views_same(pre, post);
+                let page = base / PAGE_SZ;
+                assert(r == page / level_pages(Large::Two));
+                assert(post.zeroing.active(Large::Two, r));
+                assert(pre.zeroing.active(Large::Two, r)
+                    ==> pre.zeroing.cursor@[page as int] < post.zeroing.cursor@[page as int]);
+                assert(0 < post.zeroing.cursor@[page as int] < level_pages(Large::Two));
             } else {
                 assert(post.is_cap(child));
                 assert(post.slot_view(root, to) == frame_view(base, 9, parent));
@@ -2183,7 +2199,9 @@ impl CapKernel {
             reveal(CapKernel::retype_thread_contract_fields);
             Self::lemma_thread_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, (pre.payload_of(n).base / PAGE_SZ) as int);
         } else if kind == RETYPE_FREE {
-            if out == status_only(STATUS_OK) {
+            if out == status_only(STATUS_AGAIN) {
+                assert(!pre.frame_free_acknowledged(base, level));
+            } else if out == status_only(STATUS_OK) {
                 if level == 0 {
                     let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed(post, c, root, from, base);
                     assert(post.list == pre.list && post.tables == pre.tables);

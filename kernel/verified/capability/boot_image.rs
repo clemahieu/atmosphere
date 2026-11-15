@@ -759,6 +759,8 @@ impl CapKernel {
     /// is typed as a large frame by the first block in it. The root's reach grows by exactly the runs'
     /// physical pages, and nobody else's by anything outside them. It returns how many blocks there
     /// are, and refuses, leaving the state as it was, when they do not fit in the second leaf.
+    // aarch64 exceeds the crate rlimit here; its own solver verifies at 200.
+    #[verifier::rlimit(200)]
     #[verifier::spinoff_prover]
     pub(crate) fn boot_root_image(
         &mut self,
