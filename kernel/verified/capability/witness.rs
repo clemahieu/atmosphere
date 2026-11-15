@@ -8853,7 +8853,6 @@ impl CapKernel {
             // So the capability holds the block's one reference.
             assert(s6.payload_of(nf).base / PAGE_SZ == fp);
             assert(block_ref(&s6.blocks, fp as usize) == br) by {
-                reveal(CapKernel::blocks_revoked);
                 assert(s5.blocks.tracks(fp));
             }
             assert forall|n: usize| #[trigger] s5.holders@[block_ref(&s6.blocks, s6.payload_of(nf).base / PAGE_SZ)].contains(n)
@@ -12367,7 +12366,6 @@ impl CapKernel {
             assert(s6.tables.roots@.contains_key(process));
             assert(s6.payload_of(nf).base / PAGE_SZ == fp);
             assert(block_ref(&s6.blocks, fp as usize) == br) by {
-                reveal(CapKernel::blocks_revoked);
                 assert(s5.blocks.tracks(fp));
             }
             assert forall|n: usize| #[trigger] s5.holders@[block_ref(&s6.blocks, s6.payload_of(nf).base / PAGE_SZ)].contains(n)

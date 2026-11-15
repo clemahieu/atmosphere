@@ -1106,6 +1106,7 @@ impl CapKernel {
     /// Gives each device boot found a record and a capability under the list's first node, device k
     /// at index slot + k of the table at root. Boot fills the table once, and it stops at the first
     /// device refused, so false means boot fails, and what the devices before it were given stays.
+    #[verifier::spinoff_prover]
     pub fn add_devices(&mut self, first: usize, root: usize, slot: usize, devices: &Array<DeviceInfo, MAX_DEVICES>, count: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),

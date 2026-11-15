@@ -339,7 +339,6 @@ impl CapKernel {
         }
         proof {
             reveal(devices_wf);
-            reveal(CapKernel::blocks_revoked);
             assert(self.devices.wf());
             if !(node.kind is Mapping) && !(node.kind is DeviceBinding) {
                 Self::lemma_tlb_same(pre, *self);
@@ -449,9 +448,8 @@ impl CapKernel {
     /// What revoke steps did to the blocks: each tracked page lies in the block it did, of the kind,
     /// object and order it had, every block keeps its typing, and each block's holders are some of
     /// those it had. So once every holder of a frame's block but one capability went, that capability's
-    /// is the block's one reference, which deleting it takes to zero. Kept opaque: its quantifiers over
-    /// blocks and holders would otherwise feed every caller of unlink_arm.
-    #[verifier::opaque]
+    /// is the block's one reference, which deleting it takes to zero. Open, since revoke's ensures and
+    /// invoked's revoke arm both call it: design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn blocks_revoked(pre: Self, post: Self) -> bool {
         &&& forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i)
         &&& forall|x: BlockRef| #[trigger] block_typed(&post.blocks, x) == block_typed(&pre.blocks, x)
@@ -483,7 +481,6 @@ impl CapKernel {
         ensures
             Self::counts_lowered(pre, post),
     {
-        reveal(CapKernel::blocks_revoked);
         assert(holders_wf(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@));
         assert(holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@));
         assert forall|br: BlockRef| #[trigger] pre.holders@.contains_key(br)
@@ -504,7 +501,6 @@ impl CapKernel {
         ensures
             Self::blocks_revoked(pre, post),
     {
-        reveal(CapKernel::blocks_revoked);
         assert forall|br: BlockRef, n: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(n)
             implies pre.holders@[br].contains(n) by {
             assert(mid.holders@[br].contains(n));
@@ -520,7 +516,6 @@ impl CapKernel {
         ensures
             Self::blocks_revoked(pre, post),
     {
-        reveal(CapKernel::blocks_revoked);
     }
 
     /// Nothing done is what revoke steps may do.
@@ -531,7 +526,6 @@ impl CapKernel {
         ensures
             Self::blocks_revoked(pre, post),
     {
-        reveal(CapKernel::blocks_revoked);
     }
 
     /// A frame capability whose block's other holders were mappings that revoke steps took holds the
@@ -550,7 +544,6 @@ impl CapKernel {
         ensures
             block_refs(&post.blocks, block_ref(&post.blocks, post.payload_of(c).base / PAGE_SZ)) == 1,
     {
-        reveal(CapKernel::blocks_revoked);
         let br = block_ref(&post.blocks, post.payload_of(c).base / PAGE_SZ);
         assert(holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@));
         assert(post.holders@.contains_key(br) && post.holders@[br].contains(c));

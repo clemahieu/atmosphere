@@ -35,7 +35,7 @@ use crate::capability::process::PROCESS_ORDER;
 use crate::capability::reach::*;
 use crate::capability::reclaim::FrameReclaimStep;
 #[cfg(verus_keep_ghost)]
-use crate::capability::refs::{block_refs, BlockRef};
+use crate::capability::refs::{block_ref, block_refs, block_typed, BlockRef};
 use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 #[cfg(verus_keep_ghost)]
@@ -1797,6 +1797,24 @@ impl CapKernel {
     {
     }
 
+    /// invoked's revoke arm carries blocks_revoked, the predicate revoke ensures, open, so a caller
+    /// that has invoked is told without a reveal that every block kept its typing and every tracked
+    /// page its block, kind, object and order. design/invoked-arm-is-the-operation-postcondition/.
+    pub proof fn lemma_carried_blocks_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Revoke),
+        ensures
+            forall|x: BlockRef| #[trigger] block_typed(&post.blocks, x) == block_typed(&pre.blocks, x),
+            forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
+            forall|i: int| pre.blocks.tracks(i) ==> {
+                &&& (#[trigger] post.blocks.pages@[i]).kind == pre.blocks.pages@[i].kind
+                &&& post.blocks.pages@[i].object == pre.blocks.pages@[i].object
+                &&& post.blocks.pages@[i].order == pre.blocks.pages@[i].order
+            },
+    {
+    }
+
     /// A destroy reaches destroy: refused with nothing changed unless the slot holds a process or
     /// thread capability with control whose object is not dead; ok otherwise, with that process's
     /// record dead and an IPI for each core that has its space loaded, as process_destroyed says, or
@@ -2807,7 +2825,7 @@ impl CapKernel {
             },
             None => {
                 // The slot word names no position, so revoke is not called. The arm still carries what
-                // an unchanged kernel satisfies of revoke's ensures, and blocks_revoked is opaque.
+                // an unchanged kernel satisfies of revoke's ensures.
                 proof {
                     Self::lemma_blocks_revoked_none(*old(self), *self);
                     assert(Self::mappings_shrunk(*old(self), *self));
