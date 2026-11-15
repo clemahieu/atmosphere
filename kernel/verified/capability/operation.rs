@@ -133,6 +133,64 @@ pub proof fn lemma_revoke_bounds_the_operations()
 {
 }
 
+/// L, the bound of a core's wait for the kernel's lock, in units of others' work: between the swap
+/// that queues a core and its holding, at most NUM_CPUS - 1 holdings end (QueueLock::acquire), each
+/// one entry within B. It bounds the wait in time only while every core keeps executing. See
+/// design/one-lock-bounded-steps/.
+pub spec const LOCK_WAIT_STEPS: int = (NUM_CPUS - 1) * ENTRY_STEPS;
+
+/// The steps of a run of entries, each made on its own counter.
+pub open spec fn total_steps(entries: Seq<nat>) -> nat
+    decreases entries.len(),
+{
+    if entries.len() == 0 {
+        0
+    } else {
+        entries.last() + total_steps(entries.drop_last())
+    }
+}
+
+/// A run of entries, each within B, makes at most B steps an entry.
+proof fn lemma_total_steps(entries: Seq<nat>)
+    requires
+        forall|i: int| 0 <= i < entries.len() ==> #[trigger] entries[i] <= ENTRY_STEPS,
+    ensures
+        total_steps(entries) <= entries.len() * ENTRY_STEPS,
+    decreases entries.len(),
+{
+    if entries.len() > 0 {
+        let rest = entries.drop_last();
+        assert forall|i: int| 0 <= i < rest.len() implies #[trigger] rest[i] <= ENTRY_STEPS by {
+            assert(rest[i] == entries[i]);
+        }
+        lemma_total_steps(rest);
+        assert(entries[entries.len() - 1] <= ENTRY_STEPS);
+        vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(
+            ENTRY_STEPS as int,
+            rest.len() as int,
+            1,
+        );
+    }
+}
+
+/// The holdings that end while a core waits for the lock, `granted - swapped` of them as
+/// QueueLock::acquire counts, each an entry within B, make at most L steps of others' work.
+pub proof fn lemma_lock_wait(swapped: nat, granted: nat, entries: Seq<nat>)
+    requires
+        swapped <= granted <= swapped + NUM_CPUS - 1,
+        entries.len() == granted - swapped,
+        forall|i: int| 0 <= i < entries.len() ==> #[trigger] entries[i] <= ENTRY_STEPS,
+    ensures
+        total_steps(entries) <= LOCK_WAIT_STEPS,
+{
+    lemma_total_steps(entries);
+    vstd::arithmetic::mul::lemma_mul_inequality(
+        entries.len() as int,
+        NUM_CPUS - 1,
+        ENTRY_STEPS as int,
+    );
+}
+
 pub const OPERATION_RETYPE: u64 = 1;
 pub const OPERATION_DERIVE: u64 = 2;
 pub const OPERATION_MOVE: u64 = 3;

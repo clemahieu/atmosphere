@@ -9020,6 +9020,7 @@ impl CapKernel {
     /// empty again, the process capability in slot 1, and a fourth free block past the third; the
     /// process's slot 3 is empty, and the flush epoch and the IOMMUs are as boot left them. See
     /// design/device-binding-under-the-space-capability/.
+    #[verifier::spinoff_prover]
     pub fn witness_process_binds_a_device(
         &mut self,
         root: usize,
