@@ -5,7 +5,7 @@
 //! it back, having first asked the value's serialised length within the buffer's room, as a composite
 //! does before it writes; the buffer then starts with exactly the bytes the parse consumed. Each
 //! reaches the accepting way of the combinator's `parse`, `length` and `serialize`; a choice's,
-//! through each alternative.
+//! through each alternative. Each `Length` integer's witness reaches its conversions.
 //! design/witness-per-way-an-operation-succeeds/.
 
 use vstd::prelude::*;
@@ -305,6 +305,99 @@ proof fn lemma_ethertypes_disjoint(c: &Choice<Tag, Tag>)
             assert(s.take(2)[0] != c.first.bytes@[0]);
         }
     }
+}
+
+/// Reads a run of three bytes behind a one-byte length of 3, borrowed from the input, and writes the
+/// length and the run back.
+pub fn witness_length_prefixed<'a>(input: &'a [u8], out: &mut [u8]) -> (r: (Option<(usize, &'a [u8])>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 4,
+        input[0] == 3,
+        old(out).len() >= 4,
+    ensures
+        r.0 is Some,
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(4) == input@.take(4),
+{
+    let c = LengthPrefixed::new(U8, Bytes { len: 3 });
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let (_, v) = parsed.unwrap();
+    let room = c.length(&v, out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(&v, out, 0, Tracked(&mut steps));
+    assert(out@.take(4) =~= input@.take(4));
+    (parsed, wrote, room)
+}
+
+/// `u8` as a length: its width and its largest count, and the count 3 made into a value and read
+/// back.
+pub fn witness_length_u8() -> (r: (usize, usize, usize))
+    ensures
+        r == (1usize, u8::MAX as usize, 3usize),
+{
+    let c: U8 = U8;
+    let w = c.width();
+    let m = c.max();
+    let t = c.of_len(3);
+    let n = c.len_of(&t);
+    (w, m, n)
+}
+
+/// `u16` as a length: its width and its largest count, and the count 3 made into a value and read
+/// back.
+pub fn witness_length_u16_be() -> (r: (usize, usize, usize))
+    ensures
+        r == (2usize, u16::MAX as usize, 3usize),
+{
+    let c: U16Be = U16Be;
+    let w = c.width();
+    let m = c.max();
+    let t = c.of_len(3);
+    let n = c.len_of(&t);
+    (w, m, n)
+}
+
+/// `u16` as a length: its width and its largest count, and the count 3 made into a value and read
+/// back.
+pub fn witness_length_u16_le() -> (r: (usize, usize, usize))
+    ensures
+        r == (2usize, u16::MAX as usize, 3usize),
+{
+    let c: U16Le = U16Le;
+    let w = c.width();
+    let m = c.max();
+    let t = c.of_len(3);
+    let n = c.len_of(&t);
+    (w, m, n)
+}
+
+/// `u32` as a length: its width and its largest count, and the count 3 made into a value and read
+/// back.
+pub fn witness_length_u32_be() -> (r: (usize, usize, usize))
+    ensures
+        r == (4usize, u32::MAX as usize, 3usize),
+{
+    let c: U32Be = U32Be;
+    let w = c.width();
+    let m = c.max();
+    let t = c.of_len(3);
+    let n = c.len_of(&t);
+    (w, m, n)
+}
+
+/// `u32` as a length: its width and its largest count, and the count 3 made into a value and read
+/// back.
+pub fn witness_length_u32_le() -> (r: (usize, usize, usize))
+    ensures
+        r == (4usize, u32::MAX as usize, 3usize),
+{
+    let c: U32Le = U32Le;
+    let w = c.width();
+    let m = c.max();
+    let t = c.of_len(3);
+    let n = c.len_of(&t);
+    (w, m, n)
 }
 
 } // verus!

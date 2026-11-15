@@ -18,9 +18,10 @@
 //! The combinators here: `U8`, `U16Be`, `U16Le`, `U32Be`, `U32Le`, `U64Be` and `U64Le`, the
 //! fixed-width unsigned integers in each byte order, assembled by shifts; and `Bytes`, a run of a
 //! length given as a parameter, whose value borrows the input; `Tag`, a constant run of bytes;
-//! `Pair`, one combinator then another, its value the pair of theirs; and `Choice`, the first of
-//! two disjoint alternatives that accepts. `Pair` and `Choice` are proven from their parts'
-//! properties for any parts. Nothing allocates.
+//! `Pair`, one combinator then another, its value the pair of theirs; `Choice`, the first of two
+//! disjoint alternatives that accepts; and `LengthPrefixed`, a length read with a `Length`, one of
+//! those integers, then another combinator over exactly the bytes it counts. `Pair`, `Choice` and
+//! `LengthPrefixed` are proven from their parts' properties for any parts. Nothing allocates.
 #![cfg_attr(not(test), no_std)]
 
 use vstd::prelude::*;
@@ -28,11 +29,13 @@ use vstd::prelude::*;
 mod bytes;
 mod choice;
 mod integer;
+mod length;
 mod pair;
 mod tag;
 pub use bytes::*;
 pub use choice::*;
 pub use integer::*;
+pub use length::*;
 pub use pair::*;
 pub use tag::*;
 #[cfg(refused)]

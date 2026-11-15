@@ -6,6 +6,12 @@
 pub mod bytes;
 pub mod choice_first;
 pub mod choice_second;
+pub mod length_prefixed;
+pub mod length_u16_be;
+pub mod length_u16_le;
+pub mod length_u32_be;
+pub mod length_u32_le;
+pub mod length_u8;
 pub mod pair;
 pub mod tag;
 pub mod u16_be;
