@@ -181,4 +181,26 @@ pub fn witness_bytes<'a>(input: &'a [u8], out: &mut [u8]) -> (r: (Option<(usize,
     (parsed, wrote, room)
 }
 
+/// Reads a byte and then a run of two bytes as a pair, the run borrowed from the input, and writes
+/// the pair back.
+pub fn witness_pair<'a>(input: &'a [u8], out: &mut [u8]) -> (r: (Option<(usize, (u8, &'a [u8]))>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 3,
+        old(out).len() >= 3,
+    ensures
+        r.0 is Some,
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(3) == input@.take(3),
+{
+    let c: Pair<U8, Bytes> = Pair { first: U8, second: Bytes { len: 2 } };
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let (_, v) = parsed.unwrap();
+    let room = c.length(&v, out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(&v, out, 0, Tracked(&mut steps));
+    assert(out@.take(3) =~= input@.take(3));
+    (parsed, wrote, room)
+}
+
 } // verus!

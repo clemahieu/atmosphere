@@ -4,6 +4,7 @@
 //! witness's requires. tools/check-throwaways.py writes them and expects Verus to refuse each;
 //! compiled only under cfg(throwaway). design/witness-per-way-an-operation-succeeds/.
 pub mod bytes;
+pub mod pair;
 pub mod u16_be;
 pub mod u16_le;
 pub mod u32_be;
