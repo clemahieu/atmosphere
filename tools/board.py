@@ -214,50 +214,9 @@ def main(argv):
         return 1
 
 
-def boot_log():
-    """The serial log of a boot on the PC that passes the boot log check."""
-    return (" INFO root holds 2 untyped and 1 frames\x1b[0m\n INFO root slot 1: process base 0x8000\n"
-            " INFO root slot 2: thread\n INFO root slot 3: console\n"
-            " INFO root slot 4: power base 0x2000000001000 order 0 rights 0x0\n"
-            + "".join(f" INFO root slot {5 + c}: core base {0x2000000002000 + c * 0x1000:#x} order 0 rights 0x0\n"
-                      for c in range(32))
-            + " INFO root slot 37: untyped base 0x40000000 order 18 rights 0x8\n"
-            "\x1b[34m INFO root slot 38: untyped\x1b[0m\n"
-            " INFO root slot 129: frame order 0\n"
-            "dom0 freed frame retyped\n"
-            "dom0 process retyped\n"
-            "thread best 31000 before 57405\n"
-            "thread mean 33000 before 59384\n"
-            "dom0 threads retyped\n"
-            "dom0 thread registers set\n"
-            "dom0 thread placed\n"
-            "dom0 thread switched\n"
-            "dom0 thread ran on core 1\n"
-            "dom0 invoked 90000 times on core 0\n"
-            "thread invoked 4096 times on core 1\n"
-            "dom0 unmaps a page core 1 wrote\n"
-            "\x1b[34m INFO CPU 1 acknowledged flush epoch 812\x1b[0m\n"
-            "dom0 freed the page core 1 wrote\n"
-            "dom0 thread started\n"
-            "dom0 counted 41000000 in 3 turns\n"
-            "thread counted 39000000 in 3 turns\n"
-            "dom0 thread suspended\n"
-            "dom0 thread killed on core 1\n"
-            "core 1 lag 2000 counts\n"
-            "dom0 process destroyed\n"
-            "dom0 eager backed 40\n"
-            "dom0 heap allocator held\n"
-            "dom0 slot checks held\n"
-            "dom0 capability done\n"
-            "\x1b[34m INFO CPU 0 syscall stack 0x1000\x1b[0m\n"
-            " INFO CPU 1 idle, syscall stack 0x2000\n"
-            "flush IPI acknowledged by CPU 1\n"
-            "lock contended by 2 cores: pair intact at 400000\n")
-
-
 def board_output():
     """A board run's output: the runner's lines, the serial log of a boot on virt, and QEMU's exit."""
-    serial = boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
+    serial = check_boot_log.boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
     return (f"host: orangepi5\nkvm: accel kvm\nguest: started\n{serial}"
             "\x1b[34m INFO The system is shutting down...\x1b[0m\nqemu: exit 0\n")
 
@@ -287,7 +246,10 @@ class Tests(unittest.TestCase):
         return str(caught.exception)
 
     def test_a_run_that_powered_off_after_every_check_passes(self):
-        self.assertIn("2 to 3 GiB as one 1G untyped", board_run_accepted(0, board_output()))
+        held = board_run_accepted(0, board_output())
+        self.assertIn("2 to 3 GiB as one 1G untyped", held)
+        self.assertIn("own thread's consumed cycles line", held)
+        self.assertIn("thread pointer line", held)
 
     def test_a_run_still_on_at_the_timeout_fails(self):
         output = board_output().replace("qemu: exit 0\n", "qemu: still running after 60 s\n")
