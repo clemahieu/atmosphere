@@ -894,6 +894,35 @@ impl CapKernel {
             assert(self.tables.roots@.dom().contains(q));
         }
     }
+
+    /// Boot places the root process's own process capability with control at `ROOT_PROCESS_SLOT`, so
+    /// the root process starts sealed and holding its own space there.
+    pub proof fn lemma_booted_names_own_space(
+        &self,
+        root: usize,
+        process: usize,
+        leaf: usize,
+        frames: usize,
+        t: usize,
+        free: Seq<(usize, usize)>,
+        image: Seq<ImageRun>,
+        untyped: usize,
+        frame: usize,
+        present: Seq<bool>,
+        kernel_root: usize,
+    )
+        requires
+            self.booted(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root),
+        ensures
+            self.sealed(process),
+            self.table_view(process).contains_key(ROOT_PROCESS_SLOT),
+            crate::capability::caller::view_writes_space(self.table_view(process)[ROOT_PROCESS_SLOT]),
+            self.table_view(process)[ROOT_PROCESS_SLOT].base == process,
+    {
+        self.lemma_booted_sealed(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root);
+        self.lemma_table_view(process, ROOT_PROCESS_SLOT);
+        assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+    }
 }
 
 } // verus!

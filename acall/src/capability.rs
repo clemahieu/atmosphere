@@ -13,7 +13,7 @@ use verified::capability::operation::*;
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::spec_position;
 #[cfg(verus_keep_ghost)]
-use verified::capability::rely::reaches_through;
+use verified::capability::rely::{reaches_through, same_cap};
 
 use crate::step::*;
 
@@ -36,6 +36,14 @@ pub fn move_cap(caller: &mut Tracked<Caller>, from: u64, to: u64) -> (out: Outco
         !reaches_through(to) ==> (old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root())),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                && ((!reaches_through(to) && (spec_position(to) is None || spec_position(to)->0.index != s))
+                    || (!reaches_through(from) && spec_position(from) is Some
+                        && slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), spec_position(from)->0.index))
+                    || final(caller)@.entry().table_view(final(caller)@.root()).contains_key(s))
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -51,6 +59,38 @@ pub fn move_cap(caller: &mut Tracked<Caller>, from: u64, to: u64) -> (out: Outco
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         if !reaches_through(to) {
             CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        }
+        if pre.kernel().sealed(pre.root()) {
+            assert forall|s: usize|
+                #[trigger] slot_names_own_space(pre.kernel(), pre.root(), s)
+                    && ((!reaches_through(to) && (spec_position(to) is None || spec_position(to)->0.index != s))
+                        || (!reaches_through(from) && spec_position(from) is Some
+                            && slot_names_own_space(pre.kernel(), pre.root(), spec_position(from)->0.index))
+                        || entry.table_view(pre.root()).contains_key(s))
+                implies slot_names_own_space(caller@.kernel(), pre.root(), s) by {
+                lemma_rely_keeps_slot_names_own_space(pre.kernel(), entry, pre.root(), s);
+                assert(caller@.kernel().table_view(pre.root()) == mid.table_view(pre.root()));
+                if mid.table_view(pre.root()).contains_key(s) {
+                    if out == status_only(STATUS_OK) {
+                        let f = spec_position(from)->0;
+                        let d = spec_position(to)->0;
+                        let src = entry.view_table_at(pre.root(), f.through)->0;
+                        let dst = entry.view_table_at(pre.root(), d.through)->0;
+                        if dst == pre.root() && d.index == s {
+                            if entry.table_view(pre.root()).contains_key(s) {
+                                entry.lemma_table_view(pre.root(), s);
+                            } else {
+                                assert(!reaches_through(from));
+                                assert(src == pre.root());
+                                lemma_rely_keeps_slot_names_own_space(pre.kernel(), entry, pre.root(), f.index);
+                            }
+                        } else {
+                            assert(entry.table_view(pre.root()).contains_key(s));
+                            assert(same_cap(mid.table_view(pre.root())[s], entry.table_view(pre.root())[s]));
+                        }
+                    }
+                }
+            };
         }
         if pre.pages_wf() && !reaches_through(to) {
             lemma_entry_agrees(pre, caller@);
@@ -78,6 +118,10 @@ pub fn delete(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -92,6 +136,11 @@ pub fn delete(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         CapKernel::lemma_delete_contract(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        if pre.kernel().sealed(pre.root()) {
+            assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
+                ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
+            lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+        }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
@@ -119,6 +168,10 @@ pub fn revoke(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -133,6 +186,11 @@ pub fn revoke(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         CapKernel::lemma_revoke_contract(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        if pre.kernel().sealed(pre.root()) {
+            assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
+                ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
+            lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+        }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
@@ -161,6 +219,10 @@ pub fn destroy(caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -175,6 +237,11 @@ pub fn destroy(caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
         CapKernel::lemma_destroy_contract(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        if pre.kernel().sealed(pre.root()) {
+            assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
+                ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
+            lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+        }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
@@ -202,6 +269,10 @@ pub fn place(caller: &mut Tracked<Caller>, slot: u64, core: u64, priority: u64) 
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -216,6 +287,11 @@ pub fn place(caller: &mut Tracked<Caller>, slot: u64, core: u64, priority: u64) 
         CapKernel::lemma_place_contract(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        if pre.kernel().sealed(pre.root()) {
+            assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
+                ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
+            lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+        }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
@@ -243,6 +319,10 @@ pub fn start(caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -257,6 +337,11 @@ pub fn start(caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
         CapKernel::lemma_start_contract(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        if pre.kernel().sealed(pre.root()) {
+            assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
+                ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
+            lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+        }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
@@ -285,6 +370,10 @@ pub fn suspend(caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -299,6 +388,11 @@ pub fn suspend(caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
         CapKernel::lemma_suspend_contract(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        if pre.kernel().sealed(pre.root()) {
+            assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
+                ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
+            lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+        }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
@@ -327,6 +421,10 @@ pub fn read_registers(caller: &mut Tracked<Caller>, slot: u64, index: u64) -> (o
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -341,6 +439,11 @@ pub fn read_registers(caller: &mut Tracked<Caller>, slot: u64, index: u64) -> (o
         CapKernel::lemma_read_registers_contract(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        if pre.kernel().sealed(pre.root()) {
+            assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
+                ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
+            lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+        }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
@@ -370,6 +473,10 @@ pub fn write_registers(caller: &mut Tracked<Caller>, slot: u64, index: u64, word
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
+        forall|s: usize|
+            old(caller)@.kernel().sealed(old(caller)@.root())
+                && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     no_unwind
 {
     let ghost pre = caller@;
@@ -384,6 +491,11 @@ pub fn write_registers(caller: &mut Tracked<Caller>, slot: u64, index: u64, word
         CapKernel::lemma_write_registers_contract(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        if pre.kernel().sealed(pre.root()) {
+            assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
+                ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
+            lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+        }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);

@@ -1488,6 +1488,9 @@ impl CapKernel {
             final(self).threads.records@[t].value().state == (ThreadState::Running { core: 0 }),
             final(self).threads.records@[t].value().process == Some(process),
             witness_entered(*old(self), *final(self), process, t),
+            final(self).table_view(process).contains_key(ROOT_PROCESS_SLOT),
+            crate::capability::caller::view_writes_space(final(self).table_view(process)[ROOT_PROCESS_SLOT]),
+            final(self).table_view(process)[ROOT_PROCESS_SLOT].base == process,
             final(self).list.is_child((leaf@ + ROOT_CORE_SLOT) as usize, placement_node(t)),
             final(self).list.nodes@[leaf@ as int].depth == 1,
             final(self).list.nodes@[leaf@ + ROOT_CORE_SLOT].depth == 1,
@@ -1552,6 +1555,10 @@ impl CapKernel {
             assert forall|d: int| 0 < d < NUM_CPUS implies #[trigger] s3.cores@[d] == s0.cores@[d] by {
                 assert(s3.cores@[d] == s2.cores@[d]);
             }
+            assert(s1.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            assert(s3.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            s3.lemma_table_view(process, ROOT_PROCESS_SLOT);
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
         }
     }
 

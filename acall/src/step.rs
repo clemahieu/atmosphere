@@ -26,7 +26,7 @@ use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::kernel::TlbEntry;
 #[cfg(verus_keep_ghost)]
-use verified::capability::caller::view_writes_space;
+use verified::capability::caller::{derived_view, view_narrows, view_writes_space, SlotView};
 #[cfg(verus_keep_ghost)]
 use verified::capability::link::tree_of;
 #[cfg(verus_keep_ghost)]
@@ -34,6 +34,8 @@ use verified::capability::mapping::{space_mapping, SpacePath};
 use verified::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use verified::capability::reach::Right;
+#[cfg(verus_keep_ghost)]
+use verified::capability::rely::same_cap;
 #[cfg(verus_keep_ghost)]
 use verified::capability::view::right_bit;
 #[cfg(verus_keep_ghost)]
@@ -331,6 +333,74 @@ pub proof fn lemma_returned_agrees(post: Caller, mid: CapKernel, c: int)
     ensures
         post.pages_wf(),
 {
+}
+
+/// Other callers' steps keep every slot that names the caller's own space naming its own space
+/// while the caller's process stays sealed: CapKernel::rely removes slots only and leaves every
+/// surviving slot's kind, base and rights unchanged.
+pub proof fn lemma_rely_keeps_slot_names_own_space(pre: CapKernel, post: CapKernel, root: usize, slot: usize)
+    requires
+        pre.sealed(root),
+        CapKernel::rely(pre, post, root),
+        slot_names_own_space(pre, root, slot),
+    ensures
+        slot_names_own_space(post, root, slot),
+{
+    if post.table_view(root).contains_key(slot) {
+        assert(same_cap(post.table_view(root)[slot], pre.table_view(root)[slot]));
+    }
+}
+
+/// Across the rely to `entry` and an operation leaving only surviving slots with unchanged
+/// capability fields from `entry` to `post`, every slot naming the caller's own space in `pre` still
+/// does in `post`.
+pub proof fn lemma_shrunk_view_keeps_slot_names_own_space(pre: CapKernel, entry: CapKernel, post: CapKernel, root: usize)
+    requires
+        pre.sealed(root),
+        CapKernel::rely(pre, entry, root),
+        forall|j: usize|
+            #[trigger] post.table_view(root).contains_key(j)
+                ==> entry.table_view(root).contains_key(j) && same_cap(post.table_view(root)[j], entry.table_view(root)[j]),
+    ensures
+        forall|s: usize| #[trigger] slot_names_own_space(pre, root, s) ==> slot_names_own_space(post, root, s),
+{
+    assert forall|s: usize| #[trigger] slot_names_own_space(pre, root, s) implies slot_names_own_space(post, root, s) by {
+        lemma_rely_keeps_slot_names_own_space(pre, entry, root, s);
+        if post.table_view(root).contains_key(s) {
+            assert(same_cap(post.table_view(root)[s], entry.table_view(root)[s]));
+        }
+    }
+}
+
+/// Deriving from a capability that writes no space other than `root` yields a capability that writes
+/// no space other than `root`.
+pub(crate) proof fn lemma_derived_keeps_slot_names_own_space(v: SlotView, rights: u32, base: usize, order: u8, parent: usize, root: usize)
+    requires
+        view_narrows(v, rights, base, order),
+        view_writes_space(v) ==> v.base == root,
+    ensures
+        ({
+            let child = derived_view(v, rights, base, order, parent);
+            view_writes_space(child) ==> child.base == root
+        }),
+{
+    let child = derived_view(v, rights, base, order, parent);
+    if view_writes_space(child) {
+        let vr = v.rights;
+        let rw = right_bit(Right::Write);
+        let rc = right_bit(Right::Control);
+        if child.kind is Space {
+            assert(vr & rw != 0) by (bit_vector)
+                requires
+                    rights & !vr == 0u32,
+                    rights & rw != 0u32;
+        } else {
+            assert(vr & rc != 0) by (bit_vector)
+                requires
+                    rights & !vr == 0u32,
+                    rights & rc != 0u32;
+        }
+    }
 }
 
 /// Claims the token for the page at `p` of the caller's own space, saying no frame is mapped there. The
