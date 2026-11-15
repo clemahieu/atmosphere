@@ -2,7 +2,7 @@
 
 # Design decisions
 
-54 records: 54 active, 0 superseded.
+55 records: 55 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -115,6 +115,9 @@ in `revisit if` what would make it worth reopening.
 - **[region-map-owns-the-address-space](./region-map-owns-the-address-space/DECISION.md)** (2026-11-15): Between the kernel, which decides what can be mapped, and the heap, which carves pages it was given, a region map says which part of a program owns which addresses: built once at entry from what the kernel reports empty, it holds a tracked token per page saying which frame is mapped there or none, acall maps and unmaps in the caller's own space only against such a token, and the proof holds for a process whose code and controller keep four rules, a process another process built being sealed once its creator moves the capabilities naming it into it.
   - *confidence:* The hole is measured: a throwaway against the tree verifies false, below. That page tokens close it was checked on a model outside the tree whose kernel is a bare map, not on the tree. What the tokens need of the kernel is proven: that a call returns with nothing stale on its core, from the kernel's entry through acall's step, and that other callers only remove a sealed process's entries and raise no count of its blocks, as clauses of the kernel's rely with a lemma for each kind of step. Where the proof stops, the four rules, is the human's choice.
   - *revisit if:* The kernel comes to keep a revoked entry claimed until its owner unmaps it, which would let the kernel's table be the only record and the tokens go; or several threads of one process must map at once, which one authority per process does not serve; or a program that keeps the four rules is found whose memory proof still fails.
+- **[register-convention-of-an-assembly-leaf](./register-convention-of-an-assembly-leaf/DECISION.md)** (2026-11-15): An assembly leaf's register convention, which registers carry each value and which survive it, comes from a published ABI or a design record's table, is cited in the leaf's comments, and is held by a dom0 boot check on each target that puts a distinct value in every register the convention keeps, runs the leaf and compares. It takes no voucher and no list entry. A leaf no verified code calls lands with no assumed specification.
+  - *confidence:* A judgement: a check that sets and compares every kept register observes the whole of what the convention says survives, but only on the paths it drives, only on the two targets the gate boots, and not that a clobbered register leaks nothing.
+  - *revisit if:* Verus or another tool the project runs comes to check inline assembly against a register convention, which would make the convention a proof rather than a test; or a leaf's convention depends on state a dom0 check cannot set and observe, such as a register only a higher privilege level reads.
 - **[review-is-a-leaf-of-its-epic](./review-is-a-leaf-of-its-epic/DECISION.md)** (2026-11-15): The skeptic pass that an epic closes on is its own issue: a task labelled review under the epic, waiting on the epic's other children; one review is one pass, a refuting review files a repeat, and the epic closes when its newest review passed after everything else below it closed. An epic is never claimed for a pass.
   - *confidence:* A judgement about structure. Coverage is the same by construction: the rule for which epic needs a pass is unchanged, and tools/reviews.py refuses an epic whose review missed a later closing. Cost per pass is not expected to change.
   - *revisit if:* The tracker lets a task wait on an epic, so a review could be written ahead for every epic and not only at a split; or reviews written at a split mostly run early or are withdrawn, counted as close reasons starting `withdrawn` against reviews closed.
@@ -177,9 +180,9 @@ in `revisit if` what would make it worth reopening.
 
 A view of the lists above. Nothing is reachable only through a tag.
 
-- `abi`: arch-module, gs-base-swapped-at-ring-3, one-kernel-instance, synthetic-benchmark-suite, syscall-abi-in-registers, thread-pointer-cleared-on-switch
+- `abi`: arch-module, gs-base-swapped-at-ring-3, one-kernel-instance, register-convention-of-an-assembly-leaf, synthetic-benchmark-suite, syscall-abi-in-registers, thread-pointer-cleared-on-switch
 - `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
-- `arch`: who-vouches-for-an-unproven-claim
+- `arch`: register-convention-of-an-assembly-leaf, who-vouches-for-an-unproven-claim
 - `bench`: synthetic-benchmark-suite
 - `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, flush-on-a-change-of-core-share, invoked-arm-is-the-operation-postcondition, ipc-with-reply-object, notification-word-reserves-the-waiter-bit, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
@@ -219,7 +222,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
 - `tools`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, refused-claim-per-way, witness-per-way-an-operation-succeeds
 - `tracker`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
-- `trusted-base`: boundary-into-verified-code-counted, region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
+- `trusted-base`: boundary-into-verified-code-counted, region-map-owns-the-address-space, register-convention-of-an-assembly-leaf, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
 - `verified`: arch-module, boundary-into-verified-code-counted, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-on-a-change-of-core-share, flush-without-waiting, heap-size-classes, invoked-arm-is-the-operation-postcondition, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, refused-claim-per-way, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, wire-combinators-written-here, witness-per-way-an-operation-succeeds
 - `virtualization`: vmm-over-svm
