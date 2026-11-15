@@ -1,6 +1,6 @@
 ---
 title: "An arm of invoked is the operation's postcondition, one predicate both sides call"
-date: 2026-11-14
+date: 2026-11-15
 status: active
 tags: [capability, verified, entry]
 one_line: "Each arm of invoked carries the postcondition of the operation the entry calls: the arm and the ensures call the same predicates, and a source check holds the pairing."
@@ -37,7 +37,7 @@ A conjunct with two calls, a comparison of fields, or a quantifier is not carrie
 
 The spec function decodes the frame into the operation's arguments and the `Outcome` into the operation's result. Where one status stands for two results, as revoke's `Refused` and `Exhausted` both return `STATUS_REFUSED`, the arm is a disjunction of two calls of the same predicate. The ensures keeps the operation's own result.
 
-**The check.** `tools/check-invoked-arms.py` reads the tree and takes no list of operations. It prints one line `path:function:conjunct` for each conjunct it does not count as carried, the conjunct's text with whitespace collapsed, and exits 0 when it prints nothing. A gate step named `invoked arms` runs it on x86_64 and fails otherwise. The pairing comes from the matches in `invoked` and `dispatch`, so a new arm is checked as soon as both name it.
+**The check.** `tools/check-invoked-arms.py` reads the tree and takes no list of operations. A call of `Name` carries nothing when a spec fn named `Name` anywhere in the tree is marked `#[verifier::opaque]`, so a conjunct whose shared predicate is opaque is printed. The check reads the name the conjunct calls, not the predicate's body: an open predicate that calls an opaque helper carries, as the reasoning below allows. It prints one line `path:function:conjunct` for each conjunct it does not count as carried, the conjunct's text with whitespace collapsed, and exits 0 when it prints nothing. A gate step named `invoked arms` runs it on x86_64 and fails otherwise. The pairing comes from the matches in `invoked` and `dispatch`, so a new arm is checked as soon as both name it.
 
 `lemma_entry_reaches_` shows the status each way, as `design/witness-per-way-an-operation-succeeds/` point 3 asks. A stronger arm keeps that lemma provable. The lemma is not the check: its ensures can drop a field and still verify.
 
@@ -65,5 +65,4 @@ The entry's step bound is `dispatch`'s and `enter`'s, so the operation's `steps`
 - What an operation does when the flush epoch is at its limit. The arm carries whatever the ensures says about that case.
 - Whether repeating a call that returned again reaches ok, and within what bound.
 - `invoke_*`'s conjuncts beside the `spec_*` call: the wrapper's step bound, `wf()`, and `cores` unchanged. A caller of `invoked` does not get `cores` unchanged from the arm.
-- A field hidden by marking the shared predicate opaque. The record forbids the attribute; the check reads names.
 - Operations the entry does not call. Their postconditions become the entry's when an arm calls them.

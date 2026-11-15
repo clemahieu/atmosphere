@@ -30,8 +30,11 @@ old(self).Name(...) or ret == self.Name(...) and the spec function's value depen
 Name. The value depends on a call when the call is part of the expression the function returns,
 including a conjunct of a disjunct of that expression, or when it is in a let whose name that
 expression uses. A call that occurs only in a let the value does not use, such as let _x =
-Name(...), does not: the binding is thrown away. A field comparison, a quantifier or two calls is
-not carried.
+Name(...), does not: the binding is thrown away. A call of Name carries nothing when a spec fn
+named Name anywhere in the sources is marked #[verifier::opaque]: a caller of invoked would not see
+its body without a reveal. An open predicate whose body calls an opaque helper is not that case;
+the check reads the name the conjunct calls and not what its body calls. A field comparison, a
+quantifier or two calls is not carried.
 
 The check prints one line path:function:conjunct for each conjunct it does not count as carried,
 the conjunct with its whitespace collapsed, and the path from the repository root. It prints
@@ -65,6 +68,12 @@ RESULT = re.compile(r"^ret == (?:old\(self\)\.|self\.)?([A-Za-z_]\w*)\s*\(")
 SELF_CALL = re.compile(r"\bself\.(\w+)\s*\(")
 SPEC_CALL = re.compile(r"\b(spec_\w+)\s*\(")
 POST_UNCHANGED = re.compile(r"post == pre(?!\s*\.)")
+# A spec fn marked opaque, with any other attributes and qualifiers between the mark and `fn`.
+OPAQUE = re.compile(
+    r"#\[\s*verifier\s*(?:::\s*opaque|\(\s*opaque\s*\))\s*\]"
+    r"(?:\s*#\[[^\]]*\])*"
+    r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:open|closed|uninterp)\s+)?spec\s+fn\s+([A-Za-z_]\w*)"
+)
 
 # A method of impl CapKernel. `ensures` is the clause text, `body` the brace block, `full` from
 # `fn` through the body, all with comments and string literals blanked.
@@ -560,10 +569,17 @@ def strip_implication(text):
     return text
 
 
-def carried(conjunct, spec_text, arm_text):
+def opaque_names(sources):
+    """The names of the spec fns marked #[verifier::opaque] in the sources, which are (path, masked
+    text) pairs."""
+    return {name for _, text in sources for name in OPAQUE.findall(text)}
+
+
+def carried(conjunct, spec_text, arm_text, opaque=frozenset()):
     """Whether one ensures conjunct is carried by the arm and its spec function, or is one of the
     two shapes the record skips. A call carries it only where the value depends on the call. A let
-    binding the value does not use is not such a place."""
+    binding the value does not use is not such a place, and a call of a name in `opaque` carries
+    nothing: a caller would not see the predicate's body without a reveal."""
     if re.search(r"\bsteps\b", conjunct):
         return True
     if conjunct in WF:
@@ -572,10 +588,10 @@ def carried(conjunct, spec_text, arm_text):
     if conjunct in UNCHANGED and (unchanged(arm_value) or unchanged(spec_value)):
         return True
     name = result_call(conjunct)
-    if name is not None and calls(spec_value, name):
+    if name is not None and name not in opaque and calls(spec_value, name):
         return True
     name = one_call(re.sub(r"^#\[trigger\]\s*", "", strip_implication(conjunct)))
-    return name is not None and calls(spec_value, name)
+    return name is not None and name not in opaque and calls(spec_value, name)
 
 
 def find_operation_match(body):
@@ -767,6 +783,7 @@ def lines_of(sources):
     """Each uncarried conjunct in the sources, as path:function:conjunct. `sources` is (path, masked
     text) pairs."""
     index = index_of(sources)
+    opaque = opaque_names(sources)
     lines = []
     for spec_name, arm, ops in pairings(index):
         spec = index.get(spec_name)
@@ -776,7 +793,7 @@ def lines_of(sources):
             if fn is None or fn.kind != "exec_pub":
                 continue
             for conjunct in split_conjuncts(fn.ensures):
-                if not carried(conjunct, spec_text, arm):
+                if not carried(conjunct, spec_text, arm, opaque):
                     lines.append(f"{fn.path}:{name}:{conjunct}")
     return lines
 
@@ -1075,6 +1092,44 @@ class Tests(unittest.TestCase):
         source = CARRIED.replace(
             "            *final(self) == *old(self),\n",
             "            final(self) == old(self),\n",
+        )
+        self.assertEqual(self.lines(source), [])
+
+    def test_a_shared_predicate_marked_opaque_is_not_carried(self):
+        source = CARRIED.replace(
+            "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
+            "    #[verifier::opaque]\n"
+            "    #[verifier::spinoff_prover]\n"
+            "    pub open spec fn frame_retyped(pre: Self, post: Self, root: usize) -> bool {\n"
+            "        post.flush_epoch == pre.flush_epoch\n"
+            "    }\n"
+            "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
+        )
+        self.assertEqual(
+            self.lines(source),
+            ["op.rs:retype_frame:ret ==> Self::frame_retyped(old(self), final(self), root)"],
+        )
+
+    def test_a_result_call_of_an_opaque_free_predicate_is_not_carried(self):
+        source = CARRIED + (
+            "#[verifier(opaque)]\n"
+            "pub closed spec fn can_retype_frame(k: CapKernel, root: usize) -> bool {\n"
+            "    k.free > 0\n"
+            "}\n"
+        )
+        self.assertEqual(self.lines(source), ["op.rs:retype_frame:ret == old(self).can_retype_frame(root)"])
+
+    def test_an_open_predicate_that_calls_an_opaque_helper_is_carried(self):
+        source = CARRIED.replace(
+            "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
+            "    pub open spec fn frame_retyped(pre: Self, post: Self, root: usize) -> bool {\n"
+            "        post.flush_epoch == pre.flush_epoch && Self::frame_retyped_fields(pre, post)\n"
+            "    }\n"
+            "    #[verifier::opaque]\n"
+            "    pub open spec fn frame_retyped_fields(pre: Self, post: Self) -> bool {\n"
+            "        post.blocks == pre.blocks\n"
+            "    }\n"
+            "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
         )
         self.assertEqual(self.lines(source), [])
 
