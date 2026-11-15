@@ -26,12 +26,18 @@ use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::kernel::TlbEntry;
 #[cfg(verus_keep_ghost)]
+use verified::capability::caller::view_writes_space;
+#[cfg(verus_keep_ghost)]
 use verified::capability::link::tree_of;
 #[cfg(verus_keep_ghost)]
 use verified::capability::map::address_path;
 #[cfg(verus_keep_ghost)]
 use verified::capability::mapping::{space_mapping, SpacePath};
 use verified::capability::operation::Outcome;
+#[cfg(verus_keep_ghost)]
+use verified::capability::reach::Right;
+#[cfg(verus_keep_ghost)]
+use verified::capability::view::right_bit;
 #[cfg(verus_keep_ghost)]
 use verified::define::PAGE_SZ;
 #[cfg(verus_keep_ghost)]
@@ -90,6 +96,53 @@ impl PageToken {
     pub closed spec fn id(self) -> Loc {
         self.token.id()
     }
+
+    /// The authority holds what this token says.
+    pub proof fn agree(tracked &self, tracked caller: &Caller)
+        requires
+            self.id() == caller.pages_id(),
+        ensures
+            caller.pages().contains_key(self.path()),
+            caller.pages()[self.path()] == self.frame(),
+    {
+        self.token.agree(&caller.pages);
+    }
+}
+
+/// Sets what the token says, and the authority with it: the own-space calls, once a step has changed
+/// the entry at the token's page.
+pub(crate) proof fn set_page(tracked caller: &mut Caller, tracked token: &mut PageToken, frame: Option<usize>)
+    requires
+        old(token).id() == old(caller).pages_id(),
+    ensures
+        final(caller).kernel() == old(caller).kernel(),
+        final(caller).entry() == old(caller).entry(),
+        final(caller).root() == old(caller).root(),
+        final(caller).history() == old(caller).history(),
+        final(caller).start() == old(caller).start(),
+        final(caller).pages_id() == old(caller).pages_id(),
+        final(caller).pages() == old(caller).pages().insert(old(token).path(), frame),
+        final(token).path() == old(token).path(),
+        final(token).id() == old(token).id(),
+        final(token).frame() == frame,
+{
+    token.token.update(&mut caller.pages, frame);
+    assert(caller.pages@ =~= old(caller).pages@.insert(old(token).path(), frame));
+}
+
+/// The slot at `slot` of the table at `root` in `k`, while it holds a capability that writes a space,
+/// holds one naming the space keyed at `root`, the process's own. Other callers only take slots from a
+/// sealed process's table (CapKernel::rely), so it stays true across their steps.
+pub open spec fn slot_names_own_space(k: CapKernel, root: usize, slot: usize) -> bool {
+    let v = k.table_view(root);
+    v.contains_key(slot) && view_writes_space(v[slot]) ==> v[slot].base == root
+}
+
+/// The slot at `from` of the table at `root` in `k`, while it holds a frame capability, holds one with
+/// the write right, so an entry mapping its page is writable, as a page token naming the page needs.
+pub open spec fn frame_slot_writes(k: CapKernel, root: usize, from: usize) -> bool {
+    let v = k.table_view(root);
+    v.contains_key(from) && v[from].kind is Frame ==> v[from].rights & right_bit(Right::Write) != 0
 }
 
 /// The path of the large entry that would cover the page at `p`: the same path with no level-1 index.

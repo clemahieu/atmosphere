@@ -13,13 +13,15 @@ use verified::capability::operation::*;
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::*;
 #[cfg(verus_keep_ghost)]
-use verified::capability::rely::reaches_through;
+use verified::capability::rely::{reaches_through, same_cap};
+#[cfg(verus_keep_ghost)]
+use verified::capability::caller::view_frame;
 #[cfg(verus_keep_ghost)]
 use verified::capability::link::tree_of;
 #[cfg(verus_keep_ghost)]
-use verified::capability::map::address_path;
+use verified::capability::map::{address_path, frame_map_entry};
 #[cfg(verus_keep_ghost)]
-use verified::capability::mapping::space_mapping;
+use verified::capability::mapping::{space_mapping, SpacePath};
 
 use crate::step::*;
 
@@ -367,6 +369,175 @@ pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (o
             lemma_space_kept_agrees(entry, mid, pre.root(), pre.pages());
             lemma_returned_agrees(caller@, mid, c);
         }
+    }
+    out
+}
+
+/// Maps the page at offset `page` of the frame capability at index `from` of the caller's table into
+/// the level 1 entry the address `va` names in the caller's own space, through the space capability at
+/// index `slot`, against the token for that page, which says no frame is mapped there. As map does,
+/// with level 1: on OK the token, and the authority with it, names the frame's page; refused, the token
+/// is as it was. The page tokens stay in agreement with the space either way. The contract reads the
+/// authority through the caller's pages and pages_id alone, so it is stated over that part of the
+/// caller by itself.
+pub fn map_own(caller: &mut Tracked<Caller>, token: &mut Tracked<PageToken>, slot: u64, va: u64, from: u64, page: u64) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+        old(caller)@.pages_wf(),
+        old(token)@.id() == old(caller)@.pages_id(),
+        old(token)@.path() == address_path(va),
+        old(token)@.frame() is None,
+        slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), slot as usize),
+        frame_slot_writes(old(caller)@.kernel(), old(caller)@.root(), from as usize),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+        final(caller)@.start() == old(caller)@.start(),
+        final(caller)@.pages_id() == old(caller)@.pages_id(),
+        final(caller)@.pages() == old(caller)@.pages().insert(final(token)@.path(), final(token)@.frame()),
+        final(caller)@.pages_wf(),
+        final(token)@.id() == old(token)@.id(),
+        final(token)@.path() == old(token)@.path(),
+        out.status == STATUS_OK ==> final(token)@.frame()
+            == Some(view_frame(old(caller)@.kernel().table_view(old(caller)@.root())[from as usize], page as usize)),
+        out.status != STATUS_OK ==> final(token)@ == old(token)@,
+        CapKernel::map_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, 1, from as usize, page as usize, out),
+        returned_on(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+    no_unwind
+{
+    let ghost pre = caller@;
+    proof {
+        token.borrow().agree(caller.borrow());
+    }
+    let out = step(caller, OPERATION_MAP, slot, va, 1, from, page, 0);
+    proof {
+        let entry = caller@.entry();
+        let root = pre.root();
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
+            carries(frame, OPERATION_MAP, slot, va, 1, from, page, 0)
+                && #[trigger] entered(entry, caller@.kernel(), root, frame, out, c, mid);
+        lemma_entered(entry, caller@.kernel(), root, frame, out, c, mid);
+        lemma_number_names_one_operation(Operation::Map);
+        CapKernel::lemma_map_contract(entry, mid, root, frame, out);
+        lemma_returned_map_fields(entry, mid, caller@.kernel(), c, root, slot as usize, va, 1, from as usize, page as usize);
+        CapKernel::lemma_own_step_keeps_record(entry, mid, root, frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(entry, mid, root, frame, out);
+        lemma_entry_agrees(pre, caller@);
+        let p = address_path(va);
+        let a = space_mapping(tree_of(&entry.table_pages, &entry.spaces), root);
+        let b = space_mapping(tree_of(&mid.table_pages, &mid.spaces), root);
+        if out.status == STATUS_OK {
+            let v = entry.table_view(root);
+            let u = pre.kernel().table_view(root);
+            assert(out == status_only(STATUS_OK));
+            assert(v.contains_key(slot as usize) && v.contains_key(from as usize));
+            assert(same_cap(v[slot as usize], u[slot as usize]));
+            assert(same_cap(v[from as usize], u[from as usize]));
+            let f = view_frame(v[from as usize], page as usize);
+            let e = frame_map_entry(f, v[from as usize].rights, false);
+            assert(caller@.kernel().frames@.contains_key(f));
+            assert(caller@.kernel().frames_wf());
+            assert(b == a.insert(p, e));
+            let pages = pre.pages().insert(p, Some(f));
+            assert forall|q: SpacePath| #[trigger] pages.contains_key(q) implies page_agrees(b, q, pages[q]) by {
+                if q != p {
+                    assert(pre.pages().contains_key(q));
+                    assert(page_agrees(a, q, pre.pages()[q]));
+                    if large_path(q) == p {
+                        assert(b[large_path(q)] == e);
+                    }
+                } else {
+                    assert(page_agrees(a, p, None));
+                    if large_path(p) == p {
+                        assert(b[p] == e);
+                    }
+                }
+            }
+            set_page(caller.borrow_mut(), token.borrow_mut(), Some(f));
+        } else {
+            assert(b == a);
+            assert(pre.pages().insert(p, None) =~= pre.pages());
+        }
+        lemma_returned_agrees(caller@, mid, c);
+    }
+    out
+}
+
+/// Unmaps the level 1 entry the address `va` names in the caller's own space, through the space
+/// capability at index `slot`, against the token for that page, which names a frame. As unmap does: on
+/// OK the token, and the authority with it, says no frame is mapped there; refused, the token is as it
+/// was. The page tokens stay in agreement with the space either way. The contract reads the authority
+/// through the caller's pages and pages_id alone.
+pub fn unmap_own(caller: &mut Tracked<Caller>, token: &mut Tracked<PageToken>, slot: u64, va: u64) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+        old(caller)@.pages_wf(),
+        old(token)@.id() == old(caller)@.pages_id(),
+        old(token)@.path() == address_path(va),
+        old(token)@.frame() is Some,
+        slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), slot as usize),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+        final(caller)@.start() == old(caller)@.start(),
+        final(caller)@.pages_id() == old(caller)@.pages_id(),
+        final(caller)@.pages() == old(caller)@.pages().insert(final(token)@.path(), final(token)@.frame()),
+        final(caller)@.pages_wf(),
+        final(token)@.id() == old(token)@.id(),
+        final(token)@.path() == old(token)@.path(),
+        out.status == STATUS_OK ==> final(token)@.frame() is None,
+        out.status != STATUS_OK ==> final(token)@ == old(token)@,
+        CapKernel::unmap_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, 1, out),
+    no_unwind
+{
+    let ghost pre = caller@;
+    proof {
+        token.borrow().agree(caller.borrow());
+    }
+    let out = step(caller, OPERATION_UNMAP, slot, va, 1, 0, 0, 0);
+    proof {
+        let entry = caller@.entry();
+        let root = pre.root();
+        let (frame, c, mid) = choose|frame: Registers, c: int, mid: CapKernel|
+            carries(frame, OPERATION_UNMAP, slot, va, 1, 0, 0, 0)
+                && #[trigger] entered(entry, caller@.kernel(), root, frame, out, c, mid);
+        lemma_entered(entry, caller@.kernel(), root, frame, out, c, mid);
+        lemma_number_names_one_operation(Operation::Unmap);
+        CapKernel::lemma_unmap_contract(entry, mid, root, frame, out);
+        lemma_returned_unmap_fields(entry, mid, caller@.kernel(), c, root, slot as usize, va);
+        CapKernel::lemma_own_step_keeps_record(entry, mid, root, frame, out);
+        CapKernel::lemma_own_step_keeps_sealed(entry, mid, root, frame, out);
+        lemma_entry_agrees(pre, caller@);
+        let p = address_path(va);
+        let a = space_mapping(tree_of(&entry.table_pages, &entry.spaces), root);
+        let b = space_mapping(tree_of(&mid.table_pages, &mid.spaces), root);
+        if out.status == STATUS_OK {
+            let v = entry.table_view(root);
+            let u = pre.kernel().table_view(root);
+            assert(v.contains_key(slot as usize));
+            assert(same_cap(v[slot as usize], u[slot as usize]));
+            assert(b == a.remove(p));
+            lemma_shrunk_keeps_agree(a, b, pre.pages());
+            let pages = pre.pages().insert(p, None);
+            assert forall|q: SpacePath| #[trigger] pages.contains_key(q) implies page_agrees(b, q, pages[q]) by {
+                if q != p {
+                    assert(pre.pages().contains_key(q));
+                } else {
+                    assert(page_agrees(b, p, pre.pages()[p]));
+                }
+            }
+            set_page(caller.borrow_mut(), token.borrow_mut(), None);
+        } else {
+            assert(b == a);
+            assert(pre.pages().insert(p, pre.pages()[p]) =~= pre.pages());
+        }
+        lemma_returned_agrees(caller@, mid, c);
     }
     out
 }
