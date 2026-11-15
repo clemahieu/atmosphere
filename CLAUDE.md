@@ -86,7 +86,7 @@ Each tool's opening comment is its manual: what it does, its options and its exi
 source tools/env.sh     # Verus and RUSTC_BOOTSTRAP
 tools/gate.py           # the gate; --target and --step run part of it
 cargo test --workspace  # every member's host tests, from the root, after a build
-tools/run.py            # build the images and boot them under QEMU; --iommu, --no-kvm, --gdb, --kernel-feature FEATURE
+tools/run.py            # build the images and boot them under QEMU; --iommu, --no-kvm, --gdb, --memory MIB, --kernel-feature FEATURE
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
 tools/build.py          # the gate's build; --target aarch64 builds that target's images
 tools/land.py           # from a task worktree: rebase onto main, gate, land by fast-forward and push

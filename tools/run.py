@@ -13,7 +13,9 @@ whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated
 a gdb server on the guest and the file gdb on the ESP, which makes the loader wait before it enters
 the kernel (aloader/src/debugger.rs); once the loader has logged where it loaded each binary and that
 it waits, .gdb at the workspace root holds what tools/gdb.py attaches with. --kernel-feature builds
-the kernel with a feature of its own, boot_panic for a kernel that panics at boot.
+the kernel with a feature of its own, boot_panic for a kernel that panics at boot. --memory sets the
+guest's RAM in MiB, 2560 by default (design/test-guest-memory/); the kernel sizes what it tracks from
+the memory map, so one image boots any size (design/page-metadata-sized-from-the-memory-map/).
 
 The firmware's output on the terminal ends with control sequences that reset it, so everything
 before the loader's banner is dropped there; serial.log keeps it.
@@ -22,7 +24,7 @@ Exit status: 0 when the guest powers off, as it does when dom0 reports success; 
 1 when the kernel fails or dom0 reports a failure. 1 when QEMU dies by a signal, and 1 when a build
 fails.
 
-usage: tools/run.py [--no-kvm] [--iommu] [--gdb] [--kernel-feature FEATURE ...]   (from anywhere)
+usage: tools/run.py [--no-kvm] [--iommu] [--gdb] [--memory MIB] [--kernel-feature FEATURE ...]   (from anywhere)
        tools/run.py --test                         (this script's own tests)
 """
 import argparse
@@ -143,14 +145,21 @@ CPU_TCG = "Haswell-IBRS"
 CPU_KVM = CPU_TCG + ",pmu=on,+perfctr-core"
 
 
-def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket, ovmf_code):
+def memory_size(text):
+    """The guest's RAM in MiB from --memory's argument, a positive whole number."""
+    if not text.isdigit() or int(text) == 0:
+        raise argparse.ArgumentTypeError(f"not a positive number of MiB: {text}")
+    return int(text)
+
+
+def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket, ovmf_code, memory_mib=MEMORY_MIB):
     args = esp_args(run_dir, ovmf_code) + [
         "-nographic",
         "-serial", "chardev:char0",
         "-mon", "chardev=char0",
         "-chardev", f"stdio,id=char0,mux=on,logfile={serial_log},signal=off",
         "-smp", "2",
-        "-m", str(MEMORY_MIB),
+        "-m", str(memory_mib),
         "-device", f"isa-debug-exit,iobase={DEBUG_EXIT_PORT:#x},iosize=0x04",
         "-no-reboot",
         "-machine", "q35,kernel_irqchip=split",
@@ -233,6 +242,8 @@ def main(argv):
     parser.add_argument("--no-kvm", action="store_true", help="use TCG even if /dev/kvm is writable")
     parser.add_argument("--iommu", action="store_true", help="add QEMU's emulated IOMMU")
     parser.add_argument("--gdb", action="store_true", help="wait for tools/gdb.py before entering the kernel")
+    parser.add_argument("--memory", type=memory_size, default=MEMORY_MIB, metavar="MIB",
+                        help=f"the guest's RAM in MiB (default {MEMORY_MIB})")
     parser.add_argument("--kernel-feature", action="append", default=[], metavar="FEATURE",
                         help="build the kernel with this feature; may repeat")
     options = parser.parse_args(argv)
@@ -253,7 +264,7 @@ def main(argv):
         print(f"initrd: {initrd_size} bytes", file=sys.stderr)
         socket = run_dir / "gdb.sock" if options.gdb else None
         args = qemu_args(run_dir, REPO / "serial.log", use_kvm(options.no_kvm, "/dev/kvm"), options.iommu, socket,
-                         ovmf_code)
+                         ovmf_code, options.memory)
         print(f"Starting {qemu_bin} " + " ".join(args), file=sys.stderr)
         try:
             qemu = subprocess.Popen([qemu_bin] + args, cwd=REPO, stdout=subprocess.PIPE, bufsize=0)
@@ -400,6 +411,17 @@ class Tests(unittest.TestCase):
         args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None,
                          "/ovmf/OVMF_CODE.fd")
         self.assertEqual(self.options(args, "-m"), [str(MEMORY_MIB)])
+
+    def test_the_guest_takes_the_memory_size_it_is_given(self):
+        # One kernel image boots guests of different sizes, since boot sizes the page metadata from the
+        # memory map: design/page-metadata-sized-from-the-memory-map/.
+        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None, "/ovmf/OVMF_CODE.fd",
+                         memory_mib=1536)
+        self.assertEqual(self.options(args, "-m"), ["1536"])
+        self.assertEqual(memory_size("1536"), 1536)
+        for refused in ("0", "-512", "1.5G"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                memory_size(refused)
 
     def test_kvm_iommu_and_gdb_each_add_their_arguments(self):
         plain = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None, "/ovmf/OVMF_CODE.fd")
