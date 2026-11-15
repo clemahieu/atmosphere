@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! The kernel step: one system call, the one point of this crate no proof reaches. Its ensures is what
+//! The kernel step: one system call, the one point of this crate no proof reaches, system_call. Its ensures is what
 //! the kernel proves of the step it takes for a thread whose call returns to it, CapKernel::enter in
 //! kernel/verified: some frame carrying the operation number, the slot and the arguments passed takes
 //! the kernel from the state at entry to a middle state as `invoked` says, the calling core alone then
@@ -25,13 +25,28 @@ use verified::define::NUM_CPUS;
 use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::kernel::TlbEntry;
+#[cfg(verus_keep_ghost)]
+use verified::capability::link::tree_of;
+#[cfg(verus_keep_ghost)]
+use verified::capability::map::address_path;
+#[cfg(verus_keep_ghost)]
+use verified::capability::mapping::{space_mapping, SpacePath};
 use verified::capability::operation::Outcome;
+#[cfg(verus_keep_ghost)]
+use verified::define::PAGE_SZ;
+#[cfg(verus_keep_ghost)]
+use verified::pagetable::entry::PageEntry;
+#[cfg(verus_keep_ghost)]
+use vstd::resource::map::{GhostMapAuth, GhostPointsTo};
+#[cfg(verus_keep_ghost)]
+use vstd::resource::Loc;
 
 verus! {
 
 /// What a process knows of the kernel as it calls: the kernel's state its last call returned, the state
-/// that call entered from, and the root of its own table, which names the process to the kernel and
-/// never changes. A token: its fields are private and it has
+/// that call entered from, the root of its own table, which names the process to the kernel and
+/// never changes, the kernel's state the process was handed, and the authority over its page tokens.
+/// A token: its fields are private and it has
 /// no constructor and no copy, so verified code holds only the one it was handed at the process's
 /// start and cannot keep an old one to call with again. Only specifications read its fields, so only
 /// Verus compiles them.
@@ -44,6 +59,77 @@ pub tracked struct Caller {
     ghost root: usize,
     #[cfg(verus_keep_ghost)]
     ghost history: Seq<(CapKernel, CapKernel)>,
+    #[cfg(verus_keep_ghost)]
+    ghost start: CapKernel,
+    #[cfg(verus_keep_ghost)]
+    tracked pages: GhostMapAuth<SpacePath, Option<usize>>,
+}
+
+/// The token for one page of the caller's own space, at a path of the space keyed at the caller's
+/// root: it says which frame is mapped there, by page number, or that none is
+/// (design/region-map-owns-the-address-space/). Its field is private and it has no constructor and no
+/// copy: verified code outside this crate gets one only from claim, once per page, and the caller
+/// token's authority holds what every token says, so Caller::pages_wf ties each to the kernel's entry.
+pub tracked struct PageToken {
+    #[cfg(verus_keep_ghost)]
+    tracked token: GhostPointsTo<SpacePath, Option<usize>>,
+}
+
+impl PageToken {
+    /// The path of the page this token is for.
+    pub closed spec fn path(self) -> SpacePath {
+        self.token.key()
+    }
+
+    /// The frame mapped at the page, by page number, or none.
+    pub closed spec fn frame(self) -> Option<usize> {
+        self.token.value()
+    }
+
+    /// The authority this token belongs to.
+    pub closed spec fn id(self) -> Loc {
+        self.token.id()
+    }
+}
+
+/// The path of the large entry that would cover the page at `p`: the same path with no level-1 index.
+pub open spec fn large_path(p: SpacePath) -> SpacePath {
+    SpacePath { l4: p.l4, l3: p.l3, l2: p.l2, l1: 0 }
+}
+
+/// A space's mapping `m` agrees with a page token for the page at `p` saying `frame`: no large entry
+/// covers the page, none is mapped there when the token says none, and what is mapped there is the
+/// frame the token names, writable, when it names one. Absent under a token that names a frame is
+/// allowed, as an ancestor's revoke removes entries.
+pub open spec fn page_agrees(m: IMap<SpacePath, PageEntry>, p: SpacePath, frame: Option<usize>) -> bool {
+    &&& !(m.contains_key(large_path(p)) && m[large_path(p)].perm.ps)
+    &&& frame is None ==> !m.contains_key(p)
+    &&& frame is Some && m.contains_key(p) ==> m[p].addr == frame->0 * PAGE_SZ && m[p].perm.write
+}
+
+/// The space keyed at `root` in `k` agrees with every page token `pages` holds.
+pub open spec fn pages_agree(k: CapKernel, root: usize, pages: Map<SpacePath, Option<usize>>) -> bool {
+    let m = space_mapping(tree_of(&k.table_pages, &k.spaces), root);
+    forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> page_agrees(m, p, pages[p])
+}
+
+/// A mapping that only lost entries, keeping the others' values, still agrees with every token.
+pub proof fn lemma_shrunk_keeps_agree(a: IMap<SpacePath, PageEntry>, b: IMap<SpacePath, PageEntry>, pages: Map<SpacePath, Option<usize>>)
+    requires
+        forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> page_agrees(a, p, pages[p]),
+        forall|p: SpacePath| #[trigger] b.contains_key(p) ==> a.contains_key(p) && b[p] == a[p],
+    ensures
+        forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> page_agrees(b, p, pages[p]),
+{
+    assert forall|p: SpacePath| #[trigger] pages.contains_key(p) implies page_agrees(b, p, pages[p]) by {
+        assert(page_agrees(a, p, pages[p]));
+        if b.contains_key(large_path(p)) {
+            assert(a.contains_key(large_path(p)));
+        }
+        if b.contains_key(p) {
+            assert(a.contains_key(p));
+        }
+    }
 }
 
 impl Caller {
@@ -68,10 +154,181 @@ impl Caller {
         self.history
     }
 
+    /// The kernel's state the process was handed, before any of its calls.
+    pub closed spec fn start(self) -> CapKernel {
+        self.start
+    }
+
+    /// What every page token of this caller says, by the page's path.
+    pub closed spec fn pages(self) -> Map<SpacePath, Option<usize>> {
+        self.pages@
+    }
+
+    /// The authority the caller's page tokens belong to.
+    pub closed spec fn pages_id(self) -> Loc {
+        self.pages.id()
+    }
+
     /// The kernel's state is one its steps keep: every step returns one.
     pub open spec fn wf(&self) -> bool {
         self.kernel().wf()
     }
+
+    /// The caller's process is sealed and a process, so other callers only remove entries of its
+    /// space (CapKernel::rely), and its space agrees with every page token.
+    pub open spec fn pages_wf(&self) -> bool {
+        &&& self.kernel().sealed(self.root())
+        &&& self.kernel().processes.records@.contains_key(self.root())
+        &&& pages_agree(self.kernel(), self.root(), self.pages())
+    }
+
+    /// Takes the authority out for the length of a call, leaving one with no page in its place.
+    proof fn take_pages(tracked &mut self) -> (tracked pages: GhostMapAuth<SpacePath, Option<usize>>)
+        ensures
+            pages == old(self).pages,
+            final(self).kernel == old(self).kernel,
+            final(self).entry == old(self).entry,
+            final(self).root == old(self).root,
+            final(self).history == old(self).history,
+            final(self).start == old(self).start,
+    {
+        self.pages.take()
+    }
+
+    /// Puts back what the call left aside: the authority and the state the process was handed, which a
+    /// system call does not touch, since neither exists at run time.
+    proof fn restore(tracked &mut self, tracked pages: GhostMapAuth<SpacePath, Option<usize>>, start: CapKernel)
+        ensures
+            final(self).kernel == old(self).kernel,
+            final(self).entry == old(self).entry,
+            final(self).root == old(self).root,
+            final(self).history == old(self).history,
+            final(self).start == start,
+            final(self).pages == pages,
+    {
+        self.pages = pages;
+        self.start = start;
+    }
+}
+
+/// From `pre` to `post`, a call kept the page tokens: the state the process was handed, the authority
+/// and what every token says are as they were.
+pub open spec fn pages_kept(pre: Caller, post: Caller) -> bool {
+    &&& post.start() == pre.start()
+    &&& post.pages() == pre.pages()
+    &&& post.pages_id() == pre.pages_id()
+}
+
+/// The state a call entered from agrees with every page token, and keeps the caller's process sealed
+/// and a process: the rely took it there from the state the caller token last held.
+pub proof fn lemma_entry_agrees(pre: Caller, post: Caller)
+    requires
+        pre.pages_wf(),
+        post.root() == pre.root(),
+        pages_kept(pre, post),
+        CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
+    ensures
+        post.entry().sealed(pre.root()),
+        post.entry().processes.records@.contains_key(pre.root()),
+        pages_agree(post.entry(), pre.root(), pre.pages()),
+{
+    let root = pre.root();
+    lemma_shrunk_keeps_agree(
+        space_mapping(tree_of(&pre.kernel().table_pages, &pre.kernel().spaces), root),
+        space_mapping(tree_of(&post.entry().table_pages, &post.entry().spaces), root),
+        pre.pages(),
+    );
+}
+
+/// A step that only removed entries of the space at `root`, sealed and a process before it, keeps that
+/// space agreeing with every page token.
+pub proof fn lemma_space_kept_agrees(a: CapKernel, b: CapKernel, root: usize, pages: Map<SpacePath, Option<usize>>)
+    requires
+        pages_agree(a, root, pages),
+        a.sealed(root),
+        a.processes.records@.contains_key(root),
+        CapKernel::space_kept(a, b, root),
+    ensures
+        pages_agree(b, root, pages),
+{
+    lemma_shrunk_keeps_agree(
+        space_mapping(tree_of(&a.table_pages, &a.spaces), root),
+        space_mapping(tree_of(&b.table_pages, &b.spaces), root),
+        pages,
+    );
+}
+
+/// The map of the page at `va` through the space capability at `slot` of the table at `root` in `k`
+/// leaves every page token's page and the large entry over it alone: the space is another's, or the
+/// address's page and its large entry are none a token is for.
+pub open spec fn map_misses_pages(k: CapKernel, root: usize, slot: usize, va: u64, pages: Map<SpacePath, Option<usize>>) -> bool {
+    ||| k.table_view(root)[slot].base != root
+    ||| forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> large_path(p) != large_path(address_path(va))
+}
+
+/// A mapping that gained one entry at a path that is neither a token's page nor the large entry over
+/// it still agrees with every token.
+pub proof fn lemma_inserted_keeps_agree(a: IMap<SpacePath, PageEntry>, q: SpacePath, e: PageEntry, pages: Map<SpacePath, Option<usize>>)
+    requires
+        forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> page_agrees(a, p, pages[p]),
+        forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> large_path(p) != large_path(q),
+    ensures
+        forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> page_agrees(a.insert(q, e), p, pages[p]),
+{
+    assert forall|p: SpacePath| #[trigger] pages.contains_key(p) implies page_agrees(a.insert(q, e), p, pages[p]) by {
+        assert(page_agrees(a, p, pages[p]));
+        assert(large_path(p) != large_path(q));
+        assert(large_path(large_path(p)) == large_path(p));
+        assert(p != q);
+        assert(large_path(p) != q);
+    }
+}
+
+/// The call returned from the state its operation left, its core alone catching up, which changes no
+/// space; so when that state agrees with every page token and the process is still sealed and a
+/// process, the caller token's invariant holds again.
+pub proof fn lemma_returned_agrees(post: Caller, mid: CapKernel, c: int)
+    requires
+        pages_agree(mid, post.root(), post.pages()),
+        CapKernel::only_core_changed(mid, post.kernel(), c),
+        post.kernel().sealed(post.root()),
+        post.kernel().processes.records@.contains_key(post.root()),
+    ensures
+        post.pages_wf(),
+{
+}
+
+/// Claims the token for the page at `p` of the caller's own space, saying no frame is mapped there. The
+/// page had no entry, nor a large one over it, in the state the process was handed, so none of the
+/// process's Rust memory lies there, its stack, statics and image being mapped or it would not run;
+/// it has none now; and no token for it was claimed before, so the token is the only one.
+pub proof fn claim(tracked caller: &mut Caller, p: SpacePath) -> (tracked token: PageToken)
+    requires
+        old(caller).pages_wf(),
+        !old(caller).pages().contains_key(p),
+        page_agrees(space_mapping(tree_of(&old(caller).start().table_pages, &old(caller).start().spaces), old(caller).root()), p, None),
+        page_agrees(space_mapping(tree_of(&old(caller).kernel().table_pages, &old(caller).kernel().spaces), old(caller).root()), p, None),
+    ensures
+        final(caller).kernel() == old(caller).kernel(),
+        final(caller).entry() == old(caller).entry(),
+        final(caller).root() == old(caller).root(),
+        final(caller).history() == old(caller).history(),
+        final(caller).start() == old(caller).start(),
+        final(caller).pages_id() == old(caller).pages_id(),
+        final(caller).pages() == old(caller).pages().insert(p, None),
+        final(caller).pages_wf(),
+        token.path() == p,
+        token.frame() is None,
+        token.id() == final(caller).pages_id(),
+{
+    let tracked token = caller.pages.insert(p, None);
+    let ghost m = space_mapping(tree_of(&caller.kernel.table_pages, &caller.kernel.spaces), caller.root);
+    assert forall|q: SpacePath| #[trigger] caller.pages@.contains_key(q) implies page_agrees(m, q, caller.pages@[q]) by {
+        if q != p {
+            assert(old(caller).pages().contains_key(q));
+        }
+    }
+    PageToken { token }
 }
 
 /// No other caller stepped on the token between `pre` and `post`: `post`'s step history extends `pre`'s,
@@ -148,10 +405,41 @@ pub proof fn lemma_entered(pre: CapKernel, post: CapKernel, root: usize, frame: 
 
 /// Invokes the operation `number` on the capability at `slot` with arguments 1 to 5, and returns what
 /// the kernel put in the status and result registers. The call enters from a well-formed state the rely
-/// relates to the one the token last held, which the token now carries as its entry.
+/// relates to the one the token last held, which the token now carries as its entry. The state the
+/// process was handed and the page tokens' authority exist only in the proof, so the call keeps them.
+pub fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.entry().wf(),
+        CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+        final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+        exists|frame: Registers, c: int, mid: CapKernel|
+            carries(frame, number, slot, a1, a2, a3, a4, a5)
+                && #[trigger] entered(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), frame, out, c, mid),
+        pages_kept(old(caller)@, final(caller)@),
+    no_unwind
+{
+    let ghost start = caller@.start;
+    let tracked pages = caller.borrow_mut().take_pages();
+    let out = system_call(caller, number, slot, a1, a2, a3, a4, a5);
+    let ghost called = caller@;
+    proof {
+        caller.borrow_mut().restore(pages, start);
+        assert(caller@.kernel() == called.kernel());
+        assert(caller@.entry() == called.entry());
+        assert(caller@.root() == called.root());
+        assert(caller@.history() == called.history());
+    }
+    out
+}
+
+/// The system call itself, as the kernel proves it of the step it takes for the calling thread.
 // kernel: kernel/verified/capability/operation.rs CapKernel::enter
 // kernel: kernel/verified/capability/rely.rs CapKernel::lemma_rely_transitive
-pub assume_specification[step](caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
+pub assume_specification[system_call](caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
     ensures
@@ -167,7 +455,7 @@ pub assume_specification[step](caller: &mut Tracked<Caller>, number: u64, slot: 
 
 } // verus!
 
-pub fn step(_caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Outcome {
+pub fn system_call(_caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Outcome {
     // The ABI's own: every operation may change the caller's address space, which no Rust value of
     // this crate's caller lives in unless it holds the permission the wrapper's contract speaks of.
     let (status, results) = unsafe { operation::invoke_returning(number, slot, [a1, a2, a3, a4, a5]) };
