@@ -509,9 +509,6 @@ fn rdtsc() -> u64 {
 /// Entry 0 is the frame's existing mapping. Entries 1..=64 are free: revoke cleared them.
 const TIMED_MAPS: u64 = 64;
 
-/// The before number for an unassigned invocation, logs/cutover-before.log: 102 TSC cycles.
-const NULL_TAIL: &[u8] = b" before 102\n";
-
 /// The before number for a 4K map, one page per call, logs/cutover-before.log: 66926 TSC cycles per page.
 const MAP_TAIL: &[u8] = b"/p before 66926\n";
 
@@ -574,17 +571,13 @@ fn print_counters(what: &[u8], before: Option<[u64; 4]>, after: Option<[u64; 4]>
 const MAPS_COUNTER_TAIL: &[u8] = b"/64\n";
 const _: () = assert!(TIMED_MAPS == 64);
 
-/// Whether dom0 times one invocation of a number no operation has, which returns unknown, and one 4K
-/// map of `frame` into each of TIMED_MAPS free entries of the level 1 table, and prints each cycle count
-/// beside its before number, then what the performance counters counted over each, where there are
-/// any. The counts are not checked against those numbers. The timed maps start at the page after
-/// PATH_ADDRESS, which already holds `frame`.
+/// Whether dom0 checks that an unassigned operation number returns unknown and times one 4K map of
+/// `frame` into each of TIMED_MAPS free entries of the level 1 table, printing its cycle count
+/// beside its before number and performance counter deltas where present. The counts are not
+/// checked against those numbers. The timed maps start at the page after PATH_ADDRESS, which
+/// already holds `frame`. The unassigned invocation itself is timed by `benchmarks_held`.
 fn timed_beside_before(frame: u64) -> bool {
-    let null_before = counters();
-    let start = rdtsc();
     let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
-    let null_cycles = rdtsc() - start;
-    let null_after = counters();
     if unknown != operation::STATUS_UNKNOWN {
         return false;
     }
@@ -598,11 +591,89 @@ fn timed_beside_before(frame: u64) -> bool {
     }
     let maps_cycles = rdtsc() - start;
     let maps_after = counters();
-    print_count(b"null ", null_cycles, NULL_TAIL) == operation::STATUS_OK
-        && print_count(b"4k ", maps_cycles / TIMED_MAPS, MAP_TAIL) == operation::STATUS_OK
+    print_count(b"4k ", maps_cycles / TIMED_MAPS, MAP_TAIL) == operation::STATUS_OK
         && print_count(b"4k tsc ", maps_cycles, MAPS_COUNTER_TAIL) == operation::STATUS_OK
-        && print_counters(b"null ", null_before, null_after, b"\n")
         && print_counters(b"4k ", maps_before, maps_after, MAPS_COUNTER_TAIL)
+}
+
+/// Chunked console writer flushing 39-byte slices over `ROOT_CONSOLE_SLOT`.
+struct ConsoleWriter {
+    buf: [u8; 39],
+    len: usize,
+}
+
+impl ConsoleWriter {
+    const fn new() -> Self {
+        Self {
+            buf: [0; 39],
+            len: 0,
+        }
+    }
+
+    fn flush(&mut self) -> core::fmt::Result {
+        if self.len == 0 {
+            return Ok(());
+        }
+        let status = unsafe {
+            print_slot(
+                operation::ROOT_CONSOLE_SLOT,
+                operation::print_words(&self.buf[..self.len]),
+            )
+        };
+        self.len = 0;
+        if status == operation::STATUS_OK {
+            Ok(())
+        } else {
+            Err(core::fmt::Error)
+        }
+    }
+}
+
+impl core::fmt::Write for ConsoleWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for &raw in s.as_bytes() {
+            // `operation::print_words` forbids NUL bytes inside a message.
+            let byte = if raw == 0 { b'?' } else { raw };
+            self.buf[self.len] = byte;
+            self.len += 1;
+            if byte == b'\n' || self.len == self.buf.len() {
+                self.flush()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Runs the user-space benchmark suite in unit-test check mode or `--features bench` perf mode.
+fn benchmarks_held() -> bool {
+    let mut registry = abench::runner::Registry::new();
+    if abench::runner::register_calibration_benchmarks(&mut registry).is_err() {
+        return false;
+    }
+    if registry
+        .register_simple("Syscall/Null", || {
+            let status =
+                operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
+            core::hint::black_box(status) == operation::STATUS_UNKNOWN
+        })
+        .is_err()
+    {
+        return false;
+    }
+    let mut console = ConsoleWriter::new();
+    #[cfg(not(feature = "bench"))]
+    let ok = registry
+        .run_unit_test(&mut console, None)
+        .is_ok_and(|report| {
+            report.total > 0 && report.failed == 0 && report.passed == report.total
+        });
+    #[cfg(feature = "bench")]
+    let ok = {
+        let config = abench::runner::PerfConfig::default();
+        let mut hw = abench::counter::HardwareCounters::new(true);
+        registry.run_perf_test(&config, &mut hw, &mut console).is_ok()
+    };
+    console.flush().is_ok() && ok
 }
 
 /// The entry of the level 1 table at PATH_ADDRESS that the probe check maps, the one after the timed
@@ -2595,7 +2666,8 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                         })
             })
         })
-        .is_some_and(heap_allocator_held);
+        .is_some_and(heap_allocator_held)
+        && benchmarks_held();
     let console = unsafe {
         print_slot(
             operation::ROOT_CONSOLE_SLOT,

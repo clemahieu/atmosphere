@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "abench"
+version = "0.1.0"
+
+[[package]]
 name = "acall"
 version = "0.1.0"
 dependencies = [
@@ -326,6 +330,7 @@ dependencies = [
 name = "dom0"
 version = "0.1.0"
 dependencies = [
+ "abench",
  "acall",
  "aeager",
  "aheap",

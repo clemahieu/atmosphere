@@ -250,7 +250,69 @@ def core_1_unmap_acknowledged(serial):
             and any(CORE_1_ACKNOWLEDGED in line for line in printed[unmapped + 1:freed]))
 
 
-def boot_log_accepted(serial, arch, translation=False):
+JSON_BEGIN_MARKER = "--- FUCHSIAPERF JSON BEGIN ---"
+JSON_END_MARKER = "--- FUCHSIAPERF JSON END ---"
+EXPECTED_TEST_SUITE = "atmosphere.microbenchmarks"
+REQUIRED_BENCHMARKS = (
+    "Null.tsc_cycles",
+    "Null5Step.step1.tsc_cycles",
+    "NoOpLoop/100.tsc_cycles",
+    "NoOpLoop/1000.tsc_cycles",
+    "NoOpLoop/10000.tsc_cycles",
+    "Syscall/Null.tsc_cycles",
+)
+PERFTEST_ENTRY_KEYS = frozenset({"label", "test_suite", "unit", "values"})
+
+
+def perftest_results_accepted(serial):
+    """Extracts and validates one fuchsiaperf.json array between markers, returning parsed entries."""
+    import json
+    import math
+
+    clean = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", serial)
+    raw_lines = clean.splitlines()
+    begin = next((i for i, line in enumerate(raw_lines) if line.strip() == JSON_BEGIN_MARKER), None)
+    if begin is None:
+        raise Refused(f'the serial log does not contain "{JSON_BEGIN_MARKER}"')
+    end = next((i for i in range(begin + 1, len(raw_lines)) if raw_lines[i].strip() == JSON_END_MARKER), None)
+    if end is None:
+        raise Refused(f'the serial log does not contain "{JSON_END_MARKER}" after "{JSON_BEGIN_MARKER}"')
+    payload = "\n".join(raw_lines[begin + 1:end]).strip()
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"perftest JSON is invalid: {exc}") from exc
+    if not isinstance(data, list) or not data:
+        raise Refused("perftest JSON must be a non-empty array")
+    seen_labels = set()
+    for index, entry in enumerate(data):
+        if not isinstance(entry, dict) or set(entry.keys()) != PERFTEST_ENTRY_KEYS:
+            raise Refused(f"perftest entry {index} does not match expected schema keys")
+        label = entry["label"]
+        suite = entry["test_suite"]
+        unit = entry["unit"]
+        values = entry["values"]
+        if not isinstance(label, str) or not label:
+            raise Refused(f"perftest entry {index} has invalid label")
+        if label in seen_labels:
+            raise Refused(f"duplicate perftest label: {label}")
+        seen_labels.add(label)
+        if suite != EXPECTED_TEST_SUITE:
+            raise Refused(f"perftest entry {label} has unexpected test_suite {suite!r}")
+        if not isinstance(unit, str) or not unit:
+            raise Refused(f"perftest entry {label} has invalid unit")
+        if not isinstance(values, list) or not values:
+            raise Refused(f"perftest entry {label} has empty or non-array values")
+        for value in values:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise Refused(f"perftest entry {label} has non-finite value {value!r}")
+    for required in REQUIRED_BENCHMARKS:
+        if required not in seen_labels:
+            raise Refused(f"perftest JSON is missing required benchmark series {required!r}")
+    return data
+
+
+def boot_log_accepted(serial, arch, translation=False, bench=False):
     """What held of a successful boot's log on `arch`, or Refused naming the first check that failed."""
     untyped, frames = fixed_slots_printed(serial)
     base = FREE_GIGABYTE[arch]
@@ -319,23 +381,35 @@ def boot_log_accepted(serial, arch, translation=False):
             f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
-    if not translation:
-        return held
-    if TRANSLATION_ENABLED not in serial:
-        raise Refused("the serial log does not show the IOMMU's translation enabled")
-    return f"translation enabled; {held}"
+    if translation:
+        if TRANSLATION_ENABLED not in serial:
+            raise Refused("the serial log does not show the IOMMU's translation enabled")
+        held = f"translation enabled; {held}"
+    if bench:
+        entries = perftest_results_accepted(serial)
+        held = f"{held}; perftest JSON ({len(entries)} series)"
+    return held
 
 
 def main(argv):
     parser = argparse.ArgumentParser(prog="tools/check-boot-log.py", description=__doc__.split("\n")[0])
-    parser.add_argument("--arch", required=True, choices=sorted(FREE_GIGABYTE))
+    parser.add_argument("--arch", choices=sorted(FREE_GIGABYTE))
     parser.add_argument("--translation", action="store_true",
                         help="require the kernel to have enabled the IOMMU's translation")
+    parser.add_argument("--bench", action="store_true",
+                        help="require a valid fuchsiaperf.json benchmark payload in the log")
     parser.add_argument("log", help="the serial log, or - for standard input")
     options = parser.parse_args(argv)
+    if options.arch is None and not options.bench:
+        parser.error("--arch is required unless --bench validates only perftest output")
     data = sys.stdin.buffer.read() if options.log == "-" else Path(options.log).read_bytes()
+    serial = data.decode("utf-8", errors="replace")
     try:
-        print(boot_log_accepted(data.decode("utf-8", errors="replace"), options.arch, options.translation))
+        if options.arch is None:
+            entries = perftest_results_accepted(serial)
+            print(f"perftest JSON accepted ({len(entries)} series)")
+        else:
+            print(boot_log_accepted(serial, options.arch, options.translation, options.bench))
     except Refused as refused:
         print(refused)
         return 1
@@ -475,6 +549,59 @@ class Tests(unittest.TestCase):
 
     def test_the_stop_on_core_1_returned_again(self):
         self.assertIn("stopping a thread on core 1", self.refused(boot_log().replace("took 2 again", "took 0 again")))
+
+    def valid_bench_log(self):
+        import json
+        payload = json.dumps([
+            {
+                "label": label,
+                "test_suite": "atmosphere.microbenchmarks",
+                "unit": "cycles",
+                "values": [10.0, 11.5, 9.75],
+            }
+            for label in (
+                "Null.tsc_cycles",
+                "Null5Step.step1.tsc_cycles",
+                "NoOpLoop/100.tsc_cycles",
+                "NoOpLoop/1000.tsc_cycles",
+                "NoOpLoop/10000.tsc_cycles",
+                "Syscall/Null.tsc_cycles",
+            )
+        ])
+        return (
+            boot_log()
+            + "\n--- FUCHSIAPERF JSON BEGIN ---\n"
+            + payload
+            + "\n--- FUCHSIAPERF JSON END ---\n"
+        )
+
+    def test_bench_accepts_perftest_json_with_required_metrics(self):
+        log = self.valid_bench_log()
+        parsed = perftest_results_accepted(log)
+        self.assertEqual(len(parsed), 6)
+        self.assertIn("perftest JSON", boot_log_accepted(log, "x86_64", bench=True))
+
+    def test_bench_rejects_missing_or_malformed_perftest_json(self):
+        with self.assertRaises(Refused):
+            boot_log_accepted(boot_log(), "x86_64", bench=True)
+        for bad_json in [
+            "not json",
+            "{}",
+            "[]",
+            '[{"label":"Syscall/Null.tsc_cycles","test_suite":"wrong","unit":"cycles","values":[1.0]}]',
+            '[{"label":"Syscall/Null.tsc_cycles","test_suite":"atmosphere.microbenchmarks","unit":"cycles","values":[1.0],"extra":1}]',
+            '[{"label":"Syscall/Null.tsc_cycles","test_suite":"atmosphere.microbenchmarks","unit":"cycles","values":[]}]',
+            '[{"label":"Syscall/Null.tsc_cycles","test_suite":"atmosphere.microbenchmarks","unit":"cycles","values":[null]}]',
+            '[{"label":"Null.tsc_cycles","test_suite":"atmosphere.microbenchmarks","unit":"cycles","values":[1.0]}]',
+        ]:
+            log = (
+                boot_log()
+                + "\n--- FUCHSIAPERF JSON BEGIN ---\n"
+                + bad_json
+                + "\n--- FUCHSIAPERF JSON END ---\n"
+            )
+            with self.assertRaises(Refused, msg=bad_json):
+                perftest_results_accepted(log)
 
     def test_both_cores_invoked(self):
         self.assertIn("both invoking", self.refused(boot_log().replace("invoked 4096 times", "invoked 0 times")))

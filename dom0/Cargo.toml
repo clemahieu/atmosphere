@@ -7,11 +7,15 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+abench = { path = "../abench" }
 acall = { path = "../acall" }
 aeager = { path = "../aeager" }
 aheap = { path = "../aheap" }
 astd = { path = "../astd", features = ["heap"] }
 asys = { path = "../asys" }
+
+[features]
+bench = []
 
 [dependencies.vstd]
 workspace = true

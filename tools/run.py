@@ -238,22 +238,44 @@ def lay_out_esp(run_dir, loader, images, gdb, ovmf_vars):
     return size
 
 
-def main(argv):
+def dom0_features(bench):
+    """Features enabled on dom0 for this run."""
+    return ("bench",) if bench else ()
+
+
+def validate_bench_log(log_path, arch="x86_64"):
+    """Runs tools/check-boot-log.py --bench on `log_path` and returns (returncode, output)."""
+    cmd = [sys.executable, str(REPO / "tools/check-boot-log.py")]
+    if arch is not None:
+        cmd += ["--arch", arch]
+    cmd += ["--bench", str(log_path)]
+    result = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    return result.returncode, result.stdout.strip()
+
+
+def parse_args(argv):
     parser = argparse.ArgumentParser(prog="tools/run.py", description=__doc__.split("\n")[0])
     parser.add_argument("--no-kvm", action="store_true", help="use TCG even if /dev/kvm is writable")
     parser.add_argument("--iommu", action="store_true", help="add QEMU's emulated IOMMU")
     parser.add_argument("--gdb", action="store_true", help="wait for tools/gdb.py before entering the kernel")
+    parser.add_argument("--bench", action="store_true",
+                        help="build dom0 with the bench feature and validate its perftest JSON output")
     parser.add_argument("--memory", type=memory_size, default=MEMORY_MIB, metavar="MIB",
                         help=f"the guest's RAM in MiB (default {MEMORY_MIB})")
     parser.add_argument("--kernel-feature", action="append", default=[], metavar="FEATURE",
                         help="build the kernel with this feature; may repeat")
-    options = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    options = parse_args(argv)
     # Fail before the build when the firmware or QEMU is not there.
     ovmf_code, ovmf_vars, qemu_bin = firmware.require("tools/run.py")
 
     kernel = build("kernel", "kernel", options.kernel_feature)
     loader = build("aloader", "aloader")
-    dom0 = build("dom0", "dom0")
+    dom0 = build("dom0", "dom0", dom0_features(options.bench))
     payload = build(f"user/{PAYLOAD}", PAYLOAD)
 
     # A timeout's SIGTERM unwinds through the with below, so the run directory goes too.
@@ -284,6 +306,10 @@ def main(argv):
                 gdb_path.unlink(missing_ok=True)
     if exit_status(returncode) != 0:
         print(f"tools/run.py: QEMU exited with status {returncode}", file=sys.stderr)
+    if exit_status(returncode) == 0 and options.bench:
+        status, message = validate_bench_log(REPO / "serial.log")
+        print(message, file=sys.stderr if status != 0 else sys.stdout)
+        return status
     return exit_status(returncode)
 
 
@@ -398,6 +424,47 @@ class Tests(unittest.TestCase):
         kvm = qemu_args(Path("/run/x"), Path("/w/serial.log"), True, False, None, "/ovmf/OVMF_CODE.fd")
         self.assertEqual(self.options(tcg, "-cpu"), ["Haswell-IBRS"])
         self.assertEqual(self.options(kvm, "-cpu"), ["Haswell-IBRS,pmu=on,+perfctr-core"])
+
+    def test_bench_option_builds_dom0_with_bench_feature(self):
+        self.assertEqual(dom0_features(False), ())
+        self.assertEqual(dom0_features(True), ("bench",))
+        self.assertFalse(parse_args([]).bench)
+        self.assertTrue(parse_args(["--bench"]).bench)
+
+    def test_validate_bench_log_rejects_missing_json_and_accepts_valid_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bad = Path(directory) / "bad.log"
+            bad.write_text("no perftest json here\n")
+            status, message = validate_bench_log(bad, arch=None)
+            self.assertNotEqual(status, 0)
+            self.assertIn("FUCHSIAPERF JSON BEGIN", message)
+            good = Path(directory) / "good.log"
+            payload = json.dumps([
+                {
+                    "label": label,
+                    "test_suite": "atmosphere.microbenchmarks",
+                    "unit": "cycles",
+                    "values": [42.0],
+                }
+                for label in (
+                    "Null.tsc_cycles",
+                    "Null5Step.step1.tsc_cycles",
+                    "NoOpLoop/100.tsc_cycles",
+                    "NoOpLoop/1000.tsc_cycles",
+                    "NoOpLoop/10000.tsc_cycles",
+                    "Syscall/Null.tsc_cycles",
+                )
+            ])
+            good.write_text(
+                "\n--- FUCHSIAPERF JSON BEGIN ---\n"
+                + payload
+                + "\n--- FUCHSIAPERF JSON END ---\n"
+            )
+            status, message = validate_bench_log(good, arch=None)
+            self.assertEqual(status, 0)
+            self.assertIn("6 series", message)
+            status, _ = validate_bench_log(good, arch="x86_64")
+            self.assertNotEqual(status, 0)
 
     def test_the_kernel_tracks_all_of_the_guest_s_ram_on_either_machine(self):
         # design/test-guest-memory/. The firmware allocates from the top of RAM and the loader
