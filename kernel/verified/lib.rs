@@ -18,6 +18,8 @@ pub mod column;
 pub mod pagetable;
 #[cfg(throwaway)]
 pub mod throwaway;
+#[cfg(refused)]
+mod refused;
 
 pub mod util;
 
