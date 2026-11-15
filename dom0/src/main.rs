@@ -149,6 +149,7 @@ use core::panic::PanicInfo;
 use acall::capability::{delete, destroy, move_cap, place, read_registers, revoke, start, suspend, write_registers};
 use acall::memory::{derive, link, map, retype, unmap};
 use acall::step::Caller;
+use astd::memory::{USERSPACE_BASE, USERSPACE_PAYLOAD_BASE};
 use asys::operation;
 use vstd::prelude::Tracked;
 
@@ -2222,21 +2223,52 @@ const EAGER_BELOW_TOP: u64 = 256 * 4096;
 /// PATH_ADDRESS's, which nothing maps.
 const EAGER_WINDOW: u64 = 3 << 39;
 
+/// The bytes a root entry of a space spans, on both targets.
+const ROOT_ENTRY_BYTES: u64 = 1 << 39;
+
+unsafe extern "C" {
+    /// The end of dom0's image, which the linker places past its last section.
+    static _end: u8;
+}
+
+/// Whether a source of dom0's may take the window at `window`, whose tables an eager source links into
+/// the window's root entry whole: the window starts a root entry, and that entry is none that holds
+/// what the loader mapped for dom0 or what dom0 maps itself, nor that of a window in `taken`. The loader
+/// maps dom0's image from USERSPACE_BASE to `_end`, its payload from USERSPACE_PAYLOAD_BASE and its
+/// stack, which holds this function's frame; dom0 maps and links pages of its own space under
+/// PATH_ADDRESS, and its sources under their windows.
+fn window_clear(window: u64, taken: &[u64]) -> bool {
+    let entry = |address: u64| address / ROOT_ENTRY_BYTES;
+    let here = 0u8;
+    let image = entry(USERSPACE_BASE)..=entry(&raw const _end as u64 - 1);
+    let own = entry(window);
+    window % ROOT_ENTRY_BYTES == 0
+        && !image.contains(&own)
+        && own != entry(USERSPACE_PAYLOAD_BASE)
+        && own != entry(&raw const here as u64)
+        && own != entry(PATH_ADDRESS)
+        && taken.iter().all(|&other| entry(other) != own)
+}
+
 /// The start of the line dom0 prints once its eager source is exercised, before how many pages it backed.
 const EAGER_HEAD: &[u8] = b"dom0 eager backed ";
 
 /// Whether dom0 runs aeager's verified exercise over an eager source of its own: from the untyped that is
 /// a gigabyte, a table leaf into root entry EAGER_ENTRY and a child untyped of EAGER_ORDER below
 /// EAGER_BELOW_TOP into its first slot, whose pages the source alone retypes, putting frame capabilities
-/// in the slots after it, and the window at EAGER_WINDOW. The exercise reserves a span; backs, writes and
-/// releases its first page, backs and writes its second, backs and writes its first again and reads the
-/// second; backs the span a page at a time until the source refuses, writes a byte through the run and
-/// reads it back, releases the run, backs a page again, backs the page it refused and writes and reads a
-/// byte there, and gives the span back. dom0 prints how many pages it backed, and the check holds when
-/// the second page read its own byte, so no translation of the first outlived its release, the source
-/// refused before the block was full, the byte read back, a page was backed again, and the refused page
-/// was backed once the run was released, with every page of the untyped then mapped or parked.
+/// in the slots after it, and the window at EAGER_WINDOW, which window_clear allows. The exercise
+/// reserves a span; backs, writes and releases its first page, backs and writes its second, backs and
+/// writes its first again and reads the second; backs the span a page at a time until the source refuses,
+/// writes a byte through the run and reads it back, releases the run, backs a page again, backs the page
+/// it refused and writes and reads a byte there, and gives the span back. dom0 prints how many pages it
+/// backed, and the check holds when the second page read its own byte, so no translation of the first
+/// outlived its release, the source refused before the block was full, the byte read back, a page was
+/// backed again, and the refused page was backed once the run was released, with every page of the
+/// untyped then mapped or parked.
 fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
+    if !window_clear(EAGER_WINDOW, &[]) {
+        return false;
+    }
     let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
         return false;
     };
@@ -2344,6 +2376,9 @@ fn run_objects_until_refused() -> Option<usize> {
 /// The eager source over which astd's global allocator serves dom0, set up as heap_allocator_held
 /// says, or None when a call was refused.
 fn heap_source(caller: &mut Tracked<Caller>, empty: u64) -> Option<aeager::Eager> {
+    if !window_clear(HEAP_WINDOW, &[EAGER_WINDOW]) {
+        return None;
+    }
     let (untyped, block) = untyped_of_pages(caller, empty, 1 << 18)?;
     let memory = block.base + (4096 << block.order) - HEAP_BELOW_TOP;
     let source = first_slot(HEAP_ENTRY);
@@ -2370,9 +2405,10 @@ fn heap_source(caller: &mut Tracked<Caller>, empty: u64) -> Option<aeager::Eager
 /// Whether astd's global allocator, given a heap over an eager source of dom0's own, serves dom0: from
 /// the gigabyte untyped, table leaves into the HEAP_LEAVES root entries from HEAP_ENTRY and a child
 /// untyped of HEAP_ORDER at HEAP_BELOW_TOP into the first's first slot, whose pages the source alone
-/// retypes, and the window at HEAP_WINDOW. A box of the smallest class, a vector of a few pages and one
-/// over a block are written and read back and freed; run-sized objects are then allocated until the
-/// allocator refuses one, at least one given first, and all freed, after which one is given again.
+/// retypes, and the window at HEAP_WINDOW, which window_clear allows beside EAGER_WINDOW. A box of the
+/// smallest class, a vector of a few pages and one over a block are written and read back and freed;
+/// run-sized objects are then allocated until the allocator refuses one, at least one given first, and
+/// all freed, after which one is given again.
 fn heap_allocator_held(empty: u64) -> bool {
     let Some(eager) = astd::heap::with_caller(|caller| heap_source(caller, empty)) else {
         return false;
