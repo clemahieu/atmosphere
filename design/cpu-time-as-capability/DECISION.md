@@ -1,9 +1,9 @@
 ---
 title: "CPU time is granted by a core capability with fixed priorities; scheduling contexts are deferred"
-date: 2026-11-14
+date: 2026-11-15
 status: active
 tags: [scheduling, capability]
-one_line: "Per-core run queues, fixed priorities, turns at equal priority, one selection function and one scheduling record per thread. A core capability allows placing a thread on that core at or below its maximum priority, a derived copy may lower it, and a placement is a binding so CPU time is revocable. A thread made Runnable above what its core runs sends that core a reschedule IPI. Each thread's consumed cycles are counted at every kernel entry, by the core running it only, and nothing enforces them yet. Budgets and periods are deferred, with three constraints kept so they stay addable."
+one_line: "Per-core run queues, fixed priorities, turns at equal priority, one selection function and one scheduling record per thread. A core capability allows placing a thread on that core at or below its maximum priority, a derived copy may lower it, and a placement is a binding so CPU time is revocable. A placer stops and restarts a placed thread with suspend and start on its thread capability, each one bounded step, a stop on another core returning again until that core has taken the thread off. A thread made Runnable above what its core runs sends that core a reschedule IPI. Each thread's consumed cycles are counted at every kernel entry, by the core running it only, and nothing enforces them yet. Budgets and periods are deferred, with three constraints kept so they stay addable."
 revisit_if: "A workload needs a bound on how much time a thread can take, which fixed priorities cannot give, or temporal isolation inside a core is wanted by design/isolation-claim/."
 confidence: "The human's choice to defer scheduling contexts; the estimate that they cost about 600 to 900 lines of code and 2,500 to 4,000 of proof plus a one-time rework of the scheduler and IPC proofs is reasoned from structure, not measured."
 ---
@@ -13,6 +13,8 @@ confidence: "The human's choice to defer scheduling contexts; the estimate that 
 ## Decision
 
 Per-core queues over the intrusive list, fixed priorities, turns at equal priority, one selection function and one scheduling record in a thread. A core capability allows placing a thread on that core at or below its maximum priority, and a derived copy may lower it. A thread with no placement cannot run, so CPU time is granted. A placement is a binding under the core capability, so revoking that capability makes its threads Inactive: CPU time is revocable. Timer: a per-core capability arms a deadline that signals a notification, multiplexed with the kernel's slice, so a user-level scheduler can be built. Thread placement across cores is the default thread library's policy, and rebalancing, if wanted, is a service holding thread capabilities.
+
+A placer stops and restarts a placed thread through its thread capability, not its core capability: suspend makes the thread Inactive and start makes it Runnable again at the back of its priority on the core it is placed on, operations 23 and 22, `design/syscall-abi-in-registers/`. The placement stays through both, so a restart names only the thread, and a user-level scheduler calls the pair each slice, `design/schedulers-over-core-partitions/`. Each is one bounded step. A suspend of a thread Running on another core records a pending stop, sends that core the reschedule IPI and returns again; the same invocation returns ok once that core has entered the kernel and taken the thread off, so only core c ever writes its own current thread, `design/one-lock-bounded-steps/`. Revoking the core capability is how a holder loses the core; suspend and start are how the placer uses it.
 
 A thread made Runnable on a core at a priority above that core's current thread, or on a core running nothing, sends that core a reschedule IPI, so the core runs the selection now and not at its next kernel entry. Without it, a core with no tick running a thread that never enters the kernel would never run the thread that outranks it. The rule is in `start`'s specification, as the ghost send the stop and flush IPIs use, `design/one-lock-bounded-steps/`; a wake from IPC or a notification follows the same rule. A thread of equal or lower priority sends nothing: it waits for its turn at the core's next tick or block.
 
@@ -34,3 +36,7 @@ The context object, a budget check against the consumed count, donation and time
 
 - **Round-robin only.** No guarantee a user-level scheduler runs.
 - **Scheduling contexts now.** New work either way; deferring costs the rework above and nothing that grows.
+
+## What this does not settle
+
+- A switch, suspending the caller's own thread and starting another in one step, and a change of a placed thread's priority without stopping it. Both would be single bounded steps over the same record; today a yield is two steps, and a new priority is a new placement.
