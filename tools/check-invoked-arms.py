@@ -31,10 +31,12 @@ Name. The value depends on a call when the call is part of the expression the fu
 including a conjunct of a disjunct of that expression, or when it is in a let whose name that
 expression uses. A call that occurs only in a let the value does not use, such as let _x =
 Name(...), does not: the binding is thrown away. A call of Name carries nothing when a spec fn
-named Name anywhere in the sources is marked #[verifier::opaque]: a caller of invoked would not see
-its body without a reveal. An open predicate whose body calls an opaque helper is not that case;
-the check reads the name the conjunct calls and not what its body calls. A field comparison, a
-quantifier or two calls is not carried.
+named Name anywhere in the sources is closed or uninterpreted: a caller cannot reveal that body.
+#[verifier::opaque] on a pub open spec fn is not that case. Opacity does not change the predicate,
+and a caller reveals it. The check reads the name the conjunct calls and not what its body calls,
+so an open predicate whose body calls an opaque, closed or uninterpreted helper is not printed;
+keeping that helper revealable is the committer's. A field comparison, a quantifier or two calls
+is not carried.
 
 The check prints one line path:function:conjunct for each conjunct it does not count as carried,
 the conjunct with its whitespace collapsed, and the path from the repository root. It prints
@@ -68,12 +70,9 @@ RESULT = re.compile(r"^ret == (?:old\(self\)\.|self\.)?([A-Za-z_]\w*)\s*\(")
 SELF_CALL = re.compile(r"\bself\.(\w+)\s*\(")
 SPEC_CALL = re.compile(r"\b(spec_\w+)\s*\(")
 POST_UNCHANGED = re.compile(r"post == pre(?!\s*\.)")
-# A spec fn marked opaque, with any other attributes and qualifiers between the mark and `fn`.
-OPAQUE = re.compile(
-    r"#\[\s*verifier\s*(?:::\s*opaque|\(\s*opaque\s*\))\s*\]"
-    r"(?:\s*#\[[^\]]*\])*"
-    r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:open|closed|uninterp)\s+)?spec\s+fn\s+([A-Za-z_]\w*)"
-)
+# A spec fn's mode and name. Closed and uninterpreted are not revealable. Open is, and
+# #[verifier::opaque] on it is not part of the match: a caller reveals an opaque pub open body.
+SPEC_FN = re.compile(r"\b(open|closed|uninterp)\s+spec\s+fn\s+([A-Za-z_]\w*)")
 
 # A method of impl CapKernel. `ensures` is the clause text, `body` the brace block, `full` from
 # `fn` through the body, all with comments and string literals blanked.
@@ -569,17 +568,22 @@ def strip_implication(text):
     return text
 
 
-def opaque_names(sources):
-    """The names of the spec fns marked #[verifier::opaque] in the sources, which are (path, masked
-    text) pairs."""
-    return {name for _, text in sources for name in OPAQUE.findall(text)}
+def unrevealable_names(sources):
+    """The names of the closed or uninterpreted spec fns in the sources, which are (path, masked
+    text) pairs. A pub open spec fn is absent, opaque or not: a caller can reveal it."""
+    names = set()
+    for _, text in sources:
+        for mode, name in SPEC_FN.findall(text):
+            if mode != "open":
+                names.add(name)
+    return names
 
 
-def carried(conjunct, spec_text, arm_text, opaque=frozenset()):
+def carried(conjunct, spec_text, arm_text, unrevealable=frozenset()):
     """Whether one ensures conjunct is carried by the arm and its spec function, or is one of the
     two shapes the record skips. A call carries it only where the value depends on the call. A let
-    binding the value does not use is not such a place, and a call of a name in `opaque` carries
-    nothing: a caller would not see the predicate's body without a reveal."""
+    binding the value does not use is not such a place, and a call of a name in `unrevealable`
+    carries nothing: a closed or uninterpreted body is not one a caller can reveal."""
     if re.search(r"\bsteps\b", conjunct):
         return True
     if conjunct in WF:
@@ -588,10 +592,10 @@ def carried(conjunct, spec_text, arm_text, opaque=frozenset()):
     if conjunct in UNCHANGED and (unchanged(arm_value) or unchanged(spec_value)):
         return True
     name = result_call(conjunct)
-    if name is not None and name not in opaque and calls(spec_value, name):
+    if name is not None and name not in unrevealable and calls(spec_value, name):
         return True
     name = one_call(re.sub(r"^#\[trigger\]\s*", "", strip_implication(conjunct)))
-    return name is not None and name not in opaque and calls(spec_value, name)
+    return name is not None and name not in unrevealable and calls(spec_value, name)
 
 
 def find_operation_match(body):
@@ -783,7 +787,7 @@ def lines_of(sources):
     """Each uncarried conjunct in the sources, as path:function:conjunct. `sources` is (path, masked
     text) pairs."""
     index = index_of(sources)
-    opaque = opaque_names(sources)
+    unrevealable = unrevealable_names(sources)
     lines = []
     for spec_name, arm, ops in pairings(index):
         spec = index.get(spec_name)
@@ -793,7 +797,7 @@ def lines_of(sources):
             if fn is None or fn.kind != "exec_pub":
                 continue
             for conjunct in split_conjuncts(fn.ensures):
-                if not carried(conjunct, spec_text, arm, opaque):
+                if not carried(conjunct, spec_text, arm, unrevealable):
                     lines.append(f"{fn.path}:{name}:{conjunct}")
     return lines
 
@@ -1095,7 +1099,7 @@ class Tests(unittest.TestCase):
         )
         self.assertEqual(self.lines(source), [])
 
-    def test_a_shared_predicate_marked_opaque_is_not_carried(self):
+    def test_an_opaque_pub_open_predicate_is_carried(self):
         source = CARRIED.replace(
             "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
             "    #[verifier::opaque]\n"
@@ -1105,14 +1109,34 @@ class Tests(unittest.TestCase):
             "    }\n"
             "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
         )
+        self.assertEqual(self.lines(source), [])
+
+    def test_a_closed_predicate_is_not_carried(self):
+        source = CARRIED.replace(
+            "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
+            "    pub closed spec fn frame_retyped(pre: Self, post: Self, root: usize) -> bool {\n"
+            "        post.flush_epoch == pre.flush_epoch\n"
+            "    }\n"
+            "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
+        )
         self.assertEqual(
             self.lines(source),
             ["op.rs:retype_frame:ret ==> Self::frame_retyped(old(self), final(self), root)"],
         )
 
-    def test_a_result_call_of_an_opaque_free_predicate_is_not_carried(self):
+    def test_an_uninterpreted_predicate_is_not_carried(self):
+        source = CARRIED.replace(
+            "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
+            "    pub uninterp spec fn frame_retyped(pre: Self, post: Self, root: usize) -> bool;\n"
+            "    pub open spec fn spec_outcome(&self) -> Outcome {\n",
+        )
+        self.assertEqual(
+            self.lines(source),
+            ["op.rs:retype_frame:ret ==> Self::frame_retyped(old(self), final(self), root)"],
+        )
+
+    def test_a_result_call_of_a_closed_predicate_is_not_carried(self):
         source = CARRIED + (
-            "#[verifier(opaque)]\n"
             "pub closed spec fn can_retype_frame(k: CapKernel, root: usize) -> bool {\n"
             "    k.free > 0\n"
             "}\n"
