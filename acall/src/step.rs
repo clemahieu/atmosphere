@@ -30,8 +30,6 @@ use verified::capability::caller::view_writes_space;
 #[cfg(verus_keep_ghost)]
 use verified::capability::link::tree_of;
 #[cfg(verus_keep_ghost)]
-use verified::capability::map::address_path;
-#[cfg(verus_keep_ghost)]
 use verified::capability::mapping::{space_mapping, SpacePath};
 use verified::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
@@ -136,6 +134,16 @@ pub(crate) proof fn set_page(tracked caller: &mut Caller, tracked token: &mut Pa
 pub open spec fn slot_names_own_space(k: CapKernel, root: usize, slot: usize) -> bool {
     let v = k.table_view(root);
     v.contains_key(slot) && view_writes_space(v[slot]) ==> v[slot].base == root
+}
+
+/// The slot at `slot` of the table at `root` in `k`, while it holds a capability that writes a space,
+/// holds one naming a space other than the one keyed at `root`: a process building a child, not one
+/// changing itself, whose own space changes only against its page tokens
+/// (design/region-map-owns-the-address-space/). It stays true across other callers' steps as
+/// slot_names_own_space does.
+pub open spec fn slot_names_other_space(k: CapKernel, root: usize, slot: usize) -> bool {
+    let v = k.table_view(root);
+    v.contains_key(slot) && view_writes_space(v[slot]) ==> v[slot].base != root
 }
 
 /// The slot at `from` of the table at `root` in `k`, while it holds a frame capability, holds one with
@@ -311,32 +319,6 @@ pub proof fn lemma_space_kept_agrees(a: CapKernel, b: CapKernel, root: usize, pa
     );
 }
 
-/// The map of the page at `va` through the space capability at `slot` of the table at `root` in `k`
-/// leaves every page token's page and the large entry over it alone: the space is another's, or the
-/// address's page and its large entry are none a token is for.
-pub open spec fn map_misses_pages(k: CapKernel, root: usize, slot: usize, va: u64, pages: Map<SpacePath, Option<usize>>) -> bool {
-    ||| k.table_view(root)[slot].base != root
-    ||| forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> large_path(p) != large_path(address_path(va))
-}
-
-/// A mapping that gained one entry at a path that is neither a token's page nor the large entry over
-/// it still agrees with every token.
-pub proof fn lemma_inserted_keeps_agree(a: IMap<SpacePath, PageEntry>, q: SpacePath, e: PageEntry, pages: Map<SpacePath, Option<usize>>)
-    requires
-        forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> page_agrees(a, p, pages[p]),
-        forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> large_path(p) != large_path(q),
-    ensures
-        forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> page_agrees(a.insert(q, e), p, pages[p]),
-{
-    assert forall|p: SpacePath| #[trigger] pages.contains_key(p) implies page_agrees(a.insert(q, e), p, pages[p]) by {
-        assert(page_agrees(a, p, pages[p]));
-        assert(large_path(p) != large_path(q));
-        assert(large_path(large_path(p)) == large_path(p));
-        assert(p != q);
-        assert(large_path(p) != q);
-    }
-}
-
 /// The call returned from the state its operation left, its core alone catching up, which changes no
 /// space; so when that state agrees with every page token and the process is still sealed and a
 /// process, the caller token's invariant holds again.
@@ -460,7 +442,7 @@ pub proof fn lemma_entered(pre: CapKernel, post: CapKernel, root: usize, frame: 
 /// the kernel put in the status and result registers. The call enters from a well-formed state the rely
 /// relates to the one the token last held, which the token now carries as its entry. The state the
 /// process was handed and the page tokens' authority exist only in the proof, so the call keeps them.
-pub fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
+pub(crate) fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
     ensures
@@ -492,7 +474,7 @@ pub fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u
 /// The system call itself, as the kernel proves it of the step it takes for the calling thread.
 // kernel: kernel/verified/capability/operation.rs CapKernel::enter
 // kernel: kernel/verified/capability/rely.rs CapKernel::lemma_rely_transitive
-pub assume_specification[system_call](caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
+pub(crate) assume_specification[system_call](caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
     ensures
@@ -508,7 +490,7 @@ pub assume_specification[system_call](caller: &mut Tracked<Caller>, number: u64,
 
 } // verus!
 
-pub fn system_call(_caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Outcome {
+pub(crate) fn system_call(_caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Outcome {
     // The ABI's own: every operation may change the caller's address space, which no Rust value of
     // this crate's caller lives in unless it holds the permission the wrapper's contract speaks of.
     let (status, results) = unsafe { operation::invoke_returning(number, slot, [a1, a2, a3, a4, a5]) };

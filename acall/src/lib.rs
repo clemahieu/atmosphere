@@ -7,8 +7,10 @@
 //! step, from an entry state the kernel's rely relates to the caller token's last state, on the premise
 //! `step` states that the token was the kernel's state when the process was handed it. Every wrapper in
 //! `capability` and `memory` is verified over it by the operation's kernel-side lemma and states the
-//! operation's contract from that entry state, so a contract here is a proven one, not an assumed one. `example` is a verified use of the
-//! wrappers.
+//! operation's contract from that entry state, so a contract here is a proven one, not an assumed one. `step`
+//! is private to this crate, so verified code calls the kernel only through the wrappers, and changes
+//! its own space only through map_own and unmap_own, against a page token
+//! (design/region-map-owns-the-address-space/). `example` is a verified use of the wrappers.
 //! See design/divider-proven-by-invariant/.
 #![no_std]
 // A cargo build erases specifications and proofs, so there a variable only they read looks unused.

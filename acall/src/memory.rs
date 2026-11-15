@@ -276,10 +276,12 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
 }
 
 /// Maps the page at offset `page` of the frame capability at index `from` of the caller's table into
-/// the entry at `level` that the address `va` names in the space of the capability at index `slot`.
+/// the entry at `level` that the address `va` names in the space of the capability at index `slot`,
+/// another process's: the caller's own space is mapped by map_own, against its page token.
 pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u64, page: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
+        slot_names_other_space(old(caller)@.kernel(), old(caller)@.root(), slot as usize),
     ensures
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
@@ -287,8 +289,7 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
         final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
         pages_kept(old(caller)@, final(caller)@),
-        old(caller)@.pages_wf() && map_misses_pages(final(caller)@.entry(), final(caller)@.root(), slot as usize, va, old(caller)@.pages())
-            ==> final(caller)@.pages_wf(),
+        old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
         CapKernel::map_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, page as usize, out),
         returned_on(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
@@ -309,22 +310,21 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         lemma_returned_map_fields(entry, mid, caller@.kernel(), c, pre.root(), slot as usize, va, level, from as usize, page as usize);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
-        if pre.pages_wf() && map_misses_pages(entry, pre.root(), slot as usize, va, pre.pages()) {
+        if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
             let root = pre.root();
             let a = space_mapping(tree_of(&entry.table_pages, &entry.spaces), root);
             let b = space_mapping(tree_of(&mid.table_pages, &mid.spaces), root);
             if out == status_only(STATUS_OK) {
-                let s = entry.table_view(root)[slot as usize].base;
-                if s == root {
-                    lemma_inserted_keeps_agree(a, address_path(va), b[address_path(va)], pre.pages());
-                    assert(b == a.insert(address_path(va), b[address_path(va)]));
-                } else {
-                    assert(b == a);
-                }
-            } else {
-                assert(b == a);
+                // The slot held at entry the capability it held when the caller called, which names
+                // another's space, so the map left the caller's own alone.
+                let v = entry.table_view(root);
+                let u = pre.kernel().table_view(root);
+                assert(v.contains_key(slot as usize));
+                assert(same_cap(v[slot as usize], u[slot as usize]));
+                assert(v[slot as usize].base != root);
             }
+            assert(b == a);
             lemma_returned_agrees(caller@, mid, c);
         }
     }
@@ -332,10 +332,12 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
 }
 
 /// Unmaps the level 1 entry at `level` that the address `va` names in the space of the capability at
-/// index `slot`.
+/// index `slot`, another process's: the caller's own space is unmapped by unmap_own, against its page
+/// token.
 pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
+        slot_names_other_space(old(caller)@.kernel(), old(caller)@.root(), slot as usize),
     ensures
         final(caller)@.wf(),
         final(caller)@.root() == old(caller)@.root(),
