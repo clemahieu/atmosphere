@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
-line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, core 1 unloaded-then-loaded unmap flush counts, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, a thread's consumed cycles growing, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, core 1 unloaded-then-loaded unmap flush counts, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 Each of CPU 0 and CPU 1 prints its processor report once; on x86_64 its invpcid bit is the host's, CPUID
 Fn0000_0007 EBX bit 10 as /proc/cpuinfo's invpcid flag gives it, which the output records, and its specres bit
 is clear; on aarch64 its x86_64 bits are clear.
@@ -83,6 +83,20 @@ CORE_1_LINE = "dom0 thread ran on core 1"
 # The lines dom0 prints once a thread of its child on core 1 made invocations while dom0 made its own on
 # core 0, until the thread stopped at its count: dom0's count, then the count the thread wrote, neither zero.
 INVOKED_COUNTS = re.compile(r"^dom0 invoked [1-9][0-9]* times on core 0\r?\nthread invoked [1-9][0-9]* times on core 1\r?$", re.M)
+
+# The lines dom0 prints once it inspected the thread invoking on core 1 after the thread's first counted
+# inspect, and again once the thread suspended itself at its count: the thread's consumed cycles each time,
+# which every kernel entry of the thread charged, then that the second is larger.
+# design/cpu-time-as-capability/.
+CONSUMED_GREW = re.compile(r"^consumed before ([0-9]+)\r?\nconsumed after ([0-9]+)\r?\ndom0 thread consumed grew\r?$", re.M)
+
+
+def consumed_grew(serial):
+    """Whether the log shows dom0's two readings of a thread's consumed cycles, the second larger, and its
+    line saying so."""
+    found = CONSUMED_GREW.search(serial)
+    return found is not None and int(found.group(2)) > int(found.group(1))
+
 
 # The lines dom0 prints around its unmap of a page in its child's space while a thread of the child spins
 # on CPU 1, having written the page: before the unmap, and once the page's frame, its capability deleted,
@@ -502,6 +516,8 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
         raise Refused(f'the serial log does not show CPU 1 running a thread of dom0\'s child: "{CORE_1_LINE}"')
     if not INVOKED_COUNTS.search(serial):
         raise Refused("the serial log does not show dom0 on core 0 and a thread of its child on core 1 both invoking")
+    if not consumed_grew(serial):
+        raise Refused("the serial log does not show a thread's consumed cycles growing while it ran on core 1")
     if not core_1_unmap_acknowledged(serial):
         raise Refused("the serial log does not show CPU 1 acknowledging the flush of dom0's unmap of a page a thread "
                       f'on CPU 1 wrote, between "{CORE_1_UNMAP_LINE}" and "{CORE_1_FREED_LINE}"')
@@ -542,7 +558,7 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     reports = processor_reports_held(serial, arch, host_invpcid() if invpcid is None and arch == "x86_64" else invpcid)
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
+            f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, a thread's consumed cycles growing, core 1 unmap acknowledged, started thread line, preempted counts, "
             f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, own nx page line, ' if arch == 'x86_64' else ''}core 1 unloaded-then-loaded unmap flush counts, syscall registers line, preemption registers line, context switch registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended, {reports}")
@@ -606,6 +622,9 @@ def boot_log():
             "dom0 thread ran on core 1\n"
             "dom0 invoked 90000 times on core 0\n"
             "thread invoked 4096 times on core 1\n"
+            "consumed before 5200\n"
+            "consumed after 91000000\n"
+            "dom0 thread consumed grew\n"
             "dom0 unmaps a page core 1 wrote\n"
             "\x1b[34m INFO CPU 1 acknowledged flush epoch 812\x1b[0m\n"
             "dom0 freed the page core 1 wrote\n"
@@ -682,6 +701,9 @@ class Tests(unittest.TestCase):
             ("dom0 thread ran on core 1\n", "CPU 1 running a thread"),
             ("dom0 invoked 90000 times on core 0\n", "both invoking"),
             ("thread invoked 4096 times on core 1\n", "both invoking"),
+            ("consumed before 5200\n", "consumed cycles growing"),
+            ("consumed after 91000000\n", "consumed cycles growing"),
+            ("dom0 thread consumed grew\n", "consumed cycles growing"),
             ("dom0 unmaps a page core 1 wrote\n", "CPU 1 acknowledging the flush"),
             ("\x1b[34m INFO CPU 1 acknowledged flush epoch 812\x1b[0m\n", "CPU 1 acknowledging the flush"),
             ("dom0 freed the page core 1 wrote\n", "CPU 1 acknowledging the flush"),
@@ -880,6 +902,13 @@ class Tests(unittest.TestCase):
         swapped = boot_log().replace("dom0 invoked 90000 times on core 0\nthread invoked 4096 times on core 1\n",
                                      "thread invoked 4096 times on core 1\ndom0 invoked 90000 times on core 0\n")
         self.assertIn("both invoking", self.refused(swapped))
+
+    def test_the_second_consumed_is_larger(self):
+        self.assertIn("consumed cycles growing", self.refused(boot_log().replace("after 91000000", "after 5200")))
+        self.assertIn("consumed cycles growing", self.refused(boot_log().replace("after 91000000", "after 5199")))
+        swapped = boot_log().replace("consumed before 5200\nconsumed after 91000000\n",
+                                     "consumed after 91000000\nconsumed before 5200\n")
+        self.assertIn("consumed cycles growing", self.refused(swapped))
 
     def test_core_1_acknowledges_between_the_unmap_and_the_free(self):
         log = boot_log()

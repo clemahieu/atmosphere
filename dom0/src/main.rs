@@ -92,6 +92,8 @@
 //! inspect in the shared frame, and suspends itself at a count dom0 gives it. While it does, dom0 inspects
 //! its console capability over and over on core 0, until it has seen the thread's count reach that end
 //! after seeing it change between two of its own inspects at least three times, and prints both counts.
+//! It inspects the thread when it first sees the count move and again once the thread suspended itself,
+//! and prints the thread's consumed cycles from each and that the second is larger.
 //! It maps a new frame into the child's space and starts the eighth thread on core 1 the same way; the
 //! thread writes the frame's page and spins in the child's space. dom0 unmaps the page and deletes the
 //! frame's capability, and the free of the frame returns again until CPU 1, sent the unmap's flush IPI,
@@ -1546,6 +1548,21 @@ const INVOKED_DOM0_TAIL: &[u8] = b" times on core 0\n";
 const INVOKED_THREAD_HEAD: &[u8] = b"thread invoked ";
 const INVOKED_THREAD_TAIL: &[u8] = b" times on core 1\n";
 
+/// The starts of the lines dom0 prints with the thread's consumed cycles, read once its count first moved
+/// and again once it suspended itself, and the line it prints once the second is larger, which the gate
+/// looks for. design/cpu-time-as-capability/.
+const CONSUMED_BEFORE_HEAD: &[u8] = b"consumed before ";
+const CONSUMED_AFTER_HEAD: &[u8] = b"consumed after ";
+const CONSUMED_GREW: [u64; 5] = operation::print_words(b"dom0 thread consumed grew\n");
+
+/// The consumed cycles inspect reports for the thread at `thread`, when it holds one.
+fn thread_consumed(caller: &mut Tracked<Caller>, thread: u64) -> Option<u64> {
+    match inspect(caller, thread) {
+        Ok(held) if held.kind == operation::KIND_THREAD => Some(held.consumed),
+        _ => None,
+    }
+}
+
 /// Whether a thread of dom0's child on core 1 makes invocations while dom0 makes its own on core 0. It
 /// reuses what switched_thread_held set up in the space of the child whose capability is in `process`, as
 /// core_1_thread_held does: the leaf in the child's root entry CHILD_OWN_ENTRY takes in its third slot a
@@ -1556,7 +1573,10 @@ const INVOKED_THREAD_TAIL: &[u8] = b" times on core 1\n";
 /// accepted and naming a console, and after each reads the thread's count, until the count reaches
 /// CORE_1_INVOCATIONS, at which the thread suspends itself. The thread counts only inspects the kernel
 /// accepted, and dom0 must see its count change between two of its own inspects INVOKED_TURNS times, so
-/// both cores were invoking at once. dom0 prints its own count and the thread's.
+/// both cores were invoking at once. dom0 prints its own count and the thread's. The first time it sees the
+/// count move, the thread has entered the kernel, and dom0 inspects the thread for its consumed cycles;
+/// once the thread suspended itself it inspects it again, every entry of the thread since having charged
+/// it, and prints both and that the second is larger.
 fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> bool {
     let entry = dom0_child_entry as *const () as u64;
     let invoke = dom0_child_invoke as *const () as u64;
@@ -1583,6 +1603,7 @@ fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> boo
     let mut ours = 0;
     let mut turns = 0;
     let mut last = 0;
+    let mut before = None;
     while last < CORE_1_INVOCATIONS && ours < CORE_0_INVOCATIONS {
         if inspect(caller, operation::ROOT_CONSOLE_SLOT).map(|held| held.kind) != Ok(operation::KIND_CONSOLE) {
             return false;
@@ -1593,12 +1614,22 @@ fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> boo
         if now != last {
             turns += 1;
             last = now;
+            if before.is_none() {
+                before = thread_consumed(caller, thread);
+            }
         }
     }
+    let (Some(before), Some(after)) = (before, thread_consumed(caller, thread)) else {
+        return false;
+    };
     last == CORE_1_INVOCATIONS
         && turns >= INVOKED_TURNS
         && print_count(INVOKED_DOM0_HEAD, ours, INVOKED_DOM0_TAIL) == operation::STATUS_OK
         && print_count(INVOKED_THREAD_HEAD, last, INVOKED_THREAD_TAIL) == operation::STATUS_OK
+        && print_count(CONSUMED_BEFORE_HEAD, before, b"\n") == operation::STATUS_OK
+        && print_count(CONSUMED_AFTER_HEAD, after, b"\n") == operation::STATUS_OK
+        && after > before
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, CONSUMED_GREW) } == operation::STATUS_OK
 }
 
 /// What dom0 prints before it unmaps a page in its child's space that a thread of the child on core 1
