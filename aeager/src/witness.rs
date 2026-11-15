@@ -71,6 +71,31 @@ pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut T
     seen
 }
 
+/// Builds and exercises an eager source of `MAX_PAGES` pages over a region-aligned window in the
+/// caller's own space in one call, as dom0 does at boot.
+pub fn witness_exercise_eager(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (seen: Option<Exercised>)
+    requires
+        old(token)@.pages_wf(),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
+        source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
+        old(token)@.wf(),
+        own_process(old(token)@),
+        names_own_space(old(token)@, space),
+        window@.addr != 0,
+        window@.addr as int % REGION_BYTES as int == 0,
+        window@.addr + WINDOW_BYTES <= usize::MAX,
+    ensures
+        seen is Some,
+{
+    proof {
+        assert(1int % LEAF_INDICES as int != 0) by (compute);
+        assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
+    }
+    exercise_eager(token, space, untyped, 0, MAX_PAGES, 1, window)
+}
+
 /// Reserves a one-block span from a fresh eager source over a region-aligned window.
 pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: Option<*mut u8>)
     requires

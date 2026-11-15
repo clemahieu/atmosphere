@@ -2280,7 +2280,7 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     {
         return false;
     }
-    let Some(mut eager) = aeager::Eager::new(
+    let Some(seen) = aeager::exercise_eager(
         caller,
         operation::ROOT_PROCESS_SLOT,
         source,
@@ -2291,7 +2291,6 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     ) else {
         return false;
     };
-    let seen = aeager::exercise(&mut eager, caller);
     print_count(EAGER_HEAD, seen.backed as u64, b"\n") == operation::STATUS_OK
         && seen.apart
         && seen.backed > 0

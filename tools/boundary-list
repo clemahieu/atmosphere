@@ -109,8 +109,7 @@ dom0/src/main.rs	dom0::leaf_slot_held	call	acall::memory::derive	1	kernel	kernel
 dom0/src/main.rs	dom0::retyped_leaves_held::{closure#1}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::eager_source_held	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::eager_source_held	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
-dom0/src/main.rs	dom0::eager_source_held	call	aeager::exercise::exercise	1	nothing	"the Eager is new from Eager::new, whose ensures make its view well-formed holding no frame, and the caller token is the process's own, kept well-formed by each acall wrapper's ensures; that the Eager names the process's own space is the retype and derive above returning OK"
-dom0/src/main.rs	dom0::eager_source_held	call	aeager::eager::new	1	check	"window_clear(EAGER_WINDOW, &[])"
+dom0/src/main.rs	dom0::eager_source_held	call	aeager::exercise::exercise_eager	1	nothing	"the caller token is the process's own, well-formed with its page tokens well-formed as each acall wrapper's ensures keep them, and window_clear(EAGER_WINDOW, &[]) above checks the window; that slot ROOT_PROCESS_SLOT names the process's own space is boot's placing and no call since moving it, which no proof or check shows"
 dom0/src/main.rs	dom0::heap_source	call	aeager::eager::new	1	check	"window_clear(HEAP_WINDOW, &[EAGER_WINDOW])"
 dom0/src/main.rs	dom0::heap_source	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::heap_source	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter

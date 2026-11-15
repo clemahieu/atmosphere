@@ -10,7 +10,7 @@
 //! pages stay mapped, parked at their addresses, and back those addresses again; a back elsewhere with
 //! no frame held or page free unmaps a parked page and maps its frame there. `glue` is the system calls, verified over acall's kernel step but for the one item
 //! that turns an accepted map into the permission to the page's bytes; `exercise` is a verified use of
-//! the contract that dom0 runs at boot; `apart` is what one source's steps leave of another's over
+//! the contract, which dom0 runs at boot over a source `exercise_eager` builds in the same call; `apart` is what one source's steps leave of another's over
 //! disjoint ranges; `witness` holds verified uses of the operations, built into no image.
 #![no_std]
 // A cargo build erases specifications and proofs, so there a variable only they read looks unused.
@@ -31,7 +31,7 @@ pub use acall::step::caller_alone;
 pub use eager::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 #[cfg(verus_keep_ghost)]
 pub use eager::{acall_call_in_window, acall_setup_call, run_touches_block, untyped_page, window_block};
-pub use exercise::{exercise, Exercised};
+pub use exercise::{exercise, exercise_eager, Exercised};
 pub use glue::{AcallCall, AcallStep};
 #[cfg(verus_keep_ghost)]
 pub use glue::{acall_ok, acall_steps, flush_room, kernel_source_ready, source_ready};

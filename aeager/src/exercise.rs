@@ -11,6 +11,9 @@
 //! may have grown. The proof says the second page reads its own byte, since the two pages' permissions
 //! are apart; on the machine it does only while no translation of the first page outlives its release,
 //! so that is what the read checks. What it saw is the caller's to judge: dom0 prints it.
+//! `exercise_eager` builds the eager source and exercises it in one verified call, so that the source
+//! serving the caller and its view being well formed, which `exercise` requires, are `Eager::new`'s
+//! ensures and no glue's word.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -18,8 +21,13 @@ use vstd::layout::*;
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
+use acall::step::Caller;
 use aheap::arch::*;
 use aheap::source::*;
+
+#[cfg(verus_keep_ghost)]
+use crate::glue::{names_own_space, own_process, window_unclaimed};
+use crate::Eager;
 
 verus! {
 
@@ -329,6 +337,36 @@ pub fn exercise<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (s
     src.release_span(token, addr);
     assert(src@.spans =~= start.spans);
     Exercised { backed: k, refused, read, again, apart, fresh }
+}
+
+/// Builds the eager source `Eager::new` builds from these arguments and exercises it, or returns
+/// `None` when `new` refuses them. The source serves the caller between the two calls because nothing
+/// else runs between them: `new` returns it holding every frame it holds, and the caller's own
+/// process and its space slot are as they were.
+pub fn exercise_eager(
+    caller: &mut Tracked<Caller>,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: *mut u8,
+) -> (seen: Option<Exercised>)
+    requires
+        old(caller)@.pages_wf(),
+        window_unclaimed(old(caller)@, window@.addr),
+        old(caller)@.wf(),
+        own_process(old(caller)@),
+        names_own_space(old(caller)@, space),
+    ensures
+        final(caller)@.wf(),
+        seen is Some <==> Eager::new_ok(memory, pages, slots, window),
+{
+    let mut source = match Eager::new(caller, space, untyped, memory, pages, slots, window) {
+        None => return None,
+        Some(source) => source,
+    };
+    Some(exercise(&mut source, caller))
 }
 
 } // verus!
