@@ -16,7 +16,7 @@ The network protocol stack is tier 1 required, not a tier-1 target with tier 2 a
 
 Five rules shape it:
 
-1. **Proven combinators.** Every wire format is parsed and serialised only through a combinator library whose properties are proven once per combinator: it ends, it consumes at most its input, it accepts or refuses every byte string, and serialising inverts parsing. A format written in the combinators inherits these properties. No parser in the stack is written by hand.
+1. **Proven combinators.** Every wire format is parsed and serialised only through a combinator library whose properties are proven once per combinator: it ends, it consumes at most its input, it accepts or refuses every byte string, and serialising inverts parsing. A format written in the combinators inherits these properties. No parser in the stack is written by hand. The library is written in the tree, `design/wire-combinators-written-here/`.
 2. **Fixed nesting.** Each format states the depth of everything a sender can nest or repeat: VLAN tags, IPv6 extension headers, IP and TCP options. Bounded repetition takes its bound as a parameter, and a packet past a bound is refused, so depth is never something a loop merely happens to handle.
 3. **Linear work.** Per-packet work is bounded linearly in the packet's length, `steps <= k * len + c`, by a ghost step counter in each parser's and transition's postcondition, the way `design/one-lock-bounded-steps/` bounds the kernel's operations. A hostile packet costs no more than its size.
 4. **Transitions equal to their specifications.** Each protocol is a function `(state, packet or request or timer) -> (state, outputs)` that ensures its result equals a specification function written from the RFC's state machine. Determinism is that equality, and each refusal is specified.
@@ -42,7 +42,6 @@ The kernel needed none of rules 1 to 3 because its inputs are fixed-shape regist
 
 ## What this does not settle
 
-- Whether the combinators come from an existing Verus combinator library or are written in the tree. A library's license is checked and recorded before its source is read.
 - The constants of each step bound. The counter counts what the code tells it to count: it is a model of cost, not of cycles, and the stack depth of the code is not reasoned about.
 - The virtio-net driver, whose access to the device is a hardware guarantee, `design/who-vouches-for-an-unproven-claim/`.
 - Protocols above TCP and UDP, which this record does not cover.
