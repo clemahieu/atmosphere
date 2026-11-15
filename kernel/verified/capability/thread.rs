@@ -2426,6 +2426,7 @@ impl CapKernel {
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
             },
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         // try_type proves the block counts; this body only carries them.
         hide(BlockTable::counts_wf);
@@ -2661,6 +2662,13 @@ impl CapKernel {
             Self::lemma_record_then(pre, post, root, parent, base);
             Self::lemma_type_thread_keeps(pre, post, mid, root, to, page as int);
             Self::lemma_typed_nodes(pre.list, mid, post.list, child, base);
+            // The thread is typed bound to no process, as a thread with no record is.
+            assert forall|x: usize| #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
+                if x == base && pre.threads.records@.contains_key(base) {
+                    assert(post.threads.records@[base] == pre.threads.records@[base]);
+                }
+            }
+            Self::lemma_bound_threads_same(pre, post);
         }
         true
     }

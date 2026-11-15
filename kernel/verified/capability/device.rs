@@ -1984,6 +1984,7 @@ impl CapKernel {
                 old(self).payload_of(old(self).tables.node_of(root, j)).base,
             ),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         proof {
@@ -2113,6 +2114,8 @@ impl CapKernel {
                 assert(q == root);
             }
             Self::lemma_binding_added_discharges(pre, post, root, m, x, o, s);
+            // A device binding is no Binding node, and the thread records are untouched.
+            Self::lemma_bound_threads_same(pre, post);
         }
         true
     }
