@@ -293,6 +293,18 @@ pub fn wait() {
     unsafe { asm!("msr DAIFClr, #0b0010", "wfi", options(nomem, nostack, preserves_flags)) };
 }
 
+/// Unmasks IRQs on this core (MSR DAIFClr with the I bit, Arm ARM C6.2.288).
+#[cfg(feature = "flush_cost")]
+pub fn open_interrupts() {
+    unsafe { asm!("msr DAIFClr, #0b0010", options(nomem, nostack, preserves_flags)) };
+}
+
+/// Masks IRQs on this core (MSR DAIFSet with the I bit, Arm ARM C6.2.288).
+#[cfg(feature = "flush_cost")]
+pub fn close_interrupts() {
+    unsafe { asm!("msr DAIFSet, #0b0010", options(nomem, nostack, preserves_flags)) };
+}
+
 /// Gives up what runs on the stack whose top is `stack` and waits there for interrupts, for good: the
 /// core runs nothing, and an interrupt's handler leaves the wait by entering a thread
 /// ([`exception::enter`]), which takes SP_EL1 back to the top of the syscall stack. An IRQ from the

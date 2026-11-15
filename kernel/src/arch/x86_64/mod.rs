@@ -211,6 +211,18 @@ pub fn wait() {
     unsafe { asm!("sti", "hlt") };
 }
 
+/// Opens this core to interrupts (STI, SDM Vol. 2B).
+#[cfg(feature = "flush_cost")]
+pub fn open_interrupts() {
+    unsafe { asm!("sti", options(nostack)) };
+}
+
+/// Closes this core to interrupts (CLI, SDM Vol. 2A).
+#[cfg(feature = "flush_cost")]
+pub fn close_interrupts() {
+    unsafe { asm!("cli", options(nostack)) };
+}
+
 /// Gives up what runs on the stack whose top is `stack` and waits there for interrupts, for good: the
 /// core runs nothing, and an interrupt's handler leaves the wait by returning to a thread. Interrupts
 /// arrive on their own stack (`interrupt::IST_IRQ`), so the wait's stack is never theirs.

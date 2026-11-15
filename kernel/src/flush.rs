@@ -56,8 +56,7 @@ pub fn handle_ipi() {
     {
         let mut state = FLUSH.lock();
         let epoch = state.epoch;
-        // This state is not CapKernel's, so no TLB model is kept for it and the one made here is dropped.
-        flush_every_context(Tracked::assume_new(), core);
+        flush_this_core(core);
         state.acked[core] = epoch;
     }
     if let Some(kernel) = CAP_KERNEL.lock().as_deref_mut() {
@@ -72,6 +71,12 @@ pub fn handle_ipi() {
             log::info!("CPU {} acknowledged flush epoch {}", core, kernel.flush_epoch);
         }
     }
+}
+
+/// Flushes every context on `core`, the core this runs on, for the boot test's state. That state is
+/// not CapKernel's, so no TLB model is kept for it and the one made here is dropped.
+fn flush_this_core(core: usize) {
+    flush_every_context(Tracked::assume_new(), core);
 }
 
 /// The flush an operation owes, given CapKernel's epoch before it ran, as the mask of cores to send the
@@ -133,4 +138,138 @@ pub fn check_second_core() {
         "flush IPI acknowledged by CPU 1 at epoch {}: fastest {} mean {} cycles over {} rounds",
         epoch, fastest, total / CHECK_ROUNDS, CHECK_ROUNDS,
     );
+}
+
+/// What a flush request costs by where the target is, for the flush design's numbers: CPU 0 times
+/// [`CHECK_ROUNDS`] requests to CPU 1 until CPU 1 acknowledges, with CPU 1 running a loop with
+/// interrupts open, so the IPI finds it running rather than halted as [`check_second_core`] does, and
+/// then spinning with interrupts closed, as a core waiting for the queue lock does, polling a request
+/// word in its loop, which takes no IPI. The second models a lock whose wait loop serves flush
+/// requests; the queue lock itself is unchanged. Two more split the cost: the polled word answered
+/// without a flush, the cache lines' round trip alone, and the flush alone on CPU 0. A test build:
+/// tools/run.py --kernel-feature flush_cost.
+#[cfg(feature = "flush_cost")]
+pub mod cost {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{acknowledged, flush_this_core, start, CHECK_ROUNDS};
+    use crate::{arch, cpu};
+
+    /// Where CPU 1 waits: halted for an interrupt, as when idle; running with interrupts open; spinning
+    /// with them closed and polling REQUEST, flushing before it answers or not; or done, back to its
+    /// idle loop.
+    const HALTED: usize = 0;
+    const RUNNING: usize = 1;
+    const SPINNING: usize = 2;
+    const SPINNING_BARE: usize = 3;
+    const DONE: usize = 4;
+
+    /// The mode CPU 0 asks for, and the one CPU 1 is in.
+    static MODE: AtomicUsize = AtomicUsize::new(HALTED);
+    static SEEN: AtomicUsize = AtomicUsize::new(HALTED);
+
+    /// The last request CPU 0 posted while CPU 1 spins, and the last CPU 1 served.
+    static REQUEST: AtomicUsize = AtomicUsize::new(0);
+    static SERVED: AtomicUsize = AtomicUsize::new(0);
+
+    /// CPU 1's loop, after it comes online and before it idles, until CPU 0 is done with it.
+    pub fn serve() {
+        let core = cpu::get_cpu_id();
+        loop {
+            let mode = MODE.load(Ordering::SeqCst);
+            SEEN.store(mode, Ordering::SeqCst);
+            match mode {
+                HALTED => arch::wait(),
+                RUNNING => {
+                    arch::open_interrupts();
+                    core::hint::spin_loop();
+                }
+                SPINNING | SPINNING_BARE => {
+                    arch::close_interrupts();
+                    let request = REQUEST.load(Ordering::SeqCst);
+                    if request != SERVED.load(Ordering::Relaxed) {
+                        if mode == SPINNING {
+                            flush_this_core(core);
+                        }
+                        SERVED.store(request, Ordering::SeqCst);
+                    }
+                }
+                _ => return,
+            }
+        }
+    }
+
+    /// Puts CPU 1 in `mode` and waits until it is there. A halted CPU 1 reads the mode only after an
+    /// interrupt, so it is sent a flush IPI, which also leaves nothing it owes.
+    fn enter(mode: usize) -> bool {
+        MODE.store(mode, Ordering::SeqCst);
+        let started = arch::cycles();
+        let epoch = start(1);
+        cpu::spin_until(|| {
+            (acknowledged(1, epoch) & (SEEN.load(Ordering::SeqCst) == mode))
+                | (arch::cycles() - started > arch::stall_cycles())
+        });
+        SEEN.load(Ordering::SeqCst) == mode
+    }
+
+    /// Times CHECK_ROUNDS of `request`, each until `answered` holds for what it returned, and logs the
+    /// fastest and the mean as `case`.
+    fn time(case: &str, request: impl Fn() -> usize, answered: impl Fn(usize) -> bool) {
+        let (mut fastest, mut total) = (u64::MAX, 0);
+        for _ in 0..CHECK_ROUNDS {
+            let started = arch::cycles();
+            let token = request();
+            while !answered(token) {
+                if arch::cycles() - started > arch::stall_cycles() {
+                    log::error!("flush cost: CPU 1 {} did not acknowledge", case);
+                    return;
+                }
+                core::hint::spin_loop();
+            }
+            let cycles = arch::cycles() - started;
+            fastest = fastest.min(cycles);
+            total += cycles;
+        }
+        log::info!(
+            "flush cost: CPU 1 {}: fastest {} mean {} cycles over {} rounds",
+            case, fastest, total / CHECK_ROUNDS, CHECK_ROUNDS,
+        );
+    }
+
+    /// The polled word's request and answer.
+    fn poll(case: &str) {
+        time(case, || REQUEST.fetch_add(1, Ordering::SeqCst) + 1, |request| SERVED.load(Ordering::SeqCst) == request);
+    }
+
+    /// CPU 0's side: every case, after check_second_core timed the halted one, then CPU 1 back to idle.
+    pub fn measure() {
+        let (mut fastest, mut total) = (u64::MAX, 0);
+        for _ in 0..CHECK_ROUNDS {
+            let started = arch::cycles();
+            flush_this_core(cpu::get_cpu_id());
+            let cycles = arch::cycles() - started;
+            fastest = fastest.min(cycles);
+            total += cycles;
+        }
+        log::info!(
+            "flush cost: CPU 0 flushing every context itself: fastest {} mean {} cycles over {} rounds",
+            fastest, total / CHECK_ROUNDS, CHECK_ROUNDS,
+        );
+        if !enter(RUNNING) {
+            log::error!("flush cost: CPU 1 did not start running");
+            return;
+        }
+        time("running, interrupts open, IPI", || start(1), |epoch| acknowledged(1, epoch));
+        if !enter(SPINNING) {
+            log::error!("flush cost: CPU 1 did not start spinning");
+            return;
+        }
+        poll("spinning, interrupts closed, polled word");
+        if !enter(SPINNING_BARE) {
+            log::error!("flush cost: CPU 1 did not start spinning without a flush");
+            return;
+        }
+        poll("spinning, interrupts closed, polled word, no flush");
+        MODE.store(DONE, Ordering::SeqCst);
+    }
 }

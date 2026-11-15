@@ -36,6 +36,9 @@ stray_timer = []
 # CPU 0 panics once its command line is read, so tools/check-boot-panic.py can check that a panic
 # ends the run with a failure.
 boot_panic = []
+# The boot test also times a flush request to CPU 1 running with interrupts open and spinning with
+# them closed, polling a word: flush::cost.
+flush_cost = []
 
 # A freestanding binary with its own panic handler: it has no host tests, and cargo test builds no
 # harness for it.

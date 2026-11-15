@@ -144,6 +144,8 @@ unsafe fn start_second_core() {
     lock::contend();
     lock::report_contention();
     flush::check_second_core();
+    #[cfg(feature = "flush_cost")]
+    flush::cost::measure();
 }
 
 /// AP entry point. The machine trampoline calls this with the cpu index.
@@ -159,6 +161,8 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     lock::contend();
 
     cpu::set_online();
+    #[cfg(feature = "flush_cost")]
+    flush::cost::serve();
     idle()
 }
 
