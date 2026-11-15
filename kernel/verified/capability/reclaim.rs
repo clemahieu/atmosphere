@@ -384,6 +384,7 @@ impl CapKernel {
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& Self::table_unlinked(*self, post, base)
         &&& post.cores == self.cores
+        &&& post.spaces.loaded == self.spaces.loaded
         &&& Self::caps_frame(*self, post, base, base)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
         &&& sheds_shares(self.view(), post.view())
@@ -3724,6 +3725,7 @@ impl CapKernel {
             assert(post.processes == pre.processes);
             assert(post.tables == pre.tables);
             assert(post.cores == pre.cores);
+            assert(post.spaces.loaded == pre.spaces.loaded);
         }
         true
     }
@@ -3749,12 +3751,13 @@ impl CapKernel {
             ==> post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })
     }
 
-    /// What cutting children of the dead table at `base` keeps: only tables, the record of each cut and the
-    /// TLBs changed. No entry changed but one of `base` that stopped naming a child, and no parent record
-    /// but that child's. A table page's cuts leave every walk finding what it did, since no walk reaches it,
-    /// and a root's end its walks through the entries they cut and leave every other walk. Each entry that
-    /// stopped naming a child is empty and its child is cut. A page's stale word changes only if it is
-    /// a cut child's page, so the table's own page keeps its word.
+    /// What cutting children of the dead table at `base` keeps: only tables, the record of each cut, `targeted`
+    /// epochs, and the TLBs changed. No entry changed but one of `base` that stopped naming a child, and no
+    /// parent record but that child's. A table page's cuts leave every walk finding what it did, since no walk
+    /// reaches it, and a root's end its walks through the entries they cut and leave every other walk. Each
+    /// entry that stopped naming a child is empty and its child is cut. A core loaded on the cut space is
+    /// targeted at the post `flush_epoch` when a cut occurred; every other core keeps its `targeted` epoch.
+    /// A page's stale word changes only if it is a cut child's page, so the table's own page keeps its word.
     pub open spec fn table_cuts_kept(pre: Self, post: Self, base: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -3814,6 +3817,13 @@ impl CapKernel {
             ==> exists|e: usize| #[trigger] a.names_child(base, e) && !b.names_child(base, e) && g == child_at(a, base, e) / PAGE_SZ
         &&& pre.blocks.tracks_addr(base)
             ==> post.stale_epoch.pages@[(base / PAGE_SZ) as int] == pre.stale_epoch.pages@[(base / PAGE_SZ) as int]
+        &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d] == (
+            if pre.flush_epoch < post.flush_epoch && a.record(base).space is Some
+                && pre.loaded(d, a.record(base).space->Some_0) {
+                post.flush_epoch
+            } else {
+                pre.targeted@[d]
+            })
     }
 
     /// Such cuts share no more: they take walks away, make no space a device space and leave every
@@ -4142,6 +4152,24 @@ impl CapKernel {
                     assert(b.names_child(base, p.l4) == m.names_child(base, p.l4));
                 }
             }
+        }
+        assert(m.record(base).space == s) by {
+            assert(m.record(c).parent == Some(TableParent { table: base, entry: e }));
+        }
+        assert(a.record(base).space == s);
+        assert(s is Some);
+        assert(pre.flush_epoch <= mid.flush_epoch);
+        assert(mid.flush_epoch < post.flush_epoch);
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.targeted@[d] == (
+            if pre.flush_epoch < post.flush_epoch && a.record(base).space is Some
+                && pre.loaded(d, a.record(base).space->Some_0) {
+                post.flush_epoch
+            } else {
+                pre.targeted@[d]
+            }) by {
+            assert(mid.spaces.loaded == pre.spaces.loaded);
+            assert(mid.loaded(d, s->Some_0) == pre.loaded(d, s->Some_0));
+            assert(post.targeted@[d] == if mid.loaded(d, s->Some_0) { post.flush_epoch } else { mid.targeted@[d] });
         }
     }
 
