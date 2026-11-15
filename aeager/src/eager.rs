@@ -35,6 +35,8 @@ use acall::step::{caller_alone, PageToken};
 use vstd::resource::Loc;
 #[cfg(verus_keep_ghost)]
 use verified::capability::map::address_path;
+#[cfg(verus_keep_ghost)]
+use verified::capability::mapping::SpacePath;
 use aheap::arch::*;
 use aheap::source::*;
 #[cfg(verus_keep_ghost)]
@@ -5568,6 +5570,36 @@ impl Eager {
         )
     }
 
+    /// Holding asks of the token its kernel state, its root, the authority and that its space agrees with
+    /// every page token, so a token that has only claimed page tokens since, as another source's `new`
+    /// does, holds the source still.
+    pub proof fn lemma_holds_claimed(&self, a: Caller, b: Caller)
+        requires
+            self.holds(a),
+            b.kernel() == a.kernel(),
+            b.root() == a.root(),
+            b.pages_id() == a.pages_id(),
+            b.pages_wf(),
+        ensures
+            self.holds(b),
+    {
+    }
+
+    /// A fresh source holds no frame, so a token that holds another source, of the authority of one
+    /// that holds this, holds it too: the token after a back of the other source, which keeps the
+    /// authority.
+    pub proof fn lemma_fresh_held(&self, other: &Eager, a: Caller, b: Caller)
+        requires
+            self.fresh(),
+            self.holds(a),
+            other.holds(b),
+            b.pages_id() == a.pages_id(),
+        ensures
+            self.holds(b),
+    {
+        assert(self.record.frames().dom() =~= Set::<int>::empty());
+    }
+
     /// A page is parked at `addr`: its run was released, and a back of it is granted with no system
     /// call.
     pub closed spec fn parks(&self, addr: int) -> bool {
@@ -5608,7 +5640,8 @@ impl Eager {
     /// need; and hands out spans of the window at
     /// `window`, which nothing maps, aligned to a region and with room for the window after it. None
     /// when the window or the counts do not fit, or `slots` is no slot. Each operation borrows the
-    /// process's token of the kernel, which its system calls thread.
+    /// process's token of the kernel, which its system calls thread. It claims the page tokens of the
+    /// window's pages and no others, so a window at another level-4 entry stays unclaimed.
     pub fn new(
         caller: &mut Tracked<Caller>,
         space: u64,
@@ -5630,6 +5663,14 @@ impl Eager {
                     &&& final(caller)@.history() == old(caller)@.history()
                     &&& final(caller)@.start() == old(caller)@.start()
                     &&& final(caller)@.pages_id() == old(caller)@.pages_id()
+                    &&& final(caller)@.pages_wf()
+                    &&& forall|p: SpacePath| #[trigger]
+                        final(caller)@.pages().contains_key(p) ==> old(caller)@.pages().contains_key(p) || window_path_below(
+                            window@.addr,
+                            p,
+                            (WINDOW_BYTES / PAGE_BYTES) as int,
+                        )
+                    &&& forall|p: SpacePath| #[trigger] old(caller)@.pages().contains_key(p) ==> final(caller)@.pages().contains_key(p)
                     &&& acall_steps(old(caller)@, final(caller)@, Seq::<AcallStep>::empty())
                     &&& caller_alone(old(caller)@, final(caller)@)
                     &&& source.holds(final(caller)@)
@@ -5912,7 +5953,8 @@ impl SpanSource for Eager {
     /// path and parks the pages it backed before it: it spends a block per table linked, and the step
     /// `acall` refused, if any, at most one block more, or a frame. On a fresh source under
     /// `source_ready`, or any `ready` source with `flush_room` (or no parked page), with `caller_alone`
-    /// across the call, every `acall` step is accepted and `ready` is preserved.
+    /// across the call, every `acall` step is accepted and `ready` is preserved. The token's page tokens
+    /// stay of the authority they were, so the token still holds a fresh source it held before.
     #[verifier::spinoff_prover]
     fn back(&mut self, token: &mut Tracked<Caller>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         ensures
@@ -5923,6 +5965,7 @@ impl SpanSource for Eager {
             final(self).pages() == old(self).pages(),
             final(self).slots() == old(self).slots(),
             final(self).window() == old(self).window(),
+            final(token)@.pages_id() == old(token)@.pages_id(),
             (forall|a: int| #[trigger] run_pages(start as int, pages as nat).contains(a) ==> old(self).parks(a)) ==> r is Some,
             ({
                 let n = old(self).acall_trace().len() as int;

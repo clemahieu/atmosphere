@@ -728,6 +728,73 @@ pub proof fn lemma_window_unclaimed(
     };
 }
 
+/// A page of a window at its own level-4 entry below the lower half's end has that entry's index in its
+/// path: the window's address over the level-4 span, under the entry count.
+pub proof fn lemma_window_level4(window: usize, a: int)
+    requires
+        window as int % SIZE_512G as int == 0,
+        window + WINDOW_BYTES <= LOWER_HALF_END as usize,
+        window <= a < window + WINDOW_BYTES,
+    ensures
+        address_path(a as u64).l4 as int == window as int / SIZE_512G as int,
+        (window as int / SIZE_512G as int) < ENTRIES as int,
+{
+    use vstd::arithmetic::div_mod::{lemma_fundamental_div_mod, lemma_fundamental_div_mod_converse, lemma_small_mod};
+    let t = SIZE_512G as int;
+    let w = window as int;
+    let q = w / t;
+    assert(WINDOW_BYTES < SIZE_512G) by (compute);
+    assert(LOWER_HALF_END as int == t * (ENTRIES as int / 2)) by (compute);
+    assert(t > 0 && ENTRIES > 0) by (compute);
+    lemma_fundamental_div_mod(w, t);
+    assert(w == t * q);
+    assert(0 <= q < ENTRIES as int / 2) by (nonlinear_arith)
+        requires
+            w == t * q,
+            w >= 0,
+            w < t * (ENTRIES as int / 2),
+            t > 0,
+    ;
+    lemma_fundamental_div_mod_converse(a, t, q, a - w);
+    assert((a as u64) as int == a);
+    assert(((a as u64) / (SIZE_512G as u64)) as int == q);
+    lemma_small_mod(q as nat, ENTRIES as nat);
+}
+
+/// A caller that only claimed page tokens for paths of the window at `window` since `pre`, keeping its
+/// kernel state, its root and the state it was handed, leaves a window at another level-4 entry as
+/// unclaimed as it was: none of that window's paths is one of `window`'s.
+pub proof fn lemma_window_still_unclaimed(pre: Caller, post: Caller, window: usize, other: usize)
+    requires
+        window_unclaimed(pre, other),
+        post.kernel() == pre.kernel(),
+        post.root() == pre.root(),
+        post.start() == pre.start(),
+        forall|p: SpacePath| #[trigger]
+            post.pages().contains_key(p) ==> pre.pages().contains_key(p) || window_path_below(
+                window,
+                p,
+                (WINDOW_BYTES / PAGE_BYTES) as int,
+            ),
+        window as int % SIZE_512G as int == 0,
+        other as int % SIZE_512G as int == 0,
+        window + WINDOW_BYTES <= LOWER_HALF_END as usize,
+        other + WINDOW_BYTES <= LOWER_HALF_END as usize,
+        window != other,
+    ensures
+        window_unclaimed(post, other),
+{
+    use vstd::arithmetic::div_mod::lemma_fundamental_div_mod;
+    lemma_window_level4(window, window as int);
+    lemma_fundamental_div_mod(window as int, SIZE_512G as int);
+    lemma_fundamental_div_mod(other as int, SIZE_512G as int);
+    assert forall|a: int| #[trigger] window_page(other, a) implies !post.pages().contains_key(address_path(a as u64)) by {
+        lemma_window_level4(other, a);
+        assert(address_path(a as u64).l4 != address_path(window as u64).l4);
+        assert(!window_path_below(window, address_path(a as u64), (WINDOW_BYTES / PAGE_BYTES) as int));
+    }
+}
+
 /// The path of the page `k` pages into a region-aligned window: the window's level-4 and level-3
 /// entries, with `k` spread across the level-2 and level-1 ones.
 pub(crate) proof fn lemma_window_page_path(window: usize, k: int)
@@ -891,6 +958,7 @@ pub(crate) proof fn claim_window(tracked caller: &mut Caller, window: usize, n: 
         final(caller).pages_wf(),
         forall|p: SpacePath| #[trigger]
             final(caller).pages().contains_key(p) ==> (old(caller).pages().contains_key(p) || window_path_below(window, p, n)),
+        forall|p: SpacePath| #[trigger] old(caller).pages().contains_key(p) ==> final(caller).pages().contains_key(p),
         forall|a: int| #[trigger] tokens.contains_key(a) ==> window_page(window, a) && a < window + n * PAGE_BYTES,
         forall|a: int| #[trigger] window_page(window, a) && a < window + n * PAGE_BYTES ==> {
             &&& tokens.contains_key(a)
