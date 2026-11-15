@@ -60,6 +60,7 @@ PAGE_LITERALS_CHECK = "tools/check-page-literals.py"
 ARCH_SOURCES_CHECK = "tools/check-arch-sources.py"
 UPSTREAM_COPIES_CHECK = "tools/check-upstream-copies.py"
 DESIGN_INDEX = "tools/build-design-index.py"
+FAQ_RENDER = "tools/faq.py"
 BOOT_STACK_CHECK = "tools/check-boot-stack.py"
 COVERAGE = "tools/coverage.py"
 RUN = "tools/run.py"
@@ -142,11 +143,11 @@ def run_check(gate, *argv):
         raise Failure(f"{' '.join(argv)}: {status(code)}")
 
 
-def check_output(gate, program):
+def check_output(gate, *argv):
     """Runs a check and returns what it printed to stdout; its stderr goes to the gate's."""
-    ran = gate.call([program], capture=True)
+    ran = gate.call(argv, capture=True)
     if ran.code != 0:
-        raise Failure(f"{program}: {status(ran.code)}")
+        raise Failure(f"{' '.join(argv)}: {status(ran.code)}")
     return ran.stdout
 
 
@@ -428,6 +429,14 @@ def design_index(gate):
     return "design/INDEX.md is current"
 
 
+def faq(gate):
+    """docs/faq is rendered from its templates with the kernel's constants, so a template edited
+    without rendering, or a constant changed under an explainer that names it, would leave the
+    explainer saying something the kernel does not."""
+    run_check(gate, FAQ_RENDER, "--test")
+    return check_output(gate, FAQ_RENDER, "--check").rstrip()
+
+
 def boot_stack(gate):
     # Each profile's overflow builds come first, so the images left behind are the normal ones.
     for args in (["--test"], ["debug", "overflow"], ["debug", "syscall-overflow"], ["debug"],
@@ -508,6 +517,7 @@ STEPS = (
     Step("arch sources", X86_64, self_tested(ARCH_SOURCES_CHECK)),
     Step("upstream copies", X86_64, self_tested(UPSTREAM_COPIES_CHECK)),
     Step("design index", X86_64, design_index),
+    Step("faq", X86_64, faq),
     Step("boot stack", X86_64, boot_stack),
     Step("coverage", X86_64, coverage),
     # The plain boot comes after it, so the serial.log the gate leaves has no IOMMU.
@@ -823,6 +833,14 @@ class Tests(unittest.TestCase):
         self.assertEqual(held.calls[-1], [BOOT_LOG_CHECK, "--arch", X86_64, "--translation", "-"])
         with self.assertRaisesRegex(Failure, "^no exit marker$"):
             boot_with()(FakeGate(self.root, {BOOT_LOG_CHECK: (1, "no exit marker\n")}))
+
+    def test_the_faq_step_runs_the_scripts_tests_then_holds_docs_faq_to_what_it_writes(self):
+        gate = FakeGate(self.root, {f"{FAQ_RENDER} --check": (0, "docs/faq is what tools/faq.py writes\n")})
+        self.assertEqual(faq(gate), "docs/faq is what tools/faq.py writes")
+        self.assertEqual(gate.calls, [[FAQ_RENDER, "--test"], [FAQ_RENDER, "--check"]])
+        with self.assertRaisesRegex(Failure, "^tools/faq.py --check: exit status: 1$"):
+            faq(FakeGate(self.root, {f"{FAQ_RENDER} --check": (1, "")}))
+        self.assertIn("faq", [step.name for step in chosen(X86_64)])
 
     def test_every_step_fails_the_gate_when_a_program_it_runs_fails(self):
         """One failing run per step: each program a step runs, in turn, exits 1 with nothing said."""
