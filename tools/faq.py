@@ -807,6 +807,26 @@ class Tests(unittest.TestCase):
         self.assertEqual(bytes_label(65024 << 30), "65,024 GiB")
         self.assertEqual(bytes_label(3), "3 B")
 
+    def test_the_budget_explainer_types_no_number_and_renders_its_reaches(self):
+        text = (REPO / SOURCES / "where-the-budget-runs-out.md").read_text(encoding="utf-8")
+        # A digit inside an item's name, such as SIZE_2M, is the name. A typed number stands alone.
+        self.assertIsNone(re.search(r"(?<![A-Za-z0-9_])\d", PLACEHOLDER.sub("", text)))
+        out = outputs(REPO)
+        page = out["where-the-budget-runs-out.md"]
+        v = values(REPO)
+        for name in ("TABLE_SLOTS", "REACH_4K", "REACH_2M", "REACH_1G", "NODE_SPACE", "PAGE_SZ", "SIZE_2M", "SIZE_1G"):
+            self.assertIn(f"{v[name]:,}", page)
+        self.assertIn(str(v["BLOCKS_PER_RUN"]), page)
+        self.assertIn(str(v["INDEX_BITS"]), page)
+        self.assertIn(str(v["ONE_G_ORDER"]), page)
+        self.assertIn(str(v["LEAF_SLOTS"]), page)
+        self.assertIn(str(v["ADDRESS_BITS"]), page)
+        self.assertIn(str(v["MAX_ORDER"]), page)
+        self.assertIn("(./slots-versus-memory.svg)", page)
+        self.assertNotRegex(page, r"<\s*/?\s*(svg|script|html|iframe|style)\b")
+        self.assertIn(bytes_label(v["REACH_4K"]), out["slots-versus-memory.svg"])
+        self.assertIn("Where a process's slot budget runs out", out["README.md"])
+
 
 def main(arguments):
     if arguments == ["--test"]:
