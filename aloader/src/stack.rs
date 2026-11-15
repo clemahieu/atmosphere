@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 
-//! The loader's own stack, filled with a pattern before `load` runs on it, so that `load` can say
-//! how far down the stack it wrote before entering the kernel. design/test-guest-memory/.
+//! Stacks filled with a pattern before anything runs on them, so that how far down each was written
+//! can be read back. The loader's own stack is filled before `load` runs on it, and `load` says how
+//! far down it wrote before entering the kernel. The kernel's boot stack and dom0's stack are
+//! filled as the loader maps them, and tools/check-boot-stack.py reads them back from a dump of the
+//! guest's memory after boot. design/test-guest-memory/.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-/// What every word of the stack holds before `load` runs: "loadrstk".
+/// What every word of a stack holds before anything runs on it: "loadrstk".
 const PAINT: u64 = 0x6b74_7372_6461_6f6c;
 
 /// The stack's lowest address and its length in bytes, set once by `paint`.
@@ -36,8 +39,9 @@ pub fn depth() -> (u64, u64) {
 ///
 /// # Safety
 ///
-/// As for `paint`.
-unsafe fn fill(base: u64, size: u64) {
+/// The bytes are the loader's to write, 8-byte aligned and a multiple of 8 long, and nothing runs
+/// on them yet.
+pub unsafe fn fill(base: u64, size: u64) {
     assert!(base % 8 == 0 && size % 8 == 0, "the loader's stack is in words");
     let words = base as *mut u64;
     for index in 0..(size / 8) as usize {

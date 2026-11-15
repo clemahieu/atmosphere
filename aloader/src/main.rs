@@ -57,10 +57,11 @@ pub const KERNEL_RESERVATION: usize =
 const KERNEL_IMAGE_BOUND: u64 = 6 * 1024 * 1024; // 6 MiB
 // Unmapped below the kernel's stack. The kernel probes large frames, so an overflow cannot jump it.
 const KERNEL_STACK_GUARD_SIZE: u64 = 1024 * 1024; // 1 MiB
-// The kernel's boot reaches 48 KiB down it in a debug build and 16 KiB in release, and
-// tools/check-boot-stack.py requires half of it unused. design/test-guest-memory/.
+// The kernel's boot writes 34 KiB of it in a debug build and 33 KiB in release, and
+// tools/check-boot-stack.py requires at least as much left as the boot wrote.
+// design/test-guest-memory/.
 #[cfg(not(feature = "small_kernel_stack"))]
-const KERNEL_STACK_SIZE: u64 = 1024 * 1024; // 1 MiB
+const KERNEL_STACK_SIZE: u64 = 128 * 1024; // 128 KiB
 // So check-boot-stack.py can force an overflow. Under the depth of the kernel's boot in either
 // profile, and over what main uses before the IDT exists.
 #[cfg(feature = "small_kernel_stack")]
@@ -106,10 +107,10 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
             .0
     };
     let stack_base = guard_base + KERNEL_STACK_GUARD_SIZE;
-    // The stack's frames hold what the firmware left in them. The kernel starts on zeroes, so
-    // tools/check-boot-stack.py reads its depth from what the kernel wrote.
+    // The stack's frames hold what the firmware left in them, and the kernel has not run. Filling
+    // them with the pattern lets tools/check-boot-stack.py read the depth from what the kernel wrote.
     unsafe {
-        core::ptr::write_bytes(stack_base as *mut u8, 0, KERNEL_STACK_SIZE as usize);
+        stack::fill(stack_base, KERNEL_STACK_SIZE);
     }
     // The image is everything the window holds below the guard. The kernel changes the protection
     // of single pages of its image (write_protect.rs in the kernel's arch module), and the 1 MiB guard is
@@ -287,6 +288,11 @@ where
     // FIXME: Use GNU_STACK
     let phys_base = unsafe { allocator.allocate_physical(DOM0_STACK as usize).0 };
     let virt_base = USERSPACE_BASE + DOM0_RESERVATION - DOM0_STACK;
+    // The window is the loader's and identity mapped, and dom0 has not run.
+    unsafe {
+        stack::fill(phys_base, DOM0_STACK);
+    }
+    log::info!("Dom0 stack: {:x}-{:x}", phys_base, phys_base + DOM0_STACK);
 
     let mut cur = virt_base;
     while cur < virt_base + DOM0_STACK {

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 
-"""Boot dom0 under KVM, dump guest memory after it finishes and check where the kernel's stack went.
+"""Boot dom0 under KVM, dump guest memory after it finishes and check where the kernel's and dom0's stacks went.
 
-Memory the guest never wrote is zero, so non-zero pages show the stack's reach as a lower bound.
+The loader fills the kernel's boot stack and dom0's stack with a pattern before either runs (aloader's
+stack.rs), so the lowest word that no longer holds it is how far down the boot wrote. Each stack must
+have at least that much left below it, as much again as the boot used. Memory the guest never wrote is
+zero, so the boot page tables' non-zero pages show where they reach.
 
 usage: tools/check-boot-stack.py debug|release [overflow|syscall-overflow]   (from the workspace root)
 
@@ -29,7 +32,7 @@ import run as guest
 
 KIB = 1 << 10
 PAGE = 4096
-MARGIN = 512 * KIB  # the least room the stack must have left
+PAINT = b"loadrstk"  # what the loader fills a stack with: aloader's stack.rs
 ENTRY_FRAME = PAGE  # main's frame stays under this: the overflow build's stack is two pages
 
 
@@ -103,8 +106,8 @@ def boot(profile, out, marker=b"dom0 capability done", kernel=None, dom0=None, p
     sys.exit(f"FAIL: {marker.decode()} did not appear; see {log}")
 
 
-def written(sock, out, base, size):
-    """Returns the addresses of the non-zero pages in [base, base + size)."""
+def dump(sock, out, base, size):
+    """Returns the guest's memory in [base, base + size)."""
     path = f"{out}/dump"
     if os.path.exists(path):
         os.unlink(path)
@@ -114,14 +117,48 @@ def written(sock, out, base, size):
             break
         time.sleep(0.5)
     time.sleep(0.5)
-    pages = []
-    zero = bytes(PAGE)
     with open(path, "rb") as f:
-        for i in range(size // PAGE):
-            if f.read(PAGE) != zero:
-                pages.append(base + i * PAGE)
+        data = f.read()
     os.unlink(path)
-    return pages
+    return data
+
+
+def written(sock, out, base, size):
+    """Returns the addresses of the non-zero pages in [base, base + size)."""
+    data = dump(sock, out, base, size)
+    zero = bytes(PAGE)
+    return [base + i for i in range(0, size, PAGE) if data[i:i + PAGE] != zero]
+
+
+def depth(data):
+    """The bytes of a painted stack counted down from its top to the lowest word that no longer
+    holds the pattern. A word written with the pattern itself is not seen, so this is a lower bound."""
+    untouched = 0
+    while untouched + 8 <= len(data) and data[untouched:untouched + 8] == PAINT:
+        untouched += 8
+    return len(data) - untouched
+
+
+def stack_failures(name, size, used):
+    """What is wrong with a stack of size bytes whose boot wrote used bytes of it: the boot must have
+    run on it and left at least as much below as it wrote."""
+    if used == 0:
+        return [f"nothing ran on the {name} stack"]
+    if size - used < used:
+        return [f"the {name} stack has {(size - used) // KIB} KiB left, less than the {used // KIB} KiB written"]
+    return []
+
+
+def check_stack(sock, out, log, name, line):
+    """Reads the stack the loader logged on the line starting with line and returns its failures."""
+    found = re.search(line + r": ([0-9a-f]+)-([0-9a-f]+)", log)
+    if not found:
+        return [f"the loader did not log the {name} stack"]
+    base, top = (int(found.group(i), 16) for i in (1, 2))
+    used = depth(dump(sock, out, base, top - base))
+    print(f"{name} stack {base:#x}-{top:#x} ({(top - base) // KIB} KiB): "
+          f"{used // KIB} KiB written, {(top - base - used) // KIB} KiB left")
+    return stack_failures(name, top - base, used)
 
 
 def check_overflow(profile, out):
@@ -202,20 +239,8 @@ def main():
     if stray:
         failures.append(f"writes in the upper half of the boot page tables, from {stray[0]:#x}")
 
-    stack = re.search(r"Kernel stack: ([0-9a-f]+)-([0-9a-f]+)", log)
-    if not stack:
-        failures.append("the loader did not log the kernel stack")
-    else:
-        base, top = (int(stack.group(i), 16) for i in (1, 2))
-        pages = written(sock, out, base, top - base)
-        low = pages[0] if pages else top
-        depth, room = top - low, low - base
-        print(f"kernel stack {base:#x}-{top:#x} ({(top - base) // KIB} KiB): "
-              f"depth at least {depth // KIB} KiB, {room // KIB} KiB left")
-        if not pages:
-            failures.append("the kernel did not run on its stack")
-        if room < MARGIN:
-            failures.append(f"less than {MARGIN // KIB} KiB of the stack left")
+    failures += check_stack(sock, out, log, "kernel", "Kernel stack")
+    failures += check_stack(sock, out, log, "dom0", "Dom0 stack")
 
     sock.sendall(b"quit\n")
     qemu.wait(timeout=30)
@@ -254,7 +279,28 @@ def test():
         def test_a_fault_on_another_core_fails(self):
             self.assertEqual(syscall_overflow_failures(guard + fault(1, 0xfff8)), ["the fault is on CPU 1, not CPU 0"])
 
-    result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(SyscallOverflow))
+    class Stack(unittest.TestCase):
+        def test_an_untouched_stack_has_nothing_written(self):
+            self.assertEqual(depth(PAINT * 64), 0)
+
+        def test_the_depth_runs_from_the_top_to_the_lowest_word_written(self):
+            self.assertEqual(depth(PAINT * 54 + bytes(8) + PAINT + bytes(64)), 80)
+
+        def test_a_stack_written_to_its_bottom_is_written_whole(self):
+            self.assertEqual(depth(bytes(512)), 512)
+
+        def test_as_much_left_as_written_passes(self):
+            self.assertEqual(stack_failures("dom0", 128 * KIB, 64 * KIB), [])
+
+        def test_less_left_than_written_fails(self):
+            self.assertEqual(stack_failures("dom0", 128 * KIB, 68 * KIB),
+                             ["the dom0 stack has 60 KiB left, less than the 68 KiB written"])
+
+        def test_a_stack_nothing_ran_on_fails(self):
+            self.assertEqual(stack_failures("kernel", 128 * KIB, 0), ["nothing ran on the kernel stack"])
+
+    tests = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromTestCase(case) for case in (SyscallOverflow, Stack))
+    result = unittest.TextTestRunner().run(tests)
     return 0 if result.wasSuccessful() else 1
 
 

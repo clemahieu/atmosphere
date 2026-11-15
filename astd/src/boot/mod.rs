@@ -122,8 +122,10 @@ pub const MAPPED_RUNS: usize = 64;
 /// is one page. design/test-guest-memory/.
 pub const DOM0_RESERVATION: u64 = 4 * 1024 * 1024;
 
-/// The stack the loader maps at the top of dom0's reservation.
-pub const DOM0_STACK: u64 = 1024 * 1024;
+/// The stack the loader maps at the top of dom0's reservation. The gate's boots write 60 KiB of it,
+/// debug and the coverage step's instrumented build alike, and tools/check-boot-stack.py and
+/// tools/coverage.py require at least as much left as the boot wrote. design/test-guest-memory/.
+pub const DOM0_STACK: u64 = 192 * 1024;
 
 /// One contiguous mapping the loader made for dom0.
 #[repr(C)]

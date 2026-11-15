@@ -448,7 +448,7 @@ def boot_stack(gate):
 
 def coverage(gate):
     """Coverage per crate after the script's own tests pass. A low number does not fail the gate:
-    only a capture that fails does."""
+    only a capture that fails does, or a stack the instrumented boot left less of than it wrote."""
     run_check(gate, COVERAGE, "--test")
     report = check_output(gate, COVERAGE).rstrip()
     return "\n  " + report.replace("\n", "\n  ")

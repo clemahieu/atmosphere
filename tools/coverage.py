@@ -10,7 +10,9 @@ written: the header below, then __llvm_prf_data and __llvm_prf_names from the EL
 from the guest in between. The layout is the one LLVM 23 (Rust 1.99.1) writes, raw version 11.
 
 The kernel's counters are read by physical address. dom0's are read by virtual address, which works
-because dom0 is the last thing running when its exit stops the guest. A workspace member under user/
+because dom0 is the last thing running when its exit stops the guest. The same boot reads back the
+kernel's boot stack and dom0's stack as tools/check-boot-stack.py does, and fails when either has less
+left than the instrumented boot wrote. A workspace member under user/
 that no image runs, as the payload the loader hands dom0 is not, is listed as not run. llvm-cov reads a
 copy of each image without the unused-function records that shadow a used one (unshadowed below).
 
@@ -253,6 +255,8 @@ def main():
             "kernel": report(KERNEL, sock, "pmemsave", kernel_bias),
             "dom0": report(DOM0, sock, "memsave", dom0_bias),
         }
+        failures = check_boot_stack.check_stack(sock, OUT, log, "kernel", "Kernel stack")
+        failures += check_boot_stack.check_stack(sock, OUT, log, "dom0", "Dom0 stack")
     finally:
         sock.sendall(b"quit\n")
         qemu.wait(timeout=30)
@@ -260,7 +264,9 @@ def main():
         print(line)
     for crate in not_run({crate for crates, _ in images.values() for crate in crates}):
         print(f"{crate}: not run")
-    return 0
+    for failure in failures:
+        print("FAIL:", failure)
+    return 1 if failures else 0
 
 
 class Tests(unittest.TestCase):
