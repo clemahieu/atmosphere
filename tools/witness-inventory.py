@@ -41,7 +41,7 @@ body that is the call, binds it or assigns it, or by the body's last expression 
 
 A call is `self.p(..)`, `p(..)` or `T::p(..)`, or `x.p(..)` where `x` is a parameter whose type is
 `T`, `&T` or `&mut T`, or a name every binding of which is a `let` annotated `T` or a call of a
-function that returns `Self` or `T`. In a user crate a claim may be guarded, `g ==> x is V`, by what
+function that returns `Self` or `T`; `T<..>`, with its generic arguments, names `T` the same. In a user crate a claim may be guarded, `g ==> x is V`, by what
 the crate's environment answered, and the guard is printed after the witness for a reviewer to
 judge; in the kernel a guarded claim counts for nothing. A way of a wired operation also asks for a
 proof function named `lemma_entry_reaches_<operation>`: without it the way is none, and the line
@@ -492,14 +492,14 @@ def type_of(comp, fn, name, seen):
     for s, e in split(fn.src, *fn.params):
         piece = tok[s:e]
         if ":" in piece and [token for token in piece[:piece.index(":")] if token != "mut"] == [name]:
-            kind = [token for token in piece[piece.index(":") + 1:] if token not in ("&", "mut")]
-            return kind[0] if len(kind) == 1 and kind[0] in comp.types else None
+            kind = named([token for token in piece[piece.index(":") + 1:] if token not in ("&", "mut")])
+            return kind if kind in comp.types else None
     kinds = set()
     for bound in bindings(fn, name):
         if bound.kind != "simple":
             return None
         if bound.annotation is not None:
-            kind = bound.annotation[0] if len(bound.annotation) == 1 else None
+            kind = named(bound.annotation)
         else:
             target = callee(comp, fn, *bound.rhs, seen)
             result = target.result() if target else []
@@ -508,6 +508,13 @@ def type_of(comp, fn, name, seen):
             return None
         kinds.add(kind)
     return kinds.pop() if len(kinds) == 1 else None
+
+
+def named(tokens):
+    """The type the tokens of a type name, `T` or `T<..>`, or None for any other type."""
+    if len(tokens) == 1 or len(tokens) >= 3 and tokens[1] == "<" and tokens[-1] == ">":
+        return tokens[0]
+    return None
 
 
 def callee(comp, fn, a, b, seen=frozenset()):
@@ -1348,6 +1355,17 @@ pub fn witness_slab() -> (r: (Option<usize>, Cut))
         self.assertEqual(found[("Slab::alloc", "Some")], "witness_slab")
         self.assertEqual(found[("Heap::cut", "Half")], "witness_slab")
         self.assertIsNone(found[("Heap::cut", "Whole")])
+
+    def test_a_receiver_annotated_with_generic_arguments_counts_for_its_type(self):
+        found = lines(user_rows(user("""
+pub fn witness_slab() -> (r: Option<usize>)
+    ensures
+        r is Some,
+{
+    let mut slab: Slab<'static, u8> = make();
+    slab.alloc()
+}""")))
+        self.assertEqual(found[("Slab::alloc", "Some")], "witness_slab")
 
     def test_a_guard_is_printed_beside_the_witness(self):
         found = lines(user_rows(user("""
