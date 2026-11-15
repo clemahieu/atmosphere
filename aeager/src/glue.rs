@@ -618,11 +618,13 @@ pub open spec fn keeps_own_space(pre: Caller, post: Caller) -> bool {
     forall|space: u64| #[trigger] names_own_space(pre, space) ==> names_own_space(post, space)
 }
 
-/// The page tokens' authority, and the state the process was handed, are as they were from `pre` to
-/// `post`, and the caller's space agrees with every page token in `post` whenever it did in `pre`.
+/// The page tokens' authority, the pages they are for, and the state the process was handed, are as
+/// they were from `pre` to `post`, and the caller's space agrees with every page token in `post` whenever
+/// it did in `pre`: what a token says may change, but no page gains or loses one.
 pub open spec fn keeps_pages(pre: Caller, post: Caller) -> bool {
     &&& post.start() == pre.start()
     &&& post.pages_id() == pre.pages_id()
+    &&& post.pages().dom() == pre.pages().dom()
     &&& pre.pages_wf() ==> post.pages_wf()
 }
 
@@ -1728,8 +1730,13 @@ pub(crate) fn map_page(
     }
     proof {
         assert(frame_held(mid.kernel(), root, frames@[key@]));
+        // The token's page is one the authority already has, so the map changes what it says alone.
+        token.borrow().agree(caller.borrow());
     }
     let out = memory::map_own(caller, token, space, address as u64, frame, 0);
+    proof {
+        assert(caller@.pages().dom() =~= first.pages().dom());
+    }
     let ghost before = caller@.entry();
     let ghost step2 = AcallStep {
         pre: before,
@@ -1938,8 +1945,15 @@ pub(crate) fn unmap_page(
     no_unwind
 {
     let ghost pre = caller@;
+    proof {
+        // The token's page is one the authority already has, so the unmap changes what it says alone.
+        token.borrow().agree(caller.borrow());
+    }
     // The caller gave up the permission to every byte of the page, so nothing it uses is there.
     let out = memory::unmap_own(caller, token, space, address as u64);
+    proof {
+        assert(caller@.pages().dom() =~= pre.pages().dom());
+    }
     let ghost step = AcallStep {
         pre: caller@.entry(),
         post: caller@.kernel(),

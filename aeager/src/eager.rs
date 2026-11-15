@@ -2172,6 +2172,7 @@ impl Record {
             final(self).keeps_mapped(old(self)),
             forall|u: int| 0 <= u < MAX_PAGES && u != i as int ==> #[trigger] final(self).state@[u] == old(self).state@[u],
             acall_steps(old(caller)@, final(caller)@, r.1@),
+            final(caller)@.pages().dom() == old(caller)@.pages().dom(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_setup_call(
                 (#[trigger] r.1@[k]).call,
@@ -2326,6 +2327,7 @@ impl Record {
             final(self).keeps(old(self)),
             final(self).keeps_mapped(old(self)),
             acall_steps(old(caller)@, final(caller)@, r.1@),
+            final(caller)@.pages().dom() == old(caller)@.pages().dom(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_setup_call(
                 (#[trigger] r.1@[k]).call,
@@ -2717,6 +2719,7 @@ impl Record {
             final(self).keeps(old(self)),
             final(self).keeps_mapped(old(self)),
             acall_steps(old(caller)@, final(caller)@, r.1@),
+            final(caller)@.pages().dom() == old(caller)@.pages().dom(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_setup_call(
                 (#[trigger] r.1@[k]).call,
@@ -3105,6 +3108,7 @@ impl Record {
             final(self).keeps_mapped(old(self)),
             forall|a: int| #[trigger] final(self).parks(a) ==> old(self).parks(a),
             acall_steps(old(caller)@, final(caller)@, r.1@),
+            final(caller)@.pages().dom() == old(caller)@.pages().dom(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_call_in_window(
                 #[trigger] r.1@[k],
@@ -3303,6 +3307,7 @@ impl Record {
             final(self).keeps(old(self)),
             final(self).keeps_mapped(old(self)),
             acall_steps(old(caller)@, final(caller)@, r.1@),
+            final(caller)@.pages().dom() == old(caller)@.pages().dom(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_setup_call(
                 (#[trigger] r.1@[k]).call,
@@ -3551,6 +3556,7 @@ impl Record {
             final(self).keeps_mapped(old(self)),
             forall|a: int| #[trigger] final(self).parks(a) ==> old(self).parks(a),
             acall_steps(old(caller)@, final(caller)@, r.1@),
+            final(caller)@.pages().dom() == old(caller)@.pages().dom(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_call_in_window(
                 #[trigger] r.1@[k],
@@ -4241,6 +4247,7 @@ impl Record {
             final(self).serves(final(caller)@),
             forall|a: int| #[trigger] old(self).maps(a) ==> final(self).maps(a),
             acall_steps(old(caller)@, final(caller)@, r.1@),
+            final(caller)@.pages().dom() == old(caller)@.pages().dom(),
             step_seq_well_ended(r.1@),
             forall|j: int| 0 <= j < r.1@.len() ==> acall_call_in_window(
                 #[trigger] r.1@[j],
@@ -4369,6 +4376,7 @@ impl Record {
                 provenance@ == self.provenance@,
                 c0 == old(caller)@,
                 acall_steps(c0, caller@, steps),
+                caller@.pages().dom() == c0.pages().dom(),
                 acall_ok(steps),
                 step_seq_well_ended(steps),
                 forall|j: int| 0 <= j < steps.len() ==> acall_call_in_window(
@@ -5150,6 +5158,7 @@ fn back_fields(
         final(record).serves(final(caller)@),
         backed_is_mapped(final(spans).map@, *final(record)),
         acall_steps(old(caller)@, final(caller)@, r.1@),
+        final(caller)@.pages().dom() == old(caller)@.pages().dom(),
         step_seq_well_ended(r.1@),
         forall|j: int| 0 <= j < r.1@.len() ==> acall_call_in_window(
             #[trigger] r.1@[j],
@@ -5907,6 +5916,7 @@ impl SpanSource for Eager {
     #[verifier::spinoff_prover]
     fn back(&mut self, token: &mut Tracked<Caller>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         ensures
+            final(token)@.pages().dom() == old(token)@.pages().dom(),
             final(self).space() == old(self).space(),
             final(self).untyped() == old(self).untyped(),
             final(self).memory() == old(self).memory(),
