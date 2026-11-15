@@ -40,7 +40,7 @@ A call whose callee has no requires is no site unless a conjured value is passed
 
 A site with more than one guarantor names the one that carries most; the list is a count of who vouches, not a proof.
 
-**The skeptic.** Once the call half of the check lands, the list counts the boundary, so a skeptic pass no longer reports an uncounted site as a `Boundary note:` line; `.claude/agents/skeptic.md` and `.claude/agents/round.md` drop that rule in the same change. A site the list holds with a guarantor that does not hold on a path the running system takes still refutes a criterion, as any false claim does.
+**The skeptic.** The list counts the boundary, so a skeptic pass reports no uncounted site; `.claude/agents/skeptic.md` points it at the list. A site the list holds with a guarantor that does not hold on a path the running system takes refutes a criterion, as any false claim does.
 
 ## Context
 
