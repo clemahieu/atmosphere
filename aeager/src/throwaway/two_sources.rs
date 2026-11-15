@@ -13,6 +13,7 @@ use aheap::arch::*;
 use aheap::source::*;
 use verified::capability::operation::STATUS_REFUSED;
 use verified::capability::table::TABLE_INDICES;
+use crate::apart::{lemma_other_source_ready, lemma_other_window_unclaimed, process_ready, sources_apart};
 use crate::eager::*;
 use crate::exercise::*;
 use crate::glue::{
@@ -54,6 +55,16 @@ pub fn throwaway_two_sources(
             second_window@.addr,
         ),
         window@.addr != second_window@.addr,
+        sources_apart(
+            memory,
+            ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+            slots,
+            window@.addr,
+            second_memory,
+            ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+            second_slots,
+            second_window@.addr,
+        ),
     ensures
         false,
 {

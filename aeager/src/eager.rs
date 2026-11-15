@@ -2175,6 +2175,7 @@ impl Record {
             forall|u: int| 0 <= u < MAX_PAGES && u != i as int ==> #[trigger] final(self).state@[u] == old(self).state@[u],
             acall_steps(old(caller)@, final(caller)@, r.1@),
             final(caller)@.pages().dom() == old(caller)@.pages().dom(),
+            final(caller)@.start() == old(caller)@.start(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_setup_call(
                 (#[trigger] r.1@[k]).call,
@@ -2330,6 +2331,7 @@ impl Record {
             final(self).keeps_mapped(old(self)),
             acall_steps(old(caller)@, final(caller)@, r.1@),
             final(caller)@.pages().dom() == old(caller)@.pages().dom(),
+            final(caller)@.start() == old(caller)@.start(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_setup_call(
                 (#[trigger] r.1@[k]).call,
@@ -2722,6 +2724,7 @@ impl Record {
             final(self).keeps_mapped(old(self)),
             acall_steps(old(caller)@, final(caller)@, r.1@),
             final(caller)@.pages().dom() == old(caller)@.pages().dom(),
+            final(caller)@.start() == old(caller)@.start(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_setup_call(
                 (#[trigger] r.1@[k]).call,
@@ -3111,6 +3114,7 @@ impl Record {
             forall|a: int| #[trigger] final(self).parks(a) ==> old(self).parks(a),
             acall_steps(old(caller)@, final(caller)@, r.1@),
             final(caller)@.pages().dom() == old(caller)@.pages().dom(),
+            final(caller)@.start() == old(caller)@.start(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_call_in_window(
                 #[trigger] r.1@[k],
@@ -3310,6 +3314,7 @@ impl Record {
             final(self).keeps_mapped(old(self)),
             acall_steps(old(caller)@, final(caller)@, r.1@),
             final(caller)@.pages().dom() == old(caller)@.pages().dom(),
+            final(caller)@.start() == old(caller)@.start(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_setup_call(
                 (#[trigger] r.1@[k]).call,
@@ -3559,6 +3564,7 @@ impl Record {
             forall|a: int| #[trigger] final(self).parks(a) ==> old(self).parks(a),
             acall_steps(old(caller)@, final(caller)@, r.1@),
             final(caller)@.pages().dom() == old(caller)@.pages().dom(),
+            final(caller)@.start() == old(caller)@.start(),
             step_seq_well_ended(r.1@),
             forall|k: int| 0 <= k < r.1@.len() ==> acall_call_in_window(
                 #[trigger] r.1@[k],
@@ -4250,6 +4256,7 @@ impl Record {
             forall|a: int| #[trigger] old(self).maps(a) ==> final(self).maps(a),
             acall_steps(old(caller)@, final(caller)@, r.1@),
             final(caller)@.pages().dom() == old(caller)@.pages().dom(),
+            final(caller)@.start() == old(caller)@.start(),
             step_seq_well_ended(r.1@),
             forall|j: int| 0 <= j < r.1@.len() ==> acall_call_in_window(
                 #[trigger] r.1@[j],
@@ -4379,6 +4386,7 @@ impl Record {
                 c0 == old(caller)@,
                 acall_steps(c0, caller@, steps),
                 caller@.pages().dom() == c0.pages().dom(),
+                caller@.start() == c0.start(),
                 acall_ok(steps),
                 step_seq_well_ended(steps),
                 forall|j: int| 0 <= j < steps.len() ==> acall_call_in_window(
@@ -5161,6 +5169,7 @@ fn back_fields(
         backed_is_mapped(final(spans).map@, *final(record)),
         acall_steps(old(caller)@, final(caller)@, r.1@),
         final(caller)@.pages().dom() == old(caller)@.pages().dom(),
+        final(caller)@.start() == old(caller)@.start(),
         step_seq_well_ended(r.1@),
         forall|j: int| 0 <= j < r.1@.len() ==> acall_call_in_window(
             #[trigger] r.1@[j],
@@ -5600,6 +5609,32 @@ impl Eager {
         assert(self.record.frames().dom() =~= Set::<int>::empty());
     }
 
+    /// A token a source is ready on has its kernel well formed and its process live, with its table page
+    /// live and a process space keyed at its root.
+    pub proof fn lemma_ready_process(&self, token: Caller)
+        requires
+            self.ready(token),
+        ensures
+            token.kernel().wf(),
+            token.kernel().processes.records@.contains_key(token.root()),
+            !token.kernel().processes.records@[token.root()].value().dead,
+            !token.kernel().blocks.pages@[(token.root() / verified::define::PAGE_SZ) as int].dead,
+            token.kernel().spaces.roots@.contains_key(token.root()),
+            token.kernel().spaces.records@[token.root()].value().kind
+                == verified::capability::space::SpaceKind::Process,
+    {
+        reveal(source_state_ready);
+    }
+
+    /// A token that holds a source has its page tokens well formed.
+    pub proof fn lemma_holds_pages_wf(&self, token: Caller)
+        requires
+            self.holds(token),
+        ensures
+            token.pages_wf(),
+    {
+    }
+
     /// A page is parked at `addr`: its run was released, and a back of it is granted with no system
     /// call.
     pub closed spec fn parks(&self, addr: int) -> bool {
@@ -5959,6 +5994,7 @@ impl SpanSource for Eager {
     fn back(&mut self, token: &mut Tracked<Caller>, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         ensures
             final(token)@.pages().dom() == old(token)@.pages().dom(),
+            final(token)@.start() == old(token)@.start(),
             final(self).space() == old(self).space(),
             final(self).untyped() == old(self).untyped(),
             final(self).memory() == old(self).memory(),

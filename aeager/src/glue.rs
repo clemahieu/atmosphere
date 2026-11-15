@@ -105,11 +105,17 @@ pub ghost struct AcallStep {
 
 impl AcallStep {
     /// `self` satisfies the `acall::memory` contract of `self.call` from `self.pre` to `self.post`
-    /// for `self.root` with outcome `self.out`.
+    /// for `self.root` with outcome `self.out`, and the process at `self.root` is sealed and recorded
+    /// on both sides, as a source's process is its own: so the rely between two steps keeps its space's
+    /// entries from being added to.
     #[verifier::opaque]
     pub open spec fn valid(self) -> bool {
         &&& self.pre.wf()
         &&& self.post.wf()
+        &&& self.pre.sealed(self.root)
+        &&& self.pre.processes.records@.contains_key(self.root)
+        &&& self.post.sealed(self.root)
+        &&& self.post.processes.records@.contains_key(self.root)
         &&& match self.call {
             AcallCall::Retype { untyped, kind, base, word, level } =>
                 CapKernel::retype_contract(
@@ -2637,7 +2643,7 @@ proof fn lemma_own_space_cap_live(k: CapKernel, root: usize, space: u64)
 }
 
 /// Two distinct slot indices in `root` that both hold slots in `k` name distinct capability-list nodes.
-proof fn lemma_distinct_slots_distinct_nodes(k: CapKernel, root: usize, i: usize, j: usize)
+pub(crate) proof fn lemma_distinct_slots_distinct_nodes(k: CapKernel, root: usize, i: usize, j: usize)
     requires
         k.wf(),
         k.tables.has_slot(&k.list, root, i),
@@ -3335,7 +3341,7 @@ pub(crate) proof fn lemma_ready_table_retyped(
 /// What a `retype_table_page` at `child` leaves as it was, as `retype_table_contract_fields` says it:
 /// the tables, the spaces, the processes, the large regions, every tracked page outside the eight of
 /// the block, every empty slot and every capability's depth.
-proof fn lemma_retype_table_kept(k0: CapKernel, km: CapKernel, child: usize)
+pub(crate) proof fn lemma_retype_table_kept(k0: CapKernel, km: CapKernel, child: usize)
     requires
         CapKernel::retype_table_contract_fields(k0, km, child),
     ensures
@@ -3359,7 +3365,7 @@ proof fn lemma_retype_table_kept(k0: CapKernel, km: CapKernel, child: usize)
 
 /// A `retype_table_page` at `child`, which was no table, leaves every table's entries as they were and
 /// naming the children they named, and the new table page's entries empty.
-proof fn lemma_retype_table_tree(k0: CapKernel, km: CapKernel, child: usize)
+pub(crate) proof fn lemma_retype_table_tree(k0: CapKernel, km: CapKernel, child: usize)
     requires
         CapKernel::retype_table_contract_fields(k0, km, child),
         !tree_of(&k0.table_pages, &k0.spaces).is_table(child),
@@ -4227,7 +4233,7 @@ pub(crate) proof fn lemma_ready_table_group(
 }
 
 /// `blocks_refs_changed` preserves `covered` on every tracked page.
-proof fn lemma_refs_changed_covered(
+pub(crate) proof fn lemma_refs_changed_covered(
     a: &verified::capability::block::BlockTable,
     b: &verified::capability::block::BlockTable,
     br: BlockRef,

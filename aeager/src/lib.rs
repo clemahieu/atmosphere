@@ -10,12 +10,14 @@
 //! pages stay mapped, parked at their addresses, and back those addresses again; a back elsewhere with
 //! no frame held or page free unmaps a parked page and maps its frame there. `glue` is the system calls, verified over acall's kernel step but for the one item
 //! that turns an accepted map into the permission to the page's bytes; `exercise` is a verified use of
-//! the contract that dom0 runs at boot; `witness` holds verified uses of the operations, built into no
-//! image.
+//! the contract that dom0 runs at boot; `apart` is what one source's steps leave of another's over
+//! disjoint ranges; `witness` holds verified uses of the operations, built into no image.
 #![no_std]
 // A cargo build erases specifications and proofs, so there a variable only they read looks unused.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
 
+#[cfg(verus_keep_ghost)]
+mod apart;
 mod eager;
 mod exercise;
 mod glue;

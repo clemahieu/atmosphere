@@ -11,6 +11,7 @@ use aheap::source::*;
 use verified::capability::operation::STATUS_REFUSED;
 use verified::capability::table::TABLE_INDICES;
 
+use crate::apart::{lemma_other_source_ready, lemma_other_window_unclaimed, process_ready, sources_apart};
 use crate::eager::*;
 use crate::exercise::*;
 use crate::glue::{
@@ -929,7 +930,18 @@ fn two_sources_reserved(
         r.1@.wf(),
         r.0.ready(final(token)@),
         forall|a: int| !#[trigger] r.0.parks(a),
+        r.0.fresh(),
         r.1.fresh(),
+        r.0.untyped() == untyped,
+        r.0.memory() == memory,
+        r.0.pages() == ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+        r.0.slots() == slots,
+        r.0.window() == window@.addr,
+        r.1.untyped() == second_untyped,
+        r.1.memory() == second_memory,
+        r.1.pages() == ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+        r.1.slots() == second_slots,
+        r.1.window() == second_window@.addr,
         r.0.free_capacity() >= 1,
         r.1.free_capacity() >= 1,
         r.0.acall_trace() == Seq::<AcallStep>::empty(),
@@ -1000,7 +1012,8 @@ fn two_sources_reserved(
 /// one-block span from each and backs its first page: making the second source claims page tokens for
 /// its own window's paths alone, so that window is unclaimed still after the first is made, and the
 /// first source still serves the caller and is ready after the second is made. When no other caller
-/// steps between the first back's calls, it is granted; each back is refused only when `acall` refuses
+/// steps between the backs' calls, both are granted: the first back's steps, in its own window, untyped
+/// run and frame slots, leave the second source ready. Each back is refused only when `acall` refuses
 /// its last step.
 #[verifier::spinoff_prover]
 pub fn witness_two_sources(
@@ -1031,6 +1044,16 @@ pub fn witness_two_sources(
             second_window@.addr,
         ),
         window@.addr != second_window@.addr,
+        sources_apart(
+            memory,
+            ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+            slots,
+            window@.addr,
+            second_memory,
+            ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+            second_slots,
+            second_window@.addr,
+        ),
     ensures
         final(token)@.wf(),
         acall_steps(old(token)@, final(token)@, r.2@ + r.3@),
@@ -1044,11 +1067,12 @@ pub fn witness_two_sources(
             &&& acall_ok(r.3@.drop_last())
             &&& r.3@.last().out.status == STATUS_REFUSED
         },
-        caller_alone(old(token)@, final(token)@) ==> r.0 is Some,
+        caller_alone(old(token)@, final(token)@) ==> r.0 is Some && r.1 is Some,
         r.0 is Some ==> r.0->0@.is_range(window@.addr as int, PAGE_BYTES as int),
         r.1 is Some ==> r.1->0@.is_range(second_window@.addr as int, PAGE_BYTES as int),
 {
     let ghost tok0 = token@;
+    let ghost pages = ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize;
     let (mut first, mut second) = two_sources_reserved(
         space,
         untyped,
@@ -1079,6 +1103,168 @@ pub fn witness_two_sources(
         lemma_acall_steps_append(tok0, backed, token@, steps, second_steps);
         if caller_alone(tok0, token@) {
             lemma_caller_alone_split(tok0, backed, token@, steps, second_steps);
+            assert(caller_alone(made, backed));
+            assert(first.ready(backed));
+            first.lemma_ready_process(backed);
+            assert(process_ready(backed.kernel(), tok0.root()));
+            lemma_other_source_ready(
+                tok0, backed, steps, space, untyped, memory, pages, slots, window@.addr, addr as int, 1,
+                second_untyped, second_memory, pages, second_slots, second_window@.addr,
+            );
+        }
+    }
+    (got, second_got, Ghost(steps), Ghost(second_steps))
+}
+
+/// Constructs an eager source over a window at one level-4 entry, reserves a one-block span and backs its
+/// first page, then constructs a second source over a window at another level-4 entry, from another
+/// untyped run into other frame slots, reserves a one-block span from it and backs its first page: the
+/// first back's steps, whoever stepped between them, add to the caller's space only at the first
+/// window's level-4 entry, so the second window is unclaimed still and the second source can be made
+/// after the first backed. When no other caller steps between the backs' calls, both are granted; each
+/// back is refused only when `acall` refuses its last step.
+#[verifier::spinoff_prover]
+pub fn witness_second_after_back(
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    slots: u64,
+    window: *mut u8,
+    second_untyped: u64,
+    second_memory: u64,
+    second_slots: u64,
+    second_window: *mut u8,
+    token: &mut Tracked<Caller>,
+) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>, Ghost<Seq<AcallStep>>))
+    requires
+        old(token)@.pages_wf(),
+        old(token)@.kernel() == old(token)@.start(),
+        window_tokens_clear(old(token)@, window@.addr),
+        window_tokens_clear(old(token)@, second_window@.addr),
+        source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
+        source_ready(
+            old(token)@,
+            space,
+            second_untyped,
+            second_memory,
+            ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+            second_slots,
+            second_window@.addr,
+        ),
+        sources_apart(
+            memory,
+            ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+            slots,
+            window@.addr,
+            second_memory,
+            ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize,
+            second_slots,
+            second_window@.addr,
+        ),
+    ensures
+        final(token)@.wf(),
+        acall_steps(old(token)@, final(token)@, r.2@ + r.3@),
+        r.0 is None ==> {
+            &&& r.2@.len() > 0
+            &&& acall_ok(r.2@.drop_last())
+            &&& r.2@.last().out.status == STATUS_REFUSED
+        },
+        r.1 is None ==> {
+            &&& r.3@.len() > 0
+            &&& acall_ok(r.3@.drop_last())
+            &&& r.3@.last().out.status == STATUS_REFUSED
+        },
+        caller_alone(old(token)@, final(token)@) ==> r.0 is Some && r.1 is Some,
+        r.0 is Some ==> r.0->0@.is_range(window@.addr as int, PAGE_BYTES as int),
+        r.1 is Some ==> r.1->0@.is_range(second_window@.addr as int, PAGE_BYTES as int),
+{
+    let pages: usize = (2 + WINDOW_BLOCKS) * TABLE_PAGES + 1;
+    let ghost tok0 = token@;
+    proof {
+        lemma_source_ready_premises(token@, space, untyped, memory, pages, slots, window@.addr);
+        lemma_source_ready_premises(token@, space, second_untyped, second_memory, pages, second_slots, second_window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, memory, pages, slots, window@.addr);
+        lemma_window_unclaimed(token@, space, second_untyped, second_memory, pages, second_slots, second_window@.addr);
+        assert(pages <= MAX_PAGES) by (compute);
+        assert(pages as int - (2 + WINDOW_BLOCKS as int) * TABLE_PAGES as int >= 1) by (compute);
+    }
+    let mut first: Eager = Eager::new(token, space, untyped, memory, pages, slots, window).unwrap();
+    let ghost made = token@;
+    proof {
+        lemma_window_still_unclaimed(tok0, made, window@.addr, second_window@.addr);
+        assert(source_ready(made, space, untyped, memory, pages, slots, window@.addr));
+        assert(first.window_fits(0, 1));
+    }
+    let span = first.reserve(token, 1).unwrap();
+    let addr = span.addr();
+    proof {
+        assert(addr == window@.addr);
+        let q = addr as int / BLOCK_BYTES as int;
+        lemma_fundamental_div_mod(addr as int, BLOCK_BYTES as int);
+        assert(addr as int == (q * BLOCK_PAGES as int) * PAGE_BYTES as int) by (nonlinear_arith)
+            requires
+                addr as int == BLOCK_BYTES as int * q,
+                BLOCK_BYTES == PAGE_BYTES * BLOCK_PAGES,
+        ;
+        lemma_mod_multiples_basic(q * BLOCK_PAGES as int, PAGE_BYTES as int);
+        assert(1 * PAGE_BYTES <= span_bytes(1)) by (compute);
+        assert(first@.runs_in(addr as int, addr as int, 1));
+        assert(first@.unbacked(addr as int, addr as int, 1));
+        assert(first.acall_trace() == Seq::<AcallStep>::empty());
+        assert(PAGE_BYTES <= WINDOW_BYTES) by (compute);
+    }
+    let got = first.back(token, Ghost(addr as int), addr, 1);
+    let ghost steps = first.acall_trace();
+    let ghost backed = token@;
+    proof {
+        assert(first.acall_trace().skip(0) =~= steps);
+        lemma_acall_steps_claimed(tok0, made, backed, steps);
+        lemma_other_window_unclaimed(
+            made, backed, steps, space, untyped, memory, pages, slots, window@.addr, addr as int, 1,
+            second_window@.addr,
+        );
+        first.lemma_holds_pages_wf(backed);
+    }
+    let mut second: Eager = Eager::new(token, space, second_untyped, second_memory, pages, second_slots, second_window).unwrap();
+    proof {
+        assert(second.window_fits(0, 1));
+    }
+    let second_span = second.reserve(token, 1).unwrap();
+    let second_addr = second_span.addr();
+    let ghost reserved = token@;
+    proof {
+        assert(second_addr == second_window@.addr);
+        let q2 = second_addr as int / BLOCK_BYTES as int;
+        lemma_fundamental_div_mod(second_addr as int, BLOCK_BYTES as int);
+        assert(second_addr as int == (q2 * BLOCK_PAGES as int) * PAGE_BYTES as int) by (nonlinear_arith)
+            requires
+                second_addr as int == BLOCK_BYTES as int * q2,
+                BLOCK_BYTES == PAGE_BYTES * BLOCK_PAGES,
+        ;
+        lemma_mod_multiples_basic(q2 * BLOCK_PAGES as int, PAGE_BYTES as int);
+        assert(1 * PAGE_BYTES <= span_bytes(1)) by (compute);
+        assert(second@.runs_in(second_addr as int, second_addr as int, 1));
+        assert(second@.unbacked(second_addr as int, second_addr as int, 1));
+        assert(second.acall_trace() == Seq::<AcallStep>::empty());
+    }
+    let second_got = second.back(token, Ghost(second_addr as int), second_addr, 1);
+    let ghost second_steps = second.acall_trace();
+    proof {
+        assert(second.acall_trace().skip(0) =~= second_steps);
+        lemma_acall_steps_claimed(backed, reserved, token@, second_steps);
+        lemma_acall_steps_append(tok0, backed, token@, steps, second_steps);
+        if caller_alone(tok0, token@) {
+            lemma_caller_alone_split(tok0, backed, token@, steps, second_steps);
+            assert(caller_alone(made, backed));
+            assert(first.ready(backed));
+            first.lemma_ready_process(backed);
+            assert(process_ready(backed.kernel(), tok0.root()));
+            lemma_other_source_ready(
+                tok0, backed, steps, space, untyped, memory, pages, slots, window@.addr, addr as int, 1,
+                second_untyped, second_memory, pages, second_slots, second_window@.addr,
+            );
+            assert(caller_alone(reserved, token@));
+            assert(source_ready(reserved, space, second_untyped, second_memory, pages, second_slots, second_window@.addr));
         }
     }
     (got, second_got, Ghost(steps), Ghost(second_steps))
