@@ -48,6 +48,7 @@ LICENSE_CHECK = "tools/check-licenses.py"
 SOURCE_LICENSE_CHECK = "tools/check-spdx.py"
 HOOK_TESTS = (".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh")
 EXTERNAL_BODY_CHECK = "tools/check-external-body.py"
+LAYOUT_CLAIMS_CHECK = "tools/check-layout-claims.py"
 THROWAWAY_CHECK = "tools/check-throwaways.py"
 INVOKED_ARMS_CHECK = "tools/check-invoked-arms.py"
 WITNESS_INVENTORY = "tools/witness-inventory.py"
@@ -497,6 +498,8 @@ STEPS = (
     Step("unwitnessed", X86_64, unwitnessed),
     Step("verify aarch64", AARCH64, verify_for("--target", AARCH64)),
     Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK)),
+    # Verus takes a layout claim as stated; the build checks it, for both targets.
+    Step("layout claims", X86_64, self_tested(LAYOUT_CLAIMS_CHECK)),
     Step("invoked arms", X86_64, invoked_arms),
     Step("page literals", X86_64, self_tested(PAGE_LITERALS_CHECK)),
     Step("arch sources", X86_64, self_tested(ARCH_SOURCES_CHECK)),
