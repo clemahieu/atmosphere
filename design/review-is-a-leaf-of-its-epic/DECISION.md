@@ -1,6 +1,6 @@
 ---
 title: "A skeptic pass is a review, a leaf under the epic it judges"
-date: 2026-11-12
+date: 2026-11-15
 status: active
 tags: [process, skeptic, tracker]
 one_line: "The skeptic pass that an epic closes on is its own issue: a task labelled review under the epic, waiting on the epic's other children; one review is one pass, a refuting review files a repeat, and the epic closes when its newest review passed after everything else below it closed. An epic is never claimed for a pass."
@@ -13,6 +13,8 @@ confidence: "A judgement about structure. Coverage is the same by construction: 
 The skeptic pass is a review: a task with the label `review`, a child of the epic whose acceptance criteria it judges. A round claims it from the ready list like any leaf, writes where the evidence is and hands it to the driver, which runs the skeptic and appends the report. The round that claims it next closes it: `skeptic pass:` when every criterion stands, or `refuted:` after filing a leaf per refuted criterion and a repeat review that waits on those leaves. One review is one pass.
 
 Before it hands a review over, the round matches each of the epic's criteria to the commits, logs and verify output recorded under it, as it does to close a small epic, and for tier 1 each use to its witness and to a throwaway run since that witness last changed. `tools/review-evidence.py` does the mechanical part. A criterion nothing shows becomes a leaf the review waits on: no pass runs, and since the review stays open it is not a refuted review, so the count of `design/third-refuted-review-waits-on-the-human/` does not move. The match is the round's own reading, so it finds what is absent and not what is weak.
+
+A pass can run on a main that fails the gate by itself, since a landing does not gate the main it lands on (`design/land-without-regating/`). The criterion it refutes for that, the one that says the gate passes, is main's bug and not the epic's: the triaging round files it as a landing that meets a broken main does, or finds the bug already filed, and the repeat review waits on it. It is no leaf of the refutation and no question holds it. A review that refuted nothing else closes `base:`, which is neither a pass nor a refuted review, so the count does not move.
 
 Which epic needs one is unchanged: more than three children, depth 1, or the label `skeptic`. A review is written with the leaves at a split, waiting on each of them, and otherwise when the epic finishes. An issue filed under an epic later is added to what the open review waits on.
 
@@ -44,6 +46,8 @@ A review as a leaf answers each point with what the tracker already does. It is 
 Coverage does not rest on those edges. An issue can be filed under an epic without being added to its review, and the tracker refuses the edge when the issue is an epic. So the close is decided by time: every other issue below the epic must have closed before the time the passing review's `Skeptic input` note carries. An edge that is missing costs a pass that ran early; it cannot let an epic close over work no pass saw.
 
 Existing epics are not migrated. One whose children are all closed gets its review when an epic round reaches it, which is when its pass would have run.
+
+Measured on 2026-11-15, on one epic refuted three times: two of its three refuting passes had main's own failure among the criteria they refuted, each time beside refutations that were the epic's. The second such failure, a proof over the solver's budget on one target after two changes landed together, was filed three times, once by each of two triages under their own epics and once by a landing, and the copy filed as a refutation waited on the question to the human after its fix had landed.
 
 ## Alternatives rejected
 
