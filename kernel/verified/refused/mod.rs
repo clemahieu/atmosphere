@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-//! False claims for the caller's-view contracts. An unchanged kernel meets no ok or again arm whose
-//! specification does not admit it, and no contract lets a slot it does not name change.
+//! False claims for the caller's-view contracts, and for the operation ways whose contracts admit an
+//! unchanged table view. An unchanged kernel meets no ok or again arm whose specification does not
+//! admit it, and no success ensures of destroy, place, start, suspend, unmap or the register
+//! operations. No contract lets a slot it does not name change.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -37,13 +39,24 @@ pub mod unnamed_map;
 pub mod unnamed_inspect;
 pub mod unnamed_retype;
 pub mod unnamed_derive;
+pub mod destroy_ok;
+pub mod place_ok;
+pub mod start_ok;
+pub mod suspend_suspended;
+pub mod suspend_again;
+pub mod unmap_ok;
+pub mod read_registers_none;
+pub mod write_registers_ok;
 pub mod unnamed_move;
 
 use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::Registers;
+use crate::arch::{user_rip, Registers};
+use crate::capability::thread::SuspendStep;
+use crate::capability::unmap::Unmapped;
+use crate::define::NUM_CPUS;
 use crate::capability::kernel::CapKernel;
 use crate::capability::operation::*;
 use crate::capability::position::{Position, spec_position};
@@ -221,6 +234,147 @@ pub trait MoveOk {
             post == pre,
         ensures
             CapKernel::move_contract(pre, post, root, from, to, status_only(STATUS_OK)),
+    ;
+}
+
+pub trait DestroyOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, root: usize, i: usize, ret: bool)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_destroy(root, i),
+            post == pre,
+            ret,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::destroy_answered(pre, post, root, i, ret),
+            CapKernel::destroy_kept(pre, post),
+            ret ==> CapKernel::destroy_done(pre, post, c, root, i),
+    ;
+}
+
+pub trait PlaceOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, i: usize, j: usize, priority: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_place(root, i, j, priority),
+            post == pre,
+            ret,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::place_answered(pre, post, root, i, j, priority, ret),
+            CapKernel::place_kept(pre, post, root),
+            ret ==> CapKernel::place_done(pre, post, root, i, j, priority),
+    ;
+}
+
+pub trait StartOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, i: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_start(root, i),
+            post == pre,
+            ret,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::start_answered(pre, post, root, i, ret),
+            CapKernel::start_kept(pre, post),
+            ret ==> CapKernel::start_done(pre, post, root, i),
+    ;
+}
+
+pub trait SuspendSuspended {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, root: usize, i: usize, ret: SuspendStep)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_suspend(root, i),
+            !pre.stops_elsewhere(c, root, i),
+            post == pre,
+            ret is Suspended,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::suspend_answered(pre, post, c, root, i, ret),
+    ;
+}
+
+pub trait SuspendAgain {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, root: usize, i: usize, ret: SuspendStep)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.stops_elsewhere(c, root, i),
+            post == pre,
+            ret is Again,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::suspend_answered(pre, post, c, root, i, ret),
+    ;
+}
+
+pub trait UnmapOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, slot: usize, va: u64, level: u64, ret: Option<Unmapped>)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_unmap_at(root, slot, va, level),
+            post == pre,
+            ret is Some,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::unmap_answered(pre, post, root, slot, va, level, ret is Some),
+            CapKernel::unmap_kept(pre, post),
+            ret is Some ==> CapKernel::page_unmapped(pre, post, root, slot, va, level, ret->0),
+    ;
+}
+
+pub trait ReadRegistersNone {
+    proof fn wrong(kernel: CapKernel, root: usize, i: usize, ret: Option<Registers>)
+        requires
+            kernel.wf(),
+            kernel.tables.roots@.contains_key(root),
+            kernel.root_live(root),
+            kernel.can_set_registers(root, i),
+            ret is None,
+        ensures
+            kernel.read_registers_answered(root, i, ret),
+            kernel.read_registers_done(root, i, ret),
+    ;
+}
+
+pub trait WriteRegistersOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, i: usize, frame: Registers, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_set_registers(root, i),
+            user_rip(frame.spec_pc()),
+            post == pre,
+            ret,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::write_registers_answered(pre, post, root, i, frame, ret),
+            CapKernel::write_registers_kept(pre, post),
+            ret ==> CapKernel::write_registers_done(pre, post, root, i, frame),
     ;
 }
 
