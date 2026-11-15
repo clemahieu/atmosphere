@@ -7,8 +7,10 @@ Each round runs in the main worktree as a fresh headless agent session (`claude 
 default, or `agy -p` or `grok -p` with the body of `.claude/agents/<kind>.md` when the offering chosen has
 `harness = "agy"` or `harness = "grok"`).
 Print mode waits for a background command the round started, such as its landing, and wakes the round
-when it exits, so the last result the session streams is the round's report. The report's lines say what
-comes next, as the round skill reads them (.claude/skills/round/SKILL.md):
+when it exits, so the last result the session streams is the round's report. A task notification that
+wakes the session after the report has already been said leaves only the reply in that result; the
+report is the text from before the notification. The report's lines say what comes next, as the round
+skill reads them (.claude/skills/round/SKILL.md):
 
 - `Notify: <text>` (or bullets under a bare `Notify:`), each sent with notify-send and printed;
 - `Prover: <id>` runs the prover agent on the first of its candidates not cooled down (or stamps
@@ -408,12 +410,77 @@ def agy_glimpse(step):
     return f"{name}: {str(what).splitlines()[0] if what else ''}"
 
 
+def message_text(content):
+    """The text of a stream message, from a string or from its text blocks."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(block.get("text", "") for block in content
+                     if isinstance(block, dict) and block.get("type") == "text" and block.get("text"))
+
+
+def task_notification(event):
+    """The text of a task-notification user turn, or None. A tool result is not one."""
+    if event.get("type") != "user":
+        return None
+    text = message_text((event.get("message") or {}).get("content"))
+    return text if "<task-notification>" in text else None
+
+
+def has_directive(text):
+    """Whether a turn carries a Loop, Prover, Skeptic or Retry line, which is a round's report."""
+    for raw in text.splitlines():
+        match = KEY.match(plain(raw))
+        if match and match.group(1) in ("Loop", "Prover", "Skeptic", "Retry"):
+            return True
+    return False
+
+
+def has_body(text):
+    """A skeptic verdict or a prover verify line: `STANDS` or `REFUTED`, a line `Stands:` or
+    `Refuted:`, `Observations:`, or `N verified, M errors`."""
+    if re.search(r"(?m)\b(?:STANDS|REFUTED)\b|^(?:Stands|Refuted):|^Observations:", text):
+        return True
+    return re.search(r"\d+ verified, \d+ errors\b", text) is not None
+
+
+def kept_report(earlier, result):
+    """Which text is the report when a task notification woke a turn after `earlier`.
+
+    The result event carries only the last turn. The turn that carries a report and the other does
+    not is the report: a directive line first, then a verdict or a verify line. When both do, the
+    longer one is the report and the shorter is the reply that quotes it. When neither does, the
+    result stands, so a wake before the report does not keep the preamble."""
+    earlier_s, result_s = (earlier or "").strip(), (result or "").strip()
+    if not earlier_s:
+        return result or ""
+    if not result_s:
+        return earlier
+    if earlier_s in result_s:
+        return result
+    earlier_key, result_key = has_directive(earlier_s), has_directive(result_s)
+    if earlier_key != result_key:
+        return earlier if earlier_key else result
+    earlier_body, result_body = has_body(earlier_s), has_body(result_s)
+    if earlier_body != result_body:
+        return earlier if earlier_body else result
+    if (earlier_key or earlier_body) and len(earlier_s) > len(result_s):
+        return earlier
+    return result
+
+
 def follow(lines, show):
-    """Read a session's stream-json lines, showing its progress; the last result is the report. Grok's
-    streaming-messages-json is Claude's shape, with an error result's reasons under `errors`."""
+    """Read a session's stream-json lines, showing its progress; the last result is the report.
+
+    Claude's result event carries only the last assistant turn. A task notification that wakes the
+    session after the report makes that turn a reply, so the report is the assistant text from before
+    the notification when the reply does not itself carry it. Grok's streaming-messages-json is
+    Claude's shape, with an error result's reasons under `errors`."""
     run = Run()
     agy_buffers = {}
     agy_steps = 0
+    earlier, after, notified = [], [], False
     for line in lines:
         try:
             event = json.loads(line)
@@ -454,11 +521,20 @@ def follow(lines, show):
 
         kind = event.get("type")
         if kind == "assistant":
+            said = []
             for block in event.get("message", {}).get("content", []):
                 if block.get("type") == "tool_use":
                     show(glimpse(block)[:SHOWN])
                 elif block.get("type") == "text" and block.get("text", "").strip():
                     show("says: " + block["text"].strip().splitlines()[0][:SHOWN])
+                    said.append(block["text"])
+            if said:
+                (after if notified else earlier).append("\n".join(said))
+        elif kind == "user" and task_notification(event) is not None and (earlier or after):
+            if notified:
+                earlier.extend(after)
+            after = []
+            notified = True
         elif kind == "rate_limit_event":
             info = event.get("rate_limit_info", {})
             if info.get("utilization") is not None and info.get("rateLimitType") == "seven_day":
@@ -474,11 +550,17 @@ def follow(lines, show):
                 if meter:
                     run.limit_meters.add(meter)
         elif kind == "result":
-            run.report = event.get("result") or ""
+            result = event.get("result") or ""
+            if notified:
+                pre = "\n\n".join(piece for piece in earlier if piece.strip())
+                run.report = kept_report(pre, result)
+            else:
+                run.report = result
+            earlier, after, notified = [], [], False
             run.error = bool(event.get("is_error")) or event.get("subtype") != "success"
             run.turns += event.get("num_turns") or 0
             run.weighted += weighted(event.get("usage") or {})
-            if run.error and LIMIT_RE.search(" ".join([run.report, *map(str, event.get("errors") or [])])):
+            if run.error and LIMIT_RE.search(" ".join([run.report, result, *map(str, event.get("errors") or [])])):
                 run.limited = True
     return run
 
@@ -2536,6 +2618,49 @@ class Tests(unittest.TestCase):
         run = follow(lines, shown.append)
         self.assertEqual((run.report, run.error, run.turns, run.weighted, run.limited), ("the report", False, 7, 120.0, False))
         self.assertEqual(shown, ["not json", "Bash: Land", "weekly usage 82%"])
+
+    def test_a_reply_after_a_task_notification_does_not_replace_the_report(self):
+        reply = ("That notice is only the watch on the gate run timing out after the run had already "
+                 "finished. It changes nothing in the review above.")
+        notice = ("<task-notification>\n<task-id>bri23x1fk</task-id>\n"
+                  "<summary>Monitor event: \"gate step results\"</summary>\n"
+                  "<event>[Monitor expired after 10m with 1 event delivered.]</event>\n"
+                  "</task-notification>")
+
+        def turn(text):
+            return json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+
+        def wake(text):
+            return json.dumps({"type": "user", "message": {"role": "user", "content": [
+                {"type": "text", "text": text}]}})
+
+        def done(text):
+            return json.dumps({"type": "result", "subtype": "success", "result": text, "num_turns": 2})
+
+        # A skeptic report carries a verdict and no Loop line. The reply is longer, and it is all the result holds.
+        skeptic = "Judged main: abc1234.\n1. The column is sized from the map — STANDS."
+        run = follow([turn(skeptic), wake(notice), turn(reply), done(reply)], lambda text: None)
+        self.assertEqual(run.report, skeptic)
+        string_user = json.dumps({"type": "user", "message": {"role": "user", "content": notice}})
+        run = follow([turn(skeptic), string_user, turn(reply), done(reply)], lambda text: None)
+        self.assertEqual(run.report, skeptic)
+
+        # A round report can be the shorter turn. The reply must not win by length.
+        short = "Notify: none\nLoop: continue"
+        run = follow([turn(short), wake(notice), turn(reply), done(reply)], lambda text: None)
+        self.assertEqual((run.report, parse(run.report).loop), (short, "continue"))
+
+        # The report written after the wake is the result, and a tool result is not a wake.
+        run = follow([turn("Starting the gate."), wake(notice), turn(self.REPORT), done(self.REPORT)], lambda text: None)
+        self.assertEqual((run.report, parse(run.report).loop), (self.REPORT, "continue"))
+        tool = json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": "ok"}]}})
+        run = follow([turn(short), tool, turn("extra"), done("extra")], lambda text: None)
+        self.assertEqual(run.report, "extra")
+        # Prose that says "refuted" is not a report. The Loop line written after the wake is.
+        prose = "The last pass refuted the third criterion and the leaf is filed.\n" * 4
+        run = follow([turn(prose), wake(notice), turn(short), done(short)], lambda text: None)
+        self.assertEqual(run.report, short)
 
     def test_a_rejected_rate_limit_is_a_usage_limit_with_its_reset(self):
         lines = [json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 5000}}),
