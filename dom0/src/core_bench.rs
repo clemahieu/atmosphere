@@ -133,6 +133,11 @@ unsafe extern "C" {
 /// How many cores run threads, from core 0 up, which threads_held finds; 0 until it has.
 static CORES: AtomicU64 = AtomicU64::new(0);
 
+/// How many cores run threads, as `threads_held` probed.
+pub(crate) fn core_count() -> u64 {
+    CORES.load(Ordering::Relaxed)
+}
+
 /// Whether thread `index` is retyped from its block of the untyped at `untyped` above `low`, bound to
 /// dom0's process, and its frame gets `entry` and `arguments`.
 fn thread_made(caller: &mut Tracked<Caller>, untyped: u64, low: u64, index: u64, entry: unsafe extern "C" fn(), arguments: [u64; 3]) -> bool {

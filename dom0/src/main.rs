@@ -135,11 +135,12 @@
 //! over a block, writing and reading each back; once all three are freed it allocates run-sized
 //! objects until the allocator refuses one, frees them, allocates one again, and prints that the heap
 //! held.
-//! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`), memory pointer-chase, and
-//! core-scaling/placement (`core_bench`) microbenchmarks (`design/synthetic-benchmark-suite/`) and runs
-//! them in unit-test mode, or under the `bench` feature prints the full results summary and
-//! `fuchsiaperf.json` block; `core_bench` binds dom0-process bench threads in root entries after the
-//! heap's before the heap claims the caller token, probing the online core count with CAS helpers.
+//! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`), memory pointer-chase,
+//! core-scaling/placement (`core_bench`), and scaled/contended capability (`cap_bench`)
+//! microbenchmarks (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under
+//! the `bench` feature prints the full results summary and `fuchsiaperf.json` block; `core_bench`
+//! binds dom0-process bench threads in root entries after the heap's before the heap claims the
+//! caller token, probing the online core count with CAS helpers.
 //! dom0 prints those results through the console, then an exit marker,
 //! and ends the run with a power-off through its power capability, reporting success only when every
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
@@ -156,6 +157,7 @@
 #![no_std]
 #![no_main]
 
+mod cap_bench;
 mod context;
 mod core_bench;
 mod flush_cost;
@@ -695,6 +697,9 @@ fn benchmarks_held() -> bool {
     if core_bench::register(&mut registry).is_err() {
         return false;
     }
+    if !cap_bench::register(&mut registry) {
+        return false;
+    }
     let mut console = ConsoleWriter::new();
     #[cfg(not(feature = "bench"))]
     let ok = registry
@@ -981,7 +986,7 @@ fn freed_frame_retyped(caller: &mut Tracked<Caller>, untyped: u64, slot: u64) ->
 const PROCESS_BELOW_TOP: u64 = 8 * 8 * 4096;
 
 /// The order of a process's block.
-const PROCESS_ORDER: u64 = 3;
+pub(crate) const PROCESS_ORDER: u64 = 3;
 
 /// The control right, the one right a process capability carries.
 const RIGHT_CONTROL: u64 = 128;
@@ -1026,7 +1031,7 @@ fn retyped_process_held(caller: &mut Tracked<Caller>, untyped: u64, table: u64, 
 const THREADS_BELOW_TOP: u64 = PROCESS_BELOW_TOP + TIMED_THREADS * THREAD_BYTES;
 
 /// The bytes of a thread's block, order 1.
-const THREAD_BYTES: u64 = 2 * 4096;
+pub(crate) const THREAD_BYTES: u64 = 2 * 4096;
 
 /// The order of a thread's block.
 const THREAD_ORDER: u64 = 1;
@@ -1228,9 +1233,9 @@ const RIGHT_EXECUTE: u64 = 4;
 /// table under Thread and process operations in design/syscall-abi-in-registers/ gives: rdi, rsi and
 /// rdx on x86_64, x0 to x2 on aarch64.
 #[cfg(target_arch = "x86_64")]
-const ARGUMENT_WORDS: [u64; 3] = [13, 12, 11];
+pub(crate) const ARGUMENT_WORDS: [u64; 3] = [13, 12, 11];
 #[cfg(target_arch = "aarch64")]
-const ARGUMENT_WORDS: [u64; 3] = [0, 1, 2];
+pub(crate) const ARGUMENT_WORDS: [u64; 3] = [0, 1, 2];
 
 /// How many times dom0 reads the shared word before it gives up on the child's write. The reschedule
 /// IPI that runs the child arrives as dom0 returns from the start, so the first read finds the word.
@@ -2401,7 +2406,7 @@ pub(crate) const fn first_slot(entry: u64) -> u64 {
 const FIRST_EMPTY_ENTRY: u64 = 2;
 
 /// The bytes of a table leaf's block, order 1.
-const LEAF_BYTES: u64 = 2 * 4096;
+pub(crate) const LEAF_BYTES: u64 = 2 * 4096;
 
 /// Whether the table leaf just retyped into root entry `entry` gives the entry its slots: inspect refuses
 /// the entry's first slot while it is empty, a derive of the power capability into it, named by the
