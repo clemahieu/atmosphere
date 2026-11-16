@@ -8,7 +8,8 @@ records the commit and host state under logs/ at the project root, and compares
 against a recorded baseline across at least 5 boots. Timing boots pass
 `-cpu host,pmu=off,-perfctr-core` to avoid QEMU vPMU RDPMC overhead; separate
 PMU counter boots pass `-cpu host,pmu=on` for cycles, instructions, and fills.
-Reports results and never gates.
+Reports results and never gates. tools/linux-bench.py saves a Linux guest run in
+the same record; --compare-linux prints the two side by side by label.
 
 Usage:
   tools/bench.py [within0|within1|across] [options]
@@ -24,6 +25,10 @@ Options:
                           interleave baseline and candidate boots on the same pinned cores
   --compare-only BASE CAND
                           Compare two already-saved run JSON files without booting QEMU
+  --compare-linux ATMOSPHERE LINUX
+                          Show medians of an Atmosphere run and a Linux run side by side
+                          by label, without booting. A gap is the two operations in
+                          design/synthetic-benchmark-suite/, not a regression.
   --no-compare            Skip automatic comparison against logs/bench-baseline.json
   --output PATH           Override saved run JSON path (default: logs/bench-<ts>-<sha>-<mode>.json)
   --timeout SEC           Per-boot QEMU timeout in seconds (default: 60)
@@ -41,9 +46,11 @@ Exit statuses:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import datetime
 import importlib.util
+import io
 import json
 import mmap
 import os
@@ -466,6 +473,53 @@ def format_comparison_table(comparison: dict) -> str:
             )
     else:
         lines.append("Moved benchmarks (0): none")
+    return "\n".join(lines)
+
+
+def format_side_by_side(atmosphere: dict, linux_run: dict) -> str:
+    """Medians of an Atmosphere run and a Linux run, joined by label.
+
+    A label only one run has is printed with a dash on the other side and listed
+    again at the bottom. The two numbers are the two operations in
+    design/synthetic-benchmark-suite/, not a regression of either run.
+    """
+    a_sum, a_boots = _run_summary(atmosphere)
+    l_sum, l_boots = _run_summary(linux_run)
+    linux_name = linux_run.get("kernel_release") or linux_run.get("short_commit", "linux")
+    lines = [
+        f"Atmosphere {atmosphere.get('short_commit', 'unknown')} ({a_boots} boots) beside "
+        f"Linux {linux_name} ({l_boots} boots)",
+        "",
+        f"{'Benchmark':<52} {'Unit':<13} {'Atmosphere':>14} {'Linux':>14}",
+        "-" * 96,
+    ]
+    only_atmosphere: list[str] = []
+    only_linux: list[str] = []
+    labels = list(a_sum) + [label for label in l_sum if label not in a_sum]
+    for label in labels:
+        a_entry = a_sum.get(label)
+        l_entry = l_sum.get(label)
+        if a_entry is None:
+            only_linux.append(label)
+            unit = l_entry["unit"]
+            a_col = "-"
+            l_col = _fmt_num(float(l_entry["median"]), unit)
+        elif l_entry is None:
+            only_atmosphere.append(label)
+            unit = a_entry["unit"]
+            a_col = _fmt_num(float(a_entry["median"]), unit)
+            l_col = "-"
+        else:
+            unit = a_entry["unit"]
+            a_col = _fmt_num(float(a_entry["median"]), unit)
+            l_col = _fmt_num(float(l_entry["median"]), l_entry["unit"])
+        lines.append(f"{label:<52} {unit:<13} {a_col:>14} {l_col:>14}")
+    lines.append("")
+    lines.append("Only in Atmosphere: " + (", ".join(only_atmosphere) if only_atmosphere else "none"))
+    lines.append("Only in Linux: " + (", ".join(only_linux) if only_linux else "none"))
+    lines.append(
+        "A gap is the two operations in design/synthetic-benchmark-suite/, not a regression of either run."
+    )
     return "\n".join(lines)
 
 
@@ -962,6 +1016,17 @@ def run_interleaved(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_compare_linux(args: argparse.Namespace) -> int:
+    """Print medians of an Atmosphere run and a Linux run, joined by label."""
+    atmosphere_path, linux_path = args.compare_linux
+    atmosphere = load_run_json(atmosphere_path)
+    linux_run = load_run_json(linux_path)
+    print(f"Atmosphere: {atmosphere_path}")
+    print(f"Linux:      {linux_path}")
+    print(format_side_by_side(atmosphere, linux_run))
+    return 0
+
+
 def run_compare_only(args: argparse.Namespace) -> int:
     """Load two saved run JSON files and print their comparison table."""
     base_path, cand_path = args.compare_only
@@ -1245,6 +1310,33 @@ class Tests(unittest.TestCase):
         self.assertTrue(args.save_baseline)
         self.assertTrue(args.force)
 
+    def test_side_by_side_joins_by_name(self) -> None:
+        atmosphere = self._synthetic_run(
+            {
+                "Syscall/Null.tsc_cycles": [[100.0, 100.0], [110.0, 110.0]],
+                "Null5Step.step1.tsc_cycles": [[1.0, 1.0], [1.0, 1.0]],
+            }
+        )
+        linux_run = self._synthetic_run(
+            {
+                "Syscall/Null.tsc_cycles": [[50.0, 50.0], [60.0, 60.0]],
+                "Thread/CreateStartJoin.tsc_cycles": [[9.0, 9.0], [9.0, 9.0]],
+            }
+        )
+        linux_run["kernel_release"] = "7.2.15-test"
+        text = format_side_by_side(atmosphere, linux_run)
+        self.assertIn("Linux 7.2.15-test", text)
+        syscall = next(line for line in text.splitlines() if line.startswith("Syscall/Null.tsc_cycles"))
+        self.assertIn("105.0", syscall)
+        self.assertIn("55.0", syscall)
+        self.assertIn("Only in Atmosphere: Null5Step.step1.tsc_cycles", text)
+        self.assertIn("Only in Linux: Thread/CreateStartJoin.tsc_cycles", text)
+        self.assertIn("not a regression", text)
+        joined = parse_args(["--compare-linux", "atmo.json", "linux.json"])
+        self.assertEqual([str(path) for path in joined.compare_linux], ["atmo.json", "linux.json"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            parse_args(["--compare-linux", "a.json", "b.json", "--compare-only", "c.json", "d.json"])
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments."""
@@ -1305,6 +1397,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Compare two saved run JSON files without booting QEMU",
     )
     parser.add_argument(
+        "--compare-linux",
+        nargs=2,
+        metavar=("ATMOSPHERE", "LINUX"),
+        type=Path,
+        default=None,
+        help="Show an Atmosphere run and a Linux run side by side by label, without booting",
+    )
+    parser.add_argument(
         "--no-compare",
         action="store_true",
         help="Do not compare against default logs/bench-baseline.json",
@@ -1346,6 +1446,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--boots must be at least 1")
     if args.timeout < 1:
         parser.error("--timeout must be at least 1")
+    if args.compare_linux is not None and args.compare_only is not None:
+        parser.error("--compare-linux and --compare-only are mutually exclusive")
     return args
 
 
@@ -1362,6 +1464,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.test:
         return run_tests()
     try:
+        if args.compare_linux is not None:
+            return run_compare_linux(args)
         if args.compare_only is not None:
             return run_compare_only(args)
         if args.interleave is not None:

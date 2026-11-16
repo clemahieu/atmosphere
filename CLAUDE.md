@@ -118,6 +118,7 @@ tools/check-stray-timer.py         # a kernel whose timer fires for nothing repo
 tools/check-boot-panic.py          # a kernel that panics at boot ends QEMU with status 1, on both targets
 tools/orangepi-stack-overflow.py   # an aarch64 kernel that overflows a stack on the board reports it once
 tools/bench.py                     # boot the benchmark suite pinned under KVM, save JSON under logs/, and compare with a recorded baseline across >= 5 runs
+tools/linux-bench.py               # boot a pinned KVM Linux guest and save the mapped primitives in perftest JSON; tools/bench.py --compare-linux shows it beside an Atmosphere run
 ```
 
 `tools/setup-verus.sh` builds Verus under `verus` at the project root, beside the worktrees and in no tree, at the commit the workspace `Cargo.toml` pins as vstd's revision; every worktree's tools read that one build, so a new worktree needs no setup. The host is an AMD Ryzen 9 9950X3D; `/dev/kvm` is world-writable; edk2-ovmf is at `/usr/share/edk2/ovmf`.
