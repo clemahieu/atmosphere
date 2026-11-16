@@ -33,8 +33,9 @@ A site is one of:
 
 tools/boundary-list holds one line per site, fields separated by tabs: the path, the enclosing
 function as rustc names it without the crate hash, the kind, the callee, the occurrence among sites
-alike in those four fields from 1 in source order, the guarantor's class and its text. '#' starts a
-comment line. The classes and what their text must be:
+alike in those four fields from 1 in source order, the guarantor's class and its text, and the site's
+reachability record, its reach and its text. '#' starts a comment line. The classes and what their
+text must be:
 
 - hardware '<key> <section>', machine '<key> <section>': the key one tools/hardware-documents lists.
 - kernel '<path> <item>': the file at path declares the function the item ends in.
@@ -45,16 +46,29 @@ comment line. The classes and what their text must be:
   statement that holds assert, if or while.
 - nothing '"<what it rests on>"': debt, said in words.
 
+The reachability record says whether a user process or a device can break what the site owes, and
+what shows it cannot. The change that adds a site writes its record; the reaches and their text:
+
+- unreachable '"<why>"': no user process and no device reaches the site, such as code that runs once
+  before any process exists.
+- test '<NAME> "<what it attempts>"': a dom0 test in the gate's boot attempts the violation, and NAME
+  is the constant of tools/check-boot-log.py holding the line it prints, which that file's
+  boot_log_accepted reads, itself or through a function of the file it calls.
+- untestable '"<why>"': user mode or a device reaches the site, and no dom0 test can attempt the
+  violation and see it refused, such as a precondition only the process's own state rests on.
+
 It prints one line per finding to stderr and exits 1: a site the source holds and the list does not,
-a line the source has no site for, a line that is not seven fields, a repeated line, a class not
-named above, or a text that fails its class's rule. Otherwise it prints one line counting the sites
-by kind and by class and exits 0.
+a line the source has no site for, a line that is not nine fields, a repeated line, a class or a
+reach not named above, a text that fails its class's or its reach's rule, or a test the boot check
+does not require. Otherwise it prints one line counting the sites by kind, by class and by reach and
+exits 0.
 
 usage: tools/check-boundary.py           the check
        tools/check-boundary.py --sites   print the source's sites as list lines, with the guarantor
                                          the list gives each or '?', and exit 0
        tools/check-boundary.py --test    this script's own tests
 """
+import ast
 import importlib.util
 import json
 import os
@@ -81,7 +95,11 @@ CRATES = {
 }
 KINDS = ("conjure", "raw", "call")
 CLASSES = ("hardware", "machine", "kernel", "language", "boot", "check", "nothing")
-FIELDS = 7
+REACHES = ("unreachable", "untestable", "test")
+FIELDS = 9
+# The boot check a test record names a line of, and the function in it that holds a boot's serial log.
+BOOT_CHECK = "tools/check-boot-log.py"
+BOOT_CHECK_FUNCTION = "boot_log_accepted"
 # core's functions that make a raw pointer to a type from an address or another pointer's type.
 RAW_MAKERS = {"cast", "transmute", "transmute_copy", "with_addr", "map_addr", "with_exposed_provenance",
               "with_exposed_provenance_mut", "without_provenance", "without_provenance_mut"}
@@ -98,7 +116,7 @@ ARCH = re.compile(r"::arch::(?:x86_64|aarch64)\b")
 QUOTED = re.compile(r'^"(.+)"$')
 
 Site = namedtuple("Site", "path function kind callee line column")
-Entry = namedtuple("Entry", "path function kind callee occurrence guarantor text")
+Entry = namedtuple("Entry", "path function kind callee occurrence guarantor text reach record")
 
 
 class Unreadable(Exception):
@@ -484,17 +502,16 @@ def parse_list(text):
         if not fields[4].isdigit() or int(fields[4]) < 1:
             findings.append(f"{at}: the occurrence {fields[4]} is not a number from 1")
             continue
-        entries.append((at, Entry(fields[0], fields[1], fields[2], fields[3], int(fields[4]), fields[5],
-                                  fields[6])))
+        entries.append((at, Entry(fields[0], fields[1], fields[2], fields[3], int(fields[4]), *fields[5:])))
     return entries, findings
 
 
 class Rules:
     """What a guarantor's text must be, by class, against the tree."""
 
-    def __init__(self, repo, documents, rust_src, witnesses, module):
+    def __init__(self, repo, documents, rust_src, witnesses, module, required):
         self.repo, self.documents, self.rust_src = repo, documents, rust_src
-        self.witnesses, self.module = witnesses, module
+        self.witnesses, self.module, self.required = witnesses, module, required
 
     def judge(self, entry, site):
         """None when the entry's guarantor holds for the site, or what is wrong."""
@@ -528,6 +545,42 @@ class Rules:
         if guarantor == "nothing":
             return None if QUOTED.match(text) else 'nothing says what the site rests on in double quotes'
         return f"the class {guarantor} is none of {', '.join(CLASSES)}"
+
+    def reached(self, entry):
+        """None when the entry's reachability record holds, or what is wrong."""
+        reach, record = entry.reach, entry.record
+        if reach in ("unreachable", "untestable"):
+            return None if QUOTED.match(record) else f"{reach} says why in double quotes"
+        if reach == "test":
+            name, _, attempt = record.partition(" ")
+            if name not in self.required:
+                return f"the boot check, {BOOT_CHECK} {BOOT_CHECK_FUNCTION}, does not require {name}"
+            return None if QUOTED.match(attempt.strip()) else (
+                f'a test says what it attempts in double quotes after the name: {name} "<what it attempts>"')
+        return f"the reach {reach} is none of {', '.join(REACHES)}"
+
+
+def boot_check_requires(text):
+    """The upper-case module constants of the boot check's source text that its boot_log_accepted reads,
+    itself or through a function of the same file it calls: the lines and patterns a boot's serial log
+    must show."""
+    tree = ast.parse(text)
+    constants = {target.id for node in tree.body if isinstance(node, ast.Assign) for target in node.targets
+                 if isinstance(target, ast.Name) and target.id.isupper()}
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    read, seen, pending = set(), set(), [BOOT_CHECK_FUNCTION]
+    while pending:
+        name = pending.pop()
+        if name in seen or name not in functions:
+            continue
+        seen.add(name)
+        for node in ast.walk(functions[name]):
+            if isinstance(node, ast.Name):
+                if node.id in constants:
+                    read.add(node.id)
+                elif node.id in functions:
+                    pending.append(node.id)
+    return read
 
 
 def checked(repo, site, condition, start=None):
@@ -577,9 +630,9 @@ def compare(found, entries, rules):
                             + "\t".join(map(str, key)))
             continue
         at, entry = listed[key]
-        wrong = rules.judge(entry, site)
-        if wrong:
-            findings.append(f"{at}: {wrong}")
+        for wrong in (rules.judge(entry, site), rules.reached(entry)):
+            if wrong:
+                findings.append(f"{at}: {wrong}")
     for key, (at, entry) in listed.items():
         if key not in found:
             findings.append(f"{at}: the source holds no such site: " + "\t".join(map(str, key)))
@@ -601,14 +654,15 @@ def with_starts(text, marked, requires):
 
 
 def summary(found, entries):
-    kinds, classes = {}, {}
+    kinds, classes, reaches = {}, {}, {}
     listed = {entry[:5]: entry for _, entry in entries}
     for key, site in found.items():
         kinds[site.kind] = kinds.get(site.kind, 0) + 1
-        guarantor = listed[key].guarantor
+        guarantor, reach = listed[key].guarantor, listed[key].reach
         classes[guarantor] = classes.get(guarantor, 0) + 1
+        reaches[reach] = reaches.get(reach, 0) + 1
     count = lambda table: ", ".join(f"{name} {table[name]}" for name in sorted(table))
-    return f"boundary: {len(found)} sites ({count(kinds)}); guarantors: {count(classes)}"
+    return f"boundary: {len(found)} sites ({count(kinds)}); guarantors: {count(classes)}; reach: {count(reaches)}"
 
 
 def main(argv):
@@ -639,14 +693,19 @@ def main(argv):
         listed = {entry[:5]: entry for _, entry in entries}
         for key, site in sorted(found.items(), key=lambda item: (item[1].path, item[1].line, item[1].column)):
             entry = listed.get(key)
-            print("\t".join(map(str, key)) + "\t" + ("\t".join(entry[5:]) if entry else "?\t?"))
+            print("\t".join(map(str, key)) + "\t" + "\t".join(entry[5:] if entry else ["?"] * (FIELDS - 5)))
         return 0
     try:
         documents = module.parse_documents((REPO / module.DOCUMENTS_PATH).read_text(encoding="utf-8"))
     except module.Unreadable as error:
         print(f"tools/check-boundary.py: {error}", file=sys.stderr)
         return 1
-    rules = Rules(REPO, documents, module.rust_source_root, witnesses(marked_directories(meta)), module)
+    try:
+        required = boot_check_requires((REPO / BOOT_CHECK).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError) as error:
+        print(f"tools/check-boundary.py: {BOOT_CHECK}: {error}", file=sys.stderr)
+        return 1
+    rules = Rules(REPO, documents, module.rust_source_root, witnesses(marked_directories(meta)), module, required)
     findings += compare(found, entries, rules)
     if findings:
         for finding in findings:
@@ -835,13 +894,14 @@ class Tests(unittest.TestCase):
         lines[51] = "    let core = 0;"
         lines[52] = "    let returned = kernel.enter(core, frame, Tracked::assume_new());"
         source.write_text("\n".join(lines) + "\n")
-        self.rules = Rules(self.repo, {"amd-apm2": ("t", "p", "n", "r")}, None, {"witness_boot_state"}, FakeModule)
+        self.rules = Rules(self.repo, {"amd-apm2": ("t", "p", "n", "r")}, None, {"witness_boot_state"}, FakeModule,
+                           {"GS_LOADED_LINE"})
 
     def found(self):
         return numbered(with_starts(conjure_dump(), MARKED, NONE))
 
-    def entries(self, guarantor, text, key=DISPATCH):
-        return parse_list("\t".join(map(str, key)) + f"\t{guarantor}\t{text}\n")[0]
+    def entries(self, guarantor, text, key=DISPATCH, reach="unreachable", record='"runs before any process exists"'):
+        return parse_list("\t".join(map(str, key)) + f"\t{guarantor}\t{text}\t{reach}\t{record}\n")[0]
 
     def test_a_conjured_value_is_named_by_the_call_and_argument_it_fills(self):
         self.assertEqual(list(self.found()), [DISPATCH])
@@ -886,8 +946,58 @@ class Tests(unittest.TestCase):
     def test_a_site_with_no_guarantor_fails(self):
         entries, findings = parse_list("\t".join(map(str, DISPATCH)) + "\n")
         self.assertEqual(entries, [])
-        self.assertIn("not 7 fields", findings[0])
+        self.assertIn(f"not {FIELDS} fields", findings[0])
         self.assertEqual(len(compare(self.found(), entries, self.rules)), 1)
+
+    def test_a_site_with_no_reach_record_fails(self):
+        entries, findings = parse_list("\t".join(map(str, DISPATCH)) + '\tnothing\t"x"\n')
+        self.assertEqual(entries, [])
+        self.assertIn(f"not {FIELDS} fields", findings[0])
+        self.assertEqual(len(compare(self.found(), entries, self.rules)), 1)
+
+    def test_each_reach_accepts_its_rule_and_refuses_text_that_fails_it(self):
+        cases = {
+            "unreachable": ('"runs once before any process exists"', "runs once before any process exists"),
+            "untestable": ('"nothing outside the process checks it"', '""'),
+            "test": ('GS_LOADED_LINE "dom0 loads GS and enters the kernel"', 'SEGMENTS_LINE "the boot check does not ask"'),
+        }
+        self.assertEqual(set(cases), set(REACHES))
+        for reach, (good, bad) in cases.items():
+            with self.subTest(reach):
+                self.assertEqual(compare(self.found(), self.entries("nothing", '"x"', reach=reach, record=good),
+                                         self.rules), [])
+                (finding,) = compare(self.found(), self.entries("nothing", '"x"', reach=reach, record=bad), self.rules)
+                self.assertTrue(finding.startswith(f"{LIST}:1: "), finding)
+
+    def test_a_test_the_boot_check_does_not_require_fails_and_one_it_requires_must_say_what_it_attempts(self):
+        (finding,) = compare(self.found(), self.entries("nothing", '"x"', reach="test", record='NO_SUCH_LINE "x"'),
+                             self.rules)
+        self.assertIn("does not require NO_SUCH_LINE", finding)
+        (finding,) = compare(self.found(), self.entries("nothing", '"x"', reach="test", record="GS_LOADED_LINE"),
+                             self.rules)
+        self.assertIn("what it attempts", finding)
+
+    def test_an_unknown_reach_fails(self):
+        (finding,) = compare(self.found(), self.entries("nothing", '"x"', reach="somewhere", record='"x"'), self.rules)
+        self.assertIn("the reach somewhere is none of", finding)
+
+    def test_the_boot_check_requires_the_constants_boot_log_accepted_reads_itself_or_through_its_helpers(self):
+        text = (
+            'A_LINE = "a"\n'
+            'B_LINE = "b"\n'
+            'C_LINE = "c"\n'
+            "def helper(serial):\n"
+            "    return B_LINE in serial\n"
+            "def boot_log_accepted(serial, arch):\n"
+            "    if A_LINE not in serial or not helper(serial):\n"
+            "        raise ValueError(arch)\n"
+            "def unrelated():\n"
+            "    return C_LINE\n")
+        self.assertEqual(boot_check_requires(text), {"A_LINE", "B_LINE"})
+
+    def test_the_tree_s_boot_check_requires_its_gs_line(self):
+        required = boot_check_requires((REPO / BOOT_CHECK).read_text(encoding="utf-8"))
+        self.assertIn("GS_LOADED_LINE", required)
 
     def test_a_repeated_line_fails(self):
         entries = self.entries("nothing", '"x"') * 2
@@ -927,7 +1037,7 @@ class Tests(unittest.TestCase):
 
     def test_an_unknown_class_or_kind_fails(self):
         self.assertIn("none of", compare(self.found(), self.entries("someone", '"x"'), self.rules)[0])
-        _, findings = parse_list("a\tb\tghost\tc\t1\tnothing\t\"x\"\n")
+        _, findings = parse_list("a\tb\tghost\tc\t1\tnothing\t\"x\"\tunreachable\t\"x\"\n")
         self.assertIn("kind ghost", findings[0])
 
     def test_the_boundary_crates_are_the_unmarked_members_that_depend_on_a_marked_one(self):

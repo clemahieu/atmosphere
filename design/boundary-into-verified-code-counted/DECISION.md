@@ -26,7 +26,7 @@ A call whose callee has no requires is no site unless a conjured value is passed
 
 **How the check finds them.** It reads rustc's typed intermediate form, `cargo rustc -- -Zunpretty=thir-flat` for each boundary crate, which `RUSTC_BOOTSTRAP` allows. Every call there names its callee's definition, crate and module path included, and its span: a method call such as `kernel.enter(core, frame, Tracked::assume_new())` reads as a call of `verified::capability::operation::{impl#1}::enter` at `kernel/src/capability.rs:53`. A conjure site is a call of `verus_builtin`'s `assume_new`, and a raw site an expression whose type is a raw pointer to a marked crate's type. Whether a callee has a requires is read from its definition in the marked crate's source, at the module path the THIR names. The check runs both targets, x86_64 and aarch64, since each compiles its own arch module, and holds the union.
 
-**The list.** One line per site, fields separated by tabs: path from the repository root; the enclosing function as rustc names it, without the crate hash; the kind; the callee, by its module path and name without the impl index, and for a conjure site the argument it fills; the occurrence among sites alike in that function, from 1; the guarantor's class; and its text. Lines are named this way, not by line number, so moving code does not churn the list. The check fails when the source holds a site the list does not, when the list holds one the source does not, or when a guarantor's text fails its class's rule.
+**The list.** One line per site, fields separated by tabs: path from the repository root; the enclosing function as rustc names it, without the crate hash; the kind; the callee, by its module path and name without the impl index, and for a conjure site the argument it fills; the occurrence among sites alike in that function, from 1; the guarantor's class; and its text; and the reachability record, below, as its reach and its text. Lines are named this way, not by line number, so moving code does not churn the list. The check fails when the source holds a site the list does not, when the list holds one the source does not, or when a guarantor's text fails its class's rule.
 
 **The guarantors.** Each site names one:
 
@@ -39,6 +39,14 @@ A call whose callee has no requires is no site unless a conjured value is passed
 - **nothing** `"<what it rests on>"`: debt. No document, proof or check vouches for it. The text says what the site rests on, in words, since the tree does not name the private tracker; the count of these is kept on the tracker's boundary epic, and a change that adds one files an issue saying why.
 
 A site with more than one guarantor names the one that carries most; the list is a count of who vouches, not a proof.
+
+**The reachability record.** Each line also says whether a user process or a device can break what the site owes, in two more fields, a reach and its text, and the change that adds a site writes them with its guarantor:
+
+- **unreachable** `"<why>"`: nothing a process or a device does reaches the site, such as the kernel's boot, which runs before any process exists.
+- **test** `<NAME> "<what it attempts>"`: a dom0 test in the gate's boot attempts the violation, and `NAME` is the constant of `tools/check-boot-log.py` holding the line it prints, which that check's `boot_log_accepted` reads, itself or through a function of the same file. The check fails a name the boot check does not read, so a test the boot stops asking for takes the record with it.
+- **untestable** `"<why>"`: a process or a device reaches the site, and no dom0 test can attempt the violation and see it refused, such as a precondition only the calling process's own state rests on, which nothing outside the process checks.
+
+The record lives on the line, held by the same step, because a record kept anywhere else is not held to the list: sites added after it was written had none, and nothing failed.
 
 **The skeptic.** The list counts the boundary, so a skeptic pass reports no uncounted site; `.claude/agents/skeptic.md` points it at the list. A site the list holds with a guarantor that does not hold on a path the running system takes refutes a criterion, as any false claim does.
 
@@ -75,4 +83,3 @@ Why name a site by its function and occurrence: line numbers move with every edi
 
 - Which sites can be removed, checked or witnessed, and in what order: each is its own issue.
 - The `global layout` and `global size_of` claims inside the marked crates, which Verus takes as stated: whether the build refuses a wrong one, or they join `tools/external-body-list`.
-- Which sites a user process or a device can reach, and the boot tests that try to break them.

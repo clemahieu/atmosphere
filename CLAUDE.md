@@ -96,7 +96,7 @@ tools/check-boot-log.py --arch ARCH LOG   # hold a dom0 boot's serial log to the
 tools/check-throwaways.py --write   # after adding a root witness or changing one's parameters or requires: rewrite the throwaways the gate runs; --list says which witnesses are roots
 tools/check-refused.py  # after adding a false claim under a verified crate's refused/ or changing a postcondition one names: Verus refuses each claim where it says; --coverage says, per inventory line, the claim that covers it or none; the gate's refused and unrefused steps
 tools/check-layout-claims.py  # after adding a 'global layout' or 'global size_of' claim, or a new Verus: the build refuses a wrong one in each file, on both targets; the gate's layout claims step
-tools/check-boundary.py --sites   # after adding or moving an assume_new, a cast to a verified type or a call to a verified function with a requires in kernel, dom0 or astd: the sites as tools/boundary-list lines, each with its guarantor or '?'; the gate's boundary step
+tools/check-boundary.py --sites   # after adding or moving an assume_new, a cast to a verified type or a call to a verified function with a requires in kernel, dom0 or astd: the sites as tools/boundary-list lines, each with its guarantor and reachability record or '?'; the gate's boundary step
 tools/check-invoked-arms.py   # before changing an arm of invoked or an operation's ensures: each conjunct the arm does not carry; the gate's invoked arms step
 tools/aarch64-esp.py    # build the aarch64 images and lay out the ESP the board boots
 tools/board.py          # boot dom0 on the Orange Pi under KVM and hold the run to the gate's boot checks; fails when the board is unreachable

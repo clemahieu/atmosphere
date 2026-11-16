@@ -762,8 +762,9 @@ STEPS = (
     Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK), bounded(EXTERNAL_BODY_CHECK, "tools/external-body-list", "tools/hardware-documents", *VERIFIED_CRATES, "kernel/**")),
     # Verus takes a layout claim as stated; the build checks it, for both targets.
     Step("layout claims", X86_64, self_tested(LAYOUT_CLAIMS_CHECK), bounded(LAYOUT_CLAIMS_CHECK, *VERIFIED_CRATES)),
-    # What unverified crates hand verified code unchecked, from rustc's THIR of both targets.
-    Step("boundary", X86_64, self_tested(BOUNDARY_CHECK), bounded(BOUNDARY_CHECK, EXTERNAL_BODY_CHECK, "tools/boundary-list", "tools/hardware-documents", *BOUNDARY_CRATES)),
+    # What unverified crates hand verified code unchecked, from rustc's THIR of both targets, each with who
+    # vouches for it and whether a process or a device can break it; a named boot test is held to the boot check.
+    Step("boundary", X86_64, self_tested(BOUNDARY_CHECK), bounded(BOUNDARY_CHECK, EXTERNAL_BODY_CHECK, "tools/boundary-list", "tools/hardware-documents", BOOT_LOG_CHECK, *BOUNDARY_CRATES)),
     Step("invoked arms", X86_64, invoked_arms, bounded(INVOKED_ARMS_CHECK, "kernel/verified/**")),
     Step("page literals", X86_64, self_tested(PAGE_LITERALS_CHECK), bounded(PAGE_LITERALS_CHECK, *VERIFIED_CRATES)),
     Step("arch sources", X86_64, self_tested(ARCH_SOURCES_CHECK), bounded(ARCH_SOURCES_CHECK, "kernel/src/**")),
@@ -1109,7 +1110,7 @@ def step_input_errors(steps, repo=REPO, metadata=None, faq_paths=None, patch_tar
         "refused": (VERIFY, THROWAWAY_CHECK, WITNESS_INVENTORY),
         "unrefused": (VERIFY, THROWAWAY_CHECK, WITNESS_INVENTORY, "tools/refused-exempt", UNREFUSED),
         "external body": ("tools/external-body-list", "tools/hardware-documents"),
-        "boundary": (EXTERNAL_BODY_CHECK, "tools/boundary-list", "tools/hardware-documents"),
+        "boundary": (EXTERNAL_BODY_CHECK, "tools/boundary-list", "tools/hardware-documents", BOOT_LOG_CHECK),
         "boot stack": (RUN, "tools/elfstrip.py", "tools/firmware.py"),
         "coverage": (BOOT_STACK_CHECK, RUN, "tools/elfstrip.py", "tools/firmware.py"),
         "iommu boot": ("tools/elfstrip.py", "tools/firmware.py"),
