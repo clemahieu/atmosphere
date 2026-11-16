@@ -534,12 +534,15 @@ impl CapKernel {
     }
 
     /// Revoke's condition over the caller's view: the position word names a position, the position is
-    /// in a table, and the slot there holds a capability. Nothing outside the view decides it.
+    /// in a table, the slot there holds a capability, and if the position goes through a process
+    /// capability pc, R3 does not hold (pc is not in c's run by depth and block containment). The
+    /// depths read the list outside the view.
     pub open spec fn revoke_allowed(&self, root: usize, at: Option<Position>) -> bool {
         let table = self.view_table_at(root, at->0.through);
         &&& at is Some
         &&& table is Some
         &&& self.table_view(table->0).contains_key(at->0.index)
+        &&& !self.revoke_through_run(root, at->0)
     }
 
     /// What revoking capability c kept of every table: each slot after was a slot before, saying the
@@ -561,7 +564,7 @@ impl CapKernel {
     /// childless.
     /// Whichever, every frame capability's block is the one it was at a count no higher: a revoke takes
     /// holders and adds none. A refused revoke that took nothing leaves the block table as it was.
-    /// The epoch and c's run read the kernel outside the view.
+    /// The epoch, c's run and the depths for R3 read the kernel outside the view.
     pub open spec fn revoke_contract(pre: Self, post: Self, root: usize, at: Option<Position>, out: Outcome) -> bool {
         ||| {
             &&& !pre.revoke_allowed(root, at)

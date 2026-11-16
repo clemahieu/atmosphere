@@ -1185,14 +1185,16 @@ impl CapKernel {
     }
 
     /// A revoke in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, when allows_revoke fails; refused with the flush epoch at
-    /// its limit, which a revoke reaches only from an epoch within REVOKE_BUDGET of it, raised by no more
-    /// than the nodes it took of the run of the capability at the position the slot's word names; again
-    /// with exactly REVOKE_BUDGET nodes of that run taken and some of it left; or ok with the run empty.
-    /// Whatever steps it took raised no block's count. Every arm calls the predicates revoke's ensures
-    /// calls: revoke_preserved, mappings_shrunk, records_shrunk and blocks_revoked, and revoke_answered
-    /// with the step, Refused and Exhausted both where the status is refused. See
-    /// design/revoke-by-depth-first-list/ and design/invoked-arm-is-the-operation-postcondition/.
+    /// returned: refused with nothing changed, when allows_revoke fails (a bad position word, no
+    /// capability there, or R3: a position through a process capability in the capability's run);
+    /// refused with the flush epoch at its limit, which a revoke reaches only from an epoch within
+    /// REVOKE_BUDGET of it, raised by no more than the nodes it took of the run of the capability at
+    /// the position the slot's word names; again with exactly REVOKE_BUDGET nodes of that run taken and
+    /// some of it left; or ok with the run empty. Whatever steps it took raised no block's count. Every
+    /// arm calls the predicates revoke's ensures calls: revoke_preserved, mappings_shrunk,
+    /// records_shrunk and blocks_revoked, and revoke_answered with the step, Refused and Exhausted both
+    /// where the status is refused. See design/revoke-by-depth-first-list/ and
+    /// design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
         &&& Self::page_count_kept(pre, post)
@@ -1292,10 +1294,12 @@ impl CapKernel {
         at is Some && self.can_delete_at(root, at->0)
     }
 
-    /// Whether the revoke in frame takes a step: the slot word a position that holds a capability.
+    /// Whether the revoke in frame takes a step: the slot word a position that holds a capability,
+    /// and if the position goes through a process capability pc, R3 does not hold (pc is not in c's
+    /// run by depth and block containment).
     pub open spec fn allows_revoke(&self, root: usize, frame: Registers) -> bool {
         let at = spec_position(frame.slot());
-        at is Some && self.cap_at(root, at->0) is Some
+        at is Some && self.can_revoke_at(root, at->0)
     }
 
     /// Whether the destroy in frame is allowed: can_destroy at the index the slot names, in the caller's
@@ -1825,13 +1829,13 @@ impl CapKernel {
     }
 
     /// A revoke reaches revoke: refused with nothing changed unless the slot's word names a position
-    /// holding a capability; otherwise revoke's Done, ok with the capability's run empty; its Again,
-    /// again with some of the run left; or its Exhausted, refused with the flush epoch at its limit, and
-    /// only from an epoch within REVOKE_BUDGET of it, raised to the limit by no more than the nodes it
-    /// took, so from any other epoch Done or Again. Each of the three took steps of the capability's run
-    /// alone, at most REVOKE_BUDGET of them, and Again exactly REVOKE_BUDGET, so a caller repeating on
-    /// again shortens the run each time.
-    /// design/witness-per-way-an-operation-succeeds/.
+    /// holding a capability whose position does not go through a process capability in its run (R3);
+    /// otherwise revoke's Done, ok with the capability's run empty; its Again, again with some of the
+    /// run left; or its Exhausted, refused with the flush epoch at its limit, and only from an epoch
+    /// within REVOKE_BUDGET of it, raised to the limit by no more than the nodes it took, so from any
+    /// other epoch Done or Again. Each of the three took steps of the capability's run alone, at most
+    /// REVOKE_BUDGET of them, and Again exactly REVOKE_BUDGET, so a caller repeating on again shortens
+    /// the run each time. design/witness-per-way-an-operation-succeeds/.
     pub proof fn lemma_entry_reaches_revoke(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
         requires
             Self::invoked(pre, post, root, frame, out),

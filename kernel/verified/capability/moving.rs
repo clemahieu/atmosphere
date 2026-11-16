@@ -524,33 +524,54 @@ impl CapKernel {
         }
         proof {
             let post = *self;
-            assert(post.list.nodes@[n as int].kind == pre.list.nodes@[i as int].kind);
-            assert(post.payload_of(n) == pre.payload_of(i));
             assert(Self::caps_frame(pre, post, i, n));
-            Self::lemma_move_caps_wf(pre, post, i, n);
-            Self::lemma_hidden_frame(pre, post, i, n);
-            Self::lemma_table_nodes_caps_frame(pre, post, i, n);
-            Self::lemma_space_nodes_caps_frame(pre, post, i, n);
-            assert(post.is_cap(n));
-            Self::lemma_bindings_caps_frame(pre, post, i, n);
-            // The moved capability keeps its parent, and its parent keeps its payload.
-            pre.lemma_parent_of_cap(i);
-            pre.lemma_badge_inherited(i);
-            let q = pre.list.parent@[i];
-            assert(post.list.parent@[n] == q);
-            Self::lemma_caps_frame(pre, post, i, n, q);
-            assert(badge_kept_at(&post.list, &post.tables, n));
-            Self::lemma_badges_caps_frame(pre, post, i, n);
-            Self::lemma_caps_contained_moved(pre, post, i, n);
-            Self::lemma_move_holders(pre, post, i, n);
-            Self::lemma_move_mappings(pre, post, i, n);
-            Self::lemma_move_devices(pre, post, i, n);
-            lemma_parents_moved(pre.list, post.list, i, n);
-            Self::lemma_tlb_same(pre, post);
-            assert(post.view().holds(dst, n));
-            Self::lemma_bound_threads_same(pre, post);
+            Self::lemma_move_between_wf(pre, post, dst, i, n);
         }
         true
+    }
+
+    /// Proves that `post` preserves `CapKernel::wf` and the post-move invariants after renaming `i`
+    /// to `n` in table `dst`.
+    #[verifier::spinoff_prover]
+    proof fn lemma_move_between_wf(pre: Self, post: Self, dst: usize, i: usize, n: usize)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(dst),
+            pre.tables.owner@[page_of(n)].0 == dst,
+            post.tables.wf(&post.list),
+            Self::move_step(pre, post, i, n),
+            Self::move_frame(pre, post, i, n),
+            exists|p: int| 0 <= p < pre.list.seq@.len() && #[trigger] pre.list.seq@[p] == i
+                && post.list.seq@ == pre.list.seq@.update(p, n),
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+        ensures
+            post.wf(),
+            Self::same_tree(pre, post),
+            post.view().holds(dst, n),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+    {
+        Self::lemma_move_caps_wf(pre, post, i, n);
+        Self::lemma_hidden_frame(pre, post, i, n);
+        Self::lemma_table_nodes_caps_frame(pre, post, i, n);
+        Self::lemma_space_nodes_caps_frame(pre, post, i, n);
+        assert(post.is_cap(n));
+        Self::lemma_bindings_caps_frame(pre, post, i, n);
+        // The moved capability keeps its parent, and its parent keeps its payload.
+        pre.lemma_parent_of_cap(i);
+        pre.lemma_badge_inherited(i);
+        let q = pre.list.parent@[i];
+        assert(post.list.parent@[n] == q);
+        Self::lemma_caps_frame(pre, post, i, n, q);
+        assert(badge_kept_at(&post.list, &post.tables, n));
+        Self::lemma_badges_caps_frame(pre, post, i, n);
+        Self::lemma_caps_contained_moved(pre, post, i, n);
+        Self::lemma_move_holders(pre, post, i, n);
+        Self::lemma_move_mappings(pre, post, i, n);
+        Self::lemma_move_devices(pre, post, i, n);
+        lemma_parents_moved(pre.list, post.list, i, n);
+        Self::lemma_tlb_same(pre, post);
+        assert(post.view().holds(dst, n));
+        Self::lemma_bound_threads_same(pre, post);
     }
 
     /// The containment after a move. The capability keeps its parent and what the parent says, and

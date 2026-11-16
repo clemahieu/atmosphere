@@ -1,6 +1,6 @@
 ---
 title: "A capability is shared only by derive; a move keeps a node's place, between tables too; there is no copy"
-date: 2026-11-10
+date: 2026-11-16
 status: active
 tags: [capability, revoke, lifetime]
 one_line: "The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; a move relocates a node without changing its place, within the caller's table, out of a controlled process's table, which is a claim, or into one, which is a placement; delete is refused while a node has children, mappings or bindings."
@@ -12,7 +12,7 @@ confidence: "The human's choice among three lifetime packages, with a precedent 
 
 ## Decision
 
-Derive is the only way to share: the child's rights and range lie within the parent's and its depth is one greater. Depth is a byte; overflow is an error. There is no copy, because a copy would be a peer the grantor could not revoke. Every holder may revoke what it derived, so revoke needs no right.
+Derive is the only way to share: the child's rights and range lie within the parent's and its depth is one greater. Depth is a byte; overflow is an error. There is no copy, because a copy would be a peer the grantor could not revoke. Every holder may revoke what it derived, so revoke needs no right, except that revoking `c` at a position through a process capability `pc` in `c`'s own run (`depth(pc) > depth(c)` and `c` is a process capability naming `pc`'s process or an untyped whose block holds `pc`'s order-3 block) is refused: unlinking `pc` would remove the path reaching `c` and strand the rest of `c`'s run, so the controller claims `c` into its own table first.
 
 Nodes never change ancestor. Move keeps a node's place and depth, for things with one holder such as a device, whose capability derive refuses so that it has exactly one, and for cooperative upgrade: an old service moves its untyped and receive capabilities to its replacement, and every derived child comes along. A move names its source and its destination as table positions, `design/process-holds-capabilities/`: each is a slot of the caller's own table or, through a process capability with the control right, of that process's table, and the node moves in one bounded step. Nothing enumerates a table.
 

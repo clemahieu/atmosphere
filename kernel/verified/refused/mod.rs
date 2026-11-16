@@ -128,6 +128,8 @@ pub mod retype_table_done;
 pub mod retype_thread_done;
 pub mod revoke_done;
 pub mod revoke_budget;
+pub mod revoke_through_run;
+pub mod revoke_through_run_contract;
 pub mod core_bridge_new;
 pub mod core_bridge_send;
 pub mod core_bridge_try_take;
@@ -2398,6 +2400,42 @@ pub trait RevokeBudget {
             CapKernel::revoke_answered(pre, post, root, at, ret),
             !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at),
             ret is Done ==> CapKernel::cap_revoked_at(pre, post, root, at),
+    ;
+}
+
+/// revoke under R3 (position through pc in c's run) does not answer Done, Again, or Exhausted:
+/// it must be refused.
+/// design/refused-claim-per-way/.
+pub trait RevokeThroughRun {
+    proof fn wrong(pre: CapKernel, post: CapKernel, root: usize, frame: Registers, at: Position, out: Outcome, ret: RevokeStep)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            spec_position(frame.slot()) == Some(at),
+            pre.cap_at(root, at) is Some,
+            pre.revoke_through_run(root, at),
+            !(ret is Refused),
+            out != status_only(STATUS_REFUSED),
+        ensures
+            CapKernel::revoke_answered(pre, post, root, at, ret),
+            CapKernel::spec_revoked(pre, post, root, frame, out),
+    ;
+}
+
+/// revoke's caller contract under R3 does not return a non-refused outcome.
+/// design/refused-claim-per-way/.
+pub trait RevokeThroughRunContract {
+    proof fn wrong(pre: CapKernel, post: CapKernel, root: usize, at: Position, out: Outcome)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.cap_at(root, at) is Some,
+            pre.revoke_through_run(root, at),
+            out != status_only(STATUS_REFUSED),
+        ensures
+            CapKernel::revoke_contract(pre, post, root, Some(at), out),
     ;
 }
 

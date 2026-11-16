@@ -8,6 +8,9 @@ use vstd::prelude::*;
 verus! {
 
 #[cfg(verus_keep_ghost)]
+use crate::capability::derive::block_within;
+use crate::capability::derive::is_block_within;
+#[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 use crate::capability::link::*;
 #[cfg(verus_keep_ghost)]
@@ -29,6 +32,7 @@ use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::refs::*;
 use crate::capability::table::*;
+use crate::capability::process::PROCESS_ORDER;
 #[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
 #[cfg(verus_keep_ghost)]
@@ -739,16 +743,75 @@ impl CapKernel {
         &&& post.processes.records == pre.processes.records
     }
 
+    /// Whether revoking the capability at `at` from `root` goes through a process capability `pc`
+    /// in that capability's own run (R3): `at` goes through a capability `pc` in `root`'s table
+    /// whose depth is greater than `c`'s, and `c` is a process capability naming `pc`'s base or an
+    /// untyped whose block holds `pc`'s order-3 process block.
+    pub open spec fn revoke_through_run(&self, root: usize, at: Position) -> bool {
+        match at.through {
+            None => false,
+            Some(cap) => {
+                let pc = self.tables.node_of(root, cap);
+                let p_pc = self.payload_of(pc);
+                &&& self.cap_at(root, at) is Some
+                &&& {
+                    let c = self.cap_at(root, at)->0;
+                    let p_c = self.payload_of(c);
+                    &&& self.list.d(pc) > self.list.d(c)
+                    &&& {
+                        ||| p_c.kind is Process && p_c.base == p_pc.base
+                        ||| p_c.kind is Untyped && block_within(p_pc.base, PROCESS_ORDER, p_c)
+                    }
+                }
+            },
+        }
+    }
+
+    /// Whether a revoke at position `at` from `root` is allowed: the position names a capability,
+    /// and if it goes through a process capability `pc`, R3 does not hold.
+    pub open spec fn can_revoke_at(&self, root: usize, at: Position) -> bool {
+        &&& self.cap_at(root, at) is Some
+        &&& !self.revoke_through_run(root, at)
+    }
+
+    /// When revoking at `at` through `pc` is allowed (`can_revoke_at`), `pc` is not below `c` in
+    /// the derivation list: by capability containment, any process capability below `c` would be
+    /// deeper than `c` and have its order-3 block inside `c`'s block (or equal to `c`'s for a
+    /// process capability), which R3 refuses.
+    pub proof fn lemma_can_revoke_not_below(&self, root: usize, at: Position)
+        requires
+            self.wf(),
+            self.can_revoke_at(root, at),
+            at.through is Some,
+        ensures
+            !below(self.list, self.cap_at(root, at)->0, self.tables.node_of(root, at.through->0)),
+    {
+        let cap = at.through->0;
+        let pc = self.tables.node_of(root, cap);
+        let c = self.cap_at(root, at)->0;
+        let table = self.table_at(root, Some(cap))->0;
+        self.lemma_slot(root, cap);
+        self.lemma_slot(table, at.index);
+        if below(self.list, c, pc) {
+            self.lemma_run_contained(c, pc);
+            self.lemma_process_cap(pc);
+            if self.payload_of(c).kind is Process {
+                self.lemma_process_cap(c);
+            }
+        }
+    }
+
     /// What revoke returned for the capability at a position, in revoke's own result. Refused is the
-    /// index naming no capability, and then nothing changed; an epoch already at its limit changes
-    /// nothing either. Exhausted, which the entry also reports as refused, is that limit reached with
-    /// the run unfinished. Again took exactly REVOKE_BUDGET nodes and left some of the run; Done is the
-    /// run empty. A step that was not refused took a prefix of the run, raised the flush epoch by no
-    /// more than the nodes it took, and left every page of a mapping it took stale past the epoch it
-    /// began at. revoke's ensures and spec_revoked both call it, the arm once per result:
+    /// index naming no capability or a position through a process capability in its run (R3), and
+    /// then nothing changed; an epoch already at its limit changes nothing either. Exhausted, which
+    /// the entry also reports as refused, is that limit reached with the run unfinished. Again took
+    /// exactly REVOKE_BUDGET nodes and left some of the run; Done is the run empty. A step that was
+    /// not refused took a prefix of the run, raised the flush epoch by no more than the nodes it took,
+    /// and left every page of a mapping it took stale past the epoch it began at. revoke's ensures
+    /// and spec_revoked both call it, the arm once per result:
     /// design/invoked-arm-is-the-operation-postcondition/.
     pub open spec fn revoke_answered(pre: Self, post: Self, root: usize, at: Position, ret: RevokeStep) -> bool {
-        &&& ret is Refused == pre.cap_at(root, at) is None
+        &&& ret is Refused == !pre.can_revoke_at(root, at)
         &&& ret is Refused ==> post == pre
         &&& pre.flush_epoch == usize::MAX ==> post == pre
         &&& ret is Exhausted ==> post.flush_epoch == usize::MAX
@@ -776,7 +839,7 @@ impl CapKernel {
         gone: Seq<usize>,
     )
         requires
-            ret is Refused == pre.cap_at(root, at) is None,
+            ret is Refused == !pre.can_revoke_at(root, at),
             ret is Refused ==> post == pre,
             pre.flush_epoch == usize::MAX ==> post == pre,
             ret is Exhausted ==> post.flush_epoch == usize::MAX,
@@ -800,12 +863,13 @@ impl CapKernel {
 
     /// Revokes the capability at a position, an index of the caller's table, at root, or of the table
     /// of a process the caller controls, live or dead, for at most REVOKE_BUDGET steps. The position
-    /// comes from user space, so it can be refused. The capability's own slot can leave its table
-    /// during the call, if the leaf holding it is in its run, and so can the capability the position
-    /// goes through, so the steps name the capability's node and the authority is the caller's when
-    /// the call began. Every page of a mapping it took is stale past the epoch it began at, so no core or
-    /// IOMMU counts as having flushed it on an acknowledgement from before the call, and no IOMMU
-    /// acknowledges during it: only a flush does that.
+    /// comes from user space, so it can be refused; a position through a process capability in the
+    /// capability's own run (R3) is also refused with nothing changed, since unlinking it would strand
+    /// the run. Otherwise the capability's own slot can leave its table during the call, if the leaf
+    /// holding it is in its run, so the steps name the capability's node and the authority is the
+    /// caller's when the call began. Every page of a mapping it took is stale past the epoch it began
+    /// at, so no core or IOMMU counts as having flushed it on an acknowledgement from before the call,
+    /// and no IOMMU acknowledges during it: only a flush does that.
     pub fn revoke(&mut self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: RevokeStep)
         requires
             old(self).wf(),
@@ -823,21 +887,66 @@ impl CapKernel {
             !(ret is Refused) ==> Self::cap_revoking_at(*old(self), *final(self), root, at),
             ret is Done ==> Self::cap_revoked_at(*old(self), *final(self), root, at),
     {
+        hide(CapKernel::revoke_through_run);
         let ghost pre = *old(self);
         proof {
             Self::lemma_blocks_revoked_none(pre, pre);
         }
-        let c = match self.find_cap(root, at) {
-            Some(found) => found.0,
+        let (c, c_payload) = match self.find_cap(root, at) {
+            Some(found) => found,
             None => {
                 proof {
+                    assert(!pre.can_revoke_at(root, at)) by {
+                        reveal(CapKernel::revoke_through_run);
+                    }
                     Self::lemma_revoke_answered(pre, *self, root, at, RevokeStep::Refused, Seq::empty());
                 }
                 return RevokeStep::Refused;
             },
         };
+        if let Some(through) = at.through {
+            let (pc, pc_payload) = match self.tables.lookup(&self.list, root, through) {
+                Some(found) => found,
+                None => {
+                    proof {
+                        assert(false);
+                    }
+                    return RevokeStep::Refused;
+                },
+            };
+            proof {
+                self.lemma_slot(root, through);
+                self.list.lemma_live_valid(pc);
+                assert(self.tables.caps_wf(&self.list)) by {
+                    reveal(CapKernel::wf);
+                }
+            }
+            let pc_depth = self.list.get(pc).depth;
+            let c_depth = self.list.get(c).depth;
+            let in_run = if pc_depth > c_depth {
+                match c_payload.kind {
+                    CapKind::Process => c_payload.base == pc_payload.base,
+                    CapKind::Untyped => is_block_within(c_payload, pc_payload.base, PROCESS_ORDER),
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if in_run {
+                proof {
+                    assert(!pre.can_revoke_at(root, at)) by {
+                        reveal(CapKernel::revoke_through_run);
+                    }
+                    Self::lemma_revoke_answered(pre, *self, root, at, RevokeStep::Refused, Seq::empty());
+                }
+                return RevokeStep::Refused;
+            }
+        }
         let ghost holder = pre.tables.owner@[page_of(c)].0;
         proof {
+            assert(pre.can_revoke_at(root, at)) by {
+                reveal(CapKernel::revoke_through_run);
+            }
             assert(pre.view().names.contains_key(c));
             assert(discharges(pre.view(), pre.view(), root, Effect::Revoke { cap: c }));
             lemma_bound_threads_live(&pre.list, &pre.tables);
@@ -864,6 +973,7 @@ impl CapKernel {
                 Self::mappings_shrunk(pre, *self),
                 links_kept(tree_of(&pre.table_pages, &pre.spaces), tree_of(&self.table_pages, &self.spaces), self.list),
                 pre.cap_at(root, at) == Some(c),
+                pre.can_revoke_at(root, at),
                 c < NODE_SPACE,
                 self.is_cap(c),
                 self.tables == pre.tables,
