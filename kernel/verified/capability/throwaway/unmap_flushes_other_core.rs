@@ -51,7 +51,7 @@ use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{partial_frame, saved_frame, user_frame, user_rip, FrameKind, Registers};
+use crate::arch::{partial_frame, report_tags_tlb, saved_frame, user_frame, user_rip, FrameKind, Processor, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -77,9 +77,13 @@ impl CapKernel {
         registers: Registers,
         bridge: &crate::arch::FlushBridge,
         Tracked(flush_requester): Tracked<&mut crate::arch::FlushRequester>,
+        report0: Processor,
+        report1: Processor,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            report_tags_tlb(0, report0),
+            report_tags_tlb(1, report1),
             image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES / 2,
@@ -93,7 +97,7 @@ impl CapKernel {
         ensures
             false,
     {
-        self.witness_unmap_flushes_other_core(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, l4, registers, bridge, Tracked(flush_requester));
+        self.witness_unmap_flushes_other_core(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, l4, registers, bridge, Tracked(flush_requester), report0, report1);
     }
 }
 

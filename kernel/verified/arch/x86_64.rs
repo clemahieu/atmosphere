@@ -673,14 +673,12 @@ pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbMo
 /// the bit is fixed for each core while verified code runs; which value it has is not known here.
 pub uninterp spec fn tags_tlb(core: int) -> bool;
 
-/// Reads this core's CR4, whose bit 17, PCIDE, is set exactly where the core tags its TLB entries with
-/// the PCID its CR3 is written with: tags_tlb. `register` is the core's base register, which names the
-/// core the read runs on.
-// cite: amd-apm2 3.1.3 CR4 Register, Processor Context Identifier Enable (PCIDE), Bit 17
-// cite: amd-apm2 5.5.1 Process Context Identifier
-pub assume_specification[read_cr4](Tracked(register): Tracked<&BaseRegister>) -> (ret: u64)
-    ensures
-        (ret & (1u64 << 17u64) != 0) == tags_tlb(register.core());
+/// Whether `report` carries core `core`'s TLB-tagging flag: on x86_64, `read_processor` sampled
+/// CR4.PCIDE into `report.pcid` once at that core's boot and no CR4 write clears it, so
+/// `report.spec_pcid()` equals `tags_tlb(core)`.
+pub open spec fn report_tags_tlb(core: int, report: Processor) -> bool {
+    report.spec_pcid() == tags_tlb(core)
+}
 
 /// Reads what this core's processor reports, once, in the core's boot, and clears this core's EFER.TCE:
 /// design/processor-report-read-once/. `invpcid` is CPUID Fn0000_0007_EBX_x0 bit 10 and `l1d_flush`
@@ -733,20 +731,23 @@ pub assume_specification[write_cr3](Tracked(register): Tracked<&mut BaseRegister
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), value & 0xfffusize)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d);
 
-/// Points this core's CR3 at the table whose top level is at physical address `root`. Where CR4.PCIDE
-/// is set, the write tags it with PCID `id` and sets bit 63, which keeps the entries the TLB holds under
-/// every PCID; where it is clear, CR3 holds the root alone. From then on the core may hold entries under
-/// the tag written, tag_written(core, id), so it joins the core's tags in `model`.
+/// Points this core's CR3 at the table whose top level is at physical address `root`. Where `report`
+/// says PCID is enabled on this core, the write tags it with PCID `id` and sets bit 63, which keeps
+/// the entries the TLB holds under every PCID; where it is clear, CR3 holds the root alone. From then
+/// on the core may hold entries under the tag written, tag_written(core, id), so it joins the core's
+/// tags in `model`.
 pub fn load_translation_root(
     Tracked(register): Tracked<&mut BaseRegister>,
     Tracked(model): Tracked<&mut TlbModel>,
     root: usize,
     id: usize,
+    report: Processor,
 )
     requires
         root & (!MEM_MASK) as usize == 0,
         id < PCID_MAX,
         old(model).has(old(register).core()),
+        report_tags_tlb(old(register).core(), report),
     ensures
         final(register).core() == old(register).core(),
         final(register).root() == root,
@@ -765,8 +766,7 @@ pub fn load_translation_root(
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
-    let cr4 = read_cr4(Tracked(&*register));
-    if cr4 & (1u64 << 17u64) != 0 {
+    if report.pcid() {
         let cr3 = root | id | 0x8000_0000_0000_0000usize;
         assert(cr3 & 0x7ff0_0000_0000_0000usize == 0 && cr3 & 0x000f_ffff_ffff_f000usize == root && cr3 & 0xfffusize == id) by (bit_vector)
             requires
@@ -1946,14 +1946,6 @@ pub fn serial_write_byte(byte: u8) {
         }
         core::arch::asm!("out dx, al", in("dx") COM1, in("al") byte, options(nomem, nostack));
     }
-}
-
-fn read_cr4(_register: Tracked<&BaseRegister>) -> u64 {
-    let cr4: u64;
-    unsafe {
-        core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
-    }
-    cr4
 }
 
 /// The CPUID functions and bits read_processor reads: AMD APM 3 appendix E, and for PCID APM 2 5.5.1,

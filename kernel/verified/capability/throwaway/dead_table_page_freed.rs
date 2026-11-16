@@ -51,7 +51,7 @@ use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{partial_frame, saved_frame, user_frame, user_rip, FrameKind, Registers};
+use crate::arch::{partial_frame, report_tags_tlb, saved_frame, user_frame, user_rip, FrameKind, Processor, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -75,9 +75,11 @@ impl CapKernel {
         big: usize,
         jb: Ghost<int>,
         l4: usize,
+        report: Processor,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            report_tags_tlb(0, report),
             image_tables_bound(image@) <= jb@,
             jb@ + 68 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             big == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, jb@),
@@ -87,7 +89,7 @@ impl CapKernel {
         ensures
             false,
     {
-        self.witness_dead_table_page_freed(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, big, jb, l4);
+        self.witness_dead_table_page_freed(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, big, jb, l4, report);
     }
 }
 

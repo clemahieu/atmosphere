@@ -302,7 +302,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let asid = kernel.load_space(0, process, Tracked::assume_new());
     // switch_space writes the register of the core it runs on, so its caller passes that core, here CPU
     // 0: design/teardown-driven-by-retype/.
-    kernel.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, asid);
+    kernel.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, asid, crate::cpu::processor());
     kernel.enter_boot_thread(0, page(THREAD_PAGE));
     *CAP_KERNEL.lock() = Some(kernel);
 

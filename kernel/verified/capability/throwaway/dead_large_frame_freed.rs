@@ -51,7 +51,7 @@ use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{partial_frame, saved_frame, user_frame, user_rip, FrameKind, Registers};
+use crate::arch::{partial_frame, report_tags_tlb, saved_frame, user_frame, user_rip, FrameKind, Processor, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;

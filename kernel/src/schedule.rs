@@ -96,7 +96,7 @@ pub fn handle_selection(frame: &Registers, from_user: bool) -> Resume {
             let epoch = kernel.flush_epoch;
             kernel.charge(core, crate::arch::cycles());
             // The entry makes its own step counter in the one passed here.
-            let step = kernel.tick(core, *frame, kernel_root, Tracked::assume_new());
+            let step = kernel.tick(core, *frame, kernel_root, cpu::processor(), Tracked::assume_new());
             (step, kernel.current_frame(core), crate::flush::owed(kernel, epoch))
         };
         crate::flush::send(flushes);

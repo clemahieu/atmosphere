@@ -174,10 +174,11 @@ impl CapKernel {
     /// tick is the selection's entry: the glue runs it once per hold of the kernel's lock, and it makes
     /// its one counter in steps, whatever the caller passed, and holds it to TICK_STEPS, within
     /// ENTRY_STEPS. design/one-lock-bounded-steps/.
-    pub fn tick(&mut self, c: usize, frame: Registers, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: TickStep)
+    pub fn tick(&mut self, c: usize, frame: Registers, kernel_root: usize, report: Processor, Tracked(steps): Tracked<&mut Steps>) -> (ret: TickStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
+            report_tags_tlb(c as int, report),
             kernel_root == old(self).spaces.kernel_root@,
             kernel_root % PAGE_SZ == 0,
             mem_valid(kernel_root),
@@ -202,7 +203,7 @@ impl CapKernel {
         let ghost pre = *self;
         let checked = self.check_current(c, frame, FrameKind::Full, Tracked(&mut *steps));
         let ghost mid = *self;
-        let ret = self.preempt(c, frame, kernel_root, Tracked(steps));
+        let ret = self.preempt(c, frame, kernel_root, report, Tracked(steps));
         proof {
             if pre.must_leave(c as int) {
                 assert(Self::moved_off(pre, mid, c as int, frame, FrameKind::Full));
@@ -220,10 +221,11 @@ impl CapKernel {
 
     /// The tick's step after check_current: select on core c, and act on what was selected as ticked
     /// says.
-    fn preempt(&mut self, c: usize, frame: Registers, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: TickStep)
+    fn preempt(&mut self, c: usize, frame: Registers, kernel_root: usize, report: Processor, Tracked(steps): Tracked<&mut Steps>) -> (ret: TickStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
+            report_tags_tlb(c as int, report),
             kernel_root == old(self).spaces.kernel_root@,
             kernel_root % PAGE_SZ == 0,
             mem_valid(kernel_root),
@@ -338,7 +340,7 @@ impl CapKernel {
             assert(pre.cores@[c as int].generation < ID_GENERATION_MAX);
             assert(*self == pre);
         }
-        self.switch_thread(c, frame, FrameKind::Full, Some(next), kernel_root, Tracked(steps));
+        self.switch_thread(c, frame, FrameKind::Full, Some(next), kernel_root, report, Tracked(steps));
         proof {
             let post = *self;
             assert(Self::switched(pre, post, c as int, frame, next));
@@ -475,10 +477,11 @@ impl CapKernel {
     /// a stop pending leaves by check_current, not here. The arriving thread is live, not dying and in a
     /// process that is not dead, so a switch never makes current a thread that cap_dead calls dead:
     /// see design/teardown-driven-by-retype/.
-    pub fn switch_thread(&mut self, c: usize, frame: Registers, saved: FrameKind, next: Option<usize>, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub fn switch_thread(&mut self, c: usize, frame: Registers, saved: FrameKind, next: Option<usize>, kernel_root: usize, report: Processor, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
+            report_tags_tlb(c as int, report),
             kernel_root == old(self).spaces.kernel_root@,
             kernel_root % PAGE_SZ == 0,
             mem_valid(kernel_root),
@@ -641,7 +644,7 @@ impl CapKernel {
         }
         match next {
             None => {
-                self.switch_space(c, None, kernel_root, KERNEL_TAG);
+                self.switch_space(c, None, kernel_root, KERNEL_TAG, report);
                 proof {
                     let s5 = *self;
                     assert forall|d: int, r: usize| 0 <= d < NUM_CPUS implies #[trigger] s5.loaded(d, r) == s0.loaded(d, r) by {
@@ -672,7 +675,7 @@ impl CapKernel {
                 let held = self.space_holds_id(c, p);
                 if !held && self.cores.get(c).next_pcid == PCID_MAX {
                     // The load starts a new generation: leave for the kernel's root first.
-                    self.switch_space(c, None, kernel_root, KERNEL_TAG);
+                    self.switch_space(c, None, kernel_root, KERNEL_TAG, report);
                 }
                 let ghost s2 = *self;
                 proof {
@@ -687,7 +690,7 @@ impl CapKernel {
                 proof {
                     self.lemma_space_root_aligned(p);
                 }
-                self.switch_space(c, Some(p), p + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+                self.switch_space(c, Some(p), p + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
                 let ghost s4 = *self;
                 proof {
                     assert(s4.threads == s1.threads);

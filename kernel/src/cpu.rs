@@ -169,6 +169,11 @@ pub unsafe fn read_processor() {
     arch::log_processor(cpu.id, cpu.processor);
 }
 
+/// Returns what this core's processor reported once at boot.
+pub fn processor() -> Processor {
+    get_current().processor
+}
+
 /// Spins until `done`. Whether it spins at all depends on how far another core has got, so the loop
 /// is left out of coverage, which would otherwise differ between two boots of one build.
 #[coverage(off)]

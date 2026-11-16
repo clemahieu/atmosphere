@@ -51,7 +51,7 @@ use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{partial_frame, saved_frame, user_frame, user_rip, FrameKind, Registers};
+use crate::arch::{partial_frame, report_tags_tlb, saved_frame, user_frame, user_rip, FrameKind, Processor, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -75,15 +75,17 @@ impl CapKernel {
         kernel_root: usize,
         registers: Registers,
         now: u64,
+        report: Processor,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            report_tags_tlb(0, report),
         ensures
             false,
     {
-        self.witness_tick_preempts_for_equal_priority(root, process, leaf, frames, t, free, image, untyped, frame, present, base, kernel_root, registers, now);
+        self.witness_tick_preempts_for_equal_priority(root, process, leaf, frames, t, free, image, untyped, frame, present, base, kernel_root, registers, now, report);
     }
 }
 

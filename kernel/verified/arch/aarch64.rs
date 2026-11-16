@@ -539,6 +539,12 @@ pub open spec fn tags_tlb(core: int) -> bool {
     true
 }
 
+/// Whether `report` carries core `core`'s TLB-tagging flag: on aarch64, `tags_tlb` is always
+/// true and `load_translation_root` ignores the report.
+pub open spec fn report_tags_tlb(core: int, report: Processor) -> bool {
+    true
+}
+
 /// Reads what this core's processor reports, once, in the core's boot: design/processor-report-read-once/.
 /// `specres` is ID_AA64ISAR1_EL1.SPECRES, bits 43:40, at 0b0001 or above, where the CFP, DVP and CPP
 /// RCTX instructions are implemented. The x86_64 bits are clear.
@@ -583,11 +589,13 @@ pub fn load_translation_root(
     Tracked(model): Tracked<&mut TlbModel>,
     root: usize,
     id: usize,
+    report: Processor,
 )
     requires
         root & (!MEM_MASK) as usize == 0,
         id < PCID_MAX,
         old(model).has(old(register).core()),
+        report_tags_tlb(old(register).core(), report),
     ensures
         final(register).core() == old(register).core(),
         final(register).root() == root,
@@ -605,6 +613,7 @@ pub fn load_translation_root(
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), id)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
+    let _ = report;
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
     let base = id << 48usize | root;
     assert(base & 0xfffusize == 0 && base & 0x0000_ffff_ffff_f000usize == root && base >> 48usize == id) by (bit_vector)

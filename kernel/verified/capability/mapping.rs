@@ -9,9 +9,9 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::load_translation_root;
+use crate::arch::{load_translation_root, Processor};
 #[cfg(verus_keep_ghost)]
-use crate::arch::{flush_target, tag_written, tags_tlb};
+use crate::arch::{flush_target, report_tags_tlb, tag_written, tags_tlb};
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::block::{ObjectType, PageKind};
@@ -472,10 +472,11 @@ impl CapKernel {
     /// caches is under that space's tag. A register names only a loaded space that is not retired, and a
     /// retire refuses while one names it, so a core that has acknowledged a retire never walks the space
     /// again. See design/teardown-driven-by-retype/.
-    pub fn switch_space(&mut self, c: usize, space: Option<usize>, root: usize, tag: usize)
+    pub fn switch_space(&mut self, c: usize, space: Option<usize>, root: usize, tag: usize, report: Processor)
         requires
             old(self).wf(),
             c < NUM_CPUS,
+            report_tags_tlb(c as int, report),
             root % PAGE_SZ == 0,
             space is None ==> mem_valid(root),
             match space {
@@ -573,7 +574,7 @@ impl CapKernel {
             }
         }
         let tracked mut register = self.spaces.registers.borrow_mut().tracked_remove(c as int);
-        load_translation_root(Tracked(&mut register), Tracked(self.tlb.borrow_mut()), root, tag);
+        load_translation_root(Tracked(&mut register), Tracked(self.tlb.borrow_mut()), root, tag, report);
         proof {
             self.spaces.registers.borrow_mut().tracked_insert(c as int, register);
             let post = *self;

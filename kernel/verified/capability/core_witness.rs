@@ -48,7 +48,7 @@ use crate::capability::revoke::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{partial_frame, saved_frame, user_frame, user_rip, FrameKind, Registers};
+use crate::arch::{partial_frame, report_tags_tlb, saved_frame, user_frame, user_rip, FrameKind, Processor, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -638,9 +638,11 @@ impl CapKernel {
         kernel_root: Ghost<usize>,
         registers: Registers,
         saved: FrameKind,
+        report: Processor,
     ) -> (ret: CurrentStep)
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            report_tags_tlb(0, report),
         ensures
             ret is MovedOff,
             final(self).wf(),
@@ -655,7 +657,7 @@ impl CapKernel {
         proof {
             lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
         }
-        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root);
+        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, report);
         let ghost s1 = *self;
         let ghost core_cap = (leaf@ + ROOT_CORE_SLOT) as usize;
         let ghost pn = placement_node(t);
@@ -811,11 +813,15 @@ impl CapKernel {
         kernel_root: usize,
         registers: Registers,
         saved: FrameKind,
+        report0: Processor,
+        report1: Processor,
     ) -> (ret: bool)
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            report_tags_tlb(0, report0),
+            report_tags_tlb(1, report1),
         ensures
             ret,
             ({
@@ -884,7 +890,7 @@ impl CapKernel {
         // its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
         let pcid = self.load_space(0, process, Tracked(&mut steps));
-        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report0);
         let ghost s3 = *self;
         proof {
             assert(s3.threads == s2.threads);
@@ -908,7 +914,7 @@ impl CapKernel {
             assert(s4.spaces.kernel_root@ == kernel_root);
         }
         // Core 1, idle since boot, runs the second thread.
-        self.switch_thread(1, registers, saved, Some(thread), kernel_root, Tracked(&mut steps));
+        self.switch_thread(1, registers, saved, Some(thread), kernel_root, report1, Tracked(&mut steps));
         proof {
             let s5 = *self;
             assert(s5.cores@[0] == s4.cores@[0]);

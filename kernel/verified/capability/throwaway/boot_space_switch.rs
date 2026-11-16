@@ -51,7 +51,7 @@ use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{partial_frame, saved_frame, user_frame, user_rip, FrameKind, Registers};
+use crate::arch::{partial_frame, report_tags_tlb, saved_frame, user_frame, user_rip, FrameKind, Processor, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -72,13 +72,15 @@ impl CapKernel {
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
         kernel_root: usize,
+        report: Processor,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root),
+            report_tags_tlb(0, report),
         ensures
             false,
     {
-        self.witness_boot_space_switch(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root);
+        self.witness_boot_space_switch(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, report);
     }
 }
 
