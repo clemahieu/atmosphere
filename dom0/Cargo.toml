@@ -11,6 +11,7 @@ abench = { path = "../abench" }
 acall = { path = "../acall" }
 acontext = { path = "../acontext" }
 aeager = { path = "../aeager" }
+afanin = { path = "../afanin" }
 aheap = { path = "../aheap" }
 amailbox = { path = "../amailbox" }
 aring = { path = "../aring" }

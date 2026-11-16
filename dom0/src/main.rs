@@ -137,11 +137,12 @@
 //! held.
 //! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`), memory pointer-chase,
 //! core-scaling/placement (`core_bench`), scaled/contended capability (`cap_bench`), heap
-//! allocator / working-set churn (`heap_bench`), and shared-frame ring/mailbox (`ring_bench`)
-//! microbenchmarks (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under
-//! the `bench` feature prints the full results summary and `fuchsiaperf.json` block; `core_bench`
-//! binds dom0-process bench threads in root entries after the heap's before the heap claims the
-//! caller token, probing the online core count with CAS helpers.
+//! allocator / working-set churn (`heap_bench`), shared-frame ring/mailbox (`ring_bench`), and
+//! cold-cache/pipelined/fan-in/bulk ring (`ump_bench`) microbenchmarks
+//! (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under the `bench`
+//! feature prints the full results summary and `fuchsiaperf.json` block; `core_bench` and
+//! `ump_bench` bind dom0-process bench threads before the heap claims the caller token, probing the
+//! online core count with CAS helpers.
 //! dom0 prints those results through the console, then an exit marker,
 //! and ends the run with a power-off through its power capability, reporting success only when every
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
@@ -166,6 +167,7 @@ mod heap_bench;
 mod mmu_bench;
 mod registers;
 mod ring_bench;
+mod ump_bench;
 
 extern crate alloc;
 
@@ -707,6 +709,9 @@ fn benchmarks_held() -> bool {
         return false;
     }
     if !ring_bench::register(&mut registry) {
+        return false;
+    }
+    if !ump_bench::register(&mut registry) {
         return false;
     }
     let mut console = ConsoleWriter::new();
@@ -2810,6 +2815,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && own_core_1_nx_held(caller, empty)
                                 && eager_source_held(caller, empty)
                                 && core_bench::threads_held(caller, empty)
+                                && ump_bench::threads_held(caller, empty)
                         })
             })
         })

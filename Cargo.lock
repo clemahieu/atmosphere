@@ -338,6 +338,7 @@ dependencies = [
  "acall",
  "acontext",
  "aeager",
+ "afanin",
  "aheap",
  "amailbox",
  "aring",
