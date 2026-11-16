@@ -17,11 +17,6 @@ kernel/verified/capability/moving.rs	move_cap	true
 kernel/verified/capability/operation.rs	dispatch	Some
 kernel/verified/capability/operation.rs	enter	Some
 kernel/verified/capability/process.rs	retype_process	true
-kernel/verified/capability/reclaim.rs	reclaim	Freed
-kernel/verified/capability/reclaim.rs	reclaim	Unlinked
-kernel/verified/capability/reclaim.rs	reclaim	Slice
-kernel/verified/capability/reclaim.rs	reclaim_frame	Freed
-kernel/verified/capability/reclaim.rs	reclaim_large_frame	Freed
 kernel/verified/capability/reply.rs	retype_reply	true
 kernel/verified/capability/retype.rs	retype_frame	true
 kernel/verified/capability/retype.rs	retype_leaf	true

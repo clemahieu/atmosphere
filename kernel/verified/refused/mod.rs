@@ -20,6 +20,9 @@
 //! add_devices does not record the devices, bind_device does not make the binding node a child of the
 //! space, unbind_device_at does not advance the flush epoch or drop the device from the view's binds,
 //! and map_device writes neither a page nor a large page into the device space.
+//! reclaim's Freed, at a dead queue the untyped covers, its Unlinked, at a live leaf node, and its
+//! Slice, at a leaf with a slot left, meet no unchanged kernel, and neither does reclaim_frame's or
+//! reclaim_large_frame's Freed once the frame is acknowledged. The three Again ways stay exempt.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -92,6 +95,11 @@ pub mod add_devices_ok;
 pub mod bind_device_ok;
 pub mod unbind_device_ok;
 pub mod map_device_ok;
+pub mod reclaim_freed;
+pub mod reclaim_unlinked;
+pub mod reclaim_slice;
+pub mod reclaim_frame_freed;
+pub mod reclaim_large_freed;
 
 use vstd::prelude::*;
 
@@ -100,7 +108,7 @@ verus! {
 use crate::arch::{user_rip, FrameKind, Registers, saved_frame, tag_written};
 use crate::capability::thread::{CurrentStep, SuspendStep, ThreadState, entry_frame_save, runs_in_space, same_record_perm_but_links};
 use crate::capability::unmap::Unmapped;
-use crate::define::{NUM_CPUS, NUM_IOMMUS, PAGE_SZ, PCID_MAX};
+use crate::define::{NUM_CPUS, NUM_IOMMUS, PAGE_SZ, PAGES_PER_1G, PAGES_PER_2M, PCID_MAX};
 use crate::util::page_ptr_util_u::mem_valid;
 use crate::capability::boot_image::{image_blocks, ImageRun, ROOT_FRAME_SLOTS};
 use crate::capability::boot_memory::{runs_blocks, ROOT_UNTYPED_SLOTS};
@@ -111,17 +119,21 @@ use crate::capability::kernel::{CapKernel, holds_id, id_pcid, ID_GENERATION_MAX,
 use crate::capability::device::{DeviceInfo, MAX_DEVICES, binding_node, device_of, device_payload, unbound_record};
 use crate::capability::device_space::DeviceRange;
 use crate::capability::guest_space::GuestPhysRange;
-use crate::capability::list::NODE_SPACE;
-use crate::capability::revoke::UNLINK_ARM_STEPS;
+use crate::capability::list::{NODE_SPACE, NODES_PER_PAGE};
+use crate::capability::revoke::{REVOKE_STEP_STEPS, UNLINK_ARM_STEPS};
 use crate::capability::link::tree_of;
 use crate::capability::mapping::space_says;
 use crate::capability::probe::Probed;
-use crate::capability::reach::{discharges, Effect, saves_own_frame};
+use crate::capability::reach::{discharges, Effect, Right, saves_own_frame};
 use crate::capability::schedule::{at_back_of_priority, queued_at_back, thread_priority};
 use crate::capability::space::{SPACE_ROOT_PAGE, Spaces};
 use crate::capability::switch::TickStep;
 use crate::capability::view::bound_threads;
+use crate::capability::block::{Large, SMALL_PAGES_MAX};
+use crate::capability::process::PROCESS_ORDER;
+use crate::capability::reclaim::{FrameReclaimStep, LEAF_SLICE_BUDGET, ReclaimStep};
 use crate::capability::table::{Payload, MAX_ORDER};
+use crate::capability::zero::{large_level, level_pages};
 use crate::queue_lock::{Core, QueueLock};
 use crate::capability::operation::*;
 use crate::capability::position::{Position, spec_position};
@@ -1505,4 +1517,348 @@ pub trait MapDeviceOk {
     ;
 }
 
+
+/// reclaim's Freed meets no unchanged kernel: a dead queue the untyped covers is still that queue.
+/// The requires are the operation's, the unchanged kernel and this way. The other success
+/// conditions are closed, so Verus meets every ensures conjunct except the one this way changes.
+/// design/refused-claim-per-way/.
+pub trait ReclaimFreed {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, root: usize, from: usize, base: usize, pre_steps: nat, post_steps: nat, ret: ReclaimStep)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            post_steps == pre_steps,
+            ret is Freed,
+            pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ),
+            !pre.can_unlink_leaf(root, from, base),
+            !pre.can_slice_leaf(root, from, base),
+            pre.view().holds_right(root, pre.tables.node_of(root, from), Right::Retype),
+            !pre.spaces.roots@.contains_key(base),
+            !pre.processes.records@.contains_key(base),
+            !pre.table_pages.maps@.contains_key(base),
+            !pre.threads.records@.contains_key(base),
+            !pre.can_reclaim_large(root, from, base, 9),
+            !pre.can_reclaim_large(root, from, base, 18),
+            !pre.can_unlink_table(root, from, base),
+            !pre.can_slice_table(root, from, base),
+            !pre.can_cut_table(root, from, base),
+            !pre.can_cut_space(root, from, base),
+            !pre.can_retire_process(root, from, base),
+            !pre.can_cut_process_space(root, from, base),
+            !pre.can_unbind_thread(root, from, base),
+            !(pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.table_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.space_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base)),
+            !pre.frame_is_dead(base / PAGE_SZ),
+            !pre.reply_is_dead(base / PAGE_SZ),
+            !pre.leaf_is_empty(base),
+            !pre.table_is_empty(base),
+            !pre.space_is_empty(base),
+            !pre.thread_is_spent(base),
+            !pre.process_is_spent(base),
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post_steps <= pre_steps + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (REVOKE_STEP_STEPS + 1) + (NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX),
+            post.wf(),
+            CapKernel::mappings_shrunk(pre, post),
+            ret is Refused || ret is Again ==> post == pre,
+            !((pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(base / PAGE_SZ)) || pre.can_unlink_leaf(root, from, base) || (pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base)) || pre.can_slice_leaf(root, from, base) || pre.can_unlink_table(root, from, base) || pre.can_slice_table(root, from, base) || (pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base)) || pre.can_cut_space(root, from, base) || (pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base)) || pre.can_retire_process(root, from, base) || pre.can_cut_process_space(root, from, base) || (pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)) || pre.can_unbind_thread(root, from, base) || (pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base)) || pre.can_reclaim_large(root, from, base, 9) || pre.can_reclaim_large(root, from, base, 18) || (pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ)) || (pre.can_retype_under(root, from, base, 0) && pre.reply_is_dead(base / PAGE_SZ))) ==> ret is Refused,
+            pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ) ==> ret is Freed && pre.queue_freed(post, c, root, from, base),
+            pre.can_retype_under(root, from, base, 0) && pre.reply_is_dead(base / PAGE_SZ) ==> ret is Freed && pre.reply_freed(post, c, root, from, base),
+            pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(base / PAGE_SZ) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed && pre.frame_freed(post, c, root, from, base) } else { ret is Again },
+            pre.can_reclaim_large(root, from, base, 9) ==> if pre.region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M) { ret is Freed && pre.large_frame_freed(post, c, root, from, base, 9) } else { ret is Again },
+            pre.can_reclaim_large(root, from, base, 18) ==> if pre.region_acknowledged(Large::One, base / PAGE_SZ / PAGES_PER_1G) { ret is Freed && pre.large_frame_freed(post, c, root, from, base, 18) } else { ret is Again },
+            !pre.view().holds_right(root, pre.tables.node_of(root, from), Right::Retype) ==> ret is Refused,
+            pre.spaces.roots@.contains_key(base) && !pre.dead_io_space(base) && !pre.can_retire_process(root, from, base) && !pre.can_cut_process_space(root, from, base) && !(pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)) ==> ret is Refused,
+            pre.can_cut_space(root, from, base) ==> ret is Slice,
+            pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.can_retype_under(root, from, base, 3) && pre.space_is_spent(base) ==> ret is Again || ret is Freed,
+            pre.spaces.roots@.contains_key(base) && !(pre.spaces.records@[base].value().kind is Process) && ret is Slice ==> pre.space_children_cut(post, root, from, base),
+            pre.processes.records@.contains_key(base) && (pre.blocks.pages@[(base / PAGE_SZ) as int].refs != 0 || (!pre.process_released(base) && !pre.can_retire_process(root, from, base))) ==> ret is Refused,
+            pre.processes.records@.contains_key(base) && (exists|d: int, t: usize| #![trigger pre.cores@[d], pre.threads.records@[t]] 0 <= d < NUM_CPUS && pre.cores@[d].current_thread == Some(t) && pre.threads.records@[t].value().process == Some(base)) ==> ret is Refused,
+            pre.processes.records@.contains_key(base) && (exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] pre.tlb@[d].contains(e)) ==> !pre.process_released(base) && (ret is Refused || ret is Slice && pre.process_retired(post, base)),
+            pre.can_retire_process(root, from, base) ==> ret is Slice && pre.process_retired(post, base),
+            pre.processes.records@.contains_key(base) && pre.process_space_named(base) ==> ret is Refused,
+            pre.can_cut_process_space(root, from, base) ==> ret is Slice && pre.process_space_cut(post, root, from, base),
+            pre.processes.records@.contains_key(base) && ret is Slice ==> pre.process_retired(post, base) || pre.process_space_cut(post, root, from, base),
+            pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.processes.records@.contains_key(base) && ret is Freed ==> pre.process_freed(post, c, root, from, base),
+            pre.spaces.roots@.contains_key(base) && !(pre.spaces.records@[base].value().kind is Process) && ret is Freed ==> pre.space_freed(post, c, root, from, base),
+            pre.can_unlink_table(root, from, base) ==> ret is Unlinked,
+            pre.can_slice_table(root, from, base) ==> ret is Slice,
+            pre.can_cut_table(root, from, base) ==> ret is Slice && pre.table_children_cut(post, root, from, base),
+            pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.can_retype_under(root, from, base, 3) && pre.table_is_spent(base) ==> ret is Again || ret is Freed,
+            pre.table_pages.maps@.contains_key(base) && ret is Unlinked ==> pre.table_page_unlinked(post, root, from, base),
+            pre.table_pages.maps@.contains_key(base) && ret is Slice ==> pre.table_sliced(post, root, from, base),
+            pre.table_pages.maps@.contains_key(base) && ret is Freed ==> pre.table_freed(post, c, root, from, base),
+            pre.can_unbind_thread(root, from, base) ==> ret is Slice,
+            pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base) ==> if pre.acknowledged(base / PAGE_SZ) && pre.acknowledged((base / PAGE_SZ + 1) as usize) { ret is Freed } else { ret is Again },
+            pre.threads.records@.contains_key(base) && ret is Slice ==> pre.thread_unbound(post, root, from, base),
+            pre.threads.records@.contains_key(base) && ret is Freed ==> pre.thread_freed(post, c, root, from, base),
+            pre.can_unlink_leaf(root, from, base) ==> ret is Unlinked && pre.leaf_unlinked(post, root, from, base),
+            pre.can_slice_leaf(root, from, base) ==> ret is Slice && pre.leaf_sliced(post, root, from, base),
+            pre.can_slice_leaf(root, from, base) && pre.leaf_slots_childless(base) ==> pre.leaf_slice_kept(post, base),
+            pre.can_slice_leaf(root, from, base) && pre.leaf_slots_childless(base) && pre.leaf_live_slots(base) <= LEAF_SLICE_BUDGET ==> post.leaf_is_empty(base),
+            pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) && pre.acknowledged((base / PAGE_SZ + 1) as usize) { ret is Freed && pre.leaf_freed(post, c, root, from, base) } else { ret is Again },
+            ret is Again ==> !pre.acknowledged(base / PAGE_SZ) || !pre.acknowledged((base / PAGE_SZ + 1) as usize) || !pre.region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M) || !pre.region_acknowledged(Large::One, base / PAGE_SZ / PAGES_PER_1G),
+            ret is Freed ==> pre.frame_freed(post, c, root, from, base) || pre.large_frame_freed(post, c, root, from, base, 9) || pre.large_frame_freed(post, c, root, from, base, 18) || pre.leaf_freed(post, c, root, from, base) || pre.table_freed(post, c, root, from, base) || pre.space_freed(post, c, root, from, base) || pre.thread_freed(post, c, root, from, base) || pre.process_freed(post, c, root, from, base) || pre.queue_freed(post, c, root, from, base) || pre.reply_freed(post, c, root, from, base),
+            ret is Slice ==> pre.leaf_sliced(post, root, from, base) || pre.table_sliced(post, root, from, base) || pre.space_children_cut(post, root, from, base) || pre.thread_unbound(post, root, from, base) || pre.process_retired(post, base) || pre.process_space_cut(post, root, from, base),
+            ret is Unlinked ==> pre.leaf_unlinked(post, root, from, base) || pre.table_page_unlinked(post, root, from, base),
+    ;
+}
+
+/// reclaim's Unlinked meets no unchanged kernel: the leaf's hidden node is still live.
+/// The requires are the operation's, the unchanged kernel and this way. The other success
+/// conditions are closed, so Verus meets every ensures conjunct except the one this way changes.
+/// design/refused-claim-per-way/.
+pub trait ReclaimUnlinked {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, root: usize, from: usize, base: usize, pre_steps: nat, post_steps: nat, ret: ReclaimStep)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            post_steps == pre_steps,
+            ret is Unlinked,
+            pre.can_unlink_leaf(root, from, base),
+            !pre.can_slice_leaf(root, from, base),
+            !(pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ)),
+            !(pre.can_retype_under(root, from, base, 0) && pre.reply_is_dead(base / PAGE_SZ)),
+            pre.view().holds_right(root, pre.tables.node_of(root, from), Right::Retype),
+            !pre.spaces.roots@.contains_key(base),
+            !pre.processes.records@.contains_key(base),
+            !pre.table_pages.maps@.contains_key(base),
+            !pre.threads.records@.contains_key(base),
+            !pre.can_reclaim_large(root, from, base, 9),
+            !pre.can_reclaim_large(root, from, base, 18),
+            !pre.can_unlink_table(root, from, base),
+            !pre.can_slice_table(root, from, base),
+            !pre.can_cut_table(root, from, base),
+            !pre.can_cut_space(root, from, base),
+            !pre.can_retire_process(root, from, base),
+            !pre.can_cut_process_space(root, from, base),
+            !pre.can_unbind_thread(root, from, base),
+            !(pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.table_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.space_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base)),
+            !pre.frame_is_dead(base / PAGE_SZ),
+            !pre.reply_is_dead(base / PAGE_SZ),
+            !pre.leaf_is_empty(base),
+            !pre.table_is_empty(base),
+            !pre.space_is_empty(base),
+            !pre.thread_is_spent(base),
+            !pre.process_is_spent(base),
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post_steps <= pre_steps + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (REVOKE_STEP_STEPS + 1) + (NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX),
+            post.wf(),
+            CapKernel::mappings_shrunk(pre, post),
+            ret is Refused || ret is Again ==> post == pre,
+            !((pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(base / PAGE_SZ)) || pre.can_unlink_leaf(root, from, base) || (pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base)) || pre.can_slice_leaf(root, from, base) || pre.can_unlink_table(root, from, base) || pre.can_slice_table(root, from, base) || (pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base)) || pre.can_cut_space(root, from, base) || (pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base)) || pre.can_retire_process(root, from, base) || pre.can_cut_process_space(root, from, base) || (pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)) || pre.can_unbind_thread(root, from, base) || (pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base)) || pre.can_reclaim_large(root, from, base, 9) || pre.can_reclaim_large(root, from, base, 18) || (pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ)) || (pre.can_retype_under(root, from, base, 0) && pre.reply_is_dead(base / PAGE_SZ))) ==> ret is Refused,
+            pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ) ==> ret is Freed && pre.queue_freed(post, c, root, from, base),
+            pre.can_retype_under(root, from, base, 0) && pre.reply_is_dead(base / PAGE_SZ) ==> ret is Freed && pre.reply_freed(post, c, root, from, base),
+            pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(base / PAGE_SZ) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed && pre.frame_freed(post, c, root, from, base) } else { ret is Again },
+            pre.can_reclaim_large(root, from, base, 9) ==> if pre.region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M) { ret is Freed && pre.large_frame_freed(post, c, root, from, base, 9) } else { ret is Again },
+            pre.can_reclaim_large(root, from, base, 18) ==> if pre.region_acknowledged(Large::One, base / PAGE_SZ / PAGES_PER_1G) { ret is Freed && pre.large_frame_freed(post, c, root, from, base, 18) } else { ret is Again },
+            !pre.view().holds_right(root, pre.tables.node_of(root, from), Right::Retype) ==> ret is Refused,
+            pre.spaces.roots@.contains_key(base) && !pre.dead_io_space(base) && !pre.can_retire_process(root, from, base) && !pre.can_cut_process_space(root, from, base) && !(pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)) ==> ret is Refused,
+            pre.can_cut_space(root, from, base) ==> ret is Slice,
+            pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.can_retype_under(root, from, base, 3) && pre.space_is_spent(base) ==> ret is Again || ret is Freed,
+            pre.spaces.roots@.contains_key(base) && !(pre.spaces.records@[base].value().kind is Process) && ret is Slice ==> pre.space_children_cut(post, root, from, base),
+            pre.processes.records@.contains_key(base) && (pre.blocks.pages@[(base / PAGE_SZ) as int].refs != 0 || (!pre.process_released(base) && !pre.can_retire_process(root, from, base))) ==> ret is Refused,
+            pre.processes.records@.contains_key(base) && (exists|d: int, t: usize| #![trigger pre.cores@[d], pre.threads.records@[t]] 0 <= d < NUM_CPUS && pre.cores@[d].current_thread == Some(t) && pre.threads.records@[t].value().process == Some(base)) ==> ret is Refused,
+            pre.processes.records@.contains_key(base) && (exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] pre.tlb@[d].contains(e)) ==> !pre.process_released(base) && (ret is Refused || ret is Slice && pre.process_retired(post, base)),
+            pre.can_retire_process(root, from, base) ==> ret is Slice && pre.process_retired(post, base),
+            pre.processes.records@.contains_key(base) && pre.process_space_named(base) ==> ret is Refused,
+            pre.can_cut_process_space(root, from, base) ==> ret is Slice && pre.process_space_cut(post, root, from, base),
+            pre.processes.records@.contains_key(base) && ret is Slice ==> pre.process_retired(post, base) || pre.process_space_cut(post, root, from, base),
+            pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.processes.records@.contains_key(base) && ret is Freed ==> pre.process_freed(post, c, root, from, base),
+            pre.spaces.roots@.contains_key(base) && !(pre.spaces.records@[base].value().kind is Process) && ret is Freed ==> pre.space_freed(post, c, root, from, base),
+            pre.can_unlink_table(root, from, base) ==> ret is Unlinked,
+            pre.can_slice_table(root, from, base) ==> ret is Slice,
+            pre.can_cut_table(root, from, base) ==> ret is Slice && pre.table_children_cut(post, root, from, base),
+            pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.can_retype_under(root, from, base, 3) && pre.table_is_spent(base) ==> ret is Again || ret is Freed,
+            pre.table_pages.maps@.contains_key(base) && ret is Unlinked ==> pre.table_page_unlinked(post, root, from, base),
+            pre.table_pages.maps@.contains_key(base) && ret is Slice ==> pre.table_sliced(post, root, from, base),
+            pre.table_pages.maps@.contains_key(base) && ret is Freed ==> pre.table_freed(post, c, root, from, base),
+            pre.can_unbind_thread(root, from, base) ==> ret is Slice,
+            pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base) ==> if pre.acknowledged(base / PAGE_SZ) && pre.acknowledged((base / PAGE_SZ + 1) as usize) { ret is Freed } else { ret is Again },
+            pre.threads.records@.contains_key(base) && ret is Slice ==> pre.thread_unbound(post, root, from, base),
+            pre.threads.records@.contains_key(base) && ret is Freed ==> pre.thread_freed(post, c, root, from, base),
+            pre.can_unlink_leaf(root, from, base) ==> ret is Unlinked && pre.leaf_unlinked(post, root, from, base),
+            pre.can_slice_leaf(root, from, base) ==> ret is Slice && pre.leaf_sliced(post, root, from, base),
+            pre.can_slice_leaf(root, from, base) && pre.leaf_slots_childless(base) ==> pre.leaf_slice_kept(post, base),
+            pre.can_slice_leaf(root, from, base) && pre.leaf_slots_childless(base) && pre.leaf_live_slots(base) <= LEAF_SLICE_BUDGET ==> post.leaf_is_empty(base),
+            pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) && pre.acknowledged((base / PAGE_SZ + 1) as usize) { ret is Freed && pre.leaf_freed(post, c, root, from, base) } else { ret is Again },
+            ret is Again ==> !pre.acknowledged(base / PAGE_SZ) || !pre.acknowledged((base / PAGE_SZ + 1) as usize) || !pre.region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M) || !pre.region_acknowledged(Large::One, base / PAGE_SZ / PAGES_PER_1G),
+            ret is Freed ==> pre.frame_freed(post, c, root, from, base) || pre.large_frame_freed(post, c, root, from, base, 9) || pre.large_frame_freed(post, c, root, from, base, 18) || pre.leaf_freed(post, c, root, from, base) || pre.table_freed(post, c, root, from, base) || pre.space_freed(post, c, root, from, base) || pre.thread_freed(post, c, root, from, base) || pre.process_freed(post, c, root, from, base) || pre.queue_freed(post, c, root, from, base) || pre.reply_freed(post, c, root, from, base),
+            ret is Slice ==> pre.leaf_sliced(post, root, from, base) || pre.table_sliced(post, root, from, base) || pre.space_children_cut(post, root, from, base) || pre.thread_unbound(post, root, from, base) || pre.process_retired(post, base) || pre.process_space_cut(post, root, from, base),
+            ret is Unlinked ==> pre.leaf_unlinked(post, root, from, base) || pre.table_page_unlinked(post, root, from, base),
+    ;
+}
+
+/// reclaim's Slice meets no unchanged kernel: the leaf's list is not shorter.
+/// The requires are the operation's, the unchanged kernel and this way. The other success
+/// conditions are closed, so Verus meets every ensures conjunct except the one this way changes.
+/// design/refused-claim-per-way/.
+pub trait ReclaimSlice {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, root: usize, from: usize, base: usize, pre_steps: nat, post_steps: nat, ret: ReclaimStep)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            post_steps == pre_steps,
+            ret is Slice,
+            pre.can_slice_leaf(root, from, base),
+            !pre.leaf_slots_childless(base),
+            !pre.can_unlink_leaf(root, from, base),
+            !(pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ)),
+            !(pre.can_retype_under(root, from, base, 0) && pre.reply_is_dead(base / PAGE_SZ)),
+            pre.view().holds_right(root, pre.tables.node_of(root, from), Right::Retype),
+            !pre.spaces.roots@.contains_key(base),
+            !pre.processes.records@.contains_key(base),
+            !pre.table_pages.maps@.contains_key(base),
+            !pre.threads.records@.contains_key(base),
+            !pre.can_reclaim_large(root, from, base, 9),
+            !pre.can_reclaim_large(root, from, base, 18),
+            !pre.can_unlink_table(root, from, base),
+            !pre.can_slice_table(root, from, base),
+            !pre.can_cut_table(root, from, base),
+            !pre.can_cut_space(root, from, base),
+            !pre.can_retire_process(root, from, base),
+            !pre.can_cut_process_space(root, from, base),
+            !pre.can_unbind_thread(root, from, base),
+            !(pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.table_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 3) && pre.space_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base)),
+            !(pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base)),
+            !pre.frame_is_dead(base / PAGE_SZ),
+            !pre.reply_is_dead(base / PAGE_SZ),
+            !pre.leaf_is_empty(base),
+            !pre.table_is_empty(base),
+            !pre.space_is_empty(base),
+            !pre.thread_is_spent(base),
+            !pre.process_is_spent(base),
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post_steps <= pre_steps + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (REVOKE_STEP_STEPS + 1) + (NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX),
+            post.wf(),
+            CapKernel::mappings_shrunk(pre, post),
+            ret is Refused || ret is Again ==> post == pre,
+            !((pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(base / PAGE_SZ)) || pre.can_unlink_leaf(root, from, base) || (pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base)) || pre.can_slice_leaf(root, from, base) || pre.can_unlink_table(root, from, base) || pre.can_slice_table(root, from, base) || (pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base)) || pre.can_cut_space(root, from, base) || (pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base)) || pre.can_retire_process(root, from, base) || pre.can_cut_process_space(root, from, base) || (pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)) || pre.can_unbind_thread(root, from, base) || (pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base)) || pre.can_reclaim_large(root, from, base, 9) || pre.can_reclaim_large(root, from, base, 18) || (pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ)) || (pre.can_retype_under(root, from, base, 0) && pre.reply_is_dead(base / PAGE_SZ))) ==> ret is Refused,
+            pre.can_retype_under(root, from, base, 0) && pre.queue_is_dead(base / PAGE_SZ) ==> ret is Freed && pre.queue_freed(post, c, root, from, base),
+            pre.can_retype_under(root, from, base, 0) && pre.reply_is_dead(base / PAGE_SZ) ==> ret is Freed && pre.reply_freed(post, c, root, from, base),
+            pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(base / PAGE_SZ) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed && pre.frame_freed(post, c, root, from, base) } else { ret is Again },
+            pre.can_reclaim_large(root, from, base, 9) ==> if pre.region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M) { ret is Freed && pre.large_frame_freed(post, c, root, from, base, 9) } else { ret is Again },
+            pre.can_reclaim_large(root, from, base, 18) ==> if pre.region_acknowledged(Large::One, base / PAGE_SZ / PAGES_PER_1G) { ret is Freed && pre.large_frame_freed(post, c, root, from, base, 18) } else { ret is Again },
+            !pre.view().holds_right(root, pre.tables.node_of(root, from), Right::Retype) ==> ret is Refused,
+            pre.spaces.roots@.contains_key(base) && !pre.dead_io_space(base) && !pre.can_retire_process(root, from, base) && !pre.can_cut_process_space(root, from, base) && !(pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base)) ==> ret is Refused,
+            pre.can_cut_space(root, from, base) ==> ret is Slice,
+            pre.can_retype_under(root, from, base, 3) && pre.space_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.can_retype_under(root, from, base, 3) && pre.space_is_spent(base) ==> ret is Again || ret is Freed,
+            pre.spaces.roots@.contains_key(base) && !(pre.spaces.records@[base].value().kind is Process) && ret is Slice ==> pre.space_children_cut(post, root, from, base),
+            pre.processes.records@.contains_key(base) && (pre.blocks.pages@[(base / PAGE_SZ) as int].refs != 0 || (!pre.process_released(base) && !pre.can_retire_process(root, from, base))) ==> ret is Refused,
+            pre.processes.records@.contains_key(base) && (exists|d: int, t: usize| #![trigger pre.cores@[d], pre.threads.records@[t]] 0 <= d < NUM_CPUS && pre.cores@[d].current_thread == Some(t) && pre.threads.records@[t].value().process == Some(base)) ==> ret is Refused,
+            pre.processes.records@.contains_key(base) && (exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] pre.tlb@[d].contains(e)) ==> !pre.process_released(base) && (ret is Refused || ret is Slice && pre.process_retired(post, base)),
+            pre.can_retire_process(root, from, base) ==> ret is Slice && pre.process_retired(post, base),
+            pre.processes.records@.contains_key(base) && pre.process_space_named(base) ==> ret is Refused,
+            pre.can_cut_process_space(root, from, base) ==> ret is Slice && pre.process_space_cut(post, root, from, base),
+            pre.processes.records@.contains_key(base) && ret is Slice ==> pre.process_retired(post, base) || pre.process_space_cut(post, root, from, base),
+            pre.can_retype_under(root, from, base, PROCESS_ORDER) && pre.process_is_spent(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.processes.records@.contains_key(base) && ret is Freed ==> pre.process_freed(post, c, root, from, base),
+            pre.spaces.roots@.contains_key(base) && !(pre.spaces.records@[base].value().kind is Process) && ret is Freed ==> pre.space_freed(post, c, root, from, base),
+            pre.can_unlink_table(root, from, base) ==> ret is Unlinked,
+            pre.can_slice_table(root, from, base) ==> ret is Slice,
+            pre.can_cut_table(root, from, base) ==> ret is Slice && pre.table_children_cut(post, root, from, base),
+            pre.can_retype_under(root, from, base, 3) && pre.table_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            pre.can_retype_under(root, from, base, 3) && pre.table_is_spent(base) ==> ret is Again || ret is Freed,
+            pre.table_pages.maps@.contains_key(base) && ret is Unlinked ==> pre.table_page_unlinked(post, root, from, base),
+            pre.table_pages.maps@.contains_key(base) && ret is Slice ==> pre.table_sliced(post, root, from, base),
+            pre.table_pages.maps@.contains_key(base) && ret is Freed ==> pre.table_freed(post, c, root, from, base),
+            pre.can_unbind_thread(root, from, base) ==> ret is Slice,
+            pre.can_retype_under(root, from, base, 1) && pre.thread_is_spent(base) ==> if pre.acknowledged(base / PAGE_SZ) && pre.acknowledged((base / PAGE_SZ + 1) as usize) { ret is Freed } else { ret is Again },
+            pre.threads.records@.contains_key(base) && ret is Slice ==> pre.thread_unbound(post, root, from, base),
+            pre.threads.records@.contains_key(base) && ret is Freed ==> pre.thread_freed(post, c, root, from, base),
+            pre.can_unlink_leaf(root, from, base) ==> ret is Unlinked && pre.leaf_unlinked(post, root, from, base),
+            pre.can_slice_leaf(root, from, base) ==> ret is Slice && pre.leaf_sliced(post, root, from, base),
+            pre.can_slice_leaf(root, from, base) && pre.leaf_slots_childless(base) ==> pre.leaf_slice_kept(post, base),
+            pre.can_slice_leaf(root, from, base) && pre.leaf_slots_childless(base) && pre.leaf_live_slots(base) <= LEAF_SLICE_BUDGET ==> post.leaf_is_empty(base),
+            pre.can_retype_under(root, from, base, 1) && pre.leaf_is_empty(base) ==> if pre.acknowledged(base / PAGE_SZ) && pre.acknowledged((base / PAGE_SZ + 1) as usize) { ret is Freed && pre.leaf_freed(post, c, root, from, base) } else { ret is Again },
+            ret is Again ==> !pre.acknowledged(base / PAGE_SZ) || !pre.acknowledged((base / PAGE_SZ + 1) as usize) || !pre.region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M) || !pre.region_acknowledged(Large::One, base / PAGE_SZ / PAGES_PER_1G),
+            ret is Freed ==> pre.frame_freed(post, c, root, from, base) || pre.large_frame_freed(post, c, root, from, base, 9) || pre.large_frame_freed(post, c, root, from, base, 18) || pre.leaf_freed(post, c, root, from, base) || pre.table_freed(post, c, root, from, base) || pre.space_freed(post, c, root, from, base) || pre.thread_freed(post, c, root, from, base) || pre.process_freed(post, c, root, from, base) || pre.queue_freed(post, c, root, from, base) || pre.reply_freed(post, c, root, from, base),
+            ret is Slice ==> pre.leaf_sliced(post, root, from, base) || pre.table_sliced(post, root, from, base) || pre.space_children_cut(post, root, from, base) || pre.thread_unbound(post, root, from, base) || pre.process_retired(post, base) || pre.process_space_cut(post, root, from, base),
+            ret is Unlinked ==> pre.leaf_unlinked(post, root, from, base) || pre.table_page_unlinked(post, root, from, base),
+    ;
+}
+
+/// reclaim_frame's Freed meets no unchanged kernel: the dead frame every core has acknowledged is still that frame.
+/// design/refused-claim-per-way/.
+pub trait ReclaimFrameFreed {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, root: usize, from: usize, base: usize, pre_steps: nat, post_steps: nat, ret: FrameReclaimStep)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            post_steps == pre_steps,
+            ret is Freed,
+            pre.can_retype_under(root, from, base, 0),
+            pre.frame_is_dead(base / PAGE_SZ),
+            pre.acknowledged(base / PAGE_SZ),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post_steps <= pre_steps + (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
+            post.wf(),
+            CapKernel::same_tree(pre, post),
+            CapKernel::frame_reclaim_answered(pre, post, root, from, base, ret),
+            ret is Freed ==> pre.frame_freed(post, c, root, from, base),
+    ;
+}
+
+/// reclaim_large_frame's Freed meets no unchanged kernel: the dead large frame every core has acknowledged is still typed.
+/// design/refused-claim-per-way/.
+pub trait ReclaimLargeFreed {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, c: usize, root: usize, from: usize, base: usize, pre_steps: nat, post_steps: nat, order: u8, ret: FrameReclaimStep)
+        requires
+            pre.wf(),
+            c < NUM_CPUS,
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            post_steps == pre_steps,
+            ret is Freed,
+            pre.can_reclaim_large(root, from, base, order),
+            pre.region_acknowledged(large_level(order), base / PAGE_SZ / level_pages(large_level(order))),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post_steps <= pre_steps + NUM_CPUS + NUM_IOMMUS,
+            ret is Refused ==> post_steps == pre_steps,
+            post.wf(),
+            CapKernel::same_tree(pre, post),
+            CapKernel::large_reclaim_answered(pre, post, root, from, base, order, ret),
+            ret is Freed ==> pre.large_frame_freed(post, c, root, from, base, order),
+    ;
+}
 } // verus!
