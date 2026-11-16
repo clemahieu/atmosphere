@@ -37,7 +37,7 @@ The verified user crates are found the same way: every workspace member whose `C
 
 The rest of `kernel/verified`, outside `capability`:
 
-- `queue_lock.rs` is read by the user-crate rule, as a component of its own: `CapKernel` does not call it, and the kernel's lock glue conjures its core tokens, so no witness of the capability component reaches it.
+- `queue_lock.rs` and `core_bridge.rs` are read by the user-crate rule, each as a component of its own: `CapKernel` does not call them, and the kernel's glue conjures their per-core tokens, so no witness of the capability component reaches them.
 - `define.rs`, `layouts.rs` and `util/` hold constants, layouts, specifications and proofs, and no exec function: nothing to list.
 - `array.rs`, `pptr.rs` (held to upstream vstd's `simple_pptr`) and `pagetable/` are data-structure libraries internal to the kernel. None of their functions refuses: each is exact under its requires, and `CapKernel`'s operations call them where its witnesses reach. They are steps of the capability component, not a component.
 - `arch/` holds the leaf hardware guarantees outside `verus!`, vouched for by the manual passages they cite and checked by the boots, and the per-ISA encodings and token wrappers `CapKernel`'s operations call. design/arch-module/ and design/who-vouches-for-an-unproven-claim/ say who vouches for each; no witness can reach past an assumed specification.

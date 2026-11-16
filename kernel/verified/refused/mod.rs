@@ -108,6 +108,11 @@ pub mod retype_notification_ok;
 pub mod retype_reply_ok;
 pub mod retype_space_ok;
 pub mod revoke_exhausted;
+pub mod core_bridge_new;
+pub mod core_bridge_send;
+pub mod core_bridge_try_take;
+pub mod core_bridge_wait;
+pub mod core_bridge_serve;
 
 use vstd::prelude::*;
 
@@ -145,6 +150,7 @@ use crate::capability::reclaim::{FrameReclaimStep, LEAF_SLICE_BUDGET, ReclaimSte
 use crate::capability::table::{CapKind, Payload, MAX_ORDER};
 use crate::capability::zero::{large_level, level_pages};
 use crate::queue_lock::{Core, QueueLock};
+use crate::core_bridge::{next_seq, ChannelOp, CoreBridge, Req, Srv};
 use crate::capability::operation::*;
 use crate::capability::position::{Position, spec_position};
 
@@ -2060,6 +2066,92 @@ pub trait RevokeExhausted {
             CapKernel::revoke_answered(pre, post, root, at, ret),
             !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at),
             ret is Done ==> CapKernel::cap_revoked_at(pre, post, root, at),
+    ;
+}
+
+/// `CoreBridge::new` at a bridge that is not well-formed. The requester and server maps are as ensured.
+pub trait CoreBridgeNew {
+    proof fn wrong<T, Op: ChannelOp<T>>(bridge: CoreBridge<T, Op>, reqs: Map<int, Req<T, Op>>, srvs: Map<int, Srv<T, Op>>)
+        requires
+            !bridge.wf(),
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] reqs.dom().contains(c) && reqs[c].idle() && reqs[c].cpu() == c && reqs[c].for_bridge(bridge) && reqs[c].seq() == 0usize,
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] srvs.dom().contains(c) && srvs[c].wf() && srvs[c].cpu() == c && srvs[c].for_bridge(bridge) && srvs[c].seq() == 0usize,
+        ensures
+            bridge.wf(),
+    ;
+}
+
+/// `CoreBridge::send` at an unchanged `req`, still idle.
+pub trait CoreBridgeSend {
+    proof fn unchanged<T, Op: ChannelOp<T>>(bridge: &CoreBridge<T, Op>, cpu: usize, pre_req: Req<T, Op>, post_req: Req<T, Op>, val: T)
+        requires
+            bridge.wf(),
+            cpu < NUM_CPUS,
+            pre_req.idle(),
+            pre_req.for_bridge(*bridge),
+            pre_req.cpu() == cpu,
+            Op::pre(val),
+            post_req == pre_req,
+        ensures
+            post_req.for_bridge(*bridge),
+            post_req.cpu() == cpu,
+            post_req.pending(),
+    ;
+}
+
+/// `CoreBridge::try_take`'s Some at an unchanged `req`, still pending.
+pub trait CoreBridgeTryTake {
+    proof fn unchanged<T, Op: ChannelOp<T>>(bridge: &CoreBridge<T, Op>, cpu: usize, pre_req: Req<T, Op>, post_req: Req<T, Op>, srv_opt: Option<&Srv<T, Op>>, out: T)
+        requires
+            bridge.wf(),
+            cpu < NUM_CPUS,
+            pre_req.pending(),
+            pre_req.for_bridge(*bridge),
+            pre_req.cpu() == cpu,
+            srv_opt matches Some(srv) ==> srv.wf() && srv.for_bridge(*bridge) && srv.cpu() == cpu,
+            post_req == pre_req,
+        ensures
+            post_req.for_bridge(*bridge),
+            post_req.cpu() == cpu,
+            post_req.seq() == pre_req.seq(),
+            post_req.idle() && Op::post(pre_req.input(), out),
+    ;
+}
+
+/// `CoreBridge::wait` at an unchanged `req`, still pending.
+pub trait CoreBridgeWait {
+    proof fn unchanged<T, Op: ChannelOp<T>>(bridge: &CoreBridge<T, Op>, cpu: usize, pre_req: Req<T, Op>, post_req: Req<T, Op>, out: T)
+        requires
+            bridge.wf(),
+            cpu < NUM_CPUS,
+            pre_req.pending(),
+            pre_req.for_bridge(*bridge),
+            pre_req.cpu() == cpu,
+            post_req == pre_req,
+        ensures
+            post_req.for_bridge(*bridge),
+            post_req.cpu() == cpu,
+            post_req.seq() == pre_req.seq(),
+            post_req.idle() && Op::post(pre_req.input(), out),
+    ;
+}
+
+/// `CoreBridge::serve`'s true at an unchanged `srv`.
+pub trait CoreBridgeServe {
+    proof fn unchanged<T, Op: ChannelOp<T>>(bridge: &CoreBridge<T, Op>, cpu: usize, pre_srv: Srv<T, Op>, post_srv: Srv<T, Op>, served: bool)
+        requires
+            bridge.wf(),
+            cpu < NUM_CPUS,
+            pre_srv.wf(),
+            pre_srv.for_bridge(*bridge),
+            pre_srv.cpu() == cpu,
+            post_srv == pre_srv,
+            served,
+        ensures
+            post_srv.wf(),
+            post_srv.for_bridge(*bridge),
+            post_srv.cpu() == cpu,
+            post_srv.seq() == next_seq(pre_srv.seq()),
     ;
 }
 } // verus!

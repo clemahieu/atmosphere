@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 // SPDX-License-Identifier: MIT
 
 // A cargo build erases specifications and proofs, so there a variable or an assignment that only
@@ -9,6 +9,7 @@ use vstd::prelude::verus;
 
 pub mod arch;
 pub mod capability;
+pub mod core_bridge;
 pub mod define;
 pub mod pptr;
 pub mod queue_lock;

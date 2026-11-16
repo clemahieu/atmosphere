@@ -82,6 +82,7 @@ KERNEL_TYPE = "CapKernel"
 ENTRY = "dispatch"
 ENTRY_PROOF = "lemma_entry_reaches_"
 QUEUE_LOCK = "kernel/verified/queue_lock.rs"
+CORE_BRIDGE = "kernel/verified/core_bridge.rs"
 CALLS_CRATE = "acall"
 CALLS = CALLS_CRATE + "/src"
 RETURNS = "returns"
@@ -809,6 +810,8 @@ def tree_rows(root):
     declared = declared_in(read(root, KERNEL_CRATE))
     rows = kernel_rows(kernel_texts, declared)
     rows += user_rows({QUEUE_LOCK: (root / QUEUE_LOCK).read_text(encoding="utf-8")}, declared)
+    if (root / CORE_BRIDGE).is_file():
+        rows += user_rows({CORE_BRIDGE: (root / CORE_BRIDGE).read_text(encoding="utf-8")}, declared)
     for directory in marked_users(root):
         rows += user_rows(read(root, directory))
     return rows + wrapper_rows(kernel_texts, read(root, CALLS))
