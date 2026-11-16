@@ -25,11 +25,18 @@ pub mod pair_round;
 pub mod tag_length;
 pub mod tag_round;
 pub mod u16_be_encoding;
+pub mod u16_be_integer;
 pub mod u16_be_le;
 pub mod u16_le_encoding;
+pub mod u16_le_integer;
 pub mod u32_be_encoding;
+pub mod u32_be_integer;
 pub mod u32_le_encoding;
+pub mod u32_le_integer;
+pub mod u64_be_integer;
+pub mod u64_le_integer;
 pub mod u8_encoding;
+pub mod u8_integer;
 
 use crate::*;
 
@@ -292,6 +299,36 @@ pub trait LengthEncodingReturns<'a, L: Length<'a>> {
             n <= c.spec_max(),
         ensures
             t@ != c.spec_of_len(n as nat),
+    ;
+}
+
+
+/// An integer combinator's parse and serialize at the round trip they exclude, and its `length`
+/// at a Some that is not the serialisation's. The round trip is those two postconditions at the
+/// other output; length's ensures is `n == spec_serialize(v).len()` at the other output. The
+/// requires are the round trip's and `length`'s. One impl per integer, so the claim is about that
+/// type.
+pub trait IntegerCombinator<'a, C: Combinator<'a>> {
+    proof fn parse_trip(c: &C, s: Seq<u8>)
+        requires
+            c.wf(),
+        ensures
+            c.spec_parse(s) matches Some((n, v)) ==> c.spec_serialize(v) != s.take(n as int),
+    ;
+
+    proof fn serialize_trip(c: &C, v: C::V, rest: Seq<u8>)
+        requires
+            c.wf(),
+            c.valid(v),
+        ensures
+            c.spec_parse(c.spec_serialize(v) + rest) != Some((c.spec_serialize(v).len(), v)),
+    ;
+
+    proof fn wrong(c: &C, v: C::V, n: nat)
+        requires
+            c.wf(),
+        ensures
+            n != c.spec_serialize(v).len(),
     ;
 }
 
