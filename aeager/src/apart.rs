@@ -12,7 +12,7 @@ use acall::step::*;
 use aheap::arch::*;
 use aheap::source::run_pages;
 use verified::capability::block::order_pages;
-use verified::capability::caller::view_writes_space;
+use verified::capability::caller::{frame_view, view_writes_space};
 use verified::capability::kernel::CapKernel;
 use verified::capability::link::tree_of;
 use verified::capability::list::MAX_DEPTH;
@@ -905,6 +905,435 @@ pub proof fn lemma_other_window_unclaimed(
         assert(!pre.pages().dom().contains(p));
         lemma_window_page_off(window, o_window, a);
         lemma_page_agrees_kept_off(pre.kernel(), post.kernel(), root, l4, p);
+    }
+}
+
+/// One step of a back in its window, accepted or refused, keeps every slot of `root`'s table
+/// naming the caller's own space: it either leaves the table unchanged or inserts a `Frame`
+/// capability, which writes no space.
+proof fn lemma_step_keeps_slot_names_own_space(
+    s: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    start: int,
+    count: nat,
+)
+    requires
+        s.valid(),
+        acall_call_in_window(s, space, untyped, memory, pages, slots, window, start, count),
+    ensures
+        forall|slot: usize|
+            #[trigger] slot_names_own_space(s.pre, s.root, slot)
+                ==> slot_names_own_space(s.post, s.root, slot),
+{
+    reveal(AcallStep::valid);
+    reveal(acall_call_in_window);
+    reveal(acall_setup_call);
+    let pre = s.pre;
+    let post = s.post;
+    let root = s.root;
+    match s.call {
+        AcallCall::Retype { untyped: u, kind, base, word, level } => {
+            if kind == RETYPE_FRAME && s.out == status_only(STATUS_OK)
+                && pre.retype_allowed(root, kind, u as usize, base as usize, word, level as usize)
+            {
+                let parent = pre.tables.node_of(root, u as usize);
+                let fv = frame_view(base as usize, 0u8, parent);
+                assert(post.table_view(root) == pre.table_view(root).insert(word as usize, fv));
+                assert(!view_writes_space(fv));
+            } else {
+                assert(post.table_view(root) == pre.table_view(root));
+            }
+        },
+        _ => {
+            assert(post.table_view(root) == pre.table_view(root));
+        },
+    }
+}
+
+proof fn lemma_steps_keep_slot_names_own_space_upto(
+    init: CapKernel,
+    root: usize,
+    steps: Seq<AcallStep>,
+    n: int,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    start: int,
+    count: nat,
+)
+    requires
+        0 < n <= steps.len(),
+        init.sealed(root),
+        CapKernel::rely(init, steps[0].pre, root),
+        forall|k: int| 0 <= k < steps.len() ==> (#[trigger] steps[k]).root == root && steps[k].valid(),
+        forall|j: int, k: int| 0 <= j && k == j + 1 && k < steps.len() ==> CapKernel::rely(
+            (#[trigger] steps[j]).post,
+            (#[trigger] steps[k]).pre,
+            root,
+        ),
+        forall|k: int| 0 <= k < steps.len() ==> acall_call_in_window(
+            #[trigger] steps[k],
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            start,
+            count,
+        ),
+    ensures
+        forall|slot: usize|
+            #[trigger] slot_names_own_space(init, root, slot)
+                ==> slot_names_own_space(steps[n - 1].post, root, slot),
+    decreases n,
+{
+    reveal(AcallStep::valid);
+    let last = steps[n - 1];
+    lemma_step_keeps_slot_names_own_space(last, space, untyped, memory, pages, slots, window, start, count);
+    if n > 1 {
+        lemma_steps_keep_slot_names_own_space_upto(
+            init, root, steps, n - 1, space, untyped, memory, pages, slots, window, start, count,
+        );
+    }
+    assert forall|slot: usize| #[trigger] slot_names_own_space(init, root, slot)
+        implies slot_names_own_space(last.post, root, slot) by {
+        if n == 1 {
+            lemma_rely_keeps_slot_names_own_space(init, last.pre, root, slot);
+        } else {
+            let prev = steps[n - 2];
+            assert(prev.valid());
+            lemma_rely_keeps_slot_names_own_space(prev.post, last.pre, root, slot);
+        }
+    }
+}
+
+/// The steps of a back in its window, whoever else stepped between them, keep every slot of
+/// `pre`'s table naming the caller's own space.
+pub proof fn lemma_steps_keep_slot_names_own_space(
+    pre: Caller,
+    post: Caller,
+    steps: Seq<AcallStep>,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    start: int,
+    count: nat,
+)
+    requires
+        acall_steps(pre, post, steps),
+        pre.kernel().sealed(pre.root()),
+        forall|k: int| 0 <= k < steps.len() ==> acall_call_in_window(
+            #[trigger] steps[k],
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            start,
+            count,
+        ),
+    ensures
+        forall|slot: usize|
+            #[trigger] slot_names_own_space(pre.kernel(), pre.root(), slot)
+                ==> slot_names_own_space(post.kernel(), post.root(), slot),
+{
+    reveal(acall_steps);
+    if steps.len() > 0 {
+        lemma_steps_keep_slot_names_own_space_upto(
+            pre.kernel(), pre.root(), steps, steps.len() as int, space, untyped, memory, pages, slots, window, start, count,
+        );
+        assert(steps.last() == steps[steps.len() - 1]);
+    }
+}
+
+/// One accepted step of a back in its window keeps `retype_allowed` for a frame retype from
+/// `other_untyped` at `frame_base` into `slot` when `slot` is none of the source's frame slots and
+/// `frame_base`'s page lies outside the source's untyped run.
+#[verifier::spinoff_prover]
+proof fn lemma_step_keeps_retype_frame_allowed(
+    s: AcallStep,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    start: int,
+    count: nat,
+    other_untyped: u64,
+    frame_base: u64,
+    slot: u64,
+)
+    requires
+        s.valid(),
+        s.out.status == STATUS_OK,
+        acall_call_in_window(s, space, untyped, memory, pages, slots, window, start, count),
+        source_config(memory, pages, slots, window),
+        other_untyped < TABLE_INDICES,
+        slot < TABLE_INDICES,
+        forall|i: int| 0 <= i < pages ==> #[trigger] frame_slot(slots as int, i) != slot as int,
+        (frame_base as int / PAGE_SZ as int) < memory as int / PAGE_SZ as int
+            || (frame_base as int / PAGE_SZ as int) >= memory as int / PAGE_SZ as int + pages as int,
+        s.pre.retype_allowed(s.root, RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0),
+    ensures
+        s.post.retype_allowed(s.root, RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0),
+{
+    reveal(AcallStep::valid);
+    reveal(acall_call_in_window);
+    reveal(acall_setup_call);
+    let pre = s.pre;
+    let post = s.post;
+    let root = s.root;
+    let at_frame = (frame_base as usize / PAGE_SZ) as int;
+    pre.lemma_table_view(root, other_untyped as usize);
+    let nu = pre.tables.node_of(root, other_untyped as usize);
+    assert(pre.tables.has_slot(&pre.list, root, other_untyped as usize));
+    assert(pre.tables.is_cap(&pre.list, nu));
+    match s.call {
+        AcallCall::Retype { untyped: u, kind, base, word, level } => {
+            if kind == RETYPE_FRAME {
+                let i = choose|i: int|
+                    0 <= i < pages && base as int == untyped_page(memory, i)
+                        && word as int == #[trigger] frame_slot(slots as int, i);
+                let to = word as usize;
+                let at = (base as usize / PAGE_SZ) as int;
+                reveal(CapKernel::retype_frame_contract_fields);
+                assert(pre.empty_slot(root, to));
+                pre.lemma_table_view(root, to);
+                assert(other_untyped as usize != to);
+                assert(post.table_view(root)[other_untyped as usize] == pre.table_view(root)[other_untyped as usize]);
+                assert(post.tables.node_of(root, other_untyped as usize) == nu);
+                assert(post.list.nodes@[nu as int].depth == pre.list.nodes@[nu as int].depth);
+                lemma_frame_slot_index(slots, pages, i);
+                assert(to != slot as usize);
+                lemma_distinct_slots_distinct_nodes(pre, root, slot as usize, to);
+                assert(post.empty_slot(root, slot as usize));
+                lemma_untyped_page_index(memory, i);
+                assert(at == memory as int / PAGE_SZ as int + i);
+                assert(at_frame != at);
+                assert(post.blocks.tracks(at_frame));
+                assert(post.blocks.pages@[at_frame] == pre.blocks.pages@[at_frame]);
+                assert(!post.blocks.covered(at_frame));
+            } else {
+                assert(kind == RETYPE_TABLE_PAGE);
+                let g = choose|g: int|
+                    0 <= g && g + TABLE_PAGES <= pages && g % TABLE_PAGES as int == 0
+                        && base as int == #[trigger] untyped_page(memory, g);
+                let child = base as usize;
+                let at = (child / PAGE_SZ) as int;
+                reveal(CapKernel::retype_table_contract_fields);
+                lemma_retype_table_kept(pre, post, child);
+                lemma_untyped_page_index(memory, g);
+                assert(at == memory as int / PAGE_SZ as int + g);
+                assert(!(at <= at_frame < at + TABLE_PAGES as int));
+                assert(post.blocks.tracks(at_frame));
+                assert(post.blocks.pages@[at_frame] == pre.blocks.pages@[at_frame]);
+                assert(!post.blocks.covered(at_frame));
+                assert(post.table_view(root) == pre.table_view(root));
+                assert(post.tables == pre.tables);
+                assert(post.empty_slot(root, slot as usize));
+            }
+        },
+        AcallCall::Link { .. } => {
+            reveal(CapKernel::link_contract_fields);
+        },
+        AcallCall::Map { slot: m_slot, va: _, level: _, from: m_from, page: m_page } => {
+            reveal(CapKernel::map_contract_fields);
+            let br = block_ref_of_map(pre, root, m_from as usize, m_page as usize);
+            pre.lemma_page_span();
+            lemma_refs_changed_covered(
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (verified::capability::refs::block_refs(&pre.blocks, br) + 1) as usize,
+                verified::capability::refs::block_dead(&pre.blocks, br),
+                at_frame,
+            );
+        },
+        AcallCall::Unmap { slot: u_slot, va: u_va, level: _ } => {
+            reveal(CapKernel::unmap_contract_fields);
+            let sp = pre.table_view(root)[u_slot as usize].base;
+            let mp = space_mapping(tree_of(&pre.table_pages, &pre.spaces), sp)[address_path(u_va)];
+            let br = verified::capability::refs::block_ref(&pre.blocks, mp.addr / PAGE_SZ);
+            let refs = verified::capability::refs::block_refs(&pre.blocks, br);
+            pre.lemma_page_span();
+            lemma_refs_changed_covered(
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (refs - 1) as usize,
+                verified::capability::refs::block_dead(&pre.blocks, br) || refs == 1,
+                at_frame,
+            );
+        },
+        AcallCall::Inspect { .. } => {
+            reveal(CapKernel::inspect_contract_fields);
+        },
+    }
+}
+
+/// The accepted steps of a back in its window, with no other caller stepping between, keep
+/// `retype_allowed` for a frame retype outside the source's frame slots and untyped run.
+pub proof fn lemma_steps_keep_retype_frame_allowed(
+    pre: Caller,
+    post: Caller,
+    steps: Seq<AcallStep>,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    start: int,
+    count: nat,
+    other_untyped: u64,
+    frame_base: u64,
+    slot: u64,
+)
+    requires
+        acall_steps(pre, post, steps),
+        caller_alone(pre, post),
+        acall_ok(steps),
+        forall|k: int| 0 <= k < steps.len() ==> acall_call_in_window(
+            #[trigger] steps[k],
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            start,
+            count,
+        ),
+        source_config(memory, pages, slots, window),
+        other_untyped < TABLE_INDICES,
+        slot < TABLE_INDICES,
+        forall|i: int| 0 <= i < pages ==> #[trigger] frame_slot(slots as int, i) != slot as int,
+        (frame_base as int / PAGE_SZ as int) < memory as int / PAGE_SZ as int
+            || (frame_base as int / PAGE_SZ as int) >= memory as int / PAGE_SZ as int + pages as int,
+        pre.kernel().retype_allowed(pre.root(), RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0),
+    ensures
+        post.kernel().retype_allowed(post.root(), RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0),
+    decreases steps.len(),
+{
+    lemma_acall_steps_alone(pre, post, steps);
+    reveal(acall_steps);
+    let n = steps.len();
+    if n > 0 {
+        let front = steps.drop_last();
+        let last = steps[n - 1];
+        lemma_steps_keep_retype_frame_allowed_seq(
+            pre.kernel(), pre.root(), steps, space, untyped, memory, pages, slots, window, start, count,
+            other_untyped, frame_base, slot,
+        );
+        assert(steps.last() == last);
+    }
+}
+
+proof fn lemma_steps_keep_retype_frame_allowed_seq(
+    init: CapKernel,
+    root: usize,
+    steps: Seq<AcallStep>,
+    space: u64,
+    untyped: u64,
+    memory: u64,
+    pages: usize,
+    slots: u64,
+    window: usize,
+    start: int,
+    count: nat,
+    other_untyped: u64,
+    frame_base: u64,
+    slot: u64,
+)
+    requires
+        acall_alone(init, steps),
+        acall_ok(steps),
+        forall|k: int| 0 <= k < steps.len() ==> (#[trigger] steps[k]).root == root && steps[k].valid(),
+        forall|k: int| 0 <= k < steps.len() ==> acall_call_in_window(
+            #[trigger] steps[k],
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            start,
+            count,
+        ),
+        source_config(memory, pages, slots, window),
+        other_untyped < TABLE_INDICES,
+        slot < TABLE_INDICES,
+        forall|i: int| 0 <= i < pages ==> #[trigger] frame_slot(slots as int, i) != slot as int,
+        (frame_base as int / PAGE_SZ as int) < memory as int / PAGE_SZ as int
+            || (frame_base as int / PAGE_SZ as int) >= memory as int / PAGE_SZ as int + pages as int,
+        init.retype_allowed(root, RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0),
+    ensures
+        (if steps.len() == 0 { init } else { steps.last().post }).retype_allowed(
+            root, RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0,
+        ),
+    decreases steps.len(),
+{
+    if steps.len() > 0 {
+        let n = steps.len() - 1;
+        let front = steps.drop_last();
+        assert forall|k: int| 0 <= k < front.len() implies (#[trigger] front[k]).pre
+            == (if k == 0 { init } else { front[k - 1].post }) by {
+            assert(front[k] == steps[k]);
+            assert(steps[k].pre == (if k == 0 { init } else { steps[k - 1].post }));
+            if k > 0 {
+                assert(front[k - 1] == steps[k - 1]);
+            }
+        }
+        assert forall|k: int| 0 <= k < front.len() implies (#[trigger] front[k]).out.status == STATUS_OK by {
+            assert(front[k] == steps[k]);
+        }
+        assert forall|k: int| 0 <= k < front.len() implies (#[trigger] front[k]).root == root && front[k].valid() by {
+            assert(front[k] == steps[k]);
+        }
+        assert forall|k: int| 0 <= k < front.len() implies acall_call_in_window(
+            #[trigger] front[k],
+            space,
+            untyped,
+            memory,
+            pages,
+            slots,
+            window,
+            start,
+            count,
+        ) by {
+            assert(front[k] == steps[k]);
+        }
+        lemma_steps_keep_retype_frame_allowed_seq(
+            init, root, front, space, untyped, memory, pages, slots, window, start, count,
+            other_untyped, frame_base, slot,
+        );
+        let last = steps[n];
+        assert(last.pre == (if n == 0 { init } else { steps[n - 1].post }));
+        if n > 0 {
+            assert(front.last() == steps[n - 1]);
+        }
+        assert(last.out.status == STATUS_OK);
+        assert(last.root == root && last.valid());
+        assert(acall_call_in_window(last, space, untyped, memory, pages, slots, window, start, count));
+        lemma_step_keeps_retype_frame_allowed(
+            last, space, untyped, memory, pages, slots, window, start, count,
+            other_untyped, frame_base, slot,
+        );
+        assert(steps.last() == last);
     }
 }
 

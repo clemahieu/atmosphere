@@ -60,12 +60,25 @@ use verified::capability::rely::{reaches_through, same_cap};
 use verified::capability::table::index_ok;
 use verified::capability::table::TABLE_INDICES;
 #[cfg(verus_keep_ghost)]
+use acall::memory::derive_from_frame;
+#[cfg(verus_keep_ghost)]
 use acall::step::slot_names_own_space;
+#[cfg(verus_keep_ghost)]
+use verified::capability::caller::view_frame;
+#[cfg(verus_keep_ghost)]
+use verified::capability::refs::{block_ref, block_refs};
+#[cfg(verus_keep_ghost)]
+use verified::capability::table::block_bytes;
+#[cfg(verus_keep_ghost)]
+use verified::define::PAGE_SZ;
 
 use crate::glue::*;
 use crate::invoke::GuardedCall;
 #[cfg(verus_keep_ghost)]
-use crate::invoke::{call_contract, call_keeps_source, is_source_slot, local_targets_source};
+use crate::invoke::{
+    call_contract, call_keeps_count, call_keeps_slot_space, call_keeps_source, is_source_slot,
+    local_targets_source,
+};
 
 verus! {
 
@@ -6045,6 +6058,113 @@ impl Eager {
         assert(names_own_space(post, self.record.space));
         self.lemma_serves_parts(pre, post);
     }
+
+    /// Public form of `lemma_shrunk_step_serves`: a step that keeps `space_kept`, `count_kept`,
+    /// `slot_names_own_space` for `self.space()`, `own_process`, `pages_kept` and `pages_wf` while
+    /// only shrinking `table_view(root)` keeps `self` serving the returned token.
+    pub proof fn lemma_shrunk_serves(&self, pre: Caller, post: Caller)
+        requires
+            self.serves(pre),
+            post.wf(),
+            post.root() == pre.root(),
+            post.entry().wf(),
+            CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
+            pages_kept(pre, post),
+            post.pages_wf(),
+            own_process(post),
+            slot_names_own_space(post.kernel(), post.root(), self.space() as usize),
+            CapKernel::space_kept(post.entry(), post.kernel(), post.root()),
+            CapKernel::count_kept(post.entry(), post.kernel(), post.root()),
+            forall|j: usize| #[trigger] post.kernel().table_view(post.root()).contains_key(j)
+                ==> post.entry().table_view(post.root()).contains_key(j)
+                    && same_cap(post.kernel().table_view(post.root())[j], post.entry().table_view(post.root())[j]),
+        ensures
+            self.serves(post),
+    {
+        self.lemma_shrunk_step_serves(pre, post);
+    }
+
+    /// Any guarded `invoke` call that keeps this source's slots (`call_keeps_source(self, call)`)
+    /// and preserves `slot_names_own_space` for `self.space()`, `space_kept` and `call_keeps_count`
+    /// keeps this source serving the returned token.
+    pub proof fn lemma_invoke_serves(tracked &self, pre: Caller, post: Caller, call: GuardedCall, out: Outcome)
+        requires
+            self.serves(pre),
+            call_keeps_source(self, call),
+            post.wf(),
+            post.root() == pre.root(),
+            post.entry().wf(),
+            CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
+            pages_kept(pre, post),
+            post.pages_wf(),
+            own_process(post),
+            call_contract(post.entry(), post.kernel(), post.root(), call, out),
+            CapKernel::space_kept(post.entry(), post.kernel(), post.root()),
+            call_keeps_count(post.entry(), post.kernel(), post.root(), call, out),
+            slot_names_own_space(post.kernel(), post.root(), self.space() as usize),
+        ensures
+            self.serves(post),
+    {
+        use_type_invariant(self);
+        let frames = self.record.frames();
+        let root = pre.root();
+        match call {
+            GuardedCall::Retype { untyped, kind, base: base_arg, word, level } => {
+                lemma_entry_held(pre, post, frames);
+                self.lemma_frames_in_source_slots();
+                lemma_frames_retype_call(
+                    post.entry(),
+                    post.kernel(),
+                    root,
+                    frames,
+                    kind,
+                    untyped as usize,
+                    base_arg as usize,
+                    word,
+                    level as usize,
+                    out,
+                );
+                assert(names_own_space(post, self.record.space));
+                self.lemma_serves_parts(pre, post);
+            },
+            GuardedCall::Derive { from, to, rights, base: base_arg, order } => {
+                lemma_entry_held(pre, post, frames);
+                self.lemma_frames_in_source_slots();
+                lemma_frames_derived(
+                    post.entry(),
+                    post.kernel(),
+                    root,
+                    frames,
+                    from,
+                    to,
+                    rights,
+                    base_arg,
+                    order,
+                    out,
+                );
+                assert(names_own_space(post, self.record.space));
+                self.lemma_serves_parts(pre, post);
+            },
+            GuardedCall::MoveCap { from, to } => {
+                lemma_entry_held(pre, post, frames);
+                self.lemma_frames_in_source_slots();
+                lemma_frames_moved(
+                    post.entry(),
+                    post.kernel(),
+                    root,
+                    frames,
+                    spec_position(from),
+                    to,
+                    out,
+                );
+                assert(names_own_space(post, self.record.space));
+                self.lemma_serves_parts(pre, post);
+            },
+            _ => {
+                self.lemma_shrunk_step_serves(pre, post);
+            },
+        }
+    }
 }
 
 impl Eager {
@@ -6064,6 +6184,14 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::retype_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), kind, untyped as usize, base as usize, word, level as usize, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    && (kind != RETYPE_PROCESS || word as usize != s
+                        || final(caller)@.entry().table_view(final(caller)@.root()).contains_key(s))
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         proof {
@@ -6116,6 +6244,31 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::derive_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            (out.status != STATUS_OK || !derive_from_frame(final(caller)@.entry(), final(caller)@.root(), from))
+                ==> CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            out.status == STATUS_OK && derive_from_frame(final(caller)@.entry(), final(caller)@.root(), from)
+                ==> forall|j: usize, page: usize|
+                    final(caller)@.entry().table_view(final(caller)@.root()).contains_key(j)
+                        && final(caller)@.entry().table_view(final(caller)@.root())[j].kind is Frame
+                        && (page as int) * PAGE_SZ < block_bytes(final(caller)@.entry().table_view(final(caller)@.root())[j].order)
+                        && block_ref(&final(caller)@.entry().blocks, view_frame(final(caller)@.entry().table_view(final(caller)@.root())[j], page))
+                            != block_ref(&final(caller)@.entry().blocks, view_frame(final(caller)@.entry().table_view(final(caller)@.root())[spec_position(from)->0.index], 0))
+                        ==> {
+                        let br = block_ref(&final(caller)@.entry().blocks, view_frame(final(caller)@.entry().table_view(final(caller)@.root())[j], page));
+                        &&& #[trigger] block_ref(&final(caller)@.kernel().blocks, view_frame(final(caller)@.entry().table_view(final(caller)@.root())[j], page)) == br
+                        &&& block_refs(&final(caller)@.kernel().blocks, br) == block_refs(&final(caller)@.entry().blocks, br)
+                        &&& final(caller)@.entry().held_by(br, final(caller)@.root())
+                            ==> final(caller)@.kernel().held_by(br, final(caller)@.root())
+                    },
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    && ((!reaches_through(to) && (spec_position(to) is None || spec_position(to)->0.index != s))
+                        || (!reaches_through(from) && spec_position(from) is Some
+                            && slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), spec_position(from)->0.index))
+                        || final(caller)@.entry().table_view(final(caller)@.root()).contains_key(s))
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         proof {
@@ -6154,6 +6307,16 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::move_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    && ((!reaches_through(to) && (spec_position(to) is None || spec_position(to)->0.index != s))
+                        || (!reaches_through(from) && spec_position(from) is Some
+                            && slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), spec_position(from)->0.index))
+                        || final(caller)@.entry().table_view(final(caller)@.root()).contains_key(s))
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         proof {
@@ -6190,6 +6353,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::delete_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::capability::delete(caller, at);
@@ -6214,6 +6383,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::revoke_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::capability::revoke(caller, at);
@@ -6238,6 +6413,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::destroy_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::capability::destroy(caller, slot);
@@ -6262,6 +6443,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::place_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, core as usize, priority as usize, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::capability::place(caller, slot, core, priority);
@@ -6286,6 +6473,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::start_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::capability::start(caller, slot);
@@ -6310,6 +6503,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::suspend_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::capability::suspend(caller, slot);
@@ -6334,6 +6533,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::read_registers_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, index, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::capability::read_registers(caller, slot, index);
@@ -6358,6 +6563,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::write_registers_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, index, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::capability::write_registers(caller, slot, index, words);
@@ -6382,6 +6593,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::inspect_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::memory::inspect(caller, at);
@@ -6406,6 +6623,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::link_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, child as usize, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            forall|s: usize|
+                old(caller)@.kernel().sealed(old(caller)@.root())
+                    && #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         let ghost pre = caller@;
         let out = acall::memory::link(caller, slot, va, level, from, child);
@@ -6432,6 +6655,12 @@ impl Eager {
             pages_kept(old(caller)@, final(caller)@),
             final(caller)@.pages_wf(),
             call_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), call, out),
+            CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+            call_keeps_count(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), call, out),
+            forall|s: usize|
+                #[trigger] slot_names_own_space(old(caller)@.kernel(), old(caller)@.root(), s)
+                    && call_keeps_slot_space(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root(), call, s)
+                    ==> slot_names_own_space(final(caller)@.kernel(), final(caller)@.root(), s),
     {
         match call {
             GuardedCall::Retype { untyped, kind, base, word, level } => self.guarded_retype(caller, untyped, kind, base, word, level),

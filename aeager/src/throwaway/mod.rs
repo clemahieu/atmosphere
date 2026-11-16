@@ -10,6 +10,7 @@ pub mod back_second_block;
 pub mod exercise;
 pub mod exercise_eager;
 pub mod invoke;
+pub mod invoke_other_serves;
 pub mod invoke_ways;
 pub mod new;
 pub mod new_allocator;

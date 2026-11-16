@@ -12,20 +12,32 @@
 
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
-use acall::step::pages_kept;
+use acall::memory::derive_from_frame;
+#[cfg(verus_keep_ghost)]
+use acall::step::{pages_kept, slot_names_own_space};
 use aheap::allocator::Allocator;
+#[cfg(verus_keep_ghost)]
+use aheap::source::SpanSource;
+#[cfg(verus_keep_ghost)]
+use verified::capability::caller::view_frame;
 #[cfg(verus_keep_ghost)]
 use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::spec_position;
 #[cfg(verus_keep_ghost)]
+use verified::capability::refs::{block_ref, block_refs};
+#[cfg(verus_keep_ghost)]
 use verified::capability::rely::reaches_through;
+#[cfg(verus_keep_ghost)]
+use verified::capability::table::block_bytes;
 use verified::capability::operation::{
     status_only_outcome, Outcome, RETYPE_FRAME, RETYPE_LARGE_FRAME, RETYPE_PROCESS, RETYPE_THREAD,
     STATUS_REFUSED,
 };
 #[cfg(verus_keep_ghost)]
-use verified::capability::operation::status_only;
+use verified::capability::operation::{status_only, STATUS_OK};
+#[cfg(verus_keep_ghost)]
+use verified::define::PAGE_SZ;
 
 #[cfg(verus_keep_ghost)]
 use crate::eager::frame_slot;
@@ -151,6 +163,76 @@ pub open spec fn call_contract(
     }
 }
 
+/// Whether `call` keeps block reference counts and sole ownership for frames in `root`'s table:
+/// every call other than an accepted `Derive` from a frame capability keeps `CapKernel::count_kept`
+/// for all of `root`'s frames; an accepted `Derive` from a frame capability keeps the block, count
+/// and `held_by` of every frame in `root`'s table whose page lies in another block.
+pub open spec fn call_keeps_count(
+    entry: CapKernel,
+    post: CapKernel,
+    root: usize,
+    call: GuardedCall,
+    out: Outcome,
+) -> bool {
+    match call {
+        GuardedCall::Derive { from, to: _, rights: _, base: _, order: _ } => {
+            &&& (out.status != STATUS_OK || !derive_from_frame(entry, root, from))
+                ==> CapKernel::count_kept(entry, post, root)
+            &&& (out.status == STATUS_OK && derive_from_frame(entry, root, from))
+                ==> forall|j: usize, page: usize|
+                    entry.table_view(root).contains_key(j)
+                        && entry.table_view(root)[j].kind is Frame
+                        && (page as int) * PAGE_SZ < block_bytes(entry.table_view(root)[j].order)
+                        && block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page))
+                            != block_ref(&entry.blocks, view_frame(entry.table_view(root)[spec_position(from)->0.index], 0))
+                        ==> {
+                        let br = block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page));
+                        &&& #[trigger] block_ref(&post.blocks, view_frame(entry.table_view(root)[j], page)) == br
+                        &&& block_refs(&post.blocks, br) == block_refs(&entry.blocks, br)
+                        &&& entry.held_by(br, root) ==> post.held_by(br, root)
+                    }
+        },
+        _ => CapKernel::count_kept(entry, post, root),
+    }
+}
+
+/// Whether a `Derive` or `MoveCap` from `from` to `to` cannot overwrite `s` with a foreign
+/// space-writing capability.
+pub open spec fn slot_target_keeps_space(
+    pre: CapKernel,
+    entry: CapKernel,
+    root: usize,
+    from: u64,
+    to: u64,
+    s: usize,
+) -> bool {
+    (!reaches_through(to) && (spec_position(to) is None || spec_position(to)->0.index != s))
+        || (!reaches_through(from) && spec_position(from) is Some
+            && slot_names_own_space(pre, root, spec_position(from)->0.index))
+        || entry.table_view(root).contains_key(s)
+}
+
+/// Whether `call` cannot overwrite slot `s` with a foreign space-writing capability: true when
+/// `call` populates no slot, targets another slot, copies or derives from a slot naming `root`'s
+/// own space, or finds `s` already occupied at `entry`.
+pub open spec fn call_keeps_slot_space(
+    pre: CapKernel,
+    entry: CapKernel,
+    root: usize,
+    call: GuardedCall,
+    s: usize,
+) -> bool {
+    match call {
+        GuardedCall::Retype { untyped: _, kind, base: _, word, level: _ } =>
+            kind != RETYPE_PROCESS || word as usize != s || entry.table_view(root).contains_key(s),
+        GuardedCall::Derive { from, to, rights: _, base: _, order: _ } =>
+            slot_target_keeps_space(pre, entry, root, from, to, s),
+        GuardedCall::MoveCap { from, to } =>
+            slot_target_keeps_space(pre, entry, root, from, to, s),
+        _ => true,
+    }
+}
+
 /// Invokes `call` using the caller token held inside `alloc`, rejecting any call that would
 /// overwrite or duplicate `Eager`'s source capabilities or weaken `pages_wf` / `sealed` with
 /// `STATUS_REFUSED`. When the token is held and the call is allowed, executes the `acall` wrapper
@@ -171,6 +253,7 @@ pub fn invoke(alloc: &mut Allocator<Eager>, call: GuardedCall) -> (out: Outcome)
             let pre = old(alloc).token()->0;
             let post = final(alloc).token()->0;
             &&& final(alloc).token() is Some
+            &&& final(alloc).src().serves(post)
             &&& post.wf()
             &&& post.root() == pre.root()
             &&& post.entry().wf()
@@ -179,6 +262,12 @@ pub fn invoke(alloc: &mut Allocator<Eager>, call: GuardedCall) -> (out: Outcome)
             &&& pages_kept(pre, post)
             &&& post.pages_wf()
             &&& call_contract(post.entry(), post.kernel(), post.root(), call, out)
+            &&& CapKernel::space_kept(post.entry(), post.kernel(), post.root())
+            &&& call_keeps_count(post.entry(), post.kernel(), post.root(), call, out)
+            &&& forall|s: usize|
+                #[trigger] slot_names_own_space(pre.kernel(), pre.root(), s)
+                    && call_keeps_slot_space(pre.kernel(), post.entry(), post.root(), call, s)
+                    ==> slot_names_own_space(post.kernel(), post.root(), s)
         },
 {
     proof {

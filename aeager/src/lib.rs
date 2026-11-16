@@ -42,4 +42,4 @@ pub use glue::{AcallCall, AcallStep};
 pub use glue::{acall_ok, acall_steps, flush_room, kernel_source_ready, source_ready};
 pub use invoke::{GuardedCall, invoke};
 #[cfg(verus_keep_ghost)]
-pub use invoke::{call_contract, call_keeps_source, is_source_slot};
+pub use invoke::{call_contract, call_keeps_count, call_keeps_slot_space, call_keeps_source, is_source_slot};

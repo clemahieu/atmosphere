@@ -8,12 +8,13 @@
 use vstd::arithmetic::div_mod::{lemma_fundamental_div_mod, lemma_mod_multiples_basic};
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
-use acall::step::{caller_alone, Caller};
+use acall::step::{caller_alone, slot_names_own_space, Caller};
 use aheap::allocator::Allocator;
 use aheap::arch::*;
 use aheap::heap::{class_for, small_layout};
 use aheap::source::*;
 use verified::capability::block::Large;
+use verified::capability::kernel::CapKernel;
 use verified::capability::operation::{
     status_only, Outcome, RETYPE_FRAME, RETYPE_LARGE_FRAME, STATUS_AGAIN, STATUS_OK, STATUS_REFUSED,
 };
@@ -24,7 +25,11 @@ use verified::capability::table::TABLE_INDICES;
 use verified::capability::zero::level_pages;
 use verified::define::{PAGES_PER_2M, PAGE_SZ};
 use crate::allocator::*;
-use crate::apart::{lemma_other_source_ready, lemma_other_window_unclaimed, process_ready, sources_apart};
+use crate::apart::{
+    lemma_kernel_source_ready_parts, lemma_other_source_ready, lemma_other_window_unclaimed,
+    lemma_steps_keep_retype_frame_allowed, lemma_steps_keep_slot_names_own_space, process_ready,
+    sources_apart,
+};
 use crate::eager::*;
 use crate::exercise::*;
 use crate::glue::{
@@ -32,7 +37,7 @@ use crate::glue::{
     lemma_acall_steps_append, lemma_acall_steps_claimed, lemma_caller_alone_split, lemma_source_ready_premises,
     lemma_window_still_unclaimed, lemma_window_unclaimed, names_own_space, own_process, source_ready, window_tokens_clear,
 };
-use crate::invoke::{GuardedCall, invoke};
+use crate::invoke::{call_keeps_slot_space, call_keeps_source, is_source_slot, GuardedCall, invoke};
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
 verus! {
