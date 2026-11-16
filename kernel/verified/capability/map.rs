@@ -2926,6 +2926,22 @@ impl CapKernel {
         assert(mapped_wf(post.mapped@, post.mappings@));
         assert(post.frames_wf());
         Self::lemma_map_space_nodes(pre, post, t, e, f, frame, large);
+        Self::lemma_map_bindings(pre, post, t, e, f, frame, large);
+    }
+
+    /// The bindings, the placements and the device bindings after the writes of a map: the map adds a
+    /// mapping node, so none of them changes.
+    proof fn lemma_map_bindings(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
+        requires
+            pre.wf(),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
+        ensures
+            bindings_wf(&post.list, &post.threads, &post.processes),
+            binding_parents(&post.list, &post.tables, &post.threads),
+            device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
+            placements_wf(&post.list, &post.tables, &post.threads),
+    {
         let node = mapping_node(t, e);
         assert forall|x: usize| x < NODE_SPACE implies {
             &&& ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
