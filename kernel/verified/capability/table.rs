@@ -374,13 +374,21 @@ impl Tables {
         reveal(Tables::leaves_wf);
     }
 
+    /// Index i names a slot position of the table at root: its index is valid and its root entry
+    /// names a leaf. It reads no list node, so it holds whether the leaf's hidden node is live or
+    /// dead.
+    #[verifier::inline]
+    pub open spec fn names_slot(&self, root: usize, i: usize) -> bool {
+        &&& index_ok(i)
+        &&& self.roots@.contains_key(root)
+        &&& self.leaf(root, index_entry(i)) != NO_LEAF
+    }
+
     /// Index i names a slot of the table at root: its leaf is in its root entry and the leaf's hidden
     /// node is live. A leaf whose hidden node is dead has no slots, so nothing is added to it while it
     /// is torn down. See design/teardown-driven-by-retype/.
     pub open spec fn has_slot(&self, list: &Tree, root: usize, i: usize) -> bool {
-        &&& index_ok(i)
-        &&& self.roots@.contains_key(root)
-        &&& self.leaf(root, index_entry(i)) != NO_LEAF
+        &&& self.names_slot(root, i)
         &&& list.nodes@[self.leaf(root, index_entry(i)) as int].live
     }
 
@@ -664,17 +672,16 @@ impl Tables {
         }
     }
 
-    /// Finds index i in the table at root, in a fixed number of loads. An index from user space is
-    /// checked here: it may be out of range, in a missing leaf, in a leaf whose hidden node is dead, or
-    /// position 0 of a leaf, which is no slot. Whether the slot is occupied is for the caller to read
-    /// from the list.
-    pub fn lookup(&self, list: &Tree, root: usize, i: usize) -> (ret: Option<(usize, Payload)>)
+    /// Finds index i's slot position in the table at root without loading the leaf's hidden node, in
+    /// a fixed number of loads. An index from user space is checked here: it may be out of range, in
+    /// a missing leaf, or position 0 of a leaf, which is no slot.
+    pub fn find(&self, list: &Tree, root: usize, i: usize) -> (ret: Option<(usize, Payload)>)
         requires
             self.wf(list),
             list.store_wf(),
             self.roots@.contains_key(root),
         ensures
-            ret is Some <==> self.has_slot(list, root, i),
+            ret is Some <==> self.names_slot(root, i),
             ret is Some ==> {
                 &&& ret.unwrap().0 == self.node_of(root, i)
                 &&& list.valid(ret.unwrap().0)
@@ -699,13 +706,48 @@ impl Tables {
             self.lemma_entry(root, r as int);
             self.lemma_leaf(list, leaf);
             lemma_slot_in_leaf(leaf, slot);
-            lemma_slot_in_leaf(leaf, 0);
+        }
+        let payloads = PPtr::<PayloadPage>::from_usize(leaf + PAGE_SZ).borrow(Tracked(self.payloads.borrow().tracked_borrow(leaf)));
+        Some((leaf + slot, *payloads.entries.get(slot)))
+    }
+
+    /// Finds index i in the table at root, in a fixed number of loads. An index from user space is
+    /// checked here: it may be out of range, in a missing leaf, in a leaf whose hidden node is dead, or
+    /// position 0 of a leaf, which is no slot. Whether the slot is occupied is for the caller to read
+    /// from the list.
+    pub fn lookup(&self, list: &Tree, root: usize, i: usize) -> (ret: Option<(usize, Payload)>)
+        requires
+            self.wf(list),
+            list.store_wf(),
+            self.roots@.contains_key(root),
+        ensures
+            ret is Some <==> self.has_slot(list, root, i),
+            ret is Some ==> {
+                &&& ret.unwrap().0 == self.node_of(root, i)
+                &&& list.valid(ret.unwrap().0)
+                &&& ret.unwrap().0 % PAGE_SZ != 0
+                &&& ret.unwrap().1 == self.payloads@[self.leaf(root, index_entry(i))].value().entries@[index_slot(i)]
+            },
+    {
+        let (node, payload) = match self.find(list, root, i) {
+            Some(found) => found,
+            None => { return None; },
+        };
+        let leaf = node - node % PAGE_SZ;
+        proof {
+            assert(index_ok(i));
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(i as int, NODES_PER_PAGE as int);
+            assert(0 <= index_entry(i) < ROOT_ENTRIES);
+            let l = self.leaf(root, index_entry(i));
+            self.lemma_entry(root, index_entry(i));
+            self.lemma_leaf(list, l);
+            lemma_slot_in_leaf(l, index_slot(i) as usize);
+            lemma_slot_in_leaf(l, 0);
         }
         if !list.get(leaf).live {
             return None;
         }
-        let payloads = PPtr::<PayloadPage>::from_usize(leaf + PAGE_SZ).borrow(Tracked(self.payloads.borrow().tracked_borrow(leaf)));
-        Some((leaf + slot, *payloads.entries.get(slot)))
+        Some((node, payload))
     }
 
     /// Writes what the capability at index i says. Only that slot's payload changes.
@@ -1057,8 +1099,8 @@ impl Tables {
     pub proof fn lemma_slots_distinct(&self, list: &Tree, a: usize, i: usize, b: usize, j: usize)
         requires
             self.wf(list),
-            self.has_slot(list, a, i),
-            self.has_slot(list, b, j),
+            self.names_slot(a, i),
+            self.names_slot(b, j),
             a != b || i != j,
         ensures
             self.node_of(a, i) != self.node_of(b, j),

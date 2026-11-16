@@ -1118,6 +1118,215 @@ impl CapKernel {
         }
     }
 
+    /// If add_device refuses device k after the first k devices were added, device k cannot be added
+    /// at all under the initial state.
+    proof fn lemma_add_devices_refused(
+        pre: Self,
+        before: Self,
+        root: usize,
+        slot: usize,
+        devices: Seq<DeviceInfo>,
+        k: int,
+        info: DeviceInfo,
+    )
+        requires
+            pre.wf(),
+            before.wf(),
+            0 <= k < MAX_DEVICES,
+            slot + k <= usize::MAX,
+            before.tables.roots == pre.tables.roots,
+            before.devices.count == k,
+            devices.len() == MAX_DEVICES,
+            info == devices[k],
+            forall|j: int| 0 <= j < k ==> before.devices.records@[j] == unbound_record(devices[j]),
+            forall|i: int| #![trigger before.list.nodes@[i]] 0 <= i < NODE_SPACE && pre.list.nodes@[i].live ==> before.list.nodes@[i].live,
+            pre.tables.has_slot(&pre.list, root, (slot + k) as usize) ==>
+                before.list.nodes@[pre.tables.node_of(root, (slot + k) as usize) as int].live
+                    == pre.list.nodes@[pre.tables.node_of(root, (slot + k) as usize) as int].live,
+            !before.can_add_device(root, (slot + k) as usize, info),
+        ensures
+            !pre.can_add_device_at(root, slot, devices, k),
+    {
+        let i = (slot + k) as usize;
+        if pre.can_add_device_at(root, slot, devices, k) {
+            Self::lemma_slot_stays(pre, before, root, i);
+            assert(pre.tables.has_slot(&pre.list, root, i));
+            assert forall|d: int| 0 <= d < before.devices.count implies
+                (#[trigger] before.devices.records@[d]).iommu != info.iommu || before.devices.records@[d].number != info.number by {
+                assert(before.devices.records@[d] == unbound_record(devices[d]));
+            }
+            assert(before.can_add_device(root, i, info));
+        }
+    }
+
+    /// Proves the loop step invariants after add_device succeeds for device k.
+    proof fn lemma_add_devices_step(
+        pre: Self,
+        before: Self,
+        post: Self,
+        root: usize,
+        slot: usize,
+        devices: Seq<DeviceInfo>,
+        count: usize,
+        k: int,
+        info: DeviceInfo,
+        first: usize,
+    )
+        requires
+            pre.wf(),
+            before.wf(),
+            post.wf(),
+            0 <= k < count,
+            count <= MAX_DEVICES,
+            slot + count <= usize::MAX,
+            first == pre.list.seq@[0],
+            first == before.list.seq@[0],
+            pre.tables.roots@.contains_key(root),
+            before.tables.roots == pre.tables.roots,
+            before.tables.owner == pre.tables.owner,
+            post.tables.roots == before.tables.roots,
+            post.tables.owner == before.tables.owner,
+            before.devices.count == k,
+            devices.len() == MAX_DEVICES,
+            info == devices[k],
+            before.can_add_device(root, (slot + k) as usize, info),
+            forall|j: int| 0 <= j < k ==> {
+                let n = pre.tables.node_of(root, (slot + j) as usize);
+                &&& #[trigger] before.devices.records@[j] == unbound_record(devices[j])
+                &&& before.is_cap(n)
+                &&& before.payload_of(n) == device_payload(j)
+                &&& before.list.is_child(first, n)
+            },
+            forall|i: int| #![trigger before.list.nodes@[i]]
+                0 <= i < NODE_SPACE && pre.apart_from_devices(root, slot, k, i) ==> {
+                &&& before.list.nodes@[i].live == pre.list.nodes@[i].live
+                &&& before.list.nodes@[i].kind == pre.list.nodes@[i].kind
+                &&& before.list.nodes@[i].depth == pre.list.nodes@[i].depth
+            },
+            forall|x: usize| #![trigger before.list.parent@.contains_key(x)]
+                pre.apart_from_devices(root, slot, k, x as int) ==> {
+                &&& before.list.parent@.contains_key(x) == pre.list.parent@.contains_key(x)
+                &&& pre.list.parent@.contains_key(x) ==> before.list.parent@[x] == pre.list.parent@[x]
+            },
+            forall|x: usize| #![trigger before.is_cap(x)] #![trigger pre.is_cap(x)]
+                pre.apart_from_devices(root, slot, k, x as int) ==> {
+                &&& before.is_cap(x) == pre.is_cap(x)
+                &&& pre.is_cap(x) ==> before.payload_of(x) == pre.payload_of(x)
+            },
+            forall|i: int| #![trigger before.list.nodes@[i]] 0 <= i < NODE_SPACE && pre.list.nodes@[i].live ==> before.list.nodes@[i].live,
+            forall|i: int| #![trigger before.list.nodes@[i]] 0 <= i < NODE_SPACE && i % PAGE_SZ as int == 0
+                ==> before.list.nodes@[i].live == pre.list.nodes@[i].live,
+            forall|m: int| k <= m < count && #[trigger] pre.tables.has_slot(&pre.list, root, (slot + m) as usize)
+                ==> before.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live
+                    == pre.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live,
+            ({
+                let n = before.tables.node_of(root, (slot + k) as usize);
+                &&& post.list.parent@ == before.list.parent@.insert(n, first)
+                &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != n ==> {
+                    &&& post.list.nodes@[i].live == before.list.nodes@[i].live
+                    &&& post.list.nodes@[i].kind == before.list.nodes@[i].kind
+                    &&& post.list.nodes@[i].depth == before.list.nodes@[i].depth
+                }
+                &&& post.devices.count == k + 1
+                &&& post.devices.records@ == before.devices.records@.update(k, unbound_record(info))
+                &&& post.is_cap(n)
+                &&& post.payload_of(n) == device_payload(k)
+                &&& post.list.is_child(first, n)
+                &&& Self::adds_cap(before, post, n)
+            }),
+        ensures
+            pre.can_add_device_at(root, slot, devices, k),
+            forall|j: int| 0 <= j < k + 1 ==> {
+                let m = pre.tables.node_of(root, (slot + j) as usize);
+                &&& #[trigger] post.devices.records@[j] == unbound_record(devices[j])
+                &&& post.is_cap(m)
+                &&& post.payload_of(m) == device_payload(j)
+                &&& post.list.is_child(first, m)
+            },
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && pre.list.nodes@[i].live ==> post.list.nodes@[i].live,
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i % PAGE_SZ as int == 0
+                ==> post.list.nodes@[i].live == pre.list.nodes@[i].live,
+            forall|m: int| k + 1 <= m < count && #[trigger] pre.tables.has_slot(&pre.list, root, (slot + m) as usize)
+                ==> post.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live
+                    == pre.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live,
+            forall|i: int| #![trigger post.list.nodes@[i]]
+                0 <= i < NODE_SPACE && pre.apart_from_devices(root, slot, k + 1, i) ==> {
+                &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+                &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+                &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
+            },
+            forall|x: usize| #![trigger post.list.parent@.contains_key(x)]
+                pre.apart_from_devices(root, slot, k + 1, x as int) ==> {
+                &&& post.list.parent@.contains_key(x) == pre.list.parent@.contains_key(x)
+                &&& pre.list.parent@.contains_key(x) ==> post.list.parent@[x] == pre.list.parent@[x]
+            },
+            forall|x: usize| #![trigger post.is_cap(x)] #![trigger pre.is_cap(x)]
+                pre.apart_from_devices(root, slot, k + 1, x as int) ==> {
+                &&& post.is_cap(x) == pre.is_cap(x)
+                &&& pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)
+            },
+    {
+        reveal(devices_wf);
+        let i = (slot + k) as usize;
+        let n = pre.tables.node_of(root, i);
+        assert(before.tables.node_of(root, i) == n);
+        let leaf = before.tables.leaf(root, index_entry(i));
+        before.tables.lemma_entry(root, index_entry(i));
+        before.tables.lemma_leaf(&before.list, leaf);
+        before.lemma_slot(root, i);
+        before.lemma_slot_bound(n);
+        assert(leaf % PAGE_SZ == 0);
+        assert(before.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+        assert(pre.tables.has_slot(&pre.list, root, i));
+        assert(!before.list.nodes@[n as int].live);
+        assert(!pre.list.nodes@[n as int].live);
+        assert forall|j: int| 0 <= j < k implies
+            (#[trigger] devices[j]).iommu != devices[k].iommu || devices[j].number != devices[k].number by {
+            assert(before.devices.records@[j] == unbound_record(devices[j]));
+        }
+        assert(pre.can_add_device_at(root, slot, devices, k));
+        assert forall|m: int| k + 1 <= m < count && #[trigger] pre.tables.has_slot(&pre.list, root, (slot + m) as usize) implies
+            post.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live
+                == pre.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live by {
+            let im = (slot + m) as usize;
+            Self::lemma_slot_stays(pre, before, root, im);
+            before.tables.lemma_slots_distinct(&before.list, root, i, root, im);
+            before.lemma_slot(root, im);
+            before.lemma_slot_bound(pre.tables.node_of(root, im));
+        }
+        assert forall|j: int| 0 <= j < k + 1 implies {
+            let m = pre.tables.node_of(root, (slot + j) as usize);
+            &&& #[trigger] post.devices.records@[j] == unbound_record(devices[j])
+            &&& post.is_cap(m)
+            &&& post.payload_of(m) == device_payload(j)
+            &&& post.list.is_child(first, m)
+        } by {
+            let m = pre.tables.node_of(root, (slot + j) as usize);
+            if j < k {
+                assert(before.devices.records@[j] == unbound_record(devices[j]));
+                assert(before.is_cap(m));
+                assert(before.payload_of(m) == device_payload(j));
+                assert(m != n);
+                assert(post.is_cap(m));
+                assert(post.payload_of(m) == before.payload_of(m));
+                assert(post.list.is_child(first, m)) by {
+                    assert(before.list.is_child(first, m));
+                    assert(post.list.nodes@[m as int].live);
+                    lemma_has(post.list.seq@, m);
+                    assert(post.list.parent@[m] == before.list.parent@[m]);
+                }
+                assert(post.devices.records@[j] == before.devices.records@[j]);
+            } else {
+                assert(m == n);
+                assert(post.devices.records@[j] == unbound_record(devices[j]));
+                assert(post.is_cap(m));
+                assert(post.payload_of(m) == device_payload(j));
+                assert(post.list.is_child(first, m));
+            }
+        }
+        Self::lemma_add_devices_frame(pre, before, post, root, slot, k, n, first);
+    }
+
     /// Gives each device boot found a record and a capability under the list's first node, device k
     /// at index slot + k of the table at root. Boot fills the table once, and it stops at the first
     /// device refused, so false means boot fails, and what the devices before it were given stays.
@@ -1263,85 +1472,12 @@ impl CapKernel {
             let info = *devices.get(k);
             if !self.add_device(first, root, slot + k, info, Tracked(steps)) {
                 proof {
-                    // Device k could be added after the ones before it, add_device would take it.
-                    let i = (slot + k) as usize;
-                    if pre.can_add_device_at(root, slot, devices@, k as int) {
-                        Self::lemma_slot_stays(pre, before, root, i);
-                        assert(pre.tables.has_slot(&pre.list, root, (slot + k) as usize));
-                        assert forall|d: int| 0 <= d < before.devices.count implies
-                            (#[trigger] before.devices.records@[d]).iommu != info.iommu || before.devices.records@[d].number != info.number by {
-                            assert(before.devices.records@[d] == unbound_record(devices@[d]));
-                        }
-                        assert(before.can_add_device(root, i, info));
-                    }
-                    assert(!pre.can_add_device_at(root, slot, devices@, k as int));
+                    Self::lemma_add_devices_refused(pre, before, root, slot, devices@, k as int, info);
                 }
                 return false;
             }
             proof {
-                // The records' length, for the update.
-                reveal(devices_wf);
-                let i = (slot + k) as usize;
-                let n = pre.tables.node_of(root, i);
-                assert(before.tables.node_of(root, i) == n);
-                // Device k could be added after the ones before it: its slot is the one add_device
-                // filled, whose leaf is at the start of a page and lived before.
-                let leaf = before.tables.leaf(root, index_entry(i));
-                before.tables.lemma_entry(root, index_entry(i));
-                before.tables.lemma_leaf(&before.list, leaf);
-                before.lemma_slot(root, i);
-                before.lemma_slot_bound(n);
-                assert(leaf % PAGE_SZ == 0);
-                assert(before.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
-                assert(pre.tables.has_slot(&pre.list, root, i));
-                assert(!before.list.nodes@[n as int].live);
-                assert(!pre.list.nodes@[n as int].live);
-                assert forall|j: int| 0 <= j < k implies
-                    (#[trigger] devices@[j]).iommu != devices@[k as int].iommu || devices@[j].number != devices@[k as int].number by {
-                    assert(before.devices.records@[j] == unbound_record(devices@[j]));
-                }
-                assert(pre.can_add_device_at(root, slot, devices@, k as int));
-                // A later device's slot is not device k's.
-                assert forall|m: int| k + 1 <= m < count && #[trigger] pre.tables.has_slot(&pre.list, root, (slot + m) as usize) implies
-                    self.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live
-                        == pre.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live by {
-                    let im = (slot + m) as usize;
-                    Self::lemma_slot_stays(pre, before, root, im);
-                    before.tables.lemma_slots_distinct(&before.list, root, i, root, im);
-                    before.lemma_slot(root, im);
-                    before.lemma_slot_bound(pre.tables.node_of(root, im));
-                }
-                assert forall|j: int| 0 <= j < k + 1 implies {
-                    let m = pre.tables.node_of(root, (slot + j) as usize);
-                    &&& #[trigger] self.devices.records@[j] == unbound_record(devices@[j])
-                    &&& self.is_cap(m)
-                    &&& self.payload_of(m) == device_payload(j)
-                    &&& self.list.is_child(first, m)
-                } by {
-                    let m = pre.tables.node_of(root, (slot + j) as usize);
-                    if j < k {
-                        assert(before.devices.records@[j] == unbound_record(devices@[j]));
-                        assert(before.is_cap(m));
-                        assert(before.payload_of(m) == device_payload(j));
-                        assert(m != n);
-                        assert(self.is_cap(m));
-                        assert(self.payload_of(m) == before.payload_of(m));
-                        assert(self.list.is_child(first, m)) by {
-                            assert(before.list.is_child(first, m));
-                            assert(self.list.nodes@[m as int].live);
-                            lemma_has(self.list.seq@, m);
-                            assert(self.list.parent@[m] == before.list.parent@[m]);
-                        }
-                        assert(self.devices.records@[j] == before.devices.records@[j]);
-                    } else {
-                        assert(m == n);
-                        assert(self.devices.records@[j] == unbound_record(devices@[j]));
-                        assert(self.is_cap(m));
-                        assert(self.payload_of(m) == device_payload(j));
-                        assert(self.list.is_child(first, m));
-                    }
-                }
-                Self::lemma_add_devices_frame(pre, before, *self, root, slot, k as int, n, first);
+                Self::lemma_add_devices_step(pre, before, *self, root, slot, devices@, count, k as int, info, first);
             }
             k = k + 1;
         }

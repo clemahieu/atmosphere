@@ -1397,6 +1397,90 @@ pub fn witness_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracked<
     (alloc, ok, refused, allocated, Ghost(after_ok))
 }
 
+/// Deduces the three invocation outcomes of `witness_invoke_ways` from its token trace when the
+/// caller ran uninterrupted.
+proof fn lemma_witness_invoke_ways_outcomes(
+    tok0: Caller,
+    tok1: Caller,
+    tok2: Caller,
+    tok3: Caller,
+    tok4: Caller,
+    other_untyped: u64,
+    big_base: u64,
+    big_slot: u64,
+    frame_base: u64,
+    slot: u64,
+    again: Outcome,
+    retyped: Outcome,
+    inspected: Outcome,
+)
+    requires
+        tok0.wf(),
+        tok1.wf(),
+        tok2.wf(),
+        tok3.wf(),
+        tok4.wf(),
+        tok2.entry().wf(),
+        tok3.entry().wf(),
+        tok4.entry().wf(),
+        tok1.root() == tok0.root(),
+        tok2.root() == tok1.root(),
+        tok3.root() == tok2.root(),
+        tok4.root() == tok3.root(),
+        tok1.kernel() == tok0.kernel(),
+        tok1.history() == tok0.history(),
+        tok2.history() == tok1.history().push((tok2.entry(), tok2.kernel())),
+        tok3.history() == tok2.history().push((tok3.entry(), tok3.kernel())),
+        tok4.history() == tok3.history().push((tok4.entry(), tok4.kernel())),
+        slot < TABLE_INDICES,
+        spec_position(slot) is Some,
+        spec_position(slot)->0.through is None,
+        spec_position(slot)->0.index == slot as usize,
+        tok0.kernel().retype_allowed(tok0.root(), RETYPE_LARGE_FRAME, other_untyped as usize, big_base as usize, big_slot, 0),
+        !tok0.kernel().zeroing.active(Large::Two, big_base as usize / PAGE_SZ / level_pages(Large::Two)),
+        tok0.kernel().retype_allowed(tok0.root(), RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0),
+        frame_base as usize / PAGE_SZ / PAGES_PER_2M != big_base as usize / PAGE_SZ / PAGES_PER_2M,
+        frame_base <= usize::MAX as u64,
+        CapKernel::retype_contract(tok2.entry(), tok2.kernel(), tok2.root(), RETYPE_LARGE_FRAME, other_untyped as usize, big_base as usize, big_slot, 0, again),
+        CapKernel::retype_contract(tok3.entry(), tok3.kernel(), tok3.root(), RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0, retyped),
+        CapKernel::inspect_contract(tok4.entry(), tok4.kernel(), tok4.root(), spec_position(slot), inspected),
+    ensures
+        caller_alone(tok0, tok4) ==> {
+            &&& again.status == STATUS_AGAIN
+            &&& retyped.status == STATUS_OK
+            &&& inspected.status == STATUS_OK
+            &&& inspected.result_1 == CAP_KIND_FRAME
+            &&& inspected.result_2 == frame_base
+            &&& inspected.result_3 == 0
+            &&& inspected.result_4 == FRAME_RIGHTS as u64
+        },
+{
+    if caller_alone(tok0, tok4) {
+        let n = tok0.history().len() as int;
+        let added = tok4.history().skip(n);
+        assert(tok4.history().take(n) == tok0.history());
+        assert(added =~= seq![
+            (tok2.entry(), tok2.kernel()),
+            (tok3.entry(), tok3.kernel()),
+            (tok4.entry(), tok4.kernel()),
+        ]);
+        assert(added.len() == 3);
+        assert(added[0] == (tok2.entry(), tok2.kernel()));
+        assert(added[1] == (tok3.entry(), tok3.kernel()));
+        assert(added[2] == (tok4.entry(), tok4.kernel()));
+        assert(tok2.entry() == tok0.kernel());
+        assert(tok3.entry() == tok2.kernel());
+        assert(tok4.entry() == tok3.kernel());
+        let r_big = (big_base as usize) / PAGE_SZ / level_pages(Large::Two);
+        let r_frame = (frame_base as usize) / PAGE_SZ / PAGES_PER_2M;
+        assert(level_pages(Large::Two) == PAGES_PER_2M);
+        assert(r_frame != r_big);
+        assert(tok2.kernel().blocks.regions_2m@[r_frame as int] == tok0.kernel().blocks.regions_2m@[r_frame as int]);
+        assert(tok2.kernel().retype_allowed(tok0.root(), RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0));
+        assert(tok3.kernel().inspect_allowed(tok0.root(), spec_position(slot)));
+    }
+}
+
 /// Bundles an eager source into an `Allocator<Eager>`, begins zeroing a 2M frame from a second
 /// untyped (`STATUS_AGAIN`), retypes a 4K frame from that untyped into a non-source slot
 /// (`STATUS_OK`), and inspects the slot the retype filled (`STATUS_OK`), proving `invoke`
@@ -1485,30 +1569,11 @@ pub fn witness_invoke_ways(
     let inspected = invoke(&mut alloc, GuardedCall::Inspect { at: slot });
     let ghost tok4 = alloc.token()->0;
     proof {
-        if caller_alone(tok0, tok4) {
-            let n = tok0.history().len() as int;
-            let added = tok4.history().skip(n);
-            assert(tok4.history().take(n) == tok0.history());
-            assert(added =~= seq![
-                (tok2.entry(), tok2.kernel()),
-                (tok3.entry(), tok3.kernel()),
-                (tok4.entry(), tok4.kernel()),
-            ]);
-            assert(added.len() == 3);
-            assert(added[0] == (tok2.entry(), tok2.kernel()));
-            assert(added[1] == (tok3.entry(), tok3.kernel()));
-            assert(added[2] == (tok4.entry(), tok4.kernel()));
-            assert(tok2.entry() == tok0.kernel());
-            assert(tok3.entry() == tok2.kernel());
-            assert(tok4.entry() == tok3.kernel());
-            let r_big = (big_base as usize) / PAGE_SZ / level_pages(Large::Two);
-            let r_frame = (frame_base as usize) / PAGE_SZ / PAGES_PER_2M;
-            assert(level_pages(Large::Two) == PAGES_PER_2M);
-            assert(r_frame != r_big);
-            assert(tok2.kernel().blocks.regions_2m@[r_frame as int] == tok0.kernel().blocks.regions_2m@[r_frame as int]);
-            assert(tok2.kernel().retype_allowed(tok0.root(), RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0));
-            assert(tok3.kernel().inspect_allowed(tok0.root(), spec_position(slot)));
-        }
+        lemma_witness_invoke_ways_outcomes(
+            tok0, tok1, tok2, tok3, tok4,
+            other_untyped, big_base, big_slot, frame_base, slot,
+            again, retyped, inspected,
+        );
     }
     (alloc, again, retyped, inspected)
 }
