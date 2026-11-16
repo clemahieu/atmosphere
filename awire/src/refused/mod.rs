@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 
 //! False claims, one module each, which Verus must refuse at the postconditions each names.
-//! `u16_be_le` is the interface example and names no inventory line. The others are claims about a
-//! type: the specification is the trait and the body is the module, so the refusal's body
+//! `u16_be_le` is the interface example and names no inventory line, and `choice_steps` is a step
+//! count no bound may give and names none either. The others are claims about a type. Each but
+//! `u16_be_le` states its claim as a trait here and its body in the module, so the refusal's body
 //! span is the module's. tools/check-refused.py runs them under cfg(refused), which nothing else
 //! sets, so they are in no image and no verify count. design/refused-claim-per-way/.
 pub mod bounded_length;
 pub mod bounded_round;
 pub mod bytes_length;
 pub mod bytes_round;
+pub mod choice_steps;
 pub mod count_length;
 pub mod count_round;
 pub mod elements_get;
@@ -20,6 +22,18 @@ pub mod u16_be_le;
 use crate::*;
 
 verus! {
+
+/// A choice of alternatives that take no steps, parsing a 1000-byte input in none.
+pub trait ChoiceSteps {
+    fn zero(input: &[u8], Tracked(steps): Tracked<&mut Steps>)
+        requires
+            input.len() == 1000,
+            input@[0] == 200u8,
+            old(steps).count == 0,
+        ensures
+            final(steps).count == 0,
+    ;
+}
 
 /// `Bytes`'s parse and serialize at the round trip they exclude.
 pub trait BytesRound {

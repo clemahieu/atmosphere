@@ -14,7 +14,9 @@
 //! up to the input's length. A combinator's answer on a window that holds the bytes it consumes is
 //! its answer on the whole input, by its two lemmas (`lemma_window`), so the first window on which
 //! either accepts gives the choice's answer, and that window is at most twice the bytes consumed. The
-//! windows tried before it sum to less than it, so the count stays linear in the bytes consumed.
+//! windows tried before it sum to less than it, so the count stays linear in the bytes consumed. Each
+//! window is a step of its own, besides the alternatives', which the one in `sum` and in `c` pays
+//! for, so a choice of alternatives that take no steps still counts its windows.
 //! A value's length and its serialisation are its alternative's.
 
 use vstd::slice::slice_subrange;
@@ -77,13 +79,13 @@ proof fn lemma_window<'a, C: Combinator<'a>>(c: &C, s: Seq<u8>, w: nat)
     }
 }
 
-/// Windows tried so far cost at most `2 * sum * m`; one more refused at `w <= m` stays within the
-/// next nominal window's.
+/// Windows tried so far cost at most `2 * sum * m`; one more refused at `w <= m`, its own step
+/// included, stays within the next nominal window's.
 proof fn lemma_next_window(sum: nat, ka: nat, kb: nat, ca: nat, cb: nat, m: nat, w: nat, spent: int)
     requires
-        ka + kb + ca + cb <= sum,
+        ka + kb + ca + cb + 1 <= sum,
         w <= m,
-        spent <= 2 * sum * m + ka * w + ca + kb * w + cb,
+        spent <= 2 * sum * m + 1 + ka * w + ca + kb * w + cb,
     ensures
         spent <= 2 * sum * (if m == 0 { 1nat } else { 2 * m }),
 {
@@ -93,9 +95,9 @@ proof fn lemma_next_window(sum: nat, ka: nat, kb: nat, ca: nat, cb: nat, m: nat,
                 w == 0,
         ;
     } else {
-        assert(ka * w + ca + kb * w + cb <= sum * m) by (nonlinear_arith)
+        assert(1 + ka * w + ca + kb * w + cb <= sum * m) by (nonlinear_arith)
             requires
-                ka + kb + ca + cb <= sum,
+                ka + kb + ca + cb + 1 <= sum,
                 w <= m,
                 1 <= m,
         ;
@@ -158,9 +160,10 @@ pub struct Choice<A, B> {
 }
 
 impl<'a, A: Combinator<'a>, B: Combinator<'a>> Choice<A, B> {
-    /// The sum of the alternatives' constants, of which the choice's `k` is a multiple.
+    /// The sum of the alternatives' constants and the window's own step, of which the choice's `k`
+    /// is a multiple.
     pub open spec fn sum(&self) -> nat {
-        self.first.k() + self.second.k() + self.first.c() + self.second.c()
+        self.first.k() + self.second.k() + self.first.c() + self.second.c() + 1
     }
 }
 
@@ -204,7 +207,7 @@ impl<'a, A: Combinator<'a>, B: Combinator<'a>> Combinator<'a> for Choice<A, B> {
     }
 
     open spec fn c(&self) -> nat {
-        self.first.c() + self.second.c()
+        self.first.c() + self.second.c() + 1
     }
 
     proof fn lemma_parse_serialize(&self, s: Seq<u8>) {
@@ -245,6 +248,9 @@ impl<'a, A: Combinator<'a>, B: Combinator<'a>> Combinator<'a> for Choice<A, B> {
                 steps.count <= count + 2 * sum * m,
             decreases input.len() - w,
         {
+            proof {
+                steps.step();
+            }
             let window = slice_subrange(input, 0, w);
             assert(window@ =~= s.take(w as int));
             proof {
