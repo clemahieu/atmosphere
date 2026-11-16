@@ -3,7 +3,7 @@
 //! Host runs of the kernel's boot checks, the loader map check (lines starting `free page ranges:`)
 //! and the dom0 run check (lines starting `mapped runs:`), and of tools/check-invoked-arms.py on its
 //! fixtures. The boot modules build the kernel's own file, so the host runs the code the kernel does.
-//! The dom0 run check reads the built dom0, so the gate runs these tests after the build.
+//! The dom0 run check builds the dom0 and hello ELFs on demand from their directories.
 
 #[cfg(test)]
 mod free_ranges_test;

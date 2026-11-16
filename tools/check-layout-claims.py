@@ -12,8 +12,9 @@ whose erased expansion stops checking fails it.
 
 The files are the Rust sources under each workspace member marked
 '[package.metadata.atmosphere] verified = true', the crates tools/verify.py proves, that hold a claim
-outside a comment. The check copies the tree's files, tracked and untracked but not ignored, to a
-temporary directory, and in the copy makes one claim of each file wrong: the first that no `#[cfg(`
+outside a comment. The check copies the verified workspace members, their transitive path
+dependencies and workspace manifests to a temporary directory, and in the copy makes one claim of
+each file wrong: the first that no `#[cfg(`
 attribute guards, its size raised by 8. A file whose every claim is under a cfg is a finding. Then
 for each target, x86_64-unknown-linux-gnu and aarch64-unknown-none, one
 `cargo check --offline --keep-going` of the marked crates that hold claims, from the copy's root,
@@ -36,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -127,24 +129,129 @@ def findings(files, refused):
             for arch in archs if path not in refused[arch]]
 
 
-def marked_members(root):
-    """The marked workspace members: each one's package name and directory relative to root."""
-    metadata = json.loads(subprocess.run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"],
-        cwd=root, check=True, stdout=subprocess.PIPE).stdout)
-    members = []
-    for package in metadata["packages"]:
+def load_toml(path):
+    with open(path, "rb") as file:
+        return tomllib.load(file)
+
+
+def path_deps(manifest, member_dir, root, workspace_deps):
+    """Relative workspace directory paths referenced as path dependencies by manifest."""
+    root_resolved = root.resolve()
+    tables = [manifest.get(key) or {} for key in ("dependencies", "dev-dependencies", "build-dependencies")]
+    for target in (manifest.get("target") or {}).values():
+        if isinstance(target, dict):
+            tables.extend(target.get(key) or {} for key in ("dependencies", "dev-dependencies", "build-dependencies"))
+    deps = []
+    for table in tables:
+        for name, spec in table.items():
+            if not isinstance(spec, dict):
+                continue
+            raw_path = spec.get("path")
+            base = root_resolved / member_dir
+            if raw_path is None and spec.get("workspace"):
+                wspec = workspace_deps.get(spec.get("package") or name)
+                if isinstance(wspec, dict):
+                    raw_path = wspec.get("path")
+                    base = root_resolved
+            if raw_path is None:
+                continue
+            resolved = (base / raw_path).resolve()
+            if resolved.is_relative_to(root_resolved):
+                deps.append(resolved.relative_to(root_resolved))
+    return deps
+
+
+def selected_members(root):
+    """Verified workspace members [(package, dir)] and ordered workspace dirs needed to build them."""
+    workspace = load_toml(root / "Cargo.toml").get("workspace") or {}
+    workspace_deps = workspace.get("dependencies") or {}
+    packages = {}
+    for raw in workspace.get("members") or []:
+        member_dir = Path(raw)
+        manifest_path = root / member_dir / "Cargo.toml"
+        if not manifest_path.is_file():
+            continue
+        manifest = load_toml(manifest_path)
+        package = manifest["package"]
         atmosphere = (package.get("metadata") or {}).get("atmosphere") or {}
-        if atmosphere.get("verified", False):
-            members.append((package["name"], Path(package["manifest_path"]).parent.relative_to(root)))
-    return members
+        packages[member_dir] = (package["name"], bool(atmosphere.get("verified", False)), manifest)
+    verified = [directory for directory, (_, is_verified, _) in packages.items() if is_verified]
+    selected_set = set(verified)
+    queue = list(verified)
+    while queue:
+        current = queue.pop(0)
+        for dep_dir in path_deps(packages[current][2], current, root, workspace_deps):
+            if dep_dir in packages and dep_dir not in selected_set:
+                selected_set.add(dep_dir)
+                queue.append(dep_dir)
+    members = [(packages[directory][0], directory) for directory in verified]
+    selected = [directory for directory in packages if directory in selected_set]
+    return members, selected
 
 
-def tree_files(root):
-    """The tree's files as git sees them, tracked and untracked but not ignored."""
-    listed = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-                            cwd=root, check=True, stdout=subprocess.PIPE).stdout
-    return [Path(name) for name in listed.decode().split("\0") if name and (root / name).is_file()]
+def workspace_manifest(text, keep_members):
+    """Rewrite [workspace] members in Cargo.toml text to keep_members, preserving the rest."""
+    section = re.search(r"(?m)^\[workspace\]\s*$", text)
+    if section is None:
+        raise ValueError("missing [workspace] in Cargo.toml")
+    next_section = re.search(r"(?m)^\[", text[section.end():])
+    section_end = section.end() + next_section.start() if next_section else len(text)
+    members = re.search(r"(?m)^members\s*=\s*\[", text[section.end():section_end])
+    if members is None:
+        raise ValueError("missing workspace members in Cargo.toml")
+    open_bracket = section.end() + members.end() - 1
+    depth, i, in_string = 0, open_bracket, None
+    while i < section_end:
+        ch = text[i]
+        if in_string == '"':
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = None
+        elif in_string == "'":
+            if ch == "'":
+                in_string = None
+        elif ch in ('"', "'"):
+            in_string = ch
+        elif ch == "#":
+            end = text.find("\n", i)
+            i = section_end if end < 0 else end + 1
+            continue
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                lines = "".join(f'  "{member}",\n' for member in keep_members)
+                replacement = f"[\n{lines}]" if keep_members else "[]"
+                return text[:open_bracket] + replacement + text[i + 1:]
+        i += 1
+    raise ValueError("unterminated workspace members array in Cargo.toml")
+
+
+def workspace_files(root, selected):
+    """Files inside selected workspace directories, using git when present and skipping build dirs."""
+    if not selected:
+        return []
+    if (root / ".git").exists():
+        listed = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+             "--", *(directory.as_posix() for directory in selected)],
+            check=True, stdout=subprocess.PIPE,
+        ).stdout
+        return [Path(name) for name in listed.decode().split("\0") if name and (root / name).is_file()]
+    files, seen = [], set()
+    for directory in selected:
+        for dirpath, dirs, filenames in os.walk(root / directory):
+            dirs[:] = sorted(d for d in dirs if d not in ("target", ".git"))
+            for name in sorted(filenames):
+                full = Path(dirpath) / name
+                rel = full.relative_to(root)
+                if full.is_file() and rel not in seen:
+                    seen.add(rel)
+                    files.append(rel)
+    return files
 
 
 def owner(path, members):
@@ -155,11 +262,16 @@ def owner(path, members):
 
 
 def main():
-    members = marked_members(REPO)
-    paths = tree_files(REPO)
+    members, selected = selected_members(REPO)
+    manifest = workspace_manifest((REPO / "Cargo.toml").read_text(), [directory.as_posix() for directory in selected])
+    paths = workspace_files(REPO, selected)
     problems, files, packages, total = [], {}, set(), 0
     with tempfile.TemporaryDirectory(prefix="layout-claims-") as copy:
         copy = Path(copy)
+        for name in ("Cargo.lock", "rust-toolchain.toml"):
+            if (REPO / name).is_file():
+                shutil.copy2(REPO / name, copy / name)
+        (copy / "Cargo.toml").write_text(manifest)
         for path in paths:
             (copy / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / path, copy / path)
@@ -274,6 +386,62 @@ class Tests(unittest.TestCase):
     def test_a_file_belongs_to_the_member_whose_directory_holds_it_most_closely(self):
         members = [("kernel", Path("kernel")), ("verified", Path("kernel/verified"))]
         self.assertEqual(owner(Path("kernel/verified/lib.rs"), members), "verified")
+
+    def test_workspace_manifest_filters_members_and_preserves_other_sections(self):
+        text = (
+            '[workspace]\n'
+            'resolver = "2"\n'
+            'members = [\n'
+            '  "asys",\n'
+            '  "dom0",\n'
+            '  "kernel/verified",\n'
+            ']\n\n'
+            '# Keep comments and pinned deps\n'
+            '[workspace.dependencies.vstd]\n'
+            'git = "https://github.com/verus-lang/verus"\n'
+            'rev = "abc123"\n'
+        )
+        filtered = workspace_manifest(text, ["asys", "kernel/verified"])
+        parsed = tomllib.loads(filtered)
+        self.assertEqual(parsed["workspace"]["members"], ["asys", "kernel/verified"])
+        self.assertEqual(parsed["workspace"]["dependencies"]["vstd"]["rev"], "abc123")
+        self.assertIn("# Keep comments and pinned deps", filtered)
+
+    def test_selected_members_and_workspace_files_ignore_unrelated_and_missing_members_without_git(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["plain_dep", "verified_pkg", "unused", "absent_pkg"]\n'
+            )
+            for rel, content in [
+                ("README.md", "docs\n"),
+                ("docs/note.md", "note\n"),
+                ("plain_dep/Cargo.toml", '[package]\nname = "plain_dep"\nversion = "0.1.0"\n'),
+                ("plain_dep/src/lib.rs", "pub fn ok() {}\n"),
+                ("plain_dep/target/ignored.rs", "stale\n"),
+                ("verified_pkg/Cargo.toml",
+                 '[package]\nname = "verified_pkg"\nversion = "0.1.0"\n'
+                 '[package.metadata.atmosphere]\nverified = true\n'
+                 '[dependencies]\nplain_dep = { path = "../plain_dep" }\n'),
+                ("verified_pkg/src/lib.rs", "pub fn checked() {}\n"),
+                ("unused/Cargo.toml", '[package]\nname = "unused"\nversion = "0.1.0"\n'),
+                ("unused/src/lib.rs", "pub fn nope() {}\n"),
+            ]:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            members, selected = selected_members(root)
+            self.assertEqual(members, [("verified_pkg", Path("verified_pkg"))])
+            self.assertEqual(selected, [Path("plain_dep"), Path("verified_pkg")])
+            self.assertEqual(
+                {path.as_posix() for path in workspace_files(root, selected)},
+                {
+                    "plain_dep/Cargo.toml",
+                    "plain_dep/src/lib.rs",
+                    "verified_pkg/Cargo.toml",
+                    "verified_pkg/src/lib.rs",
+                },
+            )
 
 
 if __name__ == "__main__":

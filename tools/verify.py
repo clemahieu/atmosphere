@@ -49,7 +49,10 @@ import tempfile
 import time
 import tomllib
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -263,15 +266,141 @@ def target_env(triple):
     return env
 
 
+def verus_out_dir(root=REPO, triple=None):
+    """Where exported .vir and compiled dependency .rlib artifacts live for triple."""
+    verus_out = root / "target" / "verus"
+    return verus_out / triple if triple is not None else verus_out
+
+
+def needed_deps(crates, targets):
+    """Marked dependency package names reachable from targets."""
+    by_package = {crate["package"]: crate for crate in crates}
+    stack = [dep["package"] for crate in crates if crate["package"] in targets for dep in crate["deps"]]
+    needed = set()
+    while stack:
+        package = stack.pop()
+        if package in needed or package not in by_package:
+            continue
+        needed.add(package)
+        stack.extend(dep["package"] for dep in by_package[package]["deps"])
+    return needed
+
+
+def crate_dir(src_path, root):
+    """Root directory holding crate src_path (marked by Cargo.toml inside root)."""
+    root = root.resolve()
+    directory = Path(src_path).resolve().parent
+    while directory != root and directory.parent != directory:
+        if (directory / "Cargo.toml").is_file():
+            return directory
+        directory = directory.parent
+    return Path(src_path).parent
+
+
+def crate_inputs(src_path, root):
+    """Files whose changes invalidate exported artifacts for the crate rooted at src_path."""
+    base = crate_dir(src_path, root)
+    inputs = [root / "Cargo.toml", root / "Cargo.lock", base / "Cargo.toml"]
+    for dirpath, dirs, filenames in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in ("target", ".git", "throwaway", "refused")]
+        for name in filenames:
+            if name.endswith(".rs"):
+                inputs.append(Path(dirpath) / name)
+    return inputs
+
+
+def stale_or_missing(outputs, inputs):
+    """Whether any output is missing or older than an existing input."""
+    if any(not path.exists() for path in outputs):
+        return True
+    oldest = min(path.stat().st_mtime for path in outputs)
+    newest = max((path.stat().st_mtime for path in inputs if path.exists()), default=0)
+    return newest > oldest
+
+
+def prepare_deps(crates, targets, root=REPO, triple=None, checkout=VERUS):
+    """Ensure plain and marked dependencies needed by targets are compiled/exported (--no-verify)."""
+    target_set = set(targets)
+    needed = needed_deps(crates, target_set)
+    ordered = order_crates(crates)
+    plain_deps = []
+    seen_plain = set()
+    for crate in ordered:
+        if crate["package"] not in target_set and crate["package"] not in needed:
+            continue
+        for plain in crate["plain"]:
+            if plain["crate"] not in seen_plain:
+                seen_plain.add(plain["crate"])
+                plain_deps.append(plain)
+    verus_out = verus_out_dir(root, triple)
+    if not needed and not plain_deps:
+        return verus_out
+    env = None
+
+    def ready_env():
+        nonlocal env
+        if env is not None:
+            return env
+        mismatch = checkout_mismatch(root / "Cargo.toml", checkout)
+        if mismatch is not None:
+            sys.exit(f"verify: {mismatch}")
+        env = target_env(triple)
+        verus_out.mkdir(parents=True, exist_ok=True)
+        return env
+
+    for plain in plain_deps:
+        output = verus_out / f"lib{plain['crate']}.rlib"
+        if not stale_or_missing([output], crate_inputs(plain["src"], root)):
+            continue
+        result = subprocess.run(
+            plain_command(plain, triple, verus_out),
+            cwd=root,
+            env=ready_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if result.returncode != 0:
+            if result.stdout:
+                print(result.stdout, end="", file=sys.stderr)
+            sys.exit(result.returncode)
+
+    for crate in ordered:
+        if crate["package"] not in needed:
+            continue
+        outputs = [verus_out / f"{crate['crate']}.vir", verus_out / f"lib{crate['crate']}.rlib"]
+        dep_outputs = [
+            *(verus_out / f"{dep['crate']}.vir" for dep in crate["deps"]),
+            *(verus_out / f"lib{dep['crate']}.rlib" for dep in crate["deps"]),
+            *(verus_out / f"lib{plain['crate']}.rlib" for plain in crate["plain"]),
+        ]
+        if not stale_or_missing(outputs, crate_inputs(crate["src"], root) + dep_outputs):
+            continue
+        command = verify_command(crate, needed, triple, verus_out, ["--no-verify"])
+        unit = f"atmo-verify-deps-{os.getpid()}-{crate['crate']}"
+        with tempfile.TemporaryFile(mode="w+") as log:
+            returncode, out_of_memory = run_capped(
+                command, unit, MEMORY_MAX, cwd=root, env=ready_env(),
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            )
+            if returncode != 0:
+                log.seek(0)
+                output = log.read()
+                if output:
+                    print(output, end="" if output.endswith("\n") else "\n", file=sys.stderr)
+                if out_of_memory:
+                    print(f"verify: {crate['package']} ran out of memory: its run is capped at {MEMORY_MAX}", file=sys.stderr)
+                sys.exit(returncode)
+    return verus_out
+
+
 def main(args):
     triple, extra_args = split_target(args)
     mismatch = checkout_mismatch(REPO / "Cargo.toml", VERUS)
     if mismatch is not None:
         sys.exit(f"verify: {mismatch}")
     env = target_env(triple)
-    verus_out = REPO / "target" / "verus"
-    if triple is not None:
-        verus_out = verus_out / triple
+    verus_out = verus_out_dir(REPO, triple)
     crates = marked_crates(cargo_metadata())
     depended_on = {dep["package"] for crate in crates for dep in crate["deps"]}
     if depended_on or any(crate["plain"] for crate in crates):
@@ -446,6 +575,112 @@ class Tests(unittest.TestCase):
             self.assertIn(later, refusal)
             self.git(checkout, "checkout", "--quiet", pinned)
             self.assertIsNone(checkout_mismatch(manifest, checkout))
+
+    def test_needed_deps_walks_transitive_dependencies_without_adding_standalone_targets(self):
+        crates = [
+            {"package": "base", "crate": "base", "src": "base/lib.rs", "deps": [], "plain": []},
+            {"package": "mid", "crate": "mid", "src": "mid/lib.rs",
+             "deps": [{"extern": "base", "crate": "base", "package": "base"}], "plain": []},
+            {"package": "top", "crate": "top", "src": "top/lib.rs",
+             "deps": [{"extern": "mid", "crate": "mid", "package": "mid"}], "plain": []},
+            {"package": "other", "crate": "other", "src": "other/lib.rs",
+             "deps": [{"extern": "base", "crate": "base", "package": "base"}], "plain": []},
+        ]
+        self.assertEqual(needed_deps(crates, {"top", "other"}), {"base", "mid"})
+        self.assertEqual(needed_deps(crates, {"base"}), set())
+
+    def test_prepare_deps_skips_when_fresh_and_prepares_missing_or_stale_in_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.manifest(root, "deadbeef")
+            for rel, content in [
+                ("asys/Cargo.toml", "[package]\nname = \"asys\"\nversion = \"0.1.0\"\n"),
+                ("asys/src/lib.rs", "pub fn noop() {}\n"),
+                ("base/Cargo.toml", "[package]\nname = \"base\"\nversion = \"0.1.0\"\n"),
+                ("base/src/lib.rs", "pub fn base() {}\n"),
+                ("base/src/throwaway/w.rs", "fn witness() {}\n"),
+                ("consumer/src/lib.rs", "pub fn use_base() {}\n"),
+            ]:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            plain_asys = {"extern": "asys", "crate": "asys", "src": str(root / "asys/src/lib.rs"), "edition": "2021"}
+            crates = [
+                {"package": "consumer", "crate": "consumer", "src": str(root / "consumer/src/lib.rs"),
+                 "deps": [{"extern": "base", "crate": "base", "package": "base"}], "plain": []},
+                {"package": "base", "crate": "base", "src": str(root / "base/src/lib.rs"),
+                 "deps": [], "plain": [plain_asys]},
+            ]
+            verus_out = root / "target" / "verus"
+            calls = []
+
+            def fake_subprocess(cmd, **kwargs):
+                calls.append(cmd)
+                verus_out.mkdir(parents=True, exist_ok=True)
+                (verus_out / "libasys.rlib").write_text("rlib")
+                return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+            def fake_capped(cmd, unit, memory_max, **kwargs):
+                calls.append(cmd)
+                (verus_out / "base.vir").write_text("vir")
+                (verus_out / "libbase.rlib").write_text("rlib")
+                return 0, False
+
+            with (mock.patch.object(sys.modules[__name__], "checkout_mismatch", return_value=None),
+                  mock.patch.object(subprocess, "run", side_effect=fake_subprocess),
+                  mock.patch.object(sys.modules[__name__], "run_capped", side_effect=fake_capped)):
+                prepare_deps(crates, {"consumer"}, root=root)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[0], plain_command(plain_asys, None, verus_out))
+                self.assertEqual(calls[1], verify_command(crates[1], {"base"}, None, verus_out, ["--no-verify"]))
+
+                # Fresh artifacts are skipped without running rustc or rust_verify.
+                calls.clear()
+                prepare_deps(crates, {"consumer"}, root=root)
+                self.assertEqual(calls, [])
+
+                # Changes under throwaway/ do not invalidate dependencies.
+                later = (verus_out / "base.vir").stat().st_mtime + 10
+                os.utime(root / "base/src/throwaway/w.rs", (later, later))
+                prepare_deps(crates, {"consumer"}, root=root)
+                self.assertEqual(calls, [])
+
+                # A newer source file in base rebuilds base only, not fresh plain deps.
+                os.utime(root / "base/src/lib.rs", (later, later))
+                prepare_deps(crates, {"consumer"}, root=root)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0], verify_command(crates[1], {"base"}, None, verus_out, ["--no-verify"]))
+
+    def test_prepare_deps_reports_oom_and_checkout_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.manifest(root, "deadbeef")
+            (root / "base").mkdir()
+            (root / "base/lib.rs").write_text("")
+            (root / "consumer").mkdir()
+            (root / "consumer/lib.rs").write_text("")
+            crates = [
+                {"package": "base", "crate": "base", "src": str(root / "base/lib.rs"), "deps": [], "plain": []},
+                {"package": "consumer", "crate": "consumer", "src": str(root / "consumer/lib.rs"),
+                 "deps": [{"extern": "base", "crate": "base", "package": "base"}], "plain": []},
+            ]
+            with mock.patch.object(sys.modules[__name__], "checkout_mismatch", return_value="wrong verus"):
+                with self.assertRaises(SystemExit) as caught:
+                    prepare_deps(crates, {"consumer"}, root=root)
+                self.assertIn("wrong verus", str(caught.exception))
+
+            def oom_capped(cmd, unit, memory_max, **kwargs):
+                kwargs["stdout"].write("boom details\n")
+                return -9, True
+
+            stderr = StringIO()
+            with (mock.patch.object(sys.modules[__name__], "checkout_mismatch", return_value=None),
+                  mock.patch.object(sys.modules[__name__], "run_capped", side_effect=oom_capped),
+                  redirect_stderr(stderr)):
+                with self.assertRaises(SystemExit):
+                    prepare_deps(crates, {"consumer"}, root=root)
+            self.assertIn("ran out of memory", stderr.getvalue())
+            self.assertIn("boom details", stderr.getvalue())
 
 
 if __name__ == "__main__":

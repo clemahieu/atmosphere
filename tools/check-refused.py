@@ -17,8 +17,8 @@ the trailing comma:
 
   //! refused: <function>: <clause>
 
-The check, with tools/env.sh sourced and after tools/verify.py, whose exported dependencies it
-reads: for each crate with a refused directory, one `rust_verify --cfg refused --verify-module
+The check, with tools/env.sh sourced, first prepares any missing or stale dependency exports via
+tools/verify.py (`--no-verify`), then runs for each crate with a refused directory one `rust_verify --cfg refused --verify-module
 refused::<name>...` through the cap tools/verify.py puts on rust_verify, the crates side by side.
 It passes when
 
@@ -67,6 +67,7 @@ import unittest
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -241,6 +242,8 @@ def check(crates, root):
     if findings:
         return findings, []
     with_some = [(crate, crate_claims) for crate, crate_claims, _ in crates if crate_claims]
+    if with_some:
+        verify.prepare_deps([crate for crate, _, _ in crates], {crate["package"] for crate, _ in with_some}, root)
     with ThreadPoolExecutor(max_workers=max(1, len(with_some))) as pool:
         ran = list(pool.map(lambda pair: run(pair[0], pair[1], root), with_some))
     report = []
@@ -589,6 +592,29 @@ class Tests(unittest.TestCase):
         root, found, _ = self.crate()
         self.assertEqual(account("", found, root, True), ([f"ran out of memory: its run is capped at {verify.MEMORY_MAX}"], []))
 
+    def test_check_prepares_dependencies_before_running_refused(self):
+        root, found, tree = self.crate()
+        dep = {"package": "dep", "crate": "dep", "src": str(root / "dep/lib.rs"), "deps": [], "plain": []}
+        crate = {"package": "user", "crate": "user", "src": str(root / "src/lib.rs"),
+                 "deps": [{"extern": "dep", "crate": "dep", "package": "dep"}], "plain": []}
+        order = []
+
+        def fake_prepare(crates, targets, target_root=REPO, triple=None):
+            order.append(("prepare", [c["package"] for c in crates], set(targets), target_root))
+
+        def fake_run(target_crate, target_claims, target_root):
+            order.append(("run", target_crate["package"]))
+            return "refused-output", False
+
+        module = sys.modules[__name__]
+        with (mock.patch.object(verify, "prepare_deps", side_effect=fake_prepare),
+              mock.patch.object(module, "run", side_effect=fake_run),
+              mock.patch.object(module, "account", return_value=([], []))):
+            findings, _ = check([(dep, [], []), (crate, found, tree)], root)
+        self.assertEqual(findings, [])
+        self.assertEqual(order[0], ("prepare", ["dep", "user"], {"user"}, root))
+        self.assertEqual(order[1], ("run", "user"))
+
 
 class Verus(unittest.TestCase):
     """awire's combinator that serialises little-endian what it parses big-endian, under Verus: as
@@ -638,6 +664,30 @@ class Verus(unittest.TestCase):
             "awire: src/refused/u16_be_le.rs: lemma_serialize_parse verifies the postcondition it declares Verus refuses: "
             "self.spec_parse(self.spec_serialize(v) + rest) == Some((self.spec_serialize(v).len(), v))",
         ])
+
+    def test_a_crate_with_a_marked_dependency_refuses_without_a_prior_verify_run(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        rev = verify.pinned_commit(REPO / "Cargo.toml")
+        (root / "Cargo.toml").write_text(
+            '[workspace]\nmembers = []\n\n[workspace.dependencies.vstd]\n'
+            f'git = "https://github.com/verus-lang/verus"\nrev = "{rev}"\n'
+        )
+        for rel, content in [
+            ("dep/src/lib.rs", "use vstd::prelude::*;\nverus! {\npub fn two() -> (r: u32) ensures r == 2u32 { 2u32 }\n}\n"),
+            ("user/src/lib.rs", "use vstd::prelude::*;\n#[cfg(refused)]\nmod refused;\nverus! {\npub trait Two {\n    fn doubled(&self) -> (r: u32)\n        ensures\n            r == 4u32,\n    ;\n}\n}\n"),
+            ("user/src/refused/mod.rs", "pub mod bad;\n"),
+            ("user/src/refused/bad.rs", "//! refused: doubled: r == 4u32\nuse vstd::prelude::*;\nverus! {\nstruct Bad;\nimpl crate::Two for Bad {\n    fn doubled(&self) -> (r: u32) {\n        dep::two() - 1u32\n    }\n}\n}\n"),
+        ]:
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        dep = {"package": "dep", "crate": "dep", "src": str(root / "dep/src/lib.rs"), "deps": [], "plain": []}
+        user = {"package": "user", "crate": "user", "src": str(root / "user/src/lib.rs"),
+                "deps": [{"extern": "dep", "crate": "dep", "package": "dep"}], "plain": []}
+        found, tree = claims(root / "user/src")
+        self.assertEqual(tree, [])
+        findings, _ = check([(dep, [], []), (user, found, tree)], root)
+        self.assertEqual(findings, [])
 
 
 class Coverage(unittest.TestCase):

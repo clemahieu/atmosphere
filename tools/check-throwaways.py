@@ -23,8 +23,9 @@ from the witness's text, with the `use` lines of the witness's file, and the che
 exactly those bytes, so a witness whose requires or parameters change fails the check until
 --write has been run again.
 
-The check, with tools/env.sh sourced and after tools/verify.py, whose exported dependencies it reads:
-for each crate with a throwaway, one `rust_verify --cfg throwaway --verify-module <module>...` at
+The check, with tools/env.sh sourced, first prepares any missing or stale dependency exports via
+tools/verify.py (`--no-verify`), then runs for each crate with a throwaway one
+`rust_verify --cfg throwaway --verify-module <module>...` at
 the verify budget, the crates side by side. Each of those runs goes through the cap tools/verify.py
 puts on rust_verify: verify.MEMORY_MAX in a systemd user scope of its own with no swap, so a
 throwaway that grows without bound is killed by its cgroup rather than by the kernel's OOM killer.
@@ -54,6 +55,7 @@ import unittest
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -448,6 +450,8 @@ def main(args):
         print("\n".join(f"throwaways: {finding}" for finding in findings), end="\n" if findings else "", file=sys.stderr)
         return 1 if findings else 0
     with_some = [(crate, throwaways) for crate, _, throwaways, _, _ in crates if throwaways]
+    if with_some:
+        verify.prepare_deps([crate for crate, *_ in crates], {crate["package"] for crate, _ in with_some}, REPO)
     with ThreadPoolExecutor(max_workers=max(1, len(with_some))) as pool:
         ran = list(pool.map(lambda pair: run(pair[0], pair[1], REPO), with_some))
     postcondition = budget = 0
@@ -883,6 +887,37 @@ impl CapKernel {
         self.assertEqual((postcondition, budget), (0, 0))
         judged, _, _ = account("", throwaways, self.root, False)
         self.assertIn("no verification results line, so the crate did not compile under cfg(throwaway)", judged)
+
+    def test_main_prepares_dependencies_before_running_throwaways(self):
+        throwaways, mods, listed = plan(self.user)
+        write(self.user, throwaways, mods)
+        base = {"package": "base", "crate": "base", "src": str(self.root / "base.rs"), "deps": [], "plain": []}
+        user = {"package": "user", "crate": "user", "src": str(self.user),
+                "deps": [{"extern": "base", "crate": "base", "package": "base"}], "plain": []}
+        user_plan = (user, self.user, throwaways, mods, listed)
+        base_plan = (base, Path(base["src"]), [], {}, [])
+        order = []
+
+        def fake_prepare(crates, targets, root=REPO, triple=None):
+            order.append(("prepare", [c["package"] for c in crates], set(targets), root))
+
+        def fake_run(crate, crate_throwaways, root):
+            order.append(("run", crate["package"]))
+            return "error: simulated\n --> src/throwaway/user.rs:1:1\nverification results:: 0 verified, 1 errors\n", False
+
+        module = sys.modules[__name__]
+        with (mock.patch.object(module, "REPO", self.root),
+              mock.patch.object(module, "planned", return_value=[base_plan, user_plan]),
+              mock.patch.object(verify, "prepare_deps", side_effect=fake_prepare),
+              mock.patch.object(module, "run", side_effect=fake_run),
+              mock.patch.object(module, "tree_findings", return_value=[]),
+              mock.patch.object(module, "account", return_value=([], len(throwaways), 0)),
+              mock.patch("sys.stdout")):
+            self.assertEqual(main(["--list"]), 0)
+            self.assertEqual(order, [])
+            self.assertEqual(main([]), 0)
+        self.assertEqual(order[0], ("prepare", ["base", "user"], {"user"}, self.root))
+        self.assertEqual(order[1], ("run", "user"))
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--test"]:

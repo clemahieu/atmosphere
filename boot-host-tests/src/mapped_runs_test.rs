@@ -5,9 +5,13 @@
 #[path = "../../kernel/src/boot/mapped_runs.rs"]
 mod mapped_runs;
 
+use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 use astd::boot::{
     disjoint_page_runs, page_end, page_start, MappedRun, SegmentSpan, DOM0_RESERVATION, DOM0_STACK,
@@ -52,9 +56,72 @@ fn rejected(runs: &[MappedRun]) -> String {
     message
 }
 
-fn artifact(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../target/x86_64-unknown-aloader/debug/{name}"))
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("boot-host-tests sits inside the workspace root")
+        .to_path_buf()
+}
+
+fn resolve_target_dir_from(
+    root: &Path,
+    cargo_target_dir: Option<&OsStr>,
+    current_exe: Option<&Path>,
+) -> PathBuf {
+    if let Some(raw) = cargo_target_dir.filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(raw);
+        return if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        };
+    }
+    if let Some(target_dir) = current_exe
+        .and_then(|exe| exe.parent())
+        .filter(|deps| deps.file_name() == Some(OsStr::new("deps")))
+        .and_then(|deps| deps.parent())
+        .and_then(|profile| profile.parent())
+    {
+        return target_dir.to_path_buf();
+    }
+    root.join("target")
+}
+
+fn ensure_elf(manifest_dir: &str, name: &str) -> PathBuf {
+    static BUILD_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = BUILD_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = workspace_root();
+    let target_dir = resolve_target_dir_from(
+        &root,
+        env::var_os("CARGO_TARGET_DIR").as_deref(),
+        env::current_exe().ok().as_deref(),
+    );
+    let path = target_dir.join("x86_64-unknown-aloader/debug").join(name);
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .arg("build")
+        .current_dir(root.join(manifest_dir))
+        .env("RUSTC_BOOTSTRAP", "1")
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .env_remove("CARGO_MANIFEST_DIR")
+        .env_remove("CARGO_MANIFEST_PATH")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap_or_else(|err| panic!("failed to start cargo build in {manifest_dir}: {err}"));
+    if !output.status.success() {
+        panic!(
+            "cargo build in {manifest_dir} exited with {}:\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(
+        path.is_file(),
+        "cargo build in {manifest_dir} did not produce {}",
+        path.display()
+    );
+    path
 }
 
 fn read_u16(bytes: &[u8], at: usize) -> u16 {
@@ -89,8 +156,8 @@ fn initrd_len(elf: &[u8]) -> u64 {
 
 /// The runs `load_domain` records for the built dom0 and hello, against a synthetic reservation.
 fn real_dom0_runs() -> (Vec<MappedRun>, u64) {
-    let dom0 = fs::read(artifact("dom0")).expect("dom0 is built before this check");
-    let hello = fs::read(artifact("hello")).expect("hello is built before this check");
+    let dom0 = fs::read(ensure_elf("dom0", "dom0")).expect("built dom0 ELF is readable");
+    let hello = fs::read(ensure_elf("user/hello", "hello")).expect("built hello ELF is readable");
     let hello_len = initrd_len(&hello);
     assert_eq!(&dom0[..4], b"\x7fELF", "dom0 is an ELF");
     assert_eq!(dom0[4], 2, "dom0 is ELFCLASS64");
@@ -301,5 +368,30 @@ fn mapped_run_real_dom0_load_shape_is_accepted() {
         .any(|run| run.virt == USERSPACE_PAYLOAD_BASE && run.writable && !run.executable));
     println!(
         "mapped runs: accepted {count} runs, an executable segment, stack {stack_virt:#x}, payload {USERSPACE_PAYLOAD_BASE:#x}"
+    );
+}
+
+#[test]
+fn target_dir_resolution_uses_cargo_target_dir_or_current_exe_layout() {
+    let root = Path::new("/repo");
+    assert_eq!(
+        resolve_target_dir_from(root, Some(OsStr::new("custom")), None),
+        PathBuf::from("/repo/custom")
+    );
+    assert_eq!(
+        resolve_target_dir_from(root, Some(OsStr::new("/abs/target")), None),
+        PathBuf::from("/abs/target")
+    );
+    assert_eq!(
+        resolve_target_dir_from(
+            root,
+            None,
+            Some(Path::new("/repo/alt-target/debug/deps/boot_host_tests-123"))
+        ),
+        PathBuf::from("/repo/alt-target")
+    );
+    assert_eq!(
+        resolve_target_dir_from(root, Some(OsStr::new("")), Some(Path::new("/usr/bin/other"))),
+        PathBuf::from("/repo/target")
     );
 }
