@@ -312,6 +312,8 @@ impl CapKernel {
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
         &&& post.targeted == self.targeted
+        &&& post.core_tags == self.core_tags
+        &&& post.tlb_dirty == self.tlb_dirty
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.blocks.regions_2m@ == self.blocks.regions_2m@
@@ -355,6 +357,8 @@ impl CapKernel {
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
         &&& post.targeted == self.targeted
+        &&& post.core_tags == self.core_tags
+        &&& post.tlb_dirty == self.tlb_dirty
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& Self::caps_frame(*self, post, base, base)
@@ -458,6 +462,8 @@ impl CapKernel {
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
         &&& post.targeted == self.targeted
+        &&& post.core_tags == self.core_tags
+        &&& post.tlb_dirty == self.tlb_dirty
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.spaces == self.spaces
@@ -1109,6 +1115,8 @@ impl CapKernel {
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
         &&& post.targeted == self.targeted
+        &&& post.core_tags == self.core_tags
+        &&& post.tlb_dirty == self.tlb_dirty
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.tables == self.tables
@@ -1375,6 +1383,8 @@ impl CapKernel {
             post.stale_epoch == mid.stale_epoch,
             post.flush_epoch == mid.flush_epoch,
             post.targeted == mid.targeted,
+            post.core_tags == mid.core_tags,
+            post.tlb_dirty == mid.tlb_dirty,
             post.tables == mid.tables,
             post.cores == mid.cores,
             post.iommus == mid.iommus,
@@ -1552,6 +1562,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             forall|x: usize| x != n && x < NODE_SPACE && old(self).list.nodes@[x as int].live && old(self).list.childless(x)
                 ==> #[trigger] final(self).list.childless(x),
             final(self).cores == old(self).cores,
@@ -1994,6 +2006,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
@@ -2388,6 +2402,8 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.targeted == pre.targeted,
+            post.core_tags == pre.core_tags,
+            post.tlb_dirty == pre.tlb_dirty,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2606,6 +2622,8 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -3744,7 +3762,7 @@ impl CapKernel {
         &&& post.stale_epoch.above(pre.flush_epoch as int, c / PAGE_SZ)
         &&& post.flush_awaited() ==> !post.acknowledged(c / PAGE_SZ)
         &&& forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })]
-            0 <= d < NUM_CPUS && pre.depends(d, s->Some_0)
+            0 <= d < NUM_CPUS && pre.space_may_hold(d, s->Some_0)
             ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })
         &&& forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })]
             0 <= i < NUM_IOMMUS && pre.iommu_present(i) && a.is_root(s->Some_0) && pre.spaces.records@[s->Some_0].value().kind is Device
@@ -4206,8 +4224,8 @@ impl CapKernel {
         lemma_cut_pages(m, c, g);
         assert(cut_pages(m, c).contains(g));
         assert forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s, page: g })]
-            0 <= d < NUM_CPUS && pre.depends(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
-            assert(mid.depends(d, s));
+            0 <= d < NUM_CPUS && pre.space_may_hold(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
+            assert(mid.space_may_hold(d, s));
         }
         assert forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g })]
             0 <= i < NUM_IOMMUS && pre.iommu_present(i) && tree_of(&pre.table_pages, &pre.spaces).is_root(s) && pre.spaces.records@[s].value().kind is Device
@@ -4255,7 +4273,7 @@ impl CapKernel {
             Self::lemma_unmap_unacknowledged(pre, post, g);
         }
         assert forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s, page: g })]
-            0 <= d < NUM_CPUS && pre.depends(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
+            0 <= d < NUM_CPUS && pre.space_may_hold(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
             assert(mid.tlb@[d].contains(TlbEntry { space: s, page: g }));
         }
         assert forall|j: int| #![trigger post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g })]
@@ -5230,6 +5248,8 @@ impl CapKernel {
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
         &&& post.targeted == self.targeted
+        &&& post.core_tags == self.core_tags
+        &&& post.tlb_dirty == self.tlb_dirty
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.blocks.pages@ == self.blocks.pages@
@@ -5349,6 +5369,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).blocks.pages@ == old(self).blocks.pages@,
@@ -5439,6 +5461,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,

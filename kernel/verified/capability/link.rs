@@ -42,7 +42,7 @@ use crate::util::page_ptr_util_u::*;
 /// The steps of noting one table page's cut stale: the one page its record_run writes, and one per core
 /// for naming the space's cores flush targets.
 /// See design/one-lock-bounded-steps/.
-pub const CUT_NOTE_STEPS: usize = 1 + NUM_CPUS;
+pub const CUT_NOTE_STEPS: usize = 1 + 2 * NUM_CPUS;
 
 /// Every table the kernel holds, whether a table page or a space's root, by its block's address.
 pub ghost struct TableTree {
@@ -1137,6 +1137,8 @@ impl CapKernel {
         &&& tree.record(parent).written
         &&& linked(tree_of(&pre.table_pages, &pre.spaces), tree, parent, entry, child, s)
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
     }
 
     /// The invariant after a link, given what the tables' own invariants say. The entry written was
@@ -1171,6 +1173,8 @@ impl CapKernel {
             post.frames == pre.frames,
             post.cores == pre.cores,
             post.targeted == pre.targeted,
+            post.core_tags == pre.core_tags,
+            post.tlb_dirty == pre.tlb_dirty,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
@@ -1235,6 +1239,8 @@ impl CapKernel {
             post.frames == pre.frames,
             post.cores == pre.cores,
             post.targeted == pre.targeted,
+            post.core_tags == pre.core_tags,
+            post.tlb_dirty == pre.tlb_dirty,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
@@ -1496,6 +1502,8 @@ impl CapKernel {
             final(self).replies == old(self).replies,
             final(self).cores == old(self).cores,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
             final(self).iommus == old(self).iommus,
@@ -1544,6 +1552,8 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -1639,6 +1649,8 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -1842,6 +1854,8 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
@@ -2061,6 +2075,8 @@ impl CapKernel {
     pub open spec fn detach_done(pre: Self, post: Self, t: usize) -> bool {
         &&& Self::tables_cut(pre, post, t)
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
@@ -2084,7 +2100,7 @@ impl CapKernel {
         &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d]
             == if space is Some && pre.loaded(d, space->Some_0) { post.flush_epoch } else { pre.targeted@[d] }
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
-            0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
+            0 <= d < NUM_CPUS && space is Some && pre.space_may_hold(d, space->Some_0) && pages.contains(g)
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
         &&& forall|i: int, g: usize| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
@@ -2254,11 +2270,11 @@ impl CapKernel {
             lemma_table_bound(&pre.blocks, t);
         }
         // The space's list of cores, read before the epoch moves: each core on it is named a target.
-        let list = self.listed_on(
-            PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ)
-                .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
-                .space,
-        );
+        let space_opt = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ)
+            .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
+            .space;
+        let list = self.listed_on(space_opt);
+        let targets = self.space_targets(space_opt, Tracked(steps));
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
         proof {
@@ -2266,9 +2282,10 @@ impl CapKernel {
         }
         self.stale_epoch.record_run(t / PAGE_SZ, 1, epoch, Tracked(steps));
         self.target_listed(list, Tracked(steps));
+        self.tlb_dirty = self.tlb_dirty | targets;
         proof {
             self.tlb.borrow_mut().grow(Seq::new(NUM_CPUS as nat, |d: int|
-                if space is Some && pre.depends(d, space->Some_0) {
+                if space is Some && pre.space_may_hold(d, space->Some_0) {
                     pre.tlb@[d].union(stale_entries(space->Some_0, pages))
                 } else {
                     pre.tlb@[d]
@@ -2294,8 +2311,19 @@ impl CapKernel {
             if self.flush_awaited() {
                 Self::lemma_unmap_unacknowledged(pre, *self, t / PAGE_SZ);
             }
-            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.depends(d, e.space) by {
-                assert(pre.depends(d, e.space));
+            assert forall|d: int| 0 <= d < NUM_CPUS && !crate::arch::flush_target(self.tlb_dirty, d)
+                implies #[trigger] self.tlb@[d] == Set::<TlbEntry>::empty() by {
+                Self::lemma_mask_or(pre.tlb_dirty, targets, d);
+                assert(!crate::arch::flush_target(pre.tlb_dirty, d));
+                assert(!crate::arch::flush_target(targets, d));
+                assert(pre.tlb@[d] == Set::<TlbEntry>::empty());
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.space_may_hold(d, e.space) by {
+                if pre.tlb@[d].contains(e) {
+                    assert(pre.space_may_hold(d, e.space));
+                } else {
+                    assert(space is Some && pre.space_may_hold(d, space->Some_0));
+                }
             }
             assert forall|d: int, e: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && !self.mapped@.contains(e.page)
@@ -2356,14 +2384,14 @@ impl CapKernel {
                     assert(pre.left_stale(e));
                     assert(pre.owes(d));
                 } else {
-                    assert(space is Some && pre.depends(d, space->Some_0));
+                    assert(space is Some && pre.space_may_hold(d, space->Some_0));
                     assert(pre.loaded(d, space->Some_0));
                     assert(self.targeted@[d] == self.flush_epoch);
                 }
             }
             assert(self.targets_wf());
             assert forall|d: int, g: usize| #![trigger self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
-                0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
+                0 <= d < NUM_CPUS && space is Some && pre.space_may_hold(d, space->Some_0) && pages.contains(g)
                 implies self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g }) by {
             }
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) implies self.tlb@[d].contains(e) by {
@@ -2420,7 +2448,7 @@ impl CapKernel {
         if pre.tlb@[c].contains(e) {
             return;
         }
-        assert(post.depends(c, e.space));
+        assert(post.space_may_hold(c, e.space));
         let q = a.record(t).parent;
         if q is None {
             assert(a == b);
@@ -2446,7 +2474,7 @@ impl CapKernel {
                 lemma_table_bound(&pre.blocks, t);
                 assert(t / PAGE_SZ < IDENTITY_SPAN / PAGE_SZ);
                 lemma_cut_pages(a, t, e.page);
-                assert(pre.depends(c, e.space));
+                assert(pre.space_may_hold(c, e.space));
                 assert(post.tlb@[c].contains(TlbEntry { space: e.space, page: e.page }));
                 assert(TlbEntry { space: e.space, page: e.page } == e);
             }
@@ -2462,7 +2490,7 @@ impl CapKernel {
             assert(cut_walk_finds(a, t, e.page));
             pre.lemma_walk_mapped(e.space, p, e.page);
             lemma_cut_pages(a, t, e.page);
-            assert(pre.depends(c, e.space));
+            assert(pre.space_may_hold(c, e.space));
             assert(post.tlb@[c].contains(TlbEntry { space: e.space, page: e.page }));
             assert(TlbEntry { space: e.space, page: e.page } == e);
         } else {
@@ -2498,6 +2526,8 @@ impl CapKernel {
             post.spaces == mid.spaces,
             post.cores == mid.cores,
             post.targeted == mid.targeted,
+            post.core_tags == mid.core_tags,
+            post.tlb_dirty == mid.tlb_dirty,
             post.flush_epoch == mid.flush_epoch,
             post.tlb == mid.tlb,
             post.iommus == mid.iommus,
@@ -2787,6 +2817,8 @@ impl CapKernel {
             final(self).replies == old(self).replies,
             final(self).cores == old(self).cores,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
             final(self).iommus == old(self).iommus,
@@ -2887,6 +2919,8 @@ impl CapKernel {
             post.frames == pre.frames,
             post.cores == pre.cores,
             post.targeted == pre.targeted,
+            post.core_tags == pre.core_tags,
+            post.tlb_dirty == pre.tlb_dirty,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,

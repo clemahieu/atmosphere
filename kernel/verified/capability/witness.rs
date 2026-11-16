@@ -531,6 +531,8 @@ pub open spec fn witness_entered(pre: CapKernel, post: CapKernel, process: usize
     &&& post.mapped == pre.mapped
     &&& post.stale_epoch == pre.stale_epoch
     &&& post.flush_epoch == pre.flush_epoch
+    &&& post.core_tags == pre.core_tags
+    &&& post.tlb_dirty == pre.tlb_dirty
     &&& post.iommus == pre.iommus
     &&& post.devices == pre.devices
     &&& post.processes == pre.processes
@@ -668,6 +670,8 @@ pub open spec fn dead_table_ready(k: CapKernel, process: usize, u: usize, first:
     &&& dead_table_mapped(k, process, u, first, big)
     &&& has_loaded(k.cores@[0])
     &&& k.depends(0, process)
+    &&& k.cores@[0].space == Some(process)
+    &&& k.space_may_hold(0, process)
 }
 
 /// A free block stays free across a step that kept the regions and every page's kind outside lo up to
@@ -774,6 +778,107 @@ proof fn lemma_slot_holds_but(pre: CapKernel, post: CapKernel, node: usize, root
     pre.lemma_slot_bound(n);
     assert(n != node);
     assert(post.list.nodes@[n as int].live == pre.list.nodes@[n as int].live);
+}
+
+/// What a witness that retypes and maps keeps of the state it starts from, for one that goes on to
+/// place and enter the root's thread: the cores, the threads, and every slot's capability, saying what
+/// it said at the depth it had.
+pub open spec fn witness_caps_kept(pre: CapKernel, post: CapKernel) -> bool {
+    &&& post.cores == pre.cores
+    &&& post.threads == pre.threads
+    &&& forall|r: usize, i: usize, n: usize, p: Payload| #[trigger] pre.slot_holds(r, i, n, p) ==> {
+        &&& post.slot_holds(r, i, n, p)
+        &&& post.list.nodes@[n as int].depth == pre.list.nodes@[n as int].depth
+    }
+}
+
+/// One step that keeps every slot and every capability, saying what it said at the depth it had.
+pub open spec fn witness_step_keeps_caps(pre: CapKernel, post: CapKernel) -> bool {
+    &&& forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) ==> {
+        &&& post.tables.has_slot(&post.list, r, i)
+        &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+    }
+    &&& forall|x: usize| #[trigger] pre.is_cap(x) ==> {
+        &&& post.is_cap(x)
+        &&& post.payload_of(x) == pre.payload_of(x)
+        &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+    }
+}
+
+/// A step that left the tables as they were, every live node live at its depth and every capability a
+/// capability keeps every slot's capability.
+proof fn lemma_same_tables_keep_caps(pre: CapKernel, post: CapKernel)
+    requires
+        pre.wf(),
+        post.tables == pre.tables,
+        forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+        nodes_kept(pre.list, post.list),
+    ensures
+        witness_step_keeps_caps(pre, post),
+{
+    assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live implies post.list.nodes@[j].live by {}
+    assert forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) implies {
+        &&& post.tables.has_slot(&post.list, r, i)
+        &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+    } by {
+        CapKernel::lemma_slot_stays(pre, post, r, i);
+    }
+    assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+        &&& post.is_cap(x)
+        &&& post.payload_of(x) == pre.payload_of(x)
+        &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+    } by {
+        assert(post.is_cap(x) == pre.is_cap(x));
+        pre.lemma_slot_bound(x);
+        assert(pre.list.nodes@[x as int].live);
+    }
+}
+
+/// The four steps of witness_root_maps_a_frame_into_its_own_space, a leaf retype, the path's tables,
+/// a frame retype and a map, keep the cores, the threads and every slot's capability.
+proof fn lemma_witness_caps_kept(
+    s0: CapKernel,
+    s1: CapKernel,
+    s2: CapKernel,
+    s3: CapKernel,
+    s4: CapKernel,
+    leaf: usize,
+    leaf_page: int,
+    filled: Option<(usize, int)>,
+    child: usize,
+    page: int,
+)
+    requires
+        s1.wf(),
+        s3.wf(),
+        CapKernel::leaf_retype_kept(s0, s1),
+        CapKernel::retype_keeps(s0, s1, leaf, leaf_page, 1, filled),
+        s2.tables == s1.tables,
+        s2.cores == s1.cores,
+        s2.threads == s1.threads,
+        forall|x: usize| #[trigger] s2.is_cap(x) == s1.is_cap(x),
+        nodes_kept(s1.list, s2.list),
+        CapKernel::frame_retype_kept(s2, s3),
+        CapKernel::retype_keeps(s2, s3, child, page, 0, None),
+        s4.tables == s3.tables,
+        CapKernel::map_kept(s3, s4),
+        forall|x: usize| #[trigger] s4.is_cap(x) == s3.is_cap(x),
+        nodes_kept(s3.list, s4.list),
+    ensures
+        witness_caps_kept(s0, s4),
+{
+    lemma_same_tables_keep_caps(s1, s2);
+    lemma_same_tables_keep_caps(s3, s4);
+    assert forall|r: usize, i: usize, n: usize, p: Payload| #[trigger] s0.slot_holds(r, i, n, p) implies {
+        &&& s4.slot_holds(r, i, n, p)
+        &&& s4.list.nodes@[n as int].depth == s0.list.nodes@[n as int].depth
+    } by {
+        assert(s0.tables.has_slot(&s0.list, r, i) && s0.is_cap(n));
+        assert(s1.tables.has_slot(&s1.list, r, i) && s1.is_cap(n));
+        assert(s2.tables.has_slot(&s2.list, r, i) && s2.is_cap(n));
+        assert(s3.tables.has_slot(&s3.list, r, i) && s3.is_cap(n));
+        assert(s4.tables.has_slot(&s4.list, r, i) && s4.is_cap(n));
+    }
 }
 
 /// A map adds one node, a mapping, and keeps every other: so it keeps the capabilities and the list's
@@ -1277,6 +1382,7 @@ impl CapKernel {
         registers: Tracked<Map<int, crate::arch::BaseRegister>>,
         tlb: Tracked<crate::arch::TlbModel>,
         iotlb: Tracked<crate::arch::IotlbModel>,
+        core_tags: crate::array::Array<bool, NUM_CPUS>,
         carve: usize,
         carve_perm: Tracked<vstd::raw_ptr::PointsToRaw>,
         exposed: Tracked<vstd::raw_ptr::IsExposed>,
@@ -1286,6 +1392,8 @@ impl CapKernel {
             boot_registers(registers@, PAGE_SZ),
             boot_tlb(tlb@),
             boot_iotlb(iotlb@),
+            boot_tags_tlb(core_tags@),
+            core_tags.wf(),
             carve % PAGE_SZ == 0,
             carve + spec_metadata_layout(NUM_PAGES).bytes <= usize::MAX,
             carve_perm@.is_range(carve as int, spec_metadata_layout(NUM_PAGES).bytes as int),
@@ -1391,6 +1499,7 @@ impl CapKernel {
             registers,
             tlb,
             iotlb,
+            core_tags,
             NUM_PAGES,
             carve,
             carve_perm,
@@ -1773,11 +1882,15 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         registers: Registers,
+        bridge: &crate::arch::FlushBridge,
+        Tracked(flush_requester): Tracked<&mut crate::arch::FlushRequester>,
         first: u64,
         second: u64,
     ) -> (ret: (u64, u64, u64))
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            bridge.wf(),
+            old(flush_requester).wf(*bridge),
             crate::capability::operation::spec_operation(registers.operation_number())
                 != Some(crate::capability::operation::Operation::Suspend),
         ensures
@@ -1818,11 +1931,11 @@ impl CapKernel {
         }
         // The entry makes its own counter in this one: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let out = self.enter(0, registers, Tracked(&mut steps));
+        let out = self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, Tracked(&mut steps));
         let ghost s3 = *self;
         proof {
             let mid = choose|mid: Self| #[trigger] Self::dispatched(s2, mid, 0, registers, out)
-                && Self::only_core_changed(mid, s3, 0);
+                && Self::flushed_step(mid, s3, 0);
             assert(out is Some);
             assert(mid.cores == s2.cores);
             assert(s3.cores@[0].current_thread == Some(t));
@@ -2052,13 +2165,18 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         registers: Registers,
+        bridge: &crate::arch::FlushBridge,
+        Tracked(flush_requester): Tracked<&mut crate::arch::FlushRequester>,
     ) -> (ret: Option<Outcome>)
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            bridge.wf(),
+            old(flush_requester).wf(*bridge),
         ensures
             ret is Some,
             final(self).wf(),
             final(self).acked(0) == final(self).flush_epoch,
+            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] final(self).tlb@[d] == Set::<TlbEntry>::empty(),
     {
         hide(CapKernel::wf);
         hide(CapKernel::booted);
@@ -2079,7 +2197,144 @@ impl CapKernel {
         }
         // The entry makes its own counter in this one: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        self.enter(0, registers, Tracked(&mut steps))
+        self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, Tracked(&mut steps))
+    }
+
+    /// From the state boot leaves, with one frame mapped into the root's own space on core 0 while
+    /// core 1 also holds the root's space in its base register, an unmap of that frame through
+    /// `CapKernel::enter` on core 0 succeeds and empties every core's TLB model (both core 0 and
+    /// core 1) before returning.
+    #[verifier::spinoff_prover]
+    pub fn witness_unmap_flushes_other_core(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+        l4: usize,
+        registers: Registers,
+        bridge: &crate::arch::FlushBridge,
+        Tracked(flush_requester): Tracked<&mut crate::arch::FlushRequester>,
+    ) -> (ret: Option<Outcome>)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES / 2,
+            !image_l4(image@, l4),
+            registers.operation_number() == crate::capability::operation::OPERATION_UNMAP,
+            registers.slot() == ROOT_PROCESS_SLOT as u64,
+            registers.argument(1) == (l4 * SIZE_512G) as u64,
+            registers.argument(2) == 1,
+            bridge.wf(),
+            old(flush_requester).wf(*bridge),
+        ensures
+            ret is Some,
+            ret.unwrap().status == crate::capability::operation::STATUS_OK,
+            final(self).wf(),
+            final(self).tlb@[0] == Set::<TlbEntry>::empty(),
+            final(self).tlb@[1] == Set::<TlbEntry>::empty(),
+            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] final(self).tlb@[d] == Set::<TlbEntry>::empty(),
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
+        }
+        let _ = self.witness_root_maps_a_frame_into_its_own_space(
+            root, process, leaf, frames, Ghost(t), free, image, untyped, frame, present, kernel_root, base, l4,
+        );
+        let ghost s1 = *self;
+        let ghost path = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
+        let ghost core_cap = (leaf@ + ROOT_CORE_SLOT) as usize;
+        let ghost pn = placement_node(t);
+        proof {
+            // The map kept the cores, the threads and the root's capabilities as boot left them.
+            assert(witness_caps_kept(s0, s1));
+            assert(s1.slot_holds(process, ROOT_THREAD_SLOT, (leaf@ + 2) as usize, thread_of(t)));
+            assert(s1.slot_holds(process, ROOT_CORE_SLOT, core_cap, core_payload(0, MAX_PRIORITY)));
+            assert(s1.list.nodes@[core_cap as int].depth == 1);
+            assert(s1.threads == s0.threads);
+            assert(s1.cores == s0.cores);
+            s1.lemma_process_spaces_wf();
+            assert(s1.spaces.roots@.contains_key(process));
+            s1.lemma_slot(process, ROOT_THREAD_SLOT);
+            assert(THREAD_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(s1.can_control(process, ROOT_THREAD_SLOT));
+            assert(1usize < MAX_DEPTH) by (compute_only);
+            assert(0 <= MAX_PRIORITY);
+            assert(s1.holds_core(process, ROOT_CORE_SLOT, 0));
+            assert(s1.can_place(process, ROOT_THREAD_SLOT, ROOT_CORE_SLOT, 0));
+            s1.lemma_placement_node_apart(t);
+            assert(!s1.list.nodes@[pn as int].live);
+        }
+        let placed = self.place(process, ROOT_THREAD_SLOT, ROOT_CORE_SLOT, 0);
+        let ghost s2 = *self;
+        proof {
+            assert(placed);
+            lemma_core_of(core_object(0));
+            assert(core_of(core_object(0)) == 0);
+            assert(Self::placed(s1, s2, core_cap, t, Placement { core: 0, priority: 0 }));
+            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] s1.list.nodes@[j].live implies s2.list.nodes@[j].live by {
+                if j != pn {
+                    assert(s2.list.nodes@[j].live == s1.list.nodes@[j].live);
+                }
+            }
+            Self::lemma_slot_stays(s1, s2, process, ROOT_PROCESS_SLOT);
+            assert(s2.is_cap((leaf@ + 1) as usize));
+            assert(s2.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path));
+            assert(s2.cores == s0.cores);
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid0 = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid0);
+        self.enter_boot_thread(0, t);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(t));
+            assert(s3.cores@[0].space == Some(process));
+            assert(s3.cores@[1] == s0.cores@[1]);
+            assert(s3.cores@[1].space is None);
+            assert(s3.cores@[1].generation == 1);
+            assert(s3.cores@[1].next_pcid == 1);
+            assert(s3.spaces.roots@.contains_key(process));
+            assert(s3.spaces.records@[process].value().kind is Process);
+            assert(1usize < ID_GENERATION_MAX) by (compute_only);
+            assert(1usize != PCID_MAX) by (compute_only);
+        }
+        let pcid1 = self.load_space(1, process, Tracked(&mut steps));
+        self.switch_space(1, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid1);
+        let ghost s4 = *self;
+        let va: u64 = (l4 as u64) * (SIZE_512G as u64);
+        proof {
+            assert(s4.cores@[0].current_thread == Some(t));
+            assert(s4.cores@[0].space == Some(process));
+            assert(s4.cores@[1].space == Some(process));
+            assert(!s4.threads.records@[t].value().pending_stop);
+            assert(!s4.threads.records@[t].value().dying);
+            assert(s4.threads.records@[t].value().process == Some(process));
+            assert(!s4.processes.records@[process].value().dead);
+            assert(!s4.must_leave(0));
+            lemma_top_entry_address(l4);
+            assert(names_entry(va, 1));
+            assert(address_path(va) == path);
+            assert(s4.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path));
+            assert(s4.can_unmap_at(process, ROOT_PROCESS_SLOT, va, 1));
+            crate::capability::operation::lemma_number_names_one_operation(crate::capability::operation::Operation::Unmap);
+            assert(crate::capability::operation::spec_operation(registers.operation_number())
+                == Some(crate::capability::operation::Operation::Unmap));
+        }
+        self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, Tracked(&mut steps))
     }
 
     /// From the state boot leaves, core 0 takes the flush IPI's entry: it has acknowledged the
@@ -7363,6 +7618,7 @@ impl CapKernel {
                 &&& final(self).mappings@[n1].frame == bf / PAGE_SZ
                 &&& block_refs(&final(self).blocks, block_ref(&final(self).blocks, bf / PAGE_SZ)) == 2
             }),
+            witness_caps_kept(*old(self), *final(self)),
     {
         hide(CapKernel::wf);
         let ghost s0 = *self;
@@ -7621,6 +7877,19 @@ impl CapKernel {
             assert(walk(a4, process, path) is Some);
             assert(a4.entry(walk_table(a4, process, path)->0, 0).perm.present);
             assert(s4.can_unmap(process, ROOT_PROCESS_SLOT, SpaceKind::Process, path));
+            // The cores, the threads and every capability boot left are as they were.
+            lemma_witness_caps_kept(
+                s0,
+                s1,
+                s2,
+                s3,
+                s4,
+                lb,
+                (lb / PAGE_SZ) as int,
+                Some((s0.destination_at(process, at.through)->0, at.index as int)),
+                nf,
+                fp,
+            );
         }
         (ok1, ok3, ok4)
     }
@@ -10484,6 +10753,7 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).blocks == old(self).blocks,
@@ -10518,6 +10788,7 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).blocks == old(self).blocks,
@@ -10539,6 +10810,7 @@ impl CapKernel {
                 self.flush_epoch == pre.flush_epoch,
                 self.stale_epoch == pre.stale_epoch,
                 self.targeted == pre.targeted,
+                self.core_tags == pre.core_tags,
                 self.list == pre.list,
                 self.tables == pre.tables,
                 self.blocks == pre.blocks,
@@ -10580,6 +10852,7 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).blocks == old(self).blocks,
@@ -10591,6 +10864,7 @@ impl CapKernel {
             final(self).iommus.present == old(self).iommus.present,
             final(self).cores == old(self).cores,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
     {
         hide(CapKernel::wf);
         let ghost pre = *old(self);
@@ -10602,6 +10876,7 @@ impl CapKernel {
                 self.flush_epoch == pre.flush_epoch,
                 self.stale_epoch == pre.stale_epoch,
                 self.targeted == pre.targeted,
+                self.core_tags == pre.core_tags,
                 self.list == pre.list,
                 self.tables == pre.tables,
                 self.blocks == pre.blocks,
@@ -10613,6 +10888,7 @@ impl CapKernel {
                 self.iommus.present == pre.iommus.present,
                 self.cores == pre.cores,
                 self.targeted == pre.targeted,
+                self.core_tags == pre.core_tags,
                 forall|j: int| 0 <= j < i && #[trigger] self.iommu_present(j) ==> self.iommu_acked(j) == pre.flush_epoch,
             decreases NUM_IOMMUS - i,
         {
@@ -11299,6 +11575,7 @@ impl CapKernel {
             final(self).cores@[0].generation == 1,
             final(self).cores@[0].next_pcid == 1,
             final(self).cores@[0].space is None,
+            final(self).cores@[0].current_thread is None,
     {
         hide(CapKernel::wf);
         hide(entries_translatable);
@@ -11988,25 +12265,41 @@ impl CapKernel {
             final(self).wf(),
             final(self).table_pages.maps@.contains_key((big + 66 * PROCESS_BYTES) as usize),
     {
+        // The body relates three states; their invariants stay folded, and the steps' contracts carry them.
+        hide(CapKernel::wf);
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
         let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
         let (s_ok1, s_ok3, s_ok4) = self.witness_dead_table_page_setup(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, big, jb, l4);
         let ghost sm = *self;
         proof {
-            assert(process_spaces_wf(&sm.spaces, &sm.processes));
+            sm.lemma_process_spaces_wf();
+            assert(sm.spaces.roots@.contains_key(process));
+            assert(1usize < ID_GENERATION_MAX) by (compute_only);
         }
-        // Core 0 loads the root's space, so a core may hold what the space's tables say and an unmap
-        // there has an acknowledgement to wait for.
+        // Core 0 loads the root's space and points its base register at it, so the core may hold what
+        // the space's tables say and an unmap there has an acknowledgement to wait for.
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let ghost sl = *self;
+        proof {
+            sl.lemma_space_root_aligned(process);
+            assert(tree_of(&sl.table_pages, &sl.spaces) == tree_of(&sm.table_pages, &sm.spaces));
+            assert(sl.can_retype_under(process, ROOT_UNTYPED_SLOT, (big + 66 * PROCESS_BYTES) as usize, 3)
+                == sm.can_retype_under(process, ROOT_UNTYPED_SLOT, (big + 66 * PROCESS_BYTES) as usize, 3));
+            assert(dead_table_mapped(sl, process, u, first, big));
+        }
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
         let ghost s4 = *self;
         proof {
             s4.lemma_loaded_a_space(0);
-            assert(tree_of(&s4.table_pages, &s4.spaces) == tree_of(&sm.table_pages, &sm.spaces));
+            assert(tree_of(&s4.table_pages, &s4.spaces) == tree_of(&sl.table_pages, &sl.spaces));
             assert(s4.can_retype_under(process, ROOT_UNTYPED_SLOT, (big + 66 * PROCESS_BYTES) as usize, 3)
-                == sm.can_retype_under(process, ROOT_UNTYPED_SLOT, (big + 66 * PROCESS_BYTES) as usize, 3));
+                == sl.can_retype_under(process, ROOT_UNTYPED_SLOT, (big + 66 * PROCESS_BYTES) as usize, 3));
             assert(dead_table_mapped(s4, process, u, first, big));
+            assert(s4.cores@[0].space == Some(process));
+            assert(s4.depends(0, process));
+            assert(s4.space_may_hold(0, process));
         }
         let c1 = big + 66 * PROCESS_BYTES;
         let (r1, r2, r3, r4, r5, ok5, states) = self.witness_dead_table_page_teardown(process, c1, Ghost(u), Ghost(first), Ghost(big));

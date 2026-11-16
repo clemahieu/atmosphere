@@ -73,17 +73,21 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         registers: Registers,
+        bridge: &crate::arch::FlushBridge,
+        Tracked(flush_requester): Tracked<&mut crate::arch::FlushRequester>,
         first: u64,
         second: u64,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            bridge.wf(),
+            old(flush_requester).wf(*bridge),
             crate::capability::operation::spec_operation(registers.operation_number())
                 != Some(crate::capability::operation::Operation::Suspend),
         ensures
             false,
     {
-        self.witness_charge_around_entry(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, registers, first, second);
+        self.witness_charge_around_entry(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, registers, bridge, Tracked(flush_requester), first, second);
     }
 }
 

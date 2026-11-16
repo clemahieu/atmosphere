@@ -36,7 +36,7 @@ kernel/verified/arch/x86_64.rs	serial_write_byte	assume_specification	hardware	n
 kernel/verified/arch/x86_64.rs	spin_hint	assume_specification	hardware	amd-apm3 3 General-Purpose Instruction Reference, PAUSE
 kernel/verified/arch/x86_64.rs	store_command	assume_specification	hardware	amd-iommu 2.4 Commands
 kernel/verified/arch/x86_64.rs	submit_invalidate	assume_specification	hardware	amd-iommu 3.4.15 Command and Event Log Pointer Registers, MMIO Offset 2008h Command Buffer Tail Pointer Register; amd-iommu 2.4.8 INVALIDATE_IOMMU_ALL; amd-iommu 2.4.1 COMPLETION_WAIT
-kernel/verified/arch/x86_64.rs	write_cr3	assume_specification	hardware	amd-apm2 5.3.2 CR3, Figure 5-16 Control Register 3 (CR3)—Long Mode; amd-apm2 5.5.1 Process Context Identifier
+kernel/verified/arch/x86_64.rs	write_cr3	assume_specification	hardware	amd-apm2 5.3.2 CR3, Figure 5-16 Control Register 3 (CR3)—Long Mode; amd-apm2 5.5.1 Process Context Identifier; amd-apm2 5.5.3 TLB Management, Explicit Invalidations; amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
 kernel/verified/core_bridge.rs	wait	exec_allows_no_decreases_clause	unproven	the spin waits for the server on cpu to store the request number into served, which ends only while that core keeps executing and reaches a serve
 kernel/verified/queue_lock.rs	acquire	exec_allows_no_decreases_clause	unproven	the spin waits for the holder to hand over: at most NUM_CPUS - 1 holdings end first, which bounds the wait only while every core keeps executing
 kernel/verified/queue_lock.rs	release	exec_allows_no_decreases_clause	unproven	the spin waits for the successor that swapped the tail to link itself, which follows its swap with no loop between and so ends only while that core keeps executing

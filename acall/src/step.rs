@@ -331,7 +331,7 @@ pub proof fn lemma_space_kept_agrees(a: CapKernel, b: CapKernel, root: usize, pa
 pub proof fn lemma_returned_agrees(post: Caller, mid: CapKernel, c: int)
     requires
         pages_agree(mid, post.root(), post.pages()),
-        CapKernel::only_core_changed(mid, post.kernel(), c),
+        CapKernel::flushed_step(mid, post.kernel(), c),
         post.kernel().sealed(post.root()),
         post.kernel().processes.records@.contains_key(post.root()),
     ensures
@@ -344,7 +344,7 @@ pub proof fn lemma_returned_agrees(post: Caller, mid: CapKernel, c: int)
 pub proof fn lemma_returned_space_kept(entry: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize)
     requires
         CapKernel::space_kept(entry, mid, root),
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
     ensures
         CapKernel::space_kept(entry, post, root),
 {
@@ -355,7 +355,7 @@ pub proof fn lemma_returned_space_kept(entry: CapKernel, mid: CapKernel, post: C
 pub proof fn lemma_returned_count_kept(entry: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize)
     requires
         CapKernel::count_kept(entry, mid, root),
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
         forall|t: usize| #[trigger] post.table_view(t) == mid.table_view(t),
     ensures
         CapKernel::count_kept(entry, post, root),
@@ -534,19 +534,20 @@ pub open spec fn returned_on(pre: CapKernel, post: CapKernel, root: usize) -> bo
 pub open spec fn returned_clean(post: CapKernel, root: usize, c: int) -> bool {
     &&& post.cores@[c].space == Some(root)
     &&& post.acked(c) == post.flush_epoch
+    &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.tlb@[d] == Set::<TlbEntry>::empty()
     &&& forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) && e.space == root ==> post.mapped@.contains(e.page)
 }
 
 /// What CapKernel::enter proves of core `c`'s step for a call by a thread of the process whose space
 /// is keyed at `root`, with the operation in `frame`, that returns `out` to the thread: the core had
 /// that space loaded, the operation took the kernel from `pre` to `mid` as `invoked` says with the space
-/// still loaded, and then only core `c` changed, catching up on the flush epoch, to `post`.
+/// still loaded, and then only core `c`'s state and flushed TLBs changed to `post`.
 pub open spec fn entered(pre: CapKernel, post: CapKernel, root: usize, frame: Registers, out: Outcome, c: int, mid: CapKernel) -> bool {
     &&& 0 <= c < NUM_CPUS
     &&& pre.cores@[c].space == Some(root)
     &&& mid.cores@[c].space == Some(root)
     &&& CapKernel::invoked(pre, mid, root, frame, out)
-    &&& CapKernel::only_core_changed(mid, post, c)
+    &&& CapKernel::flushed_step(mid, post, c)
     &&& returned_clean(post, root, c)
 }
 

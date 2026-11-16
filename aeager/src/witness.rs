@@ -1402,6 +1402,8 @@ pub fn witness_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracked<
 /// (`STATUS_OK`), and inspects the slot the retype filled (`STATUS_OK`), proving `invoke`
 /// reaches both outcome ways and ties the token's kernel state to the `acall` contract across
 /// successive calls.
+#[verifier::spinoff_prover]
+#[verifier::rlimit(200)]
 pub fn witness_invoke_ways(
     space: u64,
     untyped: u64,

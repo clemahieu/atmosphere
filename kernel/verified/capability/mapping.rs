@@ -11,7 +11,7 @@ verus! {
 
 use crate::arch::load_translation_root;
 #[cfg(verus_keep_ghost)]
-use crate::arch::tag_written;
+use crate::arch::{flush_target, tag_written, tags_tlb};
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::block::{ObjectType, PageKind};
@@ -43,7 +43,7 @@ use crate::pptr::*;
 
 /// The steps of noting a mapping's unmap stale: the pages its record_run writes, a 2M mapping's
 /// PAGES_PER_2M at most. See design/one-lock-bounded-steps/.
-pub const MAPPING_NOTE_STEPS: usize = PAGES_PER_2M + NUM_CPUS;
+pub const MAPPING_NOTE_STEPS: usize = PAGES_PER_2M + 2 * NUM_CPUS;
 
 /// fresh_pcid's bound in the step counter: the acknowledgement of a flush of every context, when the
 /// core's PCIDs run out.
@@ -212,7 +212,7 @@ impl CapKernel {
     /// after the load is covered with no write here.
     pub open spec fn core_may_hold(&self, c: int, e: TlbEntry) -> bool {
         ||| self.tlb@[c].contains(e)
-        ||| self.depends(c, e.space) && space_says(tree_of(&self.table_pages, &self.spaces), e.space, e.page)
+        ||| self.space_may_hold(c, e.space) && space_says(tree_of(&self.table_pages, &self.spaces), e.space, e.page)
     }
 
     /// Only a core that loaded a space may hold anything of it.
@@ -305,7 +305,7 @@ impl CapKernel {
             final(self).cores@[c as int].space == old(self).cores@[c as int].space,
             forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == s)
                 ==> #[trigger] final(self).loaded(d, r) == old(self).loaded(d, r),
-            forall|e: TlbEntry| e.space == s && space_says(tree_of(&old(self).table_pages, &old(self).spaces), s, e.page)
+            tags_tlb(c as int) ==> forall|e: TlbEntry| e.space == s && space_says(tree_of(&old(self).table_pages, &old(self).spaces), s, e.page)
                 ==> #[trigger] final(self).core_may_hold(c as int, e),
             final(self).spaces.loaded@ == old(self).spaces.loaded@.insert(s, final(self).spaces.loaded@[s]),
             final(self).spaces.loaded@.dom() == old(self).spaces.loaded@.dom(),
@@ -328,6 +328,14 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            // Only a load that ran out of PCIDs flushes the core, which takes it off the dirty mask.
+            final(self).tlb_dirty == if !holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s)
+                && old(self).cores@[c as int].next_pcid == PCID_MAX {
+                old(self).tlb_dirty & !(1u64 << (c as u64))
+            } else {
+                old(self).tlb_dirty
+            },
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
@@ -403,9 +411,11 @@ impl CapKernel {
             }
             lemma_registers_kept(mid.spaces.registers@, mid.cores@, post.cores@, mid.spaces.loaded@, post.spaces.loaded@, mid.spaces.kernel_root@);
             Self::lemma_core_loaded(mid, post, c as int, s);
-            assert forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
-                implies #[trigger] post.core_may_hold(c as int, e) by {
-                assert(post.depends(c as int, e.space));
+            if tags_tlb(c as int) {
+                assert forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
+                    implies #[trigger] post.core_may_hold(c as int, e) by {
+                    assert(post.depends(c as int, e.space));
+                }
             }
         }
         pcid
@@ -501,7 +511,12 @@ impl CapKernel {
             forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d],
             forall|d: int, r: usize| 0 <= d < NUM_CPUS ==> #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, d, r) == holds_id(old(self).cores@, old(self).spaces.loaded@, d, r),
             final(self).tlb@.len() == old(self).tlb@.len(),
-            forall|d: int| #[trigger] final(self).tlb@[d] == old(self).tlb@[d],
+            final(self).tlb@[c as int] == if tags_tlb(c as int) {
+                old(self).tlb@[c as int]
+            } else {
+                Set::<TlbEntry>::empty()
+            },
+            forall|d: int| d != c ==> #[trigger] final(self).tlb@[d] == old(self).tlb@[d],
             final(self).tlb@.tags(c as int) == old(self).tlb@.tags(c as int).insert(tag_written(c as int, tag)),
             forall|d: int| d != c ==> #[trigger] final(self).tlb@.tags(d) == old(self).tlb@.tags(d),
             final(self).spaces.roots == old(self).spaces.roots,
@@ -524,6 +539,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
@@ -606,9 +623,26 @@ impl CapKernel {
                 assert(pre.acked(d) <= pre.flush_epoch);
                 assert(post.acked(d) == pre.acked(d));
             }
-            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.depends(d, e.space) by {
-                assert(pre.depends(d, e.space));
+            assert forall|d: int| 0 <= d < NUM_CPUS && !flush_target(post.tlb_dirty, d)
+                implies #[trigger] post.tlb@[d] == Set::<TlbEntry>::empty() by {
+                if d == c as int && !tags_tlb(c as int) {
+                    assert(post.tlb@[d] == Set::<TlbEntry>::empty());
+                } else {
+                    assert(!flush_target(pre.tlb_dirty, d));
+                    assert(pre.tlb@[d] == Set::<TlbEntry>::empty());
+                }
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.space_may_hold(d, e.space) by {
+                assert(pre.tlb@[d].contains(e));
+                assert(pre.space_may_hold(d, e.space));
                 assert(post.acked(d) == pre.acked(d));
+                if d == c as int {
+                    assert(tags_tlb(c as int));
+                    if pre.cores@[d].space == Some(e.space) {
+                        pre.lemma_named_depends(d, e.space);
+                    }
+                    assert(holds_id(post.cores@, post.spaces.loaded@, d, e.space));
+                }
             }
             assert forall|d: int, e: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
@@ -649,12 +683,14 @@ impl CapKernel {
                 &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation
                 &&& final(self).cores@[c as int].next_pcid == old(self).cores@[c as int].next_pcid + 1
                 &&& final(self).tlb == old(self).tlb
+                &&& final(self).tlb_dirty == old(self).tlb_dirty
                 &&& !old(self).tlb@.tags(c as int).contains(p)
             },
             old(self).cores@[c as int].next_pcid == PCID_MAX ==> {
                 &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation + 1
                 &&& final(self).tlb@.tags(c as int) == Set::<usize>::empty()
                 &&& final(self).tlb@[c as int] == Set::<TlbEntry>::empty()
+                &&& final(self).tlb_dirty == (old(self).tlb_dirty & !(1u64 << (c as u64)))
                 &&& final(self).acked(c as int) == old(self).flush_epoch
             },
     {
@@ -719,6 +755,8 @@ impl CapKernel {
             tags_wf(post.cores@, post.tlb@),
             Self::only_core_changed(pre, post, c),
             post.tlb == pre.tlb,
+            post.tlb_dirty == pre.tlb_dirty,
+            post.cores@[c].generation == pre.cores@[c].generation || post.tlb@[c] == Set::<TlbEntry>::empty(),
             post.acked(c) == pre.acked(c),
         ensures
             post.wf(),
@@ -735,9 +773,21 @@ impl CapKernel {
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
         }
-        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.depends(d, e.space) by {
+        assert forall|d: int| 0 <= d < NUM_CPUS && !flush_target(post.tlb_dirty, d)
+            implies #[trigger] post.tlb@[d] == Set::<TlbEntry>::empty() by {
+            assert(!flush_target(pre.tlb_dirty, d));
+            assert(pre.tlb@[d] == Set::<TlbEntry>::empty());
+        }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.space_may_hold(d, e.space) by {
             assert(pre.tlb@[d].contains(e));
-            assert(pre.depends(d, e.space));
+            assert(pre.space_may_hold(d, e.space));
+            if d == c {
+                assert(post.tlb@[c] != Set::<TlbEntry>::empty());
+                assert(post.cores@[c].generation == pre.cores@[c].generation);
+                assert(holds_id(post.cores@, post.spaces.loaded@, c, e.space) == holds_id(pre.cores@, pre.spaces.loaded@, c, e.space));
+            } else {
+                assert(post.cores@[d] == pre.cores@[d]);
+            }
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
@@ -794,6 +844,11 @@ impl CapKernel {
             post.replies == pre.replies,
             post.flush_epoch == pre.flush_epoch,
             post.targeted == pre.targeted,
+            post.core_tags == pre.core_tags,
+            post.tlb_dirty == pre.tlb_dirty,
+            holds_id(post.cores@, post.spaces.loaded@, c, s),
+            forall|d: int| 0 <= d < NUM_CPUS && d != c
+                ==> #[trigger] post.spaces.loaded@[s].value().ids@[d] == pre.spaces.loaded@[s].value().ids@[d],
         ensures
             post.wf(),
             post.loaded(c, s),
@@ -841,12 +896,21 @@ impl CapKernel {
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
         }
-        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.depends(d, e.space) by {
+        assert forall|d: int| 0 <= d < NUM_CPUS && !flush_target(post.tlb_dirty, d)
+            implies #[trigger] post.tlb@[d] == Set::<TlbEntry>::empty() by {
+            assert(!flush_target(pre.tlb_dirty, d));
+            assert(pre.tlb@[d] == Set::<TlbEntry>::empty());
+        }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.space_may_hold(d, e.space) by {
             assert(pre.tlb@[d].contains(e));
-            assert(pre.depends(d, e.space));
+            assert(pre.space_may_hold(d, e.space));
             assert(post.loaded(d, e.space));
             if e.space != s {
                 assert(sb.loaded@[e.space] == sa.loaded@[e.space]);
+            } else if d != c {
+                assert(sb.loaded@[s].value().ids@[d] == sa.loaded@[s].value().ids@[d]);
+            } else {
+                assert(holds_id(post.cores@, sb.loaded@, c, s));
             }
         }
         assert forall|d: int, e: TlbEntry|
@@ -902,7 +966,7 @@ impl CapKernel {
         &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d]
             == if space is Some && pre.loaded(d, space->Some_0) { post.flush_epoch } else { pre.targeted@[d] }
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
-            0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
+            0 <= d < NUM_CPUS && space is Some && pre.space_may_hold(d, space->Some_0) && pages.contains(g)
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
         &&& forall|i: int, g: usize| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
@@ -2019,7 +2083,7 @@ impl CapKernel {
 
     /// A space with a list of cores is at a tracked, page-aligned base whose block holds a space or a
     /// process.
-    proof fn lemma_loaded_space_block(&self, s: usize)
+    pub(crate) proof fn lemma_loaded_space_block(&self, s: usize)
         requires
             self.wf(),
             self.spaces.loaded@.contains_key(s),
@@ -2138,11 +2202,11 @@ impl CapKernel {
             lemma_table_bound(&pre.blocks, t);
         }
         // The space's list of cores, read before the epoch moves: each core on it is named a target.
-        let list = self.listed_on(
-            PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ)
-                .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
-                .space,
-        );
+        let space_opt = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ)
+            .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
+            .space;
+        let list = self.listed_on(space_opt);
+        let targets = self.space_targets(space_opt, Tracked(steps));
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
         proof {
@@ -2150,9 +2214,10 @@ impl CapKernel {
         }
         self.stale_epoch.record_run(frame, count, epoch, Tracked(steps));
         self.target_listed(list, Tracked(steps));
+        self.tlb_dirty = self.tlb_dirty | targets;
         proof {
             self.tlb.borrow_mut().grow(Seq::new(NUM_CPUS as nat, |d: int|
-                if space is Some && pre.depends(d, space->Some_0) {
+                if space is Some && pre.space_may_hold(d, space->Some_0) {
                     pre.tlb@[d].union(stale_entries(space->Some_0, pages))
                 } else {
                     pre.tlb@[d]
@@ -2193,8 +2258,19 @@ impl CapKernel {
                     assert(pages.contains(g as usize));
                 }
             }
-            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.depends(d, e.space) by {
-                assert(pre.depends(d, e.space));
+            assert forall|d: int| 0 <= d < NUM_CPUS && !flush_target(self.tlb_dirty, d)
+                implies #[trigger] self.tlb@[d] == Set::<TlbEntry>::empty() by {
+                Self::lemma_mask_or(pre.tlb_dirty, targets, d);
+                assert(!flush_target(pre.tlb_dirty, d));
+                assert(!flush_target(targets, d));
+                assert(pre.tlb@[d] == Set::<TlbEntry>::empty());
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.space_may_hold(d, e.space) by {
+                if pre.tlb@[d].contains(e) {
+                    assert(pre.space_may_hold(d, e.space));
+                } else {
+                    assert(space is Some && pre.space_may_hold(d, space->Some_0));
+                }
             }
             assert forall|d: int, e: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && !self.mapped@.contains(e.page)
@@ -2253,14 +2329,14 @@ impl CapKernel {
                     assert(pre.left_stale(e));
                     assert(pre.owes(d));
                 } else {
-                    assert(space is Some && pre.depends(d, space->Some_0));
+                    assert(space is Some && pre.space_may_hold(d, space->Some_0));
                     assert(pre.loaded(d, space->Some_0));
                     assert(self.targeted@[d] == self.flush_epoch);
                 }
             }
             assert(self.targets_wf());
             assert forall|d: int, g: usize| #![trigger self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
-                0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
+                0 <= d < NUM_CPUS && space is Some && pre.space_may_hold(d, space->Some_0) && pages.contains(g)
                 implies self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g }) by {
             }
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) implies self.tlb@[d].contains(e) by {

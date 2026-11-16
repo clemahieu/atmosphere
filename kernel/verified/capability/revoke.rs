@@ -118,6 +118,8 @@ impl CapKernel {
             mapped_wf(final(self).mapped@, final(self).mappings@),
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
                 &&& final(self).targeted == old(self).targeted
+                &&& final(self).core_tags == old(self).core_tags
+                &&& final(self).tlb_dirty == old(self).tlb_dirty
                 &&& final(self).tlb == old(self).tlb
                 &&& final(self).iommus == old(self).iommus
                 &&& final(self).mapped == old(self).mapped
@@ -652,6 +654,8 @@ impl CapKernel {
             cut.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(cut, mid, r),
             !(cut.list.nodes@[r as int].kind is Mapping) ==> {
                 &&& mid.targeted == cut.targeted
+                &&& mid.core_tags == cut.core_tags
+                &&& mid.tlb_dirty == cut.tlb_dirty
                 &&& mid.table_pages == cut.table_pages
                 &&& mid.mappings == cut.mappings
             },
@@ -662,6 +666,8 @@ impl CapKernel {
             post.table_pages == mid.table_pages,
             post.spaces == mid.spaces,
             post.targeted == mid.targeted,
+            post.core_tags == mid.core_tags,
+            post.tlb_dirty == mid.tlb_dirty,
             post.mappings == mid.mappings,
             post.flush_epoch == mid.flush_epoch,
         ensures
@@ -1445,6 +1451,8 @@ impl CapKernel {
             post.cores == mid.cores,
             post.flush_epoch == mid.flush_epoch,
             post.targeted == mid.targeted,
+            post.core_tags == mid.core_tags,
+            post.tlb_dirty == mid.tlb_dirty,
             post.tlb == mid.tlb,
             post.iommus == mid.iommus,
             post.mapped == mid.mapped,

@@ -73,13 +73,17 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         registers: Registers,
+        bridge: &crate::arch::FlushBridge,
+        Tracked(flush_requester): Tracked<&mut crate::arch::FlushRequester>,
     )
         requires
             old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            bridge.wf(),
+            old(flush_requester).wf(*bridge),
         ensures
             false,
     {
-        self.witness_root_enters_the_kernel(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, registers);
+        self.witness_root_enters_the_kernel(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, registers, bridge, Tracked(flush_requester));
     }
 }
 

@@ -755,6 +755,7 @@ impl CapKernel {
         &&& post.processes == pre.processes
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
     }
 
     /// Link's specification implies its contract.
@@ -903,6 +904,7 @@ impl CapKernel {
         &&& post.processes == pre.processes
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
         &&& forall|t: usize, j: usize| #[trigger] pre.tables.has_slot(&pre.list, t, j) ==> {
             &&& post.tables.has_slot(&post.list, t, j)
             &&& post.list.nodes@[pre.tables.node_of(t, j) as int].live == pre.list.nodes@[pre.tables.node_of(t, j) as int].live
@@ -1235,6 +1237,7 @@ impl CapKernel {
         &&& post.processes == pre.processes
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
     }
 
     /// Inspect's arm of invoked implies its contract.
@@ -1796,6 +1799,7 @@ impl CapKernel {
         &&& post.processes == pre.processes
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
         &&& post.tables.roots == pre.tables.roots
         &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 0)
         &&& block_ref(&post.blocks, base / PAGE_SZ) == BlockRef::Small(base / PAGE_SZ)
@@ -1833,6 +1837,7 @@ impl CapKernel {
         &&& post.processes == pre.processes
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
         &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 3)
         &&& !post.blocks.pages@[(base / PAGE_SZ) as int].dead
         &&& post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base])

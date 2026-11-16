@@ -1234,7 +1234,7 @@ pub trait LoadSpaceReturns {
             post.cores@[c as int].space == pre.cores@[c as int].space,
             forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == s)
                 ==> #[trigger] post.loaded(d, r) == pre.loaded(d, r),
-            forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
+            crate::arch::tags_tlb(c as int) ==> forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
                 ==> #[trigger] post.core_may_hold(c as int, e),
             post.spaces.loaded@ == pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]),
             post.spaces.loaded@.dom() == pre.spaces.loaded@.dom(),
@@ -1308,7 +1308,12 @@ pub trait SwitchSpaceReturns {
             forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d],
             forall|d: int, r: usize| 0 <= d < NUM_CPUS ==> #[trigger] holds_id(post.cores@, post.spaces.loaded@, d, r) == holds_id(pre.cores@, pre.spaces.loaded@, d, r),
             post.tlb@.len() == pre.tlb@.len(),
-            forall|d: int| #[trigger] post.tlb@[d] == pre.tlb@[d],
+            post.tlb@[c as int] == if crate::arch::tags_tlb(c as int) {
+                pre.tlb@[c as int]
+            } else {
+                Set::<TlbEntry>::empty()
+            },
+            forall|d: int| d != c ==> #[trigger] post.tlb@[d] == pre.tlb@[d],
             post.tlb@.tags(c as int) == pre.tlb@.tags(c as int).insert(tag_written(c as int, tag)),
             forall|d: int| d != c ==> #[trigger] post.tlb@.tags(d) == pre.tlb@.tags(d),
             post.spaces.roots == pre.spaces.roots,

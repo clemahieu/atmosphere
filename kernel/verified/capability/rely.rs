@@ -560,7 +560,7 @@ impl CapKernel {
     /// acknowledge, on any core.
     pub proof fn lemma_acknowledge_keeps_slots(pre: Self, post: Self, c: int, root: usize)
         requires
-            Self::only_core_changed(pre, post, c),
+            Self::flushed_step(pre, post, c),
         ensures
             Self::slots_kept(pre, post, root),
             Self::root_kept(pre, post, root),
@@ -1119,7 +1119,7 @@ impl CapKernel {
     /// acknowledge, on any core.
     pub proof fn lemma_acknowledge_keeps_space(pre: Self, post: Self, c: int, root: usize)
         requires
-            Self::only_core_changed(pre, post, c),
+            Self::flushed_step(pre, post, c),
         ensures
             Self::space_kept(pre, post, root),
     {
@@ -1302,7 +1302,7 @@ impl CapKernel {
 
     pub proof fn lemma_acknowledge_keeps_record(pre: Self, post: Self, c: int, root: usize)
         requires
-            Self::only_core_changed(pre, post, c),
+            Self::flushed_step(pre, post, c),
         ensures
             Self::record_kept(pre, post, root),
     {
@@ -1965,7 +1965,7 @@ impl CapKernel {
     /// acknowledge, on any core.
     pub proof fn lemma_acknowledge_keeps_count(pre: Self, post: Self, c: int, root: usize)
         requires
-            Self::only_core_changed(pre, post, c),
+            Self::flushed_step(pre, post, c),
         ensures
             Self::count_kept(pre, post, root),
     {
@@ -2246,7 +2246,7 @@ impl CapKernel {
     /// acknowledge, on any core.
     pub proof fn lemma_acknowledge_keeps_rely(pre: Self, post: Self, c: int, root: usize)
         requires
-            Self::only_core_changed(pre, post, c),
+            Self::flushed_step(pre, post, c),
         ensures
             Self::rely(pre, post, root),
             Self::root_kept(pre, post, root),

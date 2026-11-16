@@ -54,7 +54,15 @@ pub fn dispatch(frame: Registers) -> Option<Outcome> {
         // The thread that entered is charged the cycles since this core's last entry, before the
         // operation, which may move it off: design/cpu-time-as-capability/.
         kernel.charge(core, crate::arch::cycles());
-        let returned = kernel.enter(core, frame, Tracked::assume_new());
+        let returned = kernel.enter(
+            core,
+            frame,
+            &crate::lock::FLUSH_BRIDGE,
+            // The single requester token paired with FLUSH_BRIDGE, held by the caller holding CAP_KERNEL.
+            Tracked::assume_new(),
+            |target| crate::machine::send_ipi(target, crate::machine::FLUSH_VECTOR),
+            Tracked::assume_new(),
+        );
         // A thread that suspended itself leaves the core with an outcome; one that had to leave, with
         // none. Either way the core runs nothing now.
         let returned = returned.filter(|_| kernel.current_frame(core).is_some());
@@ -245,6 +253,8 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         // Nothing is unmapped yet, so each IOMMU's IOTLB model is empty, and this is the one place that
         // model is made: design/flush-without-waiting/.
         Tracked::assume_new(),
+        // Whether each core tags its TLB with the id it writes into its translation base.
+        Array::new(crate::arch::tags_tlb(boot_info)),
         // The pages the block table tracks, as the map gives them.
         pages,
         // The carve's bytes, which only the columns placed in it touch, and the provenance of the

@@ -1272,6 +1272,8 @@ impl CapKernel {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.cores == pre.cores
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices

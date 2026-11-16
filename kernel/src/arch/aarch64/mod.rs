@@ -118,6 +118,12 @@ pub fn translation_root(boot: &BootInfo) -> u64 {
     translation_base(boot.pml4 as usize, 0)
 }
 
+/// Whether a core tags its TLB with the id written into its translation base. The loader records
+/// that on the boot info.
+pub fn tags_tlb(boot: &BootInfo) -> bool {
+    boot.pcide
+}
+
 /// Brings up the boot core, whose [`Cpu`] is in place: its translation control, what EL0 reaches of
 /// the timer, its exception vectors, the machine's interrupt controller and this core's share of
 /// it, and then the check that the timer's interrupt arrives. IRQs stay masked in the kernel

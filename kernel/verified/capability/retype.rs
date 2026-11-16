@@ -483,6 +483,8 @@ impl CapKernel {
             final(self).holders@ == old(self).holders@.insert(block_ref(&old(self).blocks, base / PAGE_SZ), set![child]),
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).mappings == old(self).mappings,
             final(self).view().holds(root, child),
             final(self).payload_of(child) == large_frame_of(base, order),
@@ -711,6 +713,8 @@ impl CapKernel {
         let child = pre.tables.node_of(root, to);
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.blocks.pages@[(base / PAGE_SZ) as int].object is Frame
         &&& Self::retype_keeps(pre, post, child, (base / PAGE_SZ) as int, 0, None)
     }
@@ -796,6 +800,8 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.iommus == pre.iommus
         &&& post.mappings == pre.mappings
     }
@@ -822,6 +828,8 @@ impl CapKernel {
         &&& post.replies == pre.replies
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.iommus == pre.iommus
     }
@@ -989,6 +997,8 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).iommus == old(self).iommus,
             ret is Refused == (!old(self).zeroing.active(level, r) && !old(self).blocks.large_free(level, r as int)),
@@ -1302,6 +1312,8 @@ impl CapKernel {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
     }
@@ -1424,6 +1436,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).devices == old(self).devices,
             final(self).iommus == old(self).iommus,
             final(self).devices == old(self).devices,

@@ -736,6 +736,8 @@ impl CapKernel {
             final(self).tlb_wf(),
             final(self).targets_wf(),
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).frames == old(self).frames,
@@ -788,8 +790,8 @@ impl CapKernel {
             assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] self.acked(c) <= self.flush_epoch by {
                 assert(pre.acked(c) <= pre.flush_epoch);
             }
-            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) implies self.depends(c, e.space) by {
-                assert(pre.depends(c, e.space));
+            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) implies self.space_may_hold(c, e.space) by {
+                assert(pre.space_may_hold(c, e.space));
             }
             assert forall|c: int, e: TlbEntry|
                 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
@@ -876,6 +878,8 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             ret ==> final(self).list.parent@ == old(self).list.parent@.insert(old(self).tables.node_of(root, slot), first),
             ret ==> {
                 let n = old(self).tables.node_of(root, slot);
@@ -1140,6 +1144,8 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             ret ==> {
                 &&& final(self).devices.count == count
                 &&& forall|k: int| 0 <= k < count ==> {
@@ -1171,6 +1177,9 @@ impl CapKernel {
                 }
             },
     {
+        // No step here reads or writes a TLB model, so what the invariant says of them stays folded.
+        hide(CapKernel::tlb_wf);
+        hide(CapKernel::targets_wf);
         let ghost pre = *old(self);
         let ghost start = steps.count;
         let mut k = 0;
@@ -1207,6 +1216,8 @@ impl CapKernel {
                 self.spaces == pre.spaces,
                 self.flush_epoch == pre.flush_epoch,
                 self.targeted == pre.targeted,
+                self.core_tags == pre.core_tags,
+                self.tlb_dirty == pre.tlb_dirty,
                 forall|j: int| 0 <= j < k ==> #[trigger] pre.can_add_device_at(root, slot, devices@, j),
                 self.devices.records@.len() == pre.devices.records@.len(),
                 forall|j: int| k <= j < pre.devices.records@.len() ==> #[trigger] self.devices.records@[j] == pre.devices.records@[j],
@@ -1605,6 +1616,8 @@ impl CapKernel {
         &&& post.replies == pre.replies
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped

@@ -68,3 +68,4 @@ pub mod tick_drops_thread_of_dead_process;
 pub mod tick_keeps_idle_core;
 pub mod tick_preempts_for_equal_priority;
 pub mod two_cores_run_threads;
+pub mod unmap_flushes_other_core;

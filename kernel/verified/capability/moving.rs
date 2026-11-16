@@ -95,6 +95,8 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -321,6 +323,8 @@ impl CapKernel {
         &&& post.spaces.bound == pre.spaces.bound
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
     }
 
@@ -458,6 +462,8 @@ impl CapKernel {
             final(self).spaces.bound == old(self).spaces.bound,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
     {
         let ghost pre = *old(self);
         let (i, payload) = match self.tables.lookup(&self.list, src, from) {

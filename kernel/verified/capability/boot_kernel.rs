@@ -14,6 +14,8 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
+#[cfg(verus_keep_ghost)]
+use crate::capability::kernel::boot_tags_tlb;
 use vstd::raw_ptr::{IsExposed, PointsToRaw};
 use crate::array::Array;
 #[cfg(verus_keep_ghost)]
@@ -301,6 +303,8 @@ impl CapKernel {
         &&& self.spaces.kernel_root@ == kernel_root
         &&& self.spaces.kernel_root@ % PAGE_SZ == 0
         &&& mem_valid(self.spaces.kernel_root@)
+        &&& self.tlb_dirty == 0
+        &&& boot_tags_tlb(self.core_tags@)
     }
 
     /// Boot of the capability kernel, from the memory boot set aside for it: init with the list's
@@ -338,6 +342,7 @@ impl CapKernel {
         Tracked(registers): Tracked<Map<int, BaseRegister>>,
         Tracked(tlb): Tracked<TlbModel>,
         Tracked(iotlb): Tracked<IotlbModel>,
+        core_tags: Array<bool, NUM_CPUS>,
         page_count: usize,
         carve: usize,
         Tracked(carve_perm): Tracked<PointsToRaw>,
@@ -356,6 +361,8 @@ impl CapKernel {
             mem_valid(kernel_root),
             boot_tlb(tlb),
             boot_iotlb(iotlb),
+            boot_tags_tlb(core_tags@),
+            core_tags.wf(),
             root % PAGE_SZ == 0,
             root + PAGE_SZ <= NODE_SPACE,
             root_perm.addr() == root,
@@ -414,7 +421,7 @@ impl CapKernel {
             ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame, iommus_present@, kernel_root),
     {
         hide(CapKernel::wf);
-        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb), Tracked(iotlb), page_count, carve, Tracked(carve_perm), Tracked(exposed));
+        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb), Tracked(iotlb), core_tags, page_count, carve, Tracked(carve_perm), Tracked(exposed));
         let ghost s0 = *self;
         let ghost len = free@.len() as int;
         let tracked mut pages = pages;
@@ -863,6 +870,10 @@ impl CapKernel {
                 assert(s4.stale_epoch == s0.stale_epoch);
                 assert(s0.stale_epoch.one@[r as int] == 0);
             }
+            assert(s4.tlb_wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s4.tlb_dirty == s0.tlb_dirty);
         }
         Some((untyped, frame))
     }

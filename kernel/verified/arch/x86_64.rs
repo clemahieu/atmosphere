@@ -690,6 +690,8 @@ pub assume_specification[read_cr4](Tracked(register): Tracked<&BaseRegister>) ->
 /// 63 set keeps them, and the model, which may hold more than the TLB does, keeps them all.
 // cite: amd-apm2 5.3.2 CR3, Figure 5-16 Control Register 3 (CR3)—Long Mode
 // cite: amd-apm2 5.5.1 Process Context Identifier
+// cite: amd-apm2 5.5.3 TLB Management, Explicit Invalidations
+// cite: amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
 pub assume_specification[write_cr3](Tracked(register): Tracked<&mut BaseRegister>, Tracked(model): Tracked<&mut TlbModel>, value: usize)
     requires
         value & 0x7ff0_0000_0000_0000usize == 0,
@@ -703,7 +705,12 @@ pub assume_specification[write_cr3](Tracked(register): Tracked<&mut BaseRegister
         old(model).pieces_wf() ==> final(model).pieces_wf(),
         old(model).wf() ==> final(model).wf(),
         forall|d: int| #[trigger] final(model).has(d) == old(model).has(d),
-        forall|d: int| #[trigger] final(model)[d] == old(model)[d],
+        final(model)[old(register).core()] == if tags_tlb(old(register).core()) {
+            old(model)[old(register).core()]
+        } else {
+            Set::<TlbEntry>::empty()
+        },
+        forall|d: int| d != old(register).core() ==> #[trigger] final(model)[d] == old(model)[d],
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), value & 0xfffusize)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d);
 
@@ -729,7 +736,12 @@ pub fn load_translation_root(
         old(model).pieces_wf() ==> final(model).pieces_wf(),
         old(model).wf() ==> final(model).wf(),
         forall|d: int| #[trigger] final(model).has(d) == old(model).has(d),
-        forall|d: int| #[trigger] final(model)[d] == old(model)[d],
+        final(model)[old(register).core()] == if tags_tlb(old(register).core()) {
+            old(model)[old(register).core()]
+        } else {
+            Set::<TlbEntry>::empty()
+        },
+        forall|d: int| d != old(register).core() ==> #[trigger] final(model)[d] == old(model)[d],
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), id)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {

@@ -113,6 +113,12 @@ pub fn translation_root(boot: &BootInfo) -> u64 {
     root
 }
 
+/// Whether a core tags its TLB with the id written into its translation base. The loader records
+/// that on the boot info.
+pub fn tags_tlb(boot: &BootInfo) -> bool {
+    boot.pcide
+}
+
 /// Brings up the boot core, whose [`Cpu`] is in place: the control bits, its GDT and TSS, the IDT
 /// every core shares, its local APIC, and the syscall entry.
 pub unsafe fn init_boot_core() {

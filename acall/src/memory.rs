@@ -37,7 +37,7 @@ verus! {
 /// retype's contract for a frame read, so they hold of `post` when they hold of `mid`.
 proof fn lemma_returned_retype_frame_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize, from: usize, base: usize, to: usize)
     requires
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
     ensures
         CapKernel::retype_frame_contract_fields(pre, mid, root, from, base, to)
             ==> CapKernel::retype_frame_contract_fields(pre, post, root, from, base, to),
@@ -48,7 +48,7 @@ proof fn lemma_returned_retype_frame_fields(pre: CapKernel, mid: CapKernel, post
 /// The same of the additional facts of retype's contract for a table page.
 proof fn lemma_returned_retype_table_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int, base: usize)
     requires
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
     ensures
         CapKernel::retype_table_contract_fields(pre, mid, base) ==> CapKernel::retype_table_contract_fields(pre, post, base),
 {
@@ -58,7 +58,7 @@ proof fn lemma_returned_retype_table_fields(pre: CapKernel, mid: CapKernel, post
 /// The same of the binding retype's contract states for a thread.
 proof fn lemma_returned_retype_thread_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize, base: usize, j: usize)
     requires
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
     ensures
         CapKernel::retype_thread_contract_fields(pre, mid, root, base, j)
             ==> CapKernel::retype_thread_contract_fields(pre, post, root, base, j),
@@ -69,7 +69,7 @@ proof fn lemma_returned_retype_thread_fields(pre: CapKernel, mid: CapKernel, pos
 /// The same of the additional facts of inspect's contract.
 proof fn lemma_returned_inspect_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int)
     requires
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
     ensures
         CapKernel::inspect_contract_fields(pre, mid) ==> CapKernel::inspect_contract_fields(pre, post),
 {
@@ -79,7 +79,7 @@ proof fn lemma_returned_inspect_fields(pre: CapKernel, mid: CapKernel, post: Cap
 /// The same of the additional facts of link's contract.
 proof fn lemma_returned_link_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int)
     requires
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
     ensures
         CapKernel::link_contract_fields(pre, mid) ==> CapKernel::link_contract_fields(pre, post),
 {
@@ -89,7 +89,7 @@ proof fn lemma_returned_link_fields(pre: CapKernel, mid: CapKernel, post: CapKer
 /// The same of the additional facts of map's contract.
 proof fn lemma_returned_map_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize)
     requires
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
     ensures
         CapKernel::map_contract_fields(pre, mid, root, slot, va, level, from, page)
             ==> CapKernel::map_contract_fields(pre, post, root, slot, va, level, from, page),
@@ -100,7 +100,7 @@ proof fn lemma_returned_map_fields(pre: CapKernel, mid: CapKernel, post: CapKern
 /// The same of the additional facts of unmap's contract.
 proof fn lemma_returned_unmap_fields(pre: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize, slot: usize, va: u64)
     requires
-        CapKernel::only_core_changed(mid, post, c),
+        CapKernel::flushed_step(mid, post, c),
     ensures
         CapKernel::unmap_contract_fields(pre, mid, root, slot, va) ==> CapKernel::unmap_contract_fields(pre, post, root, slot, va),
 {

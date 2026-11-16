@@ -146,6 +146,8 @@ impl CapKernel {
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
         &&& post.targeted == self.targeted
+        &&& post.core_tags == self.core_tags
+        &&& post.tlb_dirty == self.tlb_dirty
         &&& post.thread_is_dead(base)
         &&& post.thread_work(base) < self.thread_work(base)
         &&& post.view() == (State { waiting: post.view().waiting, ..self.view() })
@@ -323,6 +325,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).view() == (State { waiting: final(self).view().waiting, ..old(self).view() }),
             adds_no_waiter(old(self).view(), final(self).view()),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).remove(t),
@@ -768,6 +772,8 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.targeted == pre.targeted,
+            post.core_tags == pre.core_tags,
+            post.tlb_dirty == pre.tlb_dirty,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,

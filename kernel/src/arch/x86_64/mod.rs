@@ -17,8 +17,8 @@ mod this_core;
 pub mod write_protect;
 
 pub use this_core::{
-    clear_process_segments, core_pointer, counters, init_boot_core, init_core, set_core_pointer, translation_root,
-    CoreState,
+    clear_process_segments, core_pointer, counters, init_boot_core, init_core, set_core_pointer, tags_tlb,
+    translation_root, CoreState,
 };
 
 /// A privilege level: a selector's RPL and a descriptor's DPL. APM 2 §4.9.1.

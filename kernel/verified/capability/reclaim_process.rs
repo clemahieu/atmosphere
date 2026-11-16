@@ -48,7 +48,7 @@ use crate::pptr::*;
 
 /// The units of a retire: two checks of each core, a flush IPI to each core on the list, and naming each
 /// core on it a flush target.
-pub const RETIRE_STEPS: usize = 3 * NUM_CPUS + SEND_FLUSH_STEPS;
+pub const RETIRE_STEPS: usize = 4 * NUM_CPUS + SEND_FLUSH_STEPS;
 
 impl CapKernel {
     /// The process at `base` is dead with zero references: no capability names it and no thread is
@@ -93,8 +93,10 @@ impl CapKernel {
     /// was named a flush target at the new epoch, and nothing else changed, so every core depends on what
     /// it did before. The core that acknowledges the new epoch no longer depends on the space.
     pub open spec fn process_retired(&self, post: Self, base: usize) -> bool {
-        &&& post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, targeted: post.targeted, ..*self })
+        &&& post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, targeted: post.targeted, tlb_dirty: post.tlb_dirty, ..*self })
         &&& post.flush_epoch == self.flush_epoch + 1
+        &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] crate::arch::flush_target(post.tlb_dirty, d)
+            == (crate::arch::flush_target(self.tlb_dirty, d) || self.space_may_hold(d, base))
         &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d]
             == if self.loaded(d, base) { post.flush_epoch } else { self.targeted@[d] }
         &&& post.flush_ipis@ == self.flush_ipis@ + self.flush_targets(base)
@@ -330,8 +332,10 @@ impl CapKernel {
             pre.flush_epoch < usize::MAX,
             pre.spaces.loaded@[s].value().retired == 0,
             forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] pre.cores@[d].space != Some(s),
-            post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, targeted: post.targeted, ..pre }),
+            post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, targeted: post.targeted, tlb_dirty: post.tlb_dirty, ..pre }),
             post.flush_epoch == pre.flush_epoch + 1,
+            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] crate::arch::flush_target(post.tlb_dirty, d)
+                == (crate::arch::flush_target(pre.tlb_dirty, d) || pre.space_may_hold(d, s)),
             post.targeted.wf(),
             forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.targeted@[d]
                 == if core_listed(pre.spaces.loaded@[s].value().list, d) { post.flush_epoch } else { pre.targeted@[d] },
@@ -384,9 +388,15 @@ impl CapKernel {
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
         }
-        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.depends(d, e.space) by {
-            assert(pre.depends(d, e.space));
+        assert forall|d: int| 0 <= d < NUM_CPUS && !crate::arch::flush_target(post.tlb_dirty, d)
+            implies #[trigger] post.tlb@[d] == Set::<TlbEntry>::empty() by {
+            assert(!crate::arch::flush_target(pre.tlb_dirty, d));
+            assert(pre.tlb@[d] == Set::<TlbEntry>::empty());
+        }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.space_may_hold(d, e.space) by {
+            assert(pre.space_may_hold(d, e.space));
             assert(post.depends(d, e.space) == pre.depends(d, e.space));
+            assert(holds_id(post.cores@, sb.loaded@, d, e.space) == holds_id(pre.cores@, sa.loaded@, d, e.space));
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
@@ -465,10 +475,12 @@ impl CapKernel {
             return false;
         }
         let ghost sent = self.flush_ipis@;
+        let targets = self.space_targets(Some(base), Tracked(&mut *steps));
         self.send_flush(base, Ghost(sent), Tracked(&mut *steps));
         let ghost mid = *self;
         self.flush_epoch = self.flush_epoch + 1;
         self.target_listed(cores.list, Tracked(&mut *steps));
+        self.tlb_dirty = self.tlb_dirty | targets;
         let mut next = cores;
         next.retired = self.flush_epoch;
         let tracked mut perm = self.spaces.loaded.borrow_mut().tracked_remove(base);
@@ -482,6 +494,11 @@ impl CapKernel {
                     assert(pre.cores@[d].space == Some(base));
                     assert(pre.process_space_named(base));
                 }
+            }
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] crate::arch::flush_target(post.tlb_dirty, d)
+                == (crate::arch::flush_target(mid.tlb_dirty, d) || mid.space_may_hold(d, base)) by {
+                Self::lemma_mask_or(mid.tlb_dirty, targets, d);
+                assert(crate::arch::flush_target(targets, d) == pre.space_may_hold(d, base));
             }
             Self::lemma_process_retired(mid, post, base);
             Self::lemma_same_tree_shrunk(pre, post);
@@ -650,6 +667,8 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped

@@ -51,9 +51,9 @@ use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
 use crate::define::*;
 use crate::pptr::*;
-use crate::arch::{FrameKind, Registers, FRAME_WORDS};
+use crate::arch::{flush_cores, FlushBridge, FlushRequester, FrameKind, Registers, FRAME_WORDS};
 #[cfg(verus_keep_ghost)]
-use crate::arch::{lemma_register_words, lemma_registers_of, register_words, registers_of, user_rip};
+use crate::arch::{flush_target, flushed, lemma_register_words, lemma_registers_of, register_words, registers_of, user_rip};
 
 /// The operation was done.
 pub const STATUS_OK: u64 = 0;
@@ -110,7 +110,7 @@ pub const DISPATCH_STEPS: usize = CHECK_CURRENT_STEPS + INVOKE_REVOKE_STEPS;
 /// B, the bound of one entry that holds the kernel's lock: dispatch's, then the acknowledgement of a
 /// flush. The flush IPI's entry, CapKernel::enter_flush, stays within it. Each such entry makes the
 /// one counter it is held to. See design/one-lock-bounded-steps/.
-pub const ENTRY_STEPS: usize = DISPATCH_STEPS + ACKNOWLEDGE_STEPS;
+pub const ENTRY_STEPS: usize = DISPATCH_STEPS + ACKNOWLEDGE_STEPS + 1;
 
 /// Every operation dispatch runs stays within revoke's bound, so dispatch stays within its own; the
 /// flush IPI's entry and the selection's, tick, stay within B.
@@ -982,6 +982,8 @@ impl CapKernel {
         &&& !post.blocks.pages@[(base / PAGE_SZ) as int].dead
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base])
         &&& post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base])
         &&& forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base
@@ -2488,41 +2490,75 @@ impl CapKernel {
     /// holding no translation of a page that is not mapped, whichever core's unmap left it behind, and
     /// a map that follows on it sees only what the tables say. design/flush-without-waiting/. The
     /// entry makes its one counter in steps, whatever the caller passed, and holds it to ENTRY_STEPS.
-    pub fn enter(&mut self, c: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Outcome>)
+    pub fn enter<F: Fn(usize)>(
+        &mut self,
+        c: usize,
+        frame: Registers,
+        bridge: &FlushBridge,
+        Tracked(flush_requester): Tracked<&mut FlushRequester>,
+        send_ipi: F,
+        Tracked(steps): Tracked<&mut Steps>,
+    ) -> (ret: Option<Outcome>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
+            bridge.wf(),
+            old(flush_requester).wf(*bridge),
+            forall|d: usize| d < NUM_CPUS ==> #[trigger] send_ipi.requires((d,)),
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(flush_requester).wf(*bridge),
             final(steps).count <= ENTRY_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             Self::consumed_kept(*old(self), *final(self)),
             exists|mid: Self| #[trigger] Self::dispatched(*old(self), mid, c as int, frame, ret)
-                && Self::only_core_changed(mid, *final(self), c as int),
+                && Self::flushed_step(mid, *final(self), c as int),
             final(self).acked(c as int) == final(self).flush_epoch,
+            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] final(self).tlb@[d] == Set::<TlbEntry>::empty(),
             forall|e: TlbEntry| #[trigger] final(self).tlb@[c as int].contains(e) ==> final(self).mapped@.contains(e.page),
     {
         // The one counter of this entry, on a path that holds the kernel's lock, made here whatever the
         // caller passed: design/one-lock-bounded-steps/.
+        hide(CapKernel::wf);
         proof {
             *steps = Steps::fresh();
         }
         let ret = self.dispatch(c, frame, Tracked(steps));
         let ghost mid = *self;
+        proof {
+            mid.lemma_flush_ready(c as int);
+        }
         if self.cores.get(c).acked_epoch < self.flush_epoch {
             self.acknowledge(c, Tracked(steps));
+        }
+        if self.tlb_dirty != 0 {
+            let targets = self.tlb_dirty;
+            let ghost before_flush = *self;
+            proof {
+                before_flush.lemma_flush_ready(c as int);
+            }
+            flush_cores(
+                bridge,
+                Tracked(flush_requester),
+                Tracked(self.tlb.borrow_mut()),
+                c,
+                targets,
+                send_ipi,
+                Tracked(steps),
+            );
+            self.tlb_dirty = 0;
+            proof {
+                Self::lemma_dirty_flushed(before_flush, *self, c);
+            }
+        } else {
+            proof {
+                self.lemma_clean_is_empty();
+            }
         }
         proof {
             let post = *self;
             assert(Self::dispatched(*old(self), mid, c as int, frame, ret));
-            assert(Self::only_core_changed(mid, post, c as int));
-            assert forall|e: TlbEntry| #[trigger] post.tlb@[c as int].contains(e) implies post.mapped@.contains(e.page) by {
-                if !post.mapped@.contains(e.page) {
-                    assert(post.blocks.tracks(e.page as int));
-                    assert(post.stale_epoch.above(post.acked(c as int), e.page));
-                    assert(post.stale_epoch.pages@[e.page as int] <= post.flush_epoch);
-                }
-            }
+            assert(Self::flushed_step(mid, post, c as int));
         }
         ret
     }

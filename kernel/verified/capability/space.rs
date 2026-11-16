@@ -2401,6 +2401,8 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.targeted == pre.targeted,
+            post.core_tags == pre.core_tags,
+            post.tlb_dirty == pre.tlb_dirty,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
@@ -2993,6 +2995,8 @@ impl CapKernel {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.devices == pre.devices
         &&& post.iommus.present == pre.iommus.present
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
@@ -3593,6 +3597,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).cores == old(self).cores,
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);

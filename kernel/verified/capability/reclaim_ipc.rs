@@ -78,6 +78,8 @@ impl CapKernel {
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
         &&& post.targeted == self.targeted
+        &&& post.core_tags == self.core_tags
+        &&& post.tlb_dirty == self.tlb_dirty
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.blocks.regions_2m@ == self.blocks.regions_2m@

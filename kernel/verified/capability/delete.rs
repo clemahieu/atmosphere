@@ -219,6 +219,8 @@ impl CapKernel {
         &&& post.list.parent@ == pre.list.parent@
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
@@ -333,6 +335,8 @@ impl CapKernel {
             assert(post.list.parent@ == pre.list.parent@);
             assert(post.flush_epoch == pre.flush_epoch);
             assert(post.targeted == pre.targeted);
+            assert(post.core_tags == pre.core_tags);
+            assert(post.tlb_dirty == pre.tlb_dirty);
             assert(post.tlb == pre.tlb);
             assert(post.iommus == pre.iommus);
             assert(post.mapped == pre.mapped);

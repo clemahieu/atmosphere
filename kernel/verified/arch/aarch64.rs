@@ -585,7 +585,12 @@ pub fn load_translation_root(
         old(model).pieces_wf() ==> final(model).pieces_wf(),
         old(model).wf() ==> final(model).wf(),
         forall|d: int| #[trigger] final(model).has(d) == old(model).has(d),
-        forall|d: int| #[trigger] final(model)[d] == old(model)[d],
+        final(model)[old(register).core()] == if tags_tlb(old(register).core()) {
+            old(model)[old(register).core()]
+        } else {
+            Set::<TlbEntry>::empty()
+        },
+        forall|d: int| d != old(register).core() ==> #[trigger] final(model)[d] == old(model)[d],
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), id)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {

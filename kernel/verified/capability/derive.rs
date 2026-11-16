@@ -413,6 +413,8 @@ impl CapKernel {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.iommus == pre.iommus
         &&& post.spaces.loaded == pre.spaces.loaded
         &&& post.spaces.kernel_root == pre.spaces.kernel_root
@@ -520,6 +522,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).iommus == old(self).iommus,
             final(self).spaces.loaded == old(self).spaces.loaded,
             final(self).spaces.kernel_root == old(self).spaces.kernel_root,

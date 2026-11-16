@@ -1170,6 +1170,8 @@ impl CapKernel {
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
@@ -1218,6 +1220,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
@@ -1281,6 +1285,8 @@ impl CapKernel {
                 &&& Self::link_done(pre, post, place.table, place.entry, child, s)
                 &&& post.flush_epoch == pre.flush_epoch
                 &&& post.targeted == pre.targeted
+                &&& post.core_tags == pre.core_tags
+                &&& post.tlb_dirty == pre.tlb_dirty
                 &&& discharges(pre.view(), post.view(), root, Effect::Local)
             },
         }
@@ -1303,6 +1309,8 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
     }
 
@@ -1427,6 +1435,8 @@ impl CapKernel {
         }
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
@@ -1447,6 +1457,8 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
     }
 
@@ -1491,6 +1503,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
@@ -1636,6 +1650,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).cores == old(self).cores,
             ret == old(self).can_map_large(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -1659,6 +1675,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).cores == old(self).cores,
             final(self).iommus.present == old(self).iommus.present,
             ret == old(self).can_map_large(root, slot, kind, SpacePath { l4, l3, l2, l1: 0 }, from, page),
@@ -1801,6 +1819,8 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
@@ -1913,6 +1933,8 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).targeted == old(self).targeted,
+            final(self).core_tags == old(self).core_tags,
+            final(self).tlb_dirty == old(self).tlb_dirty,
             final(self).iommus == old(self).iommus,
             final(self).tlb == old(self).tlb,
             final(self).mapped == old(self).mapped,
@@ -2906,6 +2928,8 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.targeted == pre.targeted,
+            post.core_tags == pre.core_tags,
+            post.tlb_dirty == pre.tlb_dirty,
             post.tlb == pre.tlb,
             post.iommus == pre.iommus,
             post.mapped@ == pre.mapped@.union(map_pages(frame, large)),

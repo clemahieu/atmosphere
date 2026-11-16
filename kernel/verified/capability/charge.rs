@@ -45,6 +45,8 @@ impl CapKernel {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
         &&& post.tlb == pre.tlb
@@ -219,9 +221,9 @@ impl CapKernel {
             assert(pre.tlb@.tags(d).contains(p));
         }
         assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e)
-            implies post.depends(d, e.space) by {
+            implies post.space_may_hold(d, e.space) by {
             assert(pre.tlb@[d].contains(e));
-            assert(pre.depends(d, e.space));
+            assert(pre.space_may_hold(d, e.space));
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)

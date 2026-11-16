@@ -65,6 +65,7 @@ impl CapKernel {
         registers: Tracked<Map<int, crate::arch::BaseRegister>>,
         tlb: Tracked<crate::arch::TlbModel>,
         iotlb: Tracked<crate::arch::IotlbModel>,
+        core_tags: crate::array::Array<bool, NUM_CPUS>,
         carve: usize,
         carve_perm: Tracked<vstd::raw_ptr::PointsToRaw>,
         exposed: Tracked<vstd::raw_ptr::IsExposed>,
@@ -74,6 +75,8 @@ impl CapKernel {
             boot_registers(registers@, PAGE_SZ),
             boot_tlb(tlb@),
             boot_iotlb(iotlb@),
+            boot_tags_tlb(core_tags@),
+            core_tags.wf(),
             carve % PAGE_SZ == 0,
             carve + spec_metadata_layout(NUM_PAGES).bytes <= usize::MAX,
             carve_perm@.is_range(carve as int, spec_metadata_layout(NUM_PAGES).bytes as int),
@@ -81,7 +84,7 @@ impl CapKernel {
         ensures
             false,
     {
-        self.witness_kernel_init(pages, registers, tlb, iotlb, carve, carve_perm, exposed);
+        self.witness_kernel_init(pages, registers, tlb, iotlb, core_tags, carve, carve_perm, exposed);
     }
 }
 
