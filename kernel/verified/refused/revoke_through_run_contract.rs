@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! revoke_contract under R3 (position through pc in c's run) does not return a non-refused outcome.
+//! revoke_contract under R3 (position through pc deeper than c, with c's block holding pc's) does not
+//! return a non-refused outcome.
 //! design/refused-claim-per-way/.
 //!
 //! refused: wrong: CapKernel::revoke_contract(pre, post, root, Some(at), out)

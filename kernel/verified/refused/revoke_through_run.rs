@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! revoke through a process capability in c's run (R3) does not answer Done, Again, or Exhausted:
+//! revoke through a process capability pc that depth and block containment say may be in c's run
+//! (R3) does not answer Done, Again, or Exhausted:
 //! revoke_answered and spec_revoked must refuse.
 //! design/refused-claim-per-way/.
 //!

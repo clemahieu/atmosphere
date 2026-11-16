@@ -1186,7 +1186,8 @@ impl CapKernel {
 
     /// A revoke in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, when allows_revoke fails (a bad position word, no
-    /// capability there, or R3: a position through a process capability in the capability's run);
+    /// capability there, or R3: a position through a process capability that depth and block
+    /// containment say may be in the capability's run, which every one in it is and some outside it);
     /// refused with the flush epoch at its limit, which a revoke reaches only from an epoch within
     /// REVOKE_BUDGET of it, raised by no more than the nodes it took of the run of the capability at
     /// the position the slot's word names; again with exactly REVOKE_BUDGET nodes of that run taken and
@@ -1295,8 +1296,8 @@ impl CapKernel {
     }
 
     /// Whether the revoke in frame takes a step: the slot word a position that holds a capability,
-    /// and if the position goes through a process capability pc, R3 does not hold (pc is not in c's
-    /// run by depth and block containment).
+    /// and if the position goes through a process capability pc, R3 does not hold: pc is not deeper
+    /// than c with c's block holding pc's, which every pc in c's run is and some outside it are too.
     pub open spec fn allows_revoke(&self, root: usize, frame: Registers) -> bool {
         let at = spec_position(frame.slot());
         at is Some && self.can_revoke_at(root, at->0)
@@ -1829,7 +1830,9 @@ impl CapKernel {
     }
 
     /// A revoke reaches revoke: refused with nothing changed unless the slot's word names a position
-    /// holding a capability whose position does not go through a process capability in its run (R3);
+    /// holding a capability whose position does not go through a process capability that depth and
+    /// block containment say may be in its run (R3), a test every one in the run meets and some
+    /// outside it meet too;
     /// otherwise revoke's Done, ok with the capability's run empty; its Again, again with some of the
     /// run left; or its Exhausted, refused with the flush epoch at its limit, and only from an epoch
     /// within REVOKE_BUDGET of it, raised to the limit by no more than the nodes it took, so from any

@@ -535,8 +535,8 @@ impl CapKernel {
 
     /// Revoke's condition over the caller's view: the position word names a position, the position is
     /// in a table, the slot there holds a capability, and if the position goes through a process
-    /// capability pc, R3 does not hold (pc is not in c's run by depth and block containment). The
-    /// depths read the list outside the view.
+    /// capability pc, R3 does not hold: pc is not deeper than c with c's block holding pc's, which
+    /// every pc in c's run is and some outside it are too. The depths read the list outside the view.
     pub open spec fn revoke_allowed(&self, root: usize, at: Option<Position>) -> bool {
         let table = self.view_table_at(root, at->0.through);
         &&& at is Some

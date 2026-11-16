@@ -2403,7 +2403,8 @@ pub trait RevokeBudget {
     ;
 }
 
-/// revoke under R3 (position through pc in c's run) does not answer Done, Again, or Exhausted:
+/// revoke under R3 (position through pc deeper than c, with c's block holding pc's) does not answer
+/// Done, Again, or Exhausted:
 /// it must be refused.
 /// design/refused-claim-per-way/.
 pub trait RevokeThroughRun {

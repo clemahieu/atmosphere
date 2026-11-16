@@ -743,10 +743,13 @@ impl CapKernel {
         &&& post.processes.records == pre.processes.records
     }
 
-    /// Whether revoking the capability at `at` from `root` goes through a process capability `pc`
-    /// in that capability's own run (R3): `at` goes through a capability `pc` in `root`'s table
-    /// whose depth is greater than `c`'s, and `c` is a process capability naming `pc`'s base or an
-    /// untyped whose block holds `pc`'s order-3 process block.
+    /// Whether revoking the capability `c` at `at` from `root` goes through a process capability `pc`
+    /// that depth and block containment say may be in `c`'s own run (R3): `at` goes through a
+    /// capability `pc` in `root`'s table whose depth is greater than `c`'s, and `c` is a process
+    /// capability naming `pc`'s base or an untyped whose block holds `pc`'s order-3 process block.
+    /// Every `pc` in `c`'s run meets it (lemma_can_revoke_not_below), and so do some outside it, such
+    /// as the capability to a process retyped under a sibling of an untyped `c` derived over the same
+    /// block. Claiming `c` into the caller's table first serves either.
     pub open spec fn revoke_through_run(&self, root: usize, at: Position) -> bool {
         match at.through {
             None => false,
@@ -802,7 +805,8 @@ impl CapKernel {
     }
 
     /// What revoke returned for the capability at a position, in revoke's own result. Refused is the
-    /// index naming no capability or a position through a process capability in its run (R3), and
+    /// index naming no capability or a position through a process capability that depth and block
+    /// containment say may be in its run (R3), and
     /// then nothing changed; an epoch already at its limit changes nothing either. Exhausted, which
     /// the entry also reports as refused, is that limit reached with the run unfinished. Again took
     /// exactly REVOKE_BUDGET nodes and left some of the run; Done is the run empty. A step that was
@@ -861,15 +865,17 @@ impl CapKernel {
         }
     }
 
-    /// Revokes the capability at a position, an index of the caller's table, at root, or of the table
-    /// of a process the caller controls, live or dead, for at most REVOKE_BUDGET steps. The position
-    /// comes from user space, so it can be refused; a position through a process capability in the
-    /// capability's own run (R3) is also refused with nothing changed, since unlinking it would strand
-    /// the run. Otherwise the capability's own slot can leave its table during the call, if the leaf
-    /// holding it is in its run, so the steps name the capability's node and the authority is the
-    /// caller's when the call began. Every page of a mapping it took is stale past the epoch it began
-    /// at, so no core or IOMMU counts as having flushed it on an acknowledgement from before the call,
-    /// and no IOMMU acknowledges during it: only a flush does that.
+    /// Revokes the capability at a position, an index of the caller's table, at root, or of the
+    /// table of a process the caller controls, live or dead, for at most REVOKE_BUDGET steps. The
+    /// position comes from user space, so it can be refused; a position through a process
+    /// capability that depth and block containment say may be in the capability's own run (R3) is
+    /// also refused with nothing changed, since unlinking one that is would strand the run; the
+    /// test refuses some outside the run too, and claiming the capability first serves either.
+    /// Otherwise the capability's own slot can leave its table during the call, if the leaf holding
+    /// it is in its run, so the steps name the capability's node and the authority is the caller's
+    /// when the call began. Every page of a mapping it took is stale past the epoch it began at, so
+    /// no core or IOMMU counts as having flushed it on an acknowledgement from before the call, and
+    /// no IOMMU acknowledges during it: only a flush does that.
     pub fn revoke(&mut self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: RevokeStep)
         requires
             old(self).wf(),
