@@ -261,6 +261,13 @@ pub fn flush_page(context: usize, address: u64) {
     invpcid(0, context, address);
 }
 
+/// Makes `flush` on every core without asking them, and says whether it did: never, a flush reaching
+/// another core on this target by an IPI.
+#[cfg(feature = "flush_cost")]
+pub fn broadcast_flush(_flush: crate::flush::cost::Flush) -> bool {
+    false
+}
+
 /// Gives up what runs on the stack whose top is `stack` and waits there for interrupts, for good: the
 /// core runs nothing, and an interrupt's handler leaves the wait by returning to a thread. Interrupts
 /// arrive on their own stack (`interrupt::IST_IRQ`), so the wait's stack is never theirs.

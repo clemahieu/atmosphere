@@ -338,6 +338,28 @@ pub fn flush_page(context: usize, address: u64) {
     unsafe { asm!("dsb ishst", "tlbi vae1, {operand}", "dsb ish", "isb", operand = in(reg) operand, options(nostack, preserves_flags)) };
 }
 
+/// Makes `flush` on every core in the inner shareable domain, and says it did: TLBI VMALLE1IS for
+/// every context, ASIDE1IS for one ASID's non-global entries, VAE1IS for one page of one ASID, their
+/// operands as flush_context's and flush_page's, between the barriers flush_every_context uses. The
+/// DSB ISH after the TLBI waits until every core in the domain has made it (Arm ARM B2.6.9.1), so no
+/// IPI asks them.
+#[cfg(feature = "flush_cost")]
+pub fn broadcast_flush(flush: crate::flush::cost::Flush) -> bool {
+    use crate::flush::cost::Flush;
+    match flush {
+        Flush::Every => unsafe { asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb", options(nostack, preserves_flags)) },
+        Flush::Context(context) => {
+            let operand = (context as u64) << TTBR_ASID_SHIFT;
+            unsafe { asm!("dsb ishst", "tlbi aside1is, {operand}", "dsb ish", "isb", operand = in(reg) operand, options(nostack, preserves_flags)) }
+        }
+        Flush::Page(context, address) => {
+            let operand = (context as u64) << TTBR_ASID_SHIFT | (address >> 12) & TLBI_ADDRESS_MASK;
+            unsafe { asm!("dsb ishst", "tlbi vae1is, {operand}", "dsb ish", "isb", operand = in(reg) operand, options(nostack, preserves_flags)) }
+        }
+    }
+    true
+}
+
 /// Gives up what runs on the stack whose top is `stack` and waits there for interrupts, for good: the
 /// core runs nothing, and an interrupt's handler leaves the wait by entering a thread
 /// ([`exception::enter`]), which takes SP_EL1 back to the top of the syscall stack. An IRQ from the

@@ -313,25 +313,79 @@ pub mod cost {
         time(case, || REQUEST.fetch_add(1, Ordering::SeqCst) + 1, |request| SERVED.load(Ordering::SeqCst) == request);
     }
 
-    /// CPU 0's side: every case, after check_second_core timed the halted one, then CPU 1 back to idle.
-    pub fn measure() {
+    /// A flush CPU 0 makes and times itself: every context, one context's entries, or one page of one
+    /// context.
+    #[derive(Clone, Copy)]
+    pub enum Flush {
+        Every,
+        Context(usize),
+        Page(usize, u64),
+    }
+
+    /// The page CPU 0's one-page flushes name: one nothing maps, so a flush leaves nothing to refill.
+    const UNMAPPED_PAGE: u64 = 0;
+
+    /// The flushes CPU 0 times, each with its name, naming the context it runs.
+    fn flushes() -> [(&'static str, Flush); 3] {
+        let context = arch::current_context();
+        [("every context", Flush::Every), ("its context", Flush::Context(context)), ("one page", Flush::Page(context, UNMAPPED_PAGE))]
+    }
+
+    /// Makes `flush` on this core alone, and says whether this core can, given whether it can flush one
+    /// context of its own ([`arch::context_flush_available`], which is not timed: CPUID exits under
+    /// KVM).
+    fn flush_here(flush: Flush, context_flush: bool) -> bool {
+        match flush {
+            Flush::Every => flush_this_core(cpu::get_cpu_id()),
+            _ if !context_flush => return false,
+            Flush::Context(context) => arch::flush_context(context),
+            Flush::Page(context, address) => arch::flush_page(context, address),
+        }
+        true
+    }
+
+    /// Times CHECK_ROUNDS of `flush`, which says whether this core can make it, and logs the fastest and
+    /// the mean to a hundredth of a cycle as `case`, or that this core cannot.
+    fn time_flush(case: &str, name: &str, flush: impl Fn() -> bool) {
+        if !flush() {
+            log::info!("flush cost: CPU 0 {} {}: not available", case, name);
+            return;
+        }
         let (mut fastest, mut total) = (u64::MAX, 0);
         for _ in 0..CHECK_ROUNDS {
             let started = arch::cycles();
-            flush_this_core(cpu::get_cpu_id());
+            flush();
             let cycles = arch::cycles() - started;
             fastest = fastest.min(cycles);
             total += cycles;
         }
         log::info!(
-            "flush cost: CPU 0 flushing every context itself: fastest {} mean {} cycles over {} rounds",
-            fastest, total / CHECK_ROUNDS, CHECK_ROUNDS,
+            "flush cost: CPU 0 {} {}: fastest {} mean {}.{:02} cycles over {} rounds",
+            case, name, fastest, total / CHECK_ROUNDS, total * 100 / CHECK_ROUNDS % 100, CHECK_ROUNDS,
         );
+    }
+
+    /// CPU 0 broadcasting each flush to every core, with CPU 1 as `cpu_1` says.
+    fn time_broadcasts(cpu_1: &str) {
+        for (name, flush) in flushes() {
+            time_flush(cpu_1, name, || arch::broadcast_flush(flush));
+        }
+    }
+
+    /// CPU 0's side: every case, after check_second_core timed the halted one, then CPU 1 back to idle.
+    /// CPU 0 times each flush made on itself alone, and broadcast with CPU 1 halted and with it running.
+    pub fn measure() {
+        let context_flush = arch::context_flush_available(false);
+        for (name, flush) in flushes() {
+            time_flush("flushing itself", name, || flush_here(flush, context_flush));
+        }
+        time_broadcasts("broadcasting, CPU 1 halted,");
         if !enter(RUNNING) {
             log::error!("flush cost: CPU 1 did not start running");
             return;
         }
         time("running, interrupts open, IPI", || start(1), |epoch| acknowledged(1, epoch));
+        time_broadcasts("broadcasting, CPU 1 running,");
         if !enter(SPINNING) {
             log::error!("flush cost: CPU 1 did not start spinning");
             return;
