@@ -10,7 +10,7 @@ use vstd::prelude::*;
 verus! {
 
 #[cfg(verus_keep_ghost)]
-use crate::capability::derive::{badge_kept_at, badges_inherited};
+use crate::capability::derive::{badge_kept_at, badges_inherited, cap_contained, caps_contained};
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::console::*;
@@ -1359,6 +1359,9 @@ impl CapKernel {
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, root, child);
             Self::lemma_badges_derived(pre, post, root, child);
+            assert(root == pre.list.seq@[0]);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            Self::lemma_caps_contained_derived(pre, post, root, child);
             Self::lemma_tlb_same(pre, post);
             assert(post.wf());
             Self::lemma_derive_step_adds_cap(pre, post, child);
@@ -1758,6 +1761,9 @@ impl CapKernel {
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, root, child);
             Self::lemma_badges_derived(pre, post, root, child);
+            assert(root == pre.list.seq@[0]);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            Self::lemma_caps_contained_derived(pre, post, root, child);
             Self::lemma_tlb_same(pre, post);
             assert(post.wf());
             Self::lemma_derive_step_adds_cap(pre, post, child);
@@ -2020,6 +2026,9 @@ impl CapKernel {
         assert(post.is_cap(child));
         Self::lemma_space_caps_wf(pre, post, child);
         Self::lemma_tlb_same(pre, post);
+        assert(parent == pre.list.seq@[0]);
+        assert(!pre.tables.owner@.contains_key(page_of(parent)));
+        assert(!pre.is_cap(parent));
         Self::lemma_space_nodes(pre, post, mid, parent, child);
         Self::lemma_table_nodes_frame(pre, post, child, child);
         Self::lemma_space_nodes_frame(pre, post, child, child);
@@ -2737,6 +2746,16 @@ impl CapKernel {
                 assert(post.is_cap(n));
                 assert(n == cap);
                 assert(!post.tables.owner@.contains_key(page_of(root)));
+            }
+        }
+        // The one capability's parent is the list's first node.
+        assert(caps_contained(&list, &post.tables)) by {
+            reveal(caps_contained);
+            assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n) implies cap_contained(&list, &post.tables, n) by {
+                assert(post.is_cap(n));
+                assert(n == cap);
+                assert(list.parent@[cap] == root);
+                assert(list.seq@[0] == root);
             }
         }
         // The objects.

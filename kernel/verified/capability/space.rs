@@ -16,7 +16,7 @@ use crate::array::*;
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
-use crate::capability::derive::{badge_kept, badge_kept_at, badges_inherited};
+use crate::capability::derive::{badge_kept, badge_kept_at, badges_inherited, block_within, cap_contained, caps_contained};
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
 #[cfg(verus_keep_ghost)]
@@ -2261,6 +2261,7 @@ impl CapKernel {
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
             badges_inherited(&post.list, &post.tables),
+            caps_contained(&post.list, &post.tables),
     {
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
             && post.list.nodes@[x as int].kind is Hidden
@@ -2290,6 +2291,13 @@ impl CapKernel {
             assert(x != base);
         }
         Self::lemma_badges_kept(pre, post);
+        assert(list_grown(pre.list, mid));
+        assert(post.list.seq@[0] == pre.list.seq@[0]);
+        assert forall|x: usize| #[trigger] pre.is_cap(x)
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            Self::lemma_table_page_cap(pre, post, x);
+        }
+        Self::lemma_caps_contained_kept(pre, post);
     }
 
     /// Every node the list held keeps its liveness and kind when pages are added and then node `base`,
@@ -3245,6 +3253,11 @@ impl CapKernel {
             },
             post.table_pages == pre.table_pages,
             pre.is_cap(parent) ==> badge_kept(pre.payload_of(parent), post.payload_of(child)),
+            pre.is_cap(parent) ==> {
+                &&& block_within(post.payload_of(child).base, post.payload_of(child).order, pre.payload_of(parent))
+                &&& (pre.payload_of(parent).kind == post.payload_of(child).kind
+                    || pre.payload_of(parent).kind is Untyped)
+            },
         ensures
             hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
             parents_are_capabilities(&post.list),
@@ -3252,6 +3265,7 @@ impl CapKernel {
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
             badges_inherited(&post.list, &post.tables),
+            caps_contained(&post.list, &post.tables),
             forall|x: usize| x < NODE_SPACE && x != child && (#[trigger] post.list.nodes@[x as int]).live
                 ==> pre.list.nodes@[x as int].live && pre.list.valid(x),
     {
@@ -3308,6 +3322,28 @@ impl CapKernel {
             assert(x != child);
         }
         Self::lemma_badges_kept(pre, post);
+        if pre.is_cap(parent) {
+            Self::lemma_space_cap_frame(pre, post, child, parent);
+            assert(post.payload_of(parent) == pre.payload_of(parent));
+        } else {
+            assert(parent == pre.list.seq@[0]);
+        }
+        assert(post.list.parent@[child] == parent);
+        assert(cap_contained(&post.list, &post.tables, child));
+        assert forall|x: usize| #[trigger] post.is_cap(x) implies {
+            ||| pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x)
+            ||| !pre.list.nodes@[x as int].live && cap_contained(&post.list, &post.tables, x)
+        } by {
+            if x != child {
+                Self::lemma_space_cap_frame(pre, post, child, x);
+            }
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x)
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(x != child);
+            Self::lemma_space_cap_frame(pre, post, child, x);
+        }
+        Self::lemma_caps_contained_kept(pre, post);
     }
 
     /// The space clause after a space's retype at base: the new space's node pages were not the list's,
@@ -3640,6 +3676,13 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
+        proof {
+            // The parent is an untyped capability and the new block lies in its block.
+            assert(pre.can_retype(root, from, to, base, 3));
+            assert(parent == pre.tables.node_of(root, from));
+            assert(pre.payload_of(parent).kind is Untyped);
+            assert(block_within(base, 3, pre.payload_of(parent)));
+        }
         if !self.blocks.run_tracked(base / PAGE_SZ, 8) {
             return false;
         }
@@ -3769,6 +3812,9 @@ impl CapKernel {
             assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));
             Self::lemma_tree_extended_left_stale(pre, post);
             Self::lemma_tlb_same(pre, post);
+            assert(post.payload_of(child).base == base && post.payload_of(child).order == 3);
+            assert(block_within(post.payload_of(child).base, post.payload_of(child).order, pre.payload_of(parent)));
+            assert(pre.payload_of(parent).kind is Untyped);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
             Self::lemma_table_nodes_frame(pre, post, child, child);
             assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));

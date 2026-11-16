@@ -466,6 +466,41 @@ impl Tree {
     {
     }
 
+    /// Walking k steps up a listed node, with k at most its depth, stays on listed nodes and loses one
+    /// depth per step. At k equal to the depth the walk is the root.
+    pub proof fn lemma_anc_depth(&self, x: usize, k: nat)
+        requires
+            self.wf(),
+            x < NODE_SPACE,
+            self.nodes@[x as int].live,
+            k <= self.d(x),
+        ensures
+            self.anc(x, k) < NODE_SPACE,
+            self.nodes@[self.anc(x, k) as int].live,
+            self.d(self.anc(x, k)) + k == self.d(x),
+            k == self.d(x) ==> self.anc(x, k) == self.seq@[0],
+        decreases k,
+    {
+        let s = self.seq@;
+        assert(has(s, x));
+        lemma_has(s, x);
+        let j = choose|j: int| 0 <= j < s.len() && s[j] == x;
+        self.lemma_link(j);
+        if k == 0 {
+            if self.d(x) == 0 {
+                assert(j == 0);
+            }
+        } else {
+            assert(j != 0);
+            assert(self.parent@.contains_key(x));
+            self.lemma_parent_live(x);
+            let p = self.parent@[x];
+            assert(self.d(x) == self.d(p) + 1);
+            self.lemma_anc_depth(p, (k - 1) as nat);
+            assert(self.anc(x, k) == self.anc(p, (k - 1) as nat));
+        }
+    }
+
     /// A next node that is deeper is one deeper: it is a child, since everything between a parent and
     /// its child is deeper than the parent.
     pub proof fn lemma_next_deeper(&self, k: int)

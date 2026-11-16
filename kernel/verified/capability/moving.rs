@@ -12,7 +12,7 @@ use vstd::prelude::*;
 verus! {
 
 #[cfg(verus_keep_ghost)]
-use crate::capability::derive::badge_kept_at;
+use crate::capability::derive::{badge_kept_at, block_within, cap_contained, caps_contained};
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 #[cfg(verus_keep_ghost)]
@@ -525,6 +525,7 @@ impl CapKernel {
             Self::lemma_caps_frame(pre, post, i, n, q);
             assert(badge_kept_at(&post.list, &post.tables, n));
             Self::lemma_badges_caps_frame(pre, post, i, n);
+            Self::lemma_caps_contained_moved(pre, post, i, n);
             Self::lemma_move_holders(pre, post, i, n);
             Self::lemma_move_mappings(pre, post, i, n);
             Self::lemma_move_devices(pre, post, i, n);
@@ -534,6 +535,66 @@ impl CapKernel {
             Self::lemma_bound_threads_same(pre, post);
         }
         true
+    }
+
+    /// The containment after a move. The capability keeps its parent and what the parent says, and
+    /// neither name is the list's first node, so the block it lies in is the block it lay in.
+    proof fn lemma_caps_contained_moved(pre: Self, post: Self, i: usize, n: usize)
+        requires
+            Self::caps_frame(pre, post, i, n),
+            pre.is_cap(i),
+            post.is_cap(n),
+            post.payload_of(n) == pre.payload_of(i),
+            !pre.list.nodes@[n as int].live,
+            !post.list.nodes@[i as int].live,
+            post.list.parent@[n] == pre.list.parent@[i],
+            exists|p: int| 0 <= p < pre.list.seq@.len() && #[trigger] pre.list.seq@[p] == i
+                && post.list.seq@ == pre.list.seq@.update(p, n),
+            forall|x: usize| x != i && x != n && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x)
+                    && post.list.parent@[x] == rename(pre.list.parent@[x], i, n),
+        ensures
+            caps_contained(&post.list, &post.tables),
+    {
+        reveal(caps_contained);
+        assert(pre.tables.is_cap(&pre.list, i));
+        assert(cap_contained(&pre.list, &pre.tables, i));
+        assert(first_node_outside_leaves(&pre.list, &pre.tables));
+        assert(pre.tables.owner@.contains_key(page_of(i)));
+        assert(!pre.tables.owner@.contains_key(page_of(pre.list.seq@[0])));
+        assert(i != pre.list.seq@[0]);
+        pre.list.lemma_link(0);
+        assert(n != pre.list.seq@[0]);
+        let ghost p = choose|p: int| 0 <= p < pre.list.seq@.len() && #[trigger] pre.list.seq@[p] == i
+            && post.list.seq@ == pre.list.seq@.update(p, n);
+        assert(p != 0);
+        assert(post.list.seq@[0] == pre.list.seq@[0]);
+        pre.lemma_parent_of_cap(i);
+        let q = pre.list.parent@[i];
+        assert(q != i);
+        assert(pre.list.nodes@[q as int].live);
+        assert(q != n);
+        if q == pre.list.seq@[0] {
+            assert(post.list.parent@[n] == post.list.seq@[0]);
+        } else {
+            assert(pre.is_cap(q));
+            Self::lemma_caps_frame(pre, post, i, n, q);
+            assert(post.is_cap(q) && post.payload_of(q) == pre.payload_of(q));
+            let (child, held) = (post.payload_of(n), post.payload_of(q));
+            assert(child == pre.payload_of(i));
+            assert(held == pre.payload_of(q));
+            if pre.payload_of(q).kind == pre.payload_of(i).kind {
+                assert(block_within(child.base, child.order, held));
+            } else {
+                assert(pre.payload_of(q).kind is Untyped);
+                assert(block_within(child.base, child.order, held));
+            }
+        }
+        assert(cap_contained(&post.list, &post.tables, n));
+        assert(i != n);
+        assert(!pre.is_cap(n));
+        assert(!post.is_cap(i));
+        Self::lemma_caps_contained_caps_frame(pre, post, i, n);
     }
 
     /// The holders after a move: the node a frame held its block by has a new name, and no count changed.

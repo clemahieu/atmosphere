@@ -769,6 +769,10 @@ impl CapKernel {
             }
             lemma_parents_derived(mid.list, post.list, root, child);
             Self::lemma_badges_derived(mid, post, root, child);
+            assert(mid.list == pre.list);
+            assert(root == mid.list.seq@[0]);
+            assert(post.list.seq@[0] == mid.list.seq@[0]);
+            Self::lemma_caps_contained_derived(mid, post, root, child);
             Self::lemma_tlb_same(mid, post);
             assert(post.wf());
             Self::lemma_derive_step_adds_cap(mid, post, child);

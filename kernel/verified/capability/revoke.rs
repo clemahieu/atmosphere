@@ -1609,6 +1609,9 @@ impl CapKernel {
             Self::lemma_bindings_caps_frame(pre, post, r, r);
         }
         Self::lemma_badges_caps_frame(pre, post, r, r);
+        assert(r != pre.list.seq@[0]);
+        assert(!post.list.nodes@[r as int].live);
+        Self::lemma_caps_contained_caps_frame(pre, post, r, r);
         Self::lemma_tlb_same(mid, post);
         assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
         Self::lemma_caps_frame(pre, post, r, r, c);

@@ -325,6 +325,9 @@ impl CapKernel {
                 && post.list.seq@ == pre.list.seq@.remove(p);
             assert(p != 0);
             assert(post.list.seq@[0] == pre.list.seq@[0]);
+            assert(n != pre.list.seq@[0]);
+            assert(!post.list.nodes@[n as int].live);
+            Self::lemma_caps_contained_caps_frame(pre, post, n, n);
             lemma_parents_removed(pre.list, post.list, n);
             assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
             Self::lemma_delete_removes(pre, post, n);

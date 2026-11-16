@@ -352,6 +352,9 @@ impl CapKernel {
             Self::lemma_revoke_binding_holders(pre, post, t);
             Self::lemma_device_bindings_caps_frame(pre, post, t, t);
             Self::lemma_badges_caps_frame(pre, post, t, t);
+            assert(t != pre.list.seq@[0]);
+            assert(!post.list.nodes@[t as int].live);
+            Self::lemma_caps_contained_caps_frame(pre, post, t, t);
             Self::lemma_same_tree_shrunk(pre, post);
             Self::lemma_tlb_same(mid, post);
             assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
@@ -835,6 +838,8 @@ impl CapKernel {
             }
         }
         Self::lemma_badges_same_caps(pre, post);
+        assert(post.list.seq@[0] == pre.list.seq@[0]);
+        Self::lemma_caps_contained_same_caps(pre, post);
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_device_bindings_space_caps(pre, post);
         assert forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) && t != base implies {

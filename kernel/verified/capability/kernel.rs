@@ -17,7 +17,7 @@ use crate::array::Array;
 use crate::column::Column;
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
-use crate::capability::derive::badges_inherited;
+use crate::capability::derive::{badges_inherited, caps_contained};
 use crate::capability::device::*;
 use crate::capability::endpoint::*;
 use crate::capability::reply::*;
@@ -1802,6 +1802,7 @@ impl CapKernel {
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
         &&& badges_inherited(&self.list, &self.tables)
+        &&& caps_contained(&self.list, &self.tables)
         &&& first_node_outside_leaves(&self.list, &self.tables)
         &&& leaf_slots_are_capabilities(&self.list, &self.tables)
         &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
@@ -2553,6 +2554,11 @@ impl CapKernel {
             reveal(binding_parents);
             reveal(placements_wf);
             reveal(badges_inherited);
+            // Revealed here alone. The block quantifier is arithmetic, and left open it crowds the
+            // register fact above, which is all the aarch64 proof of this function has room for.
+            assert(caps_contained(&self.list, &self.tables)) by {
+                reveal(caps_contained);
+            };
             // Revealed for this fact alone: its node and record quantifiers feed each other, and the
             // device table's pairwise one multiplies what they produce.
             assert(device_bindings_wf(&self.list, &self.tables, self.spaces.bound@, &self.devices)) by {

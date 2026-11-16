@@ -13,7 +13,7 @@ verus! {
 
 use crate::array::Array;
 #[cfg(verus_keep_ghost)]
-use crate::capability::derive::badges_inherited;
+use crate::capability::derive::{badges_inherited, caps_contained};
 #[cfg(verus_keep_ghost)]
 use crate::capability::endpoint::*;
 #[cfg(verus_keep_ghost)]
@@ -943,6 +943,9 @@ impl CapKernel {
             Self::lemma_add_device_devices(pre, post, child, d as int);
             lemma_parents_derived(pre.list, post.list, first, child);
             Self::lemma_badges_derived(pre, post, first, child);
+            assert(first == pre.list.seq@[0]);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            Self::lemma_caps_contained_derived(pre, post, first, child);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_derive_step_adds_cap(pre, post, child);
         }
@@ -1646,6 +1649,7 @@ impl CapKernel {
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
             badges_inherited(&post.list, &post.tables),
+            caps_contained(&post.list, &post.tables),
             table_nodes_are_mappings(&post.list, &post.table_pages),
             space_nodes_dead(&post.list, &post.spaces),
             devices_wf(&post.list, &post.tables, &post.devices),
@@ -1673,6 +1677,8 @@ impl CapKernel {
         }
         lemma_parents_derived(pre.list, post.list, m, x);
         Self::lemma_badges_node_added(pre, post, x, m);
+        assert(post.list.seq@[0] == pre.list.seq@[0]);
+        Self::lemma_caps_contained_node_added(pre, post, x, m);
         assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Capability
             && y != post.list.seq@[0] implies post.tables.is_cap(&post.list, y) by {
             assert(y != x);

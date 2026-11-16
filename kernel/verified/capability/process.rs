@@ -1367,6 +1367,13 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
+        proof {
+            // The parent is an untyped capability and the new block lies in its block.
+            assert(pre.can_retype(root, from, to, base, PROCESS_ORDER));
+            assert(parent == pre.tables.node_of(root, from));
+            assert(pre.payload_of(parent).kind is Untyped);
+            assert(block_within(base, PROCESS_ORDER, pre.payload_of(parent)));
+        }
         if !self.blocks.run_tracked(base / PAGE_SZ, 8) {
             return false;
         }
@@ -1503,6 +1510,9 @@ impl CapKernel {
             Self::lemma_tree_extended_left_stale(pre, post);
             Self::lemma_tlb_same(pre, post);
             assert(list_grown(pre.list, mid));
+            assert(post.payload_of(child).base == base && post.payload_of(child).order == PROCESS_ORDER);
+            assert(block_within(post.payload_of(child).base, post.payload_of(child).order, pre.payload_of(parent)));
+            assert(pre.payload_of(parent).kind is Untyped);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
             Self::lemma_table_nodes_frame(pre, post, child, child);
             assert(!pre.spaces.roots@.contains_key(base)) by {

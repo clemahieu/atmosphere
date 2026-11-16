@@ -544,6 +544,12 @@ impl CapKernel {
             Self::lemma_retype_holders(pre, post, child, base, order);
             lemma_parents_derived(pre.list, post.list, parent, child);
             Self::lemma_badges_derived(pre, post, parent, child);
+            assert(pre.can_retype(root, from, to, base, order));
+            assert(pre.payload_of(parent).kind is Untyped);
+            assert(block_within(base, order, pre.payload_of(parent)));
+            assert(post.payload_of(child).base == base && post.payload_of(child).order == order);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            Self::lemma_caps_contained_derived(pre, post, parent, child);
             Self::lemma_tlb_same(pre, post);
             assert(FRAME_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
@@ -1600,6 +1606,21 @@ impl CapKernel {
                 }
                 Self::lemma_badges_kept(pre, post);
             }
+            // The leaf's hidden node is no capability, and every capability keeps its parent.
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            assert forall|x: usize| #[trigger] post.is_cap(x)
+                implies pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+                Self::lemma_leaf_cap(pre, post, base, x);
+            }
+            assert forall|x: usize| #[trigger] pre.is_cap(x)
+                implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+                Self::lemma_leaf_cap(pre, post, base, x);
+            }
+            assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.list.parent@[x] == pre.list.parent@[x] by {
+                pre.lemma_slot_bound(x);
+                assert(x != base);
+            }
+            Self::lemma_caps_contained_kept(pre, post);
             assert forall|k: int| 0 <= k < 2 implies !((#[trigger] post.blocks.pages@[page + k]).object is Space) by {
                 if k == 0 {
                     assert(post.blocks.pages@[page as int].object is TableLeaf);

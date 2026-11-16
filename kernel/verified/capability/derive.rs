@@ -92,6 +92,41 @@ pub open spec fn block_within(base: usize, order: u8, parent: Payload) -> bool {
     &&& base as int + block_bytes(order) <= parent.base as int + block_bytes(parent.order)
 }
 
+/// Within a block is within any block that holds that block.
+pub proof fn lemma_block_within_trans(base: usize, order: u8, mid: Payload, outer: Payload)
+    requires
+        block_within(base, order, mid),
+        block_within(mid.base, mid.order, outer),
+    ensures
+        block_within(base, order, outer),
+{
+    assert(order <= outer.order);
+    assert(outer.base <= base);
+    assert(base as int % block_bytes(order) == 0);
+    assert(base as int + block_bytes(order) <= outer.base as int + block_bytes(outer.order));
+}
+
+/// Capability n's parent is the list's first node, or a capability of n's kind whose block holds n's,
+/// or an untyped capability whose block holds n's. The list's first node is the root, and it is not
+/// in a table. Hidden nodes, mappings, bindings and placements are not capabilities.
+pub open spec fn cap_contained(list: &Tree, tables: &Tables, n: usize) -> bool {
+    let p = list.parent@[n];
+    let child = tables.payload_of(n);
+    ||| p == list.seq@[0]
+    ||| tables.is_cap(list, p) && tables.payload_of(p).kind == child.kind
+        && block_within(child.base, child.order, tables.payload_of(p))
+    ||| tables.is_cap(list, p) && tables.payload_of(p).kind is Untyped
+        && block_within(child.base, child.order, tables.payload_of(p))
+}
+
+/// Every capability's block lies within its parent's, or its parent is the list's first node.
+/// Opaque, as badges_inherited is, so the node quantifier stays out of proofs that only mention a
+/// capability.
+#[verifier::opaque]
+pub open spec fn caps_contained(list: &Tree, tables: &Tables) -> bool {
+    forall|n: usize| #[trigger] tables.is_cap(list, n) ==> cap_contained(list, tables, n)
+}
+
 /// The child's rights and block lie within the parent's. Only a block of memory can be narrowed: any
 /// other object is its block's base. And control reads a capability's name alone, so a child that
 /// keeps control keeps the parent's block. A core capability's child allows no higher a priority.
@@ -709,6 +744,22 @@ impl CapKernel {
             Self::lemma_caps_frame(pre, post, child, child, parent);
             assert(badge_kept_at(&post.list, &post.tables, child));
             Self::lemma_badges_caps_frame(pre, post, child, child);
+            // The child narrows its parent, so its block lies in that capability's. The child is a
+            // slot that was not live, so it is not the list's first node.
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            pre.list.lemma_link(0);
+            assert(!pre.list.nodes@[child as int].live);
+            assert(child != pre.list.seq@[0]);
+            assert(post.payload_of(child) == badged_child_of(payload, rights, base, order, badge));
+            assert(post.payload_of(parent) == payload);
+            assert(post.list.parent@[child] == parent);
+            assert(narrows(post.payload_of(child), payload));
+            assert(post.payload_of(child).kind == payload.kind);
+            assert(block_within(post.payload_of(child).base, post.payload_of(child).order, payload));
+            Self::lemma_caps_frame(pre, post, child, child, parent);
+            assert(post.is_cap(parent));
+            assert(cap_contained(&post.list, &post.tables, child));
+            Self::lemma_caps_contained_caps_frame(pre, post, child, child);
             Self::lemma_derive_holders(pre, post, parent, child, block);
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, parent, child);
@@ -1202,6 +1253,342 @@ impl CapKernel {
         }
         assert(badge_kept_at(&post.list, &post.tables, child));
         Self::lemma_badges_caps_frame(pre, post, child, child);
+    }
+
+    /// The containment after a step that changed no node but n and m and renamed n to m in the parent
+    /// map at most. A capability below n is below m after, which carries n's block, unless n was
+    /// childless; n and m are capabilities after only if they were or were not live, and each lies in
+    /// its parent's block or under the root.
+    pub proof fn lemma_caps_contained_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            post.list.seq@[0] == pre.list.seq@[0],
+            n != pre.list.seq@[0],
+            m != pre.list.seq@[0],
+            forall|x: usize| x != n && x != m && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], n, m),
+            pre.is_cap(n) ==> pre.list.childless(n) || (post.is_cap(m) && post.payload_of(m) == pre.payload_of(n)),
+            pre.is_cap(m) && m != n ==> pre.list.childless(m),
+            n != m ==> pre.is_cap(n),
+            post.is_cap(n) ==> pre.is_cap(n) || !pre.list.nodes@[n as int].live,
+            post.is_cap(m) ==> pre.is_cap(m) || !pre.list.nodes@[m as int].live,
+            post.is_cap(n) ==> cap_contained(&post.list, &post.tables, n),
+            post.is_cap(m) ==> cap_contained(&post.list, &post.tables, m),
+        ensures
+            caps_contained(&post.list, &post.tables),
+    {
+        reveal(caps_contained);
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x)
+            implies cap_contained(&post.list, &post.tables, x) by {
+            assert(post.is_cap(x));
+            if x != n && x != m {
+                Self::lemma_caps_frame(pre, post, n, m, x);
+                pre.lemma_parent_of_cap(x);
+                let a = pre.list.parent@[x];
+                assert(pre.tables.is_cap(&pre.list, x));
+                assert(cap_contained(&pre.list, &pre.tables, x));
+                assert(post.list.parent@[x] == rename(a, n, m));
+                assert(post.payload_of(x) == pre.payload_of(x));
+                if a == pre.list.seq@[0] {
+                    assert(rename(a, n, m) == a);
+                    assert(post.list.parent@[x] == post.list.seq@[0]);
+                } else if a == n {
+                    assert(pre.is_cap(n));
+                    if pre.list.childless(n) {
+                        pre.list.lemma_childless(n, x);
+                    } else {
+                        assert(post.is_cap(m) && post.payload_of(m) == pre.payload_of(n));
+                        assert(post.list.parent@[x] == m);
+                        let (child, held) = (post.payload_of(x), post.payload_of(m));
+                        assert(held == pre.payload_of(a));
+                        assert(child == pre.payload_of(x));
+                        if pre.payload_of(a).kind == pre.payload_of(x).kind {
+                            assert(block_within(child.base, child.order, held));
+                        } else {
+                            assert(pre.payload_of(a).kind is Untyped);
+                            assert(block_within(child.base, child.order, held));
+                        }
+                    }
+                } else if a == m {
+                    assert(pre.is_cap(m));
+                    pre.list.lemma_childless(m, x);
+                } else {
+                    Self::lemma_caps_frame(pre, post, n, m, a);
+                    assert(post.is_cap(a));
+                    assert(post.payload_of(a) == pre.payload_of(a));
+                    assert(post.list.parent@[x] == a);
+                    let (child, held) = (post.payload_of(x), post.payload_of(a));
+                    assert(held == pre.payload_of(a));
+                    assert(child == pre.payload_of(x));
+                    if pre.payload_of(a).kind == pre.payload_of(x).kind {
+                        assert(block_within(child.base, child.order, held));
+                    } else {
+                        assert(pre.payload_of(a).kind is Untyped);
+                        assert(block_within(child.base, child.order, held));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The containment after a step that kept every capability's parent and what it says. A capability
+    /// that was one stays one: a parent that stopped being a capability would leave its child's block
+    /// uncontained. A node that was not live may become a capability only when it already lies within
+    /// its parent.
+    pub proof fn lemma_caps_contained_kept(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.list.seq@[0] == pre.list.seq@[0],
+            forall|x: usize| #[trigger] post.is_cap(x) ==> (pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x))
+                || (!pre.list.nodes@[x as int].live && cap_contained(&post.list, &post.tables, x)),
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> post.is_cap(x) && post.payload_of(x) == pre.payload_of(x),
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> post.list.parent@[x] == pre.list.parent@[x],
+        ensures
+            caps_contained(&post.list, &post.tables),
+    {
+        reveal(caps_contained);
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x)
+            implies cap_contained(&post.list, &post.tables, x) by {
+            assert(post.is_cap(x));
+            if pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x) {
+                pre.lemma_parent_of_cap(x);
+                let a = pre.list.parent@[x];
+                assert(post.list.parent@[x] == a);
+                assert(pre.tables.is_cap(&pre.list, x));
+                assert(cap_contained(&pre.list, &pre.tables, x));
+                if a == pre.list.seq@[0] {
+                    assert(post.list.parent@[x] == post.list.seq@[0]);
+                } else {
+                    assert(pre.is_cap(a));
+                    assert(post.is_cap(a) && post.payload_of(a) == pre.payload_of(a));
+                    let (child, held) = (post.payload_of(x), post.payload_of(a));
+                    assert(child == pre.payload_of(x));
+                    assert(held == pre.payload_of(a));
+                    if pre.payload_of(a).kind == pre.payload_of(x).kind {
+                        assert(block_within(child.base, child.order, held));
+                    } else {
+                        assert(pre.payload_of(a).kind is Untyped);
+                        assert(block_within(child.base, child.order, held));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The containment after a step that kept every capability, what it says and the parent map.
+    pub proof fn lemma_caps_contained_same_caps(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.list.seq@[0] == pre.list.seq@[0],
+            forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
+            forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
+                ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
+            post.list.parent == pre.list.parent,
+        ensures
+            caps_contained(&post.list, &post.tables),
+    {
+        assert forall|x: usize| #[trigger] post.is_cap(x)
+            implies pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(post.tables.is_cap(&post.list, x));
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x)
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(pre.tables.is_cap(&pre.list, x));
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.list.parent@[x] == pre.list.parent@[x] by {
+            assert(post.list.parent == pre.list.parent);
+        }
+        Self::lemma_caps_contained_kept(pre, post);
+    }
+
+    /// The containment after a step that adds one node that is no capability and changes no capability.
+    pub proof fn lemma_caps_contained_node_added(pre: Self, post: Self, n: usize, c: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            post.list.seq@[0] == pre.list.seq@[0],
+            !pre.list.nodes@[n as int].live,
+            !(post.list.nodes@[n as int].kind is Capability),
+            post.list.parent@ == pre.list.parent@.insert(n, c),
+        ensures
+            caps_contained(&post.list, &post.tables),
+    {
+        assert forall|x: usize| #[trigger] post.is_cap(x)
+            implies pre.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            if x == n {
+                assert(!(post.list.nodes@[n as int].kind is Capability));
+            } else {
+                Self::lemma_caps_frame(pre, post, n, n, x);
+            }
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x)
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(x != n);
+            Self::lemma_caps_frame(pre, post, n, n, x);
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.list.parent@[x] == pre.list.parent@[x] by {
+            assert(x != n);
+        }
+        Self::lemma_caps_contained_kept(pre, post);
+    }
+
+    /// The containment after a step that derives one child. Its parent is the list's first node, or a
+    /// capability of the child's kind whose block holds the child's, or an untyped whose block does.
+    /// Every other capability is as it was.
+    pub proof fn lemma_caps_contained_derived(pre: Self, post: Self, parent: usize, child: usize)
+        requires
+            Self::caps_frame(pre, post, child, child),
+            post.list.seq@[0] == pre.list.seq@[0],
+            forall|x: usize| x != child && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], child, child),
+            !pre.list.nodes@[child as int].live,
+            parent != child,
+            post.list.parent@.contains_key(child),
+            post.list.parent@[child] == parent,
+            parent == pre.list.seq@[0] || (
+                pre.is_cap(parent)
+                && block_within(post.payload_of(child).base, post.payload_of(child).order, pre.payload_of(parent))
+                && (pre.payload_of(parent).kind == post.payload_of(child).kind
+                    || pre.payload_of(parent).kind is Untyped)
+            ),
+        ensures
+            caps_contained(&post.list, &post.tables),
+    {
+        pre.list.lemma_link(0);
+        assert(pre.list.nodes@[pre.list.seq@[0] as int].live);
+        assert(child != pre.list.seq@[0]);
+        if parent == pre.list.seq@[0] {
+            assert(post.list.parent@[child] == post.list.seq@[0]);
+        } else {
+            Self::lemma_caps_frame(pre, post, child, child, parent);
+            assert(post.is_cap(parent));
+            assert(post.payload_of(parent) == pre.payload_of(parent));
+        }
+        assert(cap_contained(&post.list, &post.tables, child));
+        Self::lemma_caps_contained_caps_frame(pre, post, child, child);
+    }
+
+    /// Capability x's ancestor n steps up, n at most x's depth, is the root or a capability whose block
+    /// holds x's: the same kind, or an untyped. One step is cap_contained; a longer chain composes.
+    proof fn lemma_contained_at(&self, x: usize, n: nat)
+        requires
+            self.wf(),
+            self.is_cap(x),
+            0 < n,
+            n <= self.list.d(x),
+        ensures
+            ({
+                let a = self.list.anc(x, n);
+                &&& a < NODE_SPACE
+                &&& self.list.nodes@[a as int].live
+                &&& self.is_cap(a) ==> {
+                    ||| self.payload_of(a).kind == self.payload_of(x).kind
+                        && block_within(self.payload_of(x).base, self.payload_of(x).order, self.payload_of(a))
+                    ||| self.payload_of(a).kind is Untyped
+                        && block_within(self.payload_of(x).base, self.payload_of(x).order, self.payload_of(a))
+                }
+            }),
+        decreases n,
+    {
+        reveal(caps_contained);
+        self.lemma_slot_bound(x);
+        assert(self.list.nodes@[x as int].live);
+        self.list.lemma_anc_depth(x, n);
+        self.lemma_parent_of_cap(x);
+        let p = self.list.parent@[x];
+        assert(self.list.is_child(p, x));
+        assert(self.tables.is_cap(&self.list, x));
+        assert(cap_contained(&self.list, &self.tables, x));
+        let s = self.list.seq@;
+        lemma_has(s, x);
+        let k = choose|k: int| 0 <= k < s.len() && s[k] == x;
+        assert(x != s[0]);
+        assert(k != 0);
+        assert(self.list.parent@.contains_key(s[k]));
+        assert(self.list.d(s[k]) == self.list.d(self.list.parent@[s[k]]) + 1);
+        assert(self.list.d(x) == self.list.d(p) + 1);
+        if n == 1 {
+            assert(self.list.anc(x, 1) == p);
+            if p == s[0] {
+                assert(first_node_outside_leaves(&self.list, &self.tables));
+                assert(!self.is_cap(p));
+            } else {
+                assert(self.is_cap(p));
+                let (child, held) = (self.payload_of(x), self.payload_of(p));
+                if held.kind == child.kind {
+                    assert(block_within(child.base, child.order, held));
+                } else {
+                    assert(held.kind is Untyped);
+                    assert(block_within(child.base, child.order, held));
+                }
+            }
+        } else {
+            assert(n > 1);
+            assert(self.list.d(s[0]) == 0);
+            assert(p != s[0]);
+            assert(self.is_cap(p));
+            let step = (n - 1) as nat;
+            assert(0 < step);
+            assert(step <= self.list.d(p));
+            self.lemma_contained_at(p, step);
+            let a = self.list.anc(p, step);
+            assert(self.list.anc(x, n) == a);
+            if self.is_cap(a) {
+                let (xb, xo) = (self.payload_of(x).base, self.payload_of(x).order);
+                let mid = self.payload_of(p);
+                let outer = self.payload_of(a);
+                if mid.kind == self.payload_of(x).kind {
+                    assert(block_within(xb, xo, mid));
+                } else {
+                    assert(mid.kind is Untyped);
+                    assert(block_within(xb, xo, mid));
+                }
+                if outer.kind == mid.kind {
+                    assert(block_within(mid.base, mid.order, outer));
+                } else {
+                    assert(outer.kind is Untyped);
+                    assert(block_within(mid.base, mid.order, outer));
+                }
+                lemma_block_within_trans(xb, xo, mid, outer);
+                if mid.kind == self.payload_of(x).kind {
+                    if outer.kind == mid.kind {
+                        assert(outer.kind == self.payload_of(x).kind);
+                    } else {
+                        assert(outer.kind is Untyped);
+                    }
+                } else {
+                    assert(mid.kind is Untyped);
+                    assert(outer.kind is Untyped);
+                }
+            }
+        }
+    }
+
+    /// Capability x in capability c's run is deeper than c, and c's block holds x's: c has x's kind, or
+    /// c is an untyped. The run is the ancestor chain `below` names. That chain is what `in_run` names
+    /// for a witness that stays within the listed depths; a walk past the root is not a listed ancestor.
+    pub proof fn lemma_run_contained(&self, c: usize, x: usize)
+        requires
+            self.wf(),
+            self.is_cap(c),
+            self.is_cap(x),
+            below(self.list, c, x),
+        ensures
+            self.list.in_run(c, x),
+            self.list.d(x) > self.list.d(c),
+            ({
+                ||| self.payload_of(c).kind == self.payload_of(x).kind
+                    && block_within(self.payload_of(x).base, self.payload_of(x).order, self.payload_of(c))
+                ||| self.payload_of(c).kind is Untyped
+                    && block_within(self.payload_of(x).base, self.payload_of(x).order, self.payload_of(c))
+            }),
+    {
+        let n = (self.list.d(x) - self.list.d(c)) as nat;
+        assert(self.list.d(x) > self.list.d(c));
+        assert(n > 0);
+        assert(n <= self.list.d(x));
+        assert(self.list.anc(x, n) == c);
+        assert(self.list.in_run(c, x));
+        self.lemma_contained_at(x, n);
     }
 
     /// The view of a step that adds one child, in a slot of the table at dst, under a capability held

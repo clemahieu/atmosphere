@@ -2444,6 +2444,13 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
+        proof {
+            // The parent is an untyped capability and the new block lies in its block.
+            assert(pre.can_retype(root, from, to, base, THREAD_ORDER));
+            assert(parent == pre.tables.node_of(root, from));
+            assert(pre.payload_of(parent).kind is Untyped);
+            assert(block_within(base, THREAD_ORDER, pre.payload_of(parent)));
+        }
         if !self.blocks.run_tracked(base / PAGE_SZ, 2) {
             return false;
         }
@@ -2528,6 +2535,9 @@ impl CapKernel {
             assert(post.is_cap(child));
             Self::lemma_space_caps_wf(pre, post, child);
             Self::lemma_tlb_same(pre, post);
+            assert(post.payload_of(child).base == base && post.payload_of(child).order == THREAD_ORDER);
+            assert(block_within(post.payload_of(child).base, post.payload_of(child).order, pre.payload_of(parent)));
+            assert(pre.payload_of(parent).kind is Untyped);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
             Self::lemma_table_nodes_frame(pre, post, child, child);
             Self::lemma_space_nodes_frame(pre, post, child, child);
@@ -5182,6 +5192,7 @@ impl CapKernel {
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
             badges_inherited(&post.list, &post.tables),
+            caps_contained(&post.list, &post.tables),
             table_nodes_are_mappings(&post.list, &post.table_pages),
             space_nodes_dead(&post.list, &post.spaces),
             devices_wf(&post.list, &post.tables, &post.devices),
@@ -5208,6 +5219,8 @@ impl CapKernel {
         }
         lemma_parents_derived(pre.list, post.list, n, t);
         Self::lemma_badges_node_added(pre, post, t, n);
+        assert(post.list.seq@[0] == pre.list.seq@[0]);
+        Self::lemma_caps_contained_node_added(pre, post, t, n);
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Capability
             && x != post.list.seq@[0] implies post.tables.is_cap(&post.list, x) by {
             assert(x != t);
@@ -5830,6 +5843,7 @@ impl CapKernel {
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
             badges_inherited(&post.list, &post.tables),
+            caps_contained(&post.list, &post.tables),
             table_nodes_are_mappings(&post.list, &post.table_pages),
             space_nodes_dead(&post.list, &post.spaces),
             devices_wf(&post.list, &post.tables, &post.devices),
@@ -5857,6 +5871,8 @@ impl CapKernel {
         }
         lemma_parents_derived(pre.list, post.list, m, x);
         Self::lemma_badges_node_added(pre, post, x, m);
+        assert(post.list.seq@[0] == pre.list.seq@[0]);
+        Self::lemma_caps_contained_node_added(pre, post, x, m);
         assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Capability
             && y != post.list.seq@[0] implies post.tables.is_cap(&post.list, y) by {
             assert(y != x);
