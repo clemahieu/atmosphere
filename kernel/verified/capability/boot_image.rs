@@ -867,6 +867,9 @@ impl CapKernel {
                     ==> block_ref(&final(self).blocks, g as usize) == BlockRef::Two((g / PAGES_PER_2M as int) as usize)
             },
     {
+        // The loop relates cur, pre and post; keeping wf folded avoids putting every kernel
+        // invariant quantifier into the loop queries.
+        hide(CapKernel::wf);
         let count = match count_frames(runs, Ghost(self.blocks.page_count())) {
             Some(count) => count,
             None => return None,

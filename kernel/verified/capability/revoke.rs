@@ -1171,22 +1171,6 @@ impl CapKernel {
             Some(found) => found,
             None => { return true; },
         };
-        proof {
-            // A binding node is node 0 of its thread's node page, a page of the list, and two
-            // permissions never share an address: no table root lies there.
-            if pre.list.nodes@[r as int].kind is Binding && pre.tables.roots@.contains_key(r) {
-                pre.lemma_binding_parent(r);
-                pre.lemma_thread_wf(r);
-                pre.tables.lemma_root(r);
-                crate::layouts::lemma_process_block_layouts();
-                crate::capability::reclaim::lemma_list_page(&pre.list, r);
-                crate::capability::reclaim::lemma_list_page_apart(
-                    self.list.pages.borrow_mut(),
-                    self.tables.roots.borrow().tracked_borrow(r),
-                );
-                assert(false);
-            }
-        }
         self.cut_hidden_table(r, Tracked(&mut *steps));
         let ghost cut = *self;
         self.unlink_arm(r, Tracked(steps));
@@ -1427,7 +1411,6 @@ impl CapKernel {
             pre.list.anc(r, (pre.list.d(r) - pre.list.d(c)) as nat) == c,
             pre.list.childless(r),
             pre.hidden_table(r) ==> pre.table_pages.records@[r].value().parent is None,
-            pre.list.nodes@[r as int].kind is Binding ==> !pre.tables.roots@.contains_key(r),
             mid.tables.wf(&pre.list),
             mid.blocks.wf(),
             mid.list == pre.list,
@@ -2911,10 +2894,8 @@ impl CapKernel {
                 &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
                 &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
             },
-            pre.list.nodes@[r as int].kind is Binding ==> {
-                &&& !pre.tables.roots@.contains_key(r)
-                &&& forall|o: ObjectId| !#[trigger] blocked_on(&post.threads).contains((o, r))
-            },
+            pre.list.nodes@[r as int].kind is Binding ==>
+                forall|o: ObjectId| !#[trigger] blocked_on(&post.threads).contains((o, r)),
         ensures
             Self::caps_frame(pre, post, r, r),
             discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
@@ -2955,7 +2936,6 @@ impl CapKernel {
             pre.list.nodes@[r as int].kind is Binding,
             !post.list.nodes@[r as int].live,
             bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).remove(r),
-            !pre.tables.roots@.contains_key(r),
             forall|o: ObjectId| !#[trigger] blocked_on(&post.threads).contains((o, r)),
         ensures
             discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
@@ -2976,6 +2956,14 @@ impl CapKernel {
         assert(b.process_of == a.process_of.remove(r));
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
         assert(unbinds(a, b, r, r));
+        // A binding node is its thread's base, so its block is a Thread and never a process's table root.
+        pre.lemma_binding_parent(r);
+        pre.lemma_thread_wf(r);
+        assert(!pre.tables.roots@.contains_key(r)) by {
+            if pre.tables.roots@.contains_key(r) {
+                assert(process_wf(&pre.processes, &pre.blocks, r));
+            }
+        }
         // The thread is no table's root, so it holds nothing.
         assert forall|x: NodeId| !#[trigger] a.held.contains((r, x)) by {
             if a.held.contains((r, x)) {
@@ -2983,7 +2971,6 @@ impl CapKernel {
             }
         }
         // A capability naming the thread names its block's first page, which it covers.
-        pre.lemma_binding_parent(r);
         pre.lemma_thread_node_apart(r);
         assert forall|x: NodeId| #[trigger] a.names.contains_key(x) && a.names[x] == r implies a.covers(x, r) by {
             vstd::arithmetic::power2::lemma_pow2_pos(pre.payload_of(x).order as nat);

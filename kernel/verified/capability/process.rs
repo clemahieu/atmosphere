@@ -172,10 +172,11 @@ pub open spec fn processes_wf(list: &Tree, tables: &Tables, processes: &Processe
     }
 }
 
-/// Each process has its capability table, rooted at the process's base: a table position reaches
-/// the table through a capability naming the process.
+/// Each process has its capability table, rooted at the process's base, and every table root is a
+/// process's base: a table position reaches the table through a capability naming the process.
 pub open spec fn process_tables_wf(tables: &Tables, processes: &Processes) -> bool {
-    forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> tables.roots@.contains_key(p)
+    &&& forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> tables.roots@.contains_key(p)
+    &&& forall|r: usize| #[trigger] tables.roots@.contains_key(r) ==> processes.records@.contains_key(r)
 }
 
 /// Each process has its address space, keyed at the process's base: a link or a map reaches the space
@@ -1585,6 +1586,12 @@ impl CapKernel {
             assert forall|p: usize| #[trigger] post.processes.records@.contains_key(p) implies post.tables.roots@.contains_key(p) by {
                 if p != base {
                     assert(pre.processes.records@.contains_key(p));
+                }
+            }
+            assert forall|r: usize| #[trigger] post.tables.roots@.contains_key(r) implies post.processes.records@.contains_key(r) by {
+                assert(rooted.roots@.dom().contains(r));
+                if r != base {
+                    assert(pre.tables.roots@.contains_key(r));
                 }
             }
             lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);

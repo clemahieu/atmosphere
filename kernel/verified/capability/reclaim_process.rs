@@ -880,6 +880,9 @@ impl CapKernel {
         assert forall|p: usize| #[trigger] post.processes.records@.contains_key(p) implies post.tables.roots@.contains_key(p) by {
             assert(pre.processes.records@.contains_key(p));
         }
+        assert forall|r: usize| #[trigger] post.tables.roots@.contains_key(r) implies post.processes.records@.contains_key(r) by {
+            assert(pre.tables.roots@.contains_key(r));
+        }
         assert forall|p: usize| #[trigger] post.processes.records@.contains_key(p) implies {
             &&& post.spaces.roots@.contains_key(p)
             &&& post.spaces.records@[p].value().kind is Process
