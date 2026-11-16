@@ -4,7 +4,6 @@
 # text must be: design/boundary-into-verified-code-counted/. Fields, separated by tabs: path,
 # enclosing function, kind, callee, occurrence, guarantor's class, its text.
 # A 'nothing' line is debt: no document, proof or check vouches for it.
-astd/src/heap.rs	astd::heap::with_caller	call	aheap::allocator::give_back	1	nothing	"the caller is the one lend gave out and its closure invoked no memory operation on the heap's Eager frames or space slot, so src_serves still holds when give_back returns it; tracked in atmo-6x9.5.32.4"
 astd/src/heap.rs	astd::heap::{impl#1}::dealloc	call	aheap::allocator::free	1	language	library/core/src/alloc/global.rs "`ptr` is a block of memory currently allocated via this allocator and, * `layout` is the same layout that was used to allocate that block of memory."
 astd/src/heap.rs	astd::heap::{impl#1}::dealloc	conjure	aheap::allocator::free argument 4: Tracked<vstd::raw_ptr::PointsToRaw>	1	language	library/core/src/alloc/global.rs "`ptr` is a block of memory currently allocated via this allocator and, * `layout` is the same layout that was used to allocate that block of memory."
 dom0/src/flush_cost.rs	dom0::flush_cost::walk_mapped::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter

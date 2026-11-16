@@ -26,7 +26,7 @@ use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::kernel::TlbEntry;
 #[cfg(verus_keep_ghost)]
-use verified::capability::caller::{derived_view, view_narrows, view_writes_space, SlotView};
+use verified::capability::caller::{derived_view, view_frame, view_narrows, view_writes_space, SlotView};
 #[cfg(verus_keep_ghost)]
 use verified::capability::link::tree_of;
 #[cfg(verus_keep_ghost)]
@@ -35,7 +35,11 @@ use verified::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use verified::capability::reach::Right;
 #[cfg(verus_keep_ghost)]
+use verified::capability::refs::{block_ref, block_refs};
+#[cfg(verus_keep_ghost)]
 use verified::capability::rely::same_cap;
+#[cfg(verus_keep_ghost)]
+use verified::capability::table::block_bytes;
 #[cfg(verus_keep_ghost)]
 use verified::capability::view::right_bit;
 #[cfg(verus_keep_ghost)]
@@ -333,6 +337,56 @@ pub proof fn lemma_returned_agrees(post: Caller, mid: CapKernel, c: int)
     ensures
         post.pages_wf(),
 {
+}
+
+/// The calling core's catching up changes only that core's state, so `space_kept` from `entry` to
+/// `mid` holds to `post`.
+pub proof fn lemma_returned_space_kept(entry: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize)
+    requires
+        CapKernel::space_kept(entry, mid, root),
+        CapKernel::only_core_changed(mid, post, c),
+    ensures
+        CapKernel::space_kept(entry, post, root),
+{
+}
+
+/// The calling core's catching up leaves every table's view and the block table unchanged, so
+/// `count_kept` from `entry` to `mid` holds to `post`.
+pub proof fn lemma_returned_count_kept(entry: CapKernel, mid: CapKernel, post: CapKernel, c: int, root: usize)
+    requires
+        CapKernel::count_kept(entry, mid, root),
+        CapKernel::only_core_changed(mid, post, c),
+        forall|t: usize| #[trigger] post.table_view(t) == mid.table_view(t),
+    ensures
+        CapKernel::count_kept(entry, post, root),
+{
+    if entry.sealed(root) {
+        assert forall|j: usize, page: usize|
+            entry.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
+                && entry.table_view(root)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(entry.table_view(root)[j].order) implies {
+                let br = block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(entry.table_view(root)[j], page)) == br
+                &&& entry.held_by(br, root) ==> {
+                    &&& block_refs(&post.blocks, br) <= block_refs(&entry.blocks, br)
+                    &&& post.held_by(br, root)
+                }
+            } by {
+            let br = block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page));
+            assert(mid.table_view(root).contains_key(j));
+            assert(block_ref(&mid.blocks, view_frame(entry.table_view(root)[j], page)) == br);
+            if entry.held_by(br, root) {
+                assert(mid.held_by(br, root));
+                assert forall|t: usize, i: usize, p: usize|
+                    t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
+                        && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
+                        implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
+                    assert(mid.table_view(t).contains_key(i));
+                    assert(block_ref(&mid.blocks, view_frame(mid.table_view(t)[i], p)) != br);
+                }
+            }
+        }
+    }
 }
 
 /// Other callers' steps keep every slot that names the caller's own space naming its own space

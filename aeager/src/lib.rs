@@ -22,6 +22,8 @@ mod apart;
 mod eager;
 mod exercise;
 mod glue;
+#[cfg(verus_keep_ghost)]
+mod invoke;
 #[cfg(throwaway)]
 mod throwaway;
 #[cfg(verus_keep_ghost)]
@@ -37,3 +39,5 @@ pub use exercise::{exercise, exercise_eager, Exercised};
 pub use glue::{AcallCall, AcallStep};
 #[cfg(verus_keep_ghost)]
 pub use glue::{acall_ok, acall_steps, flush_room, kernel_source_ready, source_ready};
+#[cfg(verus_keep_ghost)]
+pub use invoke::{GuardedCall, call_keeps_source, is_source_slot};

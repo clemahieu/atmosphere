@@ -3405,6 +3405,7 @@ pub fn witness_allocator<S: SpanSource>(src: S, token: Tracked<S::Token>) -> (r:
         r.2 ==> r.0.live() == ISet::<int>::empty(),
 {
     let mut alloc: Allocator<S> = Allocator::new(0, src, token);
+    let _src = alloc.source();
     let held: bool = alloc.has_token();
     let returned: Tracked<S::Token> = alloc.lend().unwrap();
     alloc.give_back(returned);

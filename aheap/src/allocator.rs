@@ -65,6 +65,14 @@ impl<S: SpanSource> Allocator<S> {
         self.src().serves(token)
     }
 
+    /// A reference to the underlying span source.
+    pub fn source(&self) -> (r: &S)
+        ensures
+            *r == self.src(),
+    {
+        &self.src
+    }
+
     /// Whether the allocator currently holds its token.
     pub closed spec fn held(&self) -> bool {
         self.token is Some

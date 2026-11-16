@@ -6,9 +6,11 @@ use vstd::arithmetic::div_mod::{lemma_fundamental_div_mod, lemma_mod_multiples_b
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
 use acall::step::{caller_alone, Caller};
+use aheap::allocator::Allocator;
 use aheap::arch::*;
+use aheap::heap::{class_for, small_layout};
 use aheap::source::*;
-use verified::capability::operation::STATUS_REFUSED;
+use verified::capability::operation::{status_only, Outcome, STATUS_REFUSED};
 use verified::capability::table::TABLE_INDICES;
 
 use crate::allocator::*;
@@ -20,6 +22,7 @@ use crate::glue::{
     lemma_acall_steps_append, lemma_acall_steps_claimed, lemma_caller_alone_split, lemma_source_ready_premises,
     lemma_window_still_unclaimed, lemma_window_unclaimed, names_own_space, own_process, source_ready, window_tokens_clear,
 };
+use crate::invoke::{GuardedCall, invoke};
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
 verus! {
@@ -1320,6 +1323,52 @@ pub fn witness_second_after_back(
         }
     }
     (got, second_got, Ghost(steps), Ghost(second_steps))
+}
+
+/// Bundles an eager source into an `Allocator<Eager>`, runs an allowed inspection and a guarded
+/// source-slot deletion through `invoke`, and then allocates from the heap, proving `serves` holds
+/// across both.
+pub fn witness_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracked<Caller>) -> (r: (
+    Allocator<Eager>,
+    Outcome,
+    Outcome,
+    bool,
+))
+    requires
+        space < TABLE_INDICES,
+        token@.pages_wf(),
+        token@.kernel() == token@.start(),
+        window_tokens_clear(token@, window@.addr),
+        source_ready(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
+        window@.addr != 0,
+        window@.addr as int % REGION_BYTES as int == 0,
+        window@.addr + WINDOW_BYTES <= usize::MAX,
+    ensures
+        r.0.held(),
+        r.2 == status_only(STATUS_REFUSED),
+{
+    proof {
+        assert(1int % LEAF_INDICES as int != 0) by (compute);
+        assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_source_ready_premises(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
+    }
+    let AllocatorInit::Ready(mut alloc) = new_allocator(token, 0, space, untyped, 0, MAX_PAGES, 1, window) else {
+        unreached()
+    };
+    let ok = invoke(&mut alloc, GuardedCall::Inspect { at: space });
+    proof {
+        assert(TABLE_INDICES <= verified::capability::position::POSITION_INDEX_MASK + 1) by (compute);
+        verified::capability::position::lemma_position_own(space);
+    }
+    let refused = invoke(&mut alloc, GuardedCall::Delete { at: space });
+    proof {
+        alloc.lemma_wf();
+        assert(small_layout(8, 8)) by (compute);
+        assert(class_for(8, 8) == 0) by (compute);
+    }
+    let allocated = alloc.alloc(8, 8).is_some();
+    (alloc, ok, refused, allocated)
 }
 
 } // verus!

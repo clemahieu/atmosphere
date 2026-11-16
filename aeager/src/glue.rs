@@ -36,7 +36,9 @@ use verified::capability::block::order_pages;
 #[cfg(verus_keep_ghost)]
 use verified::capability::reach::Right;
 #[cfg(verus_keep_ghost)]
-use verified::capability::caller::{frame_view, view_frame, view_retypes, view_writes_space};
+use verified::capability::caller::{
+    derived_view, frame_view, process_view, thread_view, view_frame, view_narrows, view_retypes, view_writes_space, SlotView,
+};
 #[cfg(verus_keep_ghost)]
 use verified::capability::view::right_bit;
 use verified::capability::kernel::CapKernel;
@@ -55,7 +57,7 @@ use verified::capability::map::{
 #[cfg(verus_keep_ghost)]
 use verified::capability::mapping::{entries_cleared, space_mapping, step, walk, SpacePath};
 #[cfg(verus_keep_ghost)]
-use verified::capability::rely::same_cap;
+use verified::capability::rely::{reaches_through, same_cap};
 #[cfg(verus_keep_ghost)]
 use verified::capability::retype::FRAME_RIGHTS;
 #[cfg(verus_keep_ghost)]
@@ -71,7 +73,9 @@ use verified::capability::table::{block_bytes, index_entry, index_slot, NO_LEAF,
 #[cfg(verus_keep_ghost)]
 use verified::define::{ENTRIES, KERNEL_MEM_END_L4INDEX, PAGE_SZ, SIZE_1G, SIZE_2M, SIZE_512G};
 #[cfg(verus_keep_ghost)]
-use verified::capability::position::spec_position;
+use verified::define::{lemma_shifts, PAGE_SHIFT};
+#[cfg(verus_keep_ghost)]
+use verified::capability::position::{spec_position, Position};
 use verified::capability::operation::*;
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::POSITION_INDEX_MASK;
@@ -593,17 +597,32 @@ pub open spec fn frame_held(k: CapKernel, root: usize, f: (usize, Option<usize>)
     }
 }
 
+/// No slot of `root`'s table other than a frame slot listed in `frames` holds a frame capability
+/// whose pages share a block with any frame in `frames`: deriving or moving within `root` cannot
+/// create an untracked alias to a source frame's block.
+pub open spec fn frames_exclusive(k: CapKernel, root: usize, frames: Map<int, (usize, Option<usize>)>) -> bool {
+    forall|i: int, j: usize, page: usize|
+        #[trigger] frames.contains_key(i) && k.table_view(root).contains_key(frames[i].0)
+            && k.table_view(root).contains_key(j) && j != frames[i].0
+            && k.table_view(root)[j].kind is Frame
+            && (page as int) * PAGE_SZ < block_bytes(k.table_view(root)[j].order)
+            ==> #[trigger] block_ref(&k.blocks, view_frame(k.table_view(root)[j], page))
+                != block_ref(&k.blocks, slot_page(k, root, frames[i].0))
+}
+
 /// The frames a source holds, by key, each as frame_held says, no two of those the table still holds
-/// holding the same block. Each clause allows a slot, an entry or a count to go and none to come, as a
-/// revoke of an ancestor may take them, so it holds across any step another caller takes while the
-/// process is its own (lemma_frames_rely); the source's own map is what raises a count, and its own
-/// unmap what lowers it again.
+/// holding the same block, and no other slot in `root`'s table holding any page of those blocks.
+/// Each clause allows a slot, an entry or a count to go and none to come, as a revoke of an ancestor
+/// may take them, so it holds across any step another caller takes while the process is its own
+/// (lemma_frames_rely); the source's own map is what raises a count, and its own unmap what lowers
+/// it again.
 pub open spec fn frames_held(k: CapKernel, root: usize, frames: Map<int, (usize, Option<usize>)>) -> bool {
     &&& forall|i: int| #[trigger] frames.contains_key(i) ==> frame_held(k, root, frames[i])
     &&& forall|i: int, j: int|
         frames.contains_key(i) && frames.contains_key(j) && i != j
             && k.table_view(root).contains_key(#[trigger] frames[i].0) && k.table_view(root).contains_key(#[trigger] frames[j].0)
             ==> block_ref(&k.blocks, slot_page(k, root, frames[i].0)) != block_ref(&k.blocks, slot_page(k, root, frames[j].0))
+    &&& frames_exclusive(k, root, frames)
 }
 
 /// The slot at `space` of the table at `root`, while it holds a capability that writes a space, holds
@@ -1123,8 +1142,9 @@ proof fn lemma_path_page(va: u64)
 
 /// A step under which the slots of root's table that the source's frames name are only taken, with
 /// the capability they held, root's space only loses entries, and while root is sealed no block that
-/// only root's table holds gains a count or a holder keeps every frame the source holds.
-pub proof fn lemma_frames_shrunk(pre: CapKernel, post: CapKernel, root: usize, frames: Map<int, (usize, Option<usize>)>)
+/// only root's table holds gains a count or a holder keeps each frame the source holds held, no two of
+/// them in one block.
+proof fn lemma_frames_shrunk_caps(pre: CapKernel, post: CapKernel, root: usize, frames: Map<int, (usize, Option<usize>)>)
     requires
         frames_held(pre, root, frames),
         pre.sealed(root),
@@ -1135,7 +1155,11 @@ pub proof fn lemma_frames_shrunk(pre: CapKernel, post: CapKernel, root: usize, f
                 && space_mapping(tree_of(&post.table_pages, &post.spaces), root)[p] == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root)[p],
         CapKernel::count_kept(pre, post, root),
     ensures
-        frames_held(post, root, frames),
+        forall|i: int| #[trigger] frames.contains_key(i) ==> frame_held(post, root, frames[i]),
+        forall|i: int, j: int|
+            frames.contains_key(i) && frames.contains_key(j) && i != j
+                && post.table_view(root).contains_key(#[trigger] frames[i].0) && post.table_view(root).contains_key(#[trigger] frames[j].0)
+                ==> block_ref(&post.blocks, slot_page(post, root, frames[i].0)) != block_ref(&post.blocks, slot_page(post, root, frames[j].0)),
 {
     vstd::arithmetic::power2::lemma2_to64();
     let a = space_mapping(tree_of(&pre.table_pages, &pre.spaces), root);
@@ -1167,6 +1191,42 @@ pub proof fn lemma_frames_shrunk(pre: CapKernel, post: CapKernel, root: usize, f
             implies block_ref(&post.blocks, slot_page(post, root, frames[i].0)) != block_ref(&post.blocks, slot_page(post, root, frames[j].0)) by {
         assert(frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0));
         assert(frames.contains_key(j) && post.table_view(root).contains_key(frames[j].0));
+    }
+}
+
+/// The step from `pre` to `post` where root's table only loses slots, its surviving slots hold
+/// the capability they held, root's space only loses entries, and while root is sealed every
+/// surviving frame capability page stays in its block and no block that only root's table holds
+/// gains a count or a holder keeps every frame the source holds.
+pub proof fn lemma_frames_shrunk(pre: CapKernel, post: CapKernel, root: usize, frames: Map<int, (usize, Option<usize>)>)
+    requires
+        frames_held(pre, root, frames),
+        pre.sealed(root),
+        forall|j: usize| #[trigger] post.table_view(root).contains_key(j)
+            ==> pre.table_view(root).contains_key(j) && same_cap(post.table_view(root)[j], pre.table_view(root)[j]),
+        forall|p: SpacePath| #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), root).contains_key(p)
+            ==> space_mapping(tree_of(&pre.table_pages, &pre.spaces), root).contains_key(p)
+                && space_mapping(tree_of(&post.table_pages, &post.spaces), root)[p] == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root)[p],
+        CapKernel::count_kept(pre, post, root),
+    ensures
+        frames_held(post, root, frames),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    lemma_frames_shrunk_caps(pre, post, root, frames);
+    assert forall|i: int, j: usize, page: usize|
+        #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+            && post.table_view(root).contains_key(j) && j != frames[i].0
+            && post.table_view(root)[j].kind is Frame
+            && (page as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+            implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], page))
+                != block_ref(&post.blocks, slot_page(post, root, frames[i].0)) by {
+        assert(frame_held(pre, root, frames[i]));
+        assert((0 as int) * PAGE_SZ < block_bytes(pre.table_view(root)[frames[i].0].order));
+        assert(view_frame(post.table_view(root)[j], page) == view_frame(pre.table_view(root)[j], page));
+        assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page))
+            == block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+        assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[frames[i].0], 0))
+            == block_ref(&pre.blocks, view_frame(pre.table_view(root)[frames[i].0], 0)));
     }
 }
 
@@ -1286,6 +1346,16 @@ proof fn lemma_frames_parked(k: CapKernel, root: usize, frames: Map<int, (usize,
         assert(frames.contains_key(i) && frames.contains_key(j));
         assert(f[i].0 == frames[i].0 && f[j].0 == frames[j].0);
     }
+    assert forall|i: int, j: usize, page: usize|
+        #[trigger] f.contains_key(i) && k.table_view(root).contains_key(f[i].0)
+            && k.table_view(root).contains_key(j) && j != f[i].0
+            && k.table_view(root)[j].kind is Frame
+            && (page as int) * PAGE_SZ < block_bytes(k.table_view(root)[j].order)
+            implies #[trigger] block_ref(&k.blocks, view_frame(k.table_view(root)[j], page))
+                != block_ref(&k.blocks, slot_page(k, root, f[i].0)) by {
+        assert(frames.contains_key(i));
+        assert(f[i].0 == frames[i].0);
+    }
 }
 
 /// A step that leaves every other table's view as it was, and every frame capability's pages in their
@@ -1308,12 +1378,12 @@ proof fn lemma_frame_blocks_keep_count(pre: CapKernel, post: CapKernel, root: us
     CapKernel::lemma_frames_kept_keeps_count(pre, post, root, root, 0);
 }
 
-/// A step that leaves every table's view as it was and every tracked page in its block keeps each
-/// block that no other table holds a capability of so.
+/// A step that leaves every table's view but root's as it was and every tracked page in its block
+/// keeps each block that no other table holds a capability of so.
 proof fn lemma_held_kept(pre: CapKernel, post: CapKernel, root: usize, x: BlockRef)
     requires
         pre.wf(),
-        forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+        forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t),
         forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
         pre.held_by(x, root),
     ensures
@@ -1361,7 +1431,7 @@ proof fn lemma_frames_retyped(
     let f = frames.insert(key, (slot, None::<usize>));
     assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root) == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
     lemma_frame_blocks_keep_count(pre, post, root);
-    lemma_frames_shrunk(pre, post, root, frames);
+    lemma_frames_shrunk_caps(pre, post, root, frames);
     assert(slot_page(post, root, slot) == base / PAGE_SZ);
     let nb = block_ref(&post.blocks, view_frame(fv, 0));
     assert((0 as int) * PAGE_SZ < block_bytes(fv.order));
@@ -1402,6 +1472,37 @@ proof fn lemma_frames_retyped(
         }
         if j != key {
             assert(frames.contains_key(j) && f[j] == frames[j]);
+        }
+    }
+    assert forall|i: int, j: usize, page: usize|
+        #[trigger] f.contains_key(i) && post.table_view(root).contains_key(f[i].0)
+            && post.table_view(root).contains_key(j) && j != f[i].0
+            && post.table_view(root)[j].kind is Frame
+            && (page as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+            implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], page))
+                != block_ref(&post.blocks, slot_page(post, root, f[i].0)) by {
+        if i == key {
+            assert(post.table_view(root)[j] == pre.table_view(root)[j]);
+            assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page))
+                == block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+            assert(block_ref(&post.blocks, view_frame(fv, 0))
+                != block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+        } else {
+            assert(frames.contains_key(i) && f[i] == frames[i]);
+            assert(frame_held(pre, root, frames[i]));
+            assert((0 as int) * PAGE_SZ < block_bytes(pre.table_view(root)[f[i].0].order));
+            assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[f[i].0], 0))
+                == block_ref(&pre.blocks, view_frame(pre.table_view(root)[f[i].0], 0)));
+            if j == slot {
+                assert(page == 0);
+                assert(view_frame(post.table_view(root)[j], page) == view_frame(fv, 0));
+                assert(block_ref(&post.blocks, view_frame(fv, 0))
+                    != block_ref(&pre.blocks, view_frame(pre.table_view(root)[f[i].0], 0)));
+            } else {
+                assert(pre.table_view(root).contains_key(j) && post.table_view(root)[j] == pre.table_view(root)[j]);
+                assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page))
+                    == block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+            }
         }
     }
 }
@@ -1490,6 +1591,18 @@ proof fn lemma_frames_mapped(
         lemma_slot_page(pre, root, frames[i].0);
         lemma_slot_page(pre, root, frames[j].0);
     }
+    assert forall|i: int, j: usize, p_idx: usize|
+        #[trigger] f.contains_key(i) && post.table_view(root).contains_key(f[i].0)
+            && post.table_view(root).contains_key(j) && j != f[i].0
+            && post.table_view(root)[j].kind is Frame
+            && (p_idx as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+            implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], p_idx))
+                != block_ref(&post.blocks, slot_page(post, root, f[i].0)) by {
+        assert(frames.contains_key(i) && f[i].0 == frames[i].0);
+        lemma_slot_page(pre, root, frames[i].0);
+        pre.lemma_view_frame_counted(root, j, p_idx);
+        pre.lemma_view_frame_counted(root, frames[i].0, 0);
+    }
 }
 
 /// An unmap at `address`, the address of the frame the source holds under `key`, in the space the slot
@@ -1541,6 +1654,494 @@ proof fn lemma_frames_unmapped(
         assert(frame_refs(post, slot_page(post, root, from)) <= 1);
     }
     lemma_frames_parked(post, root, frames, key);
+}
+
+/// A guarded `retype` invocation that takes `untyped` outside the source's own and, for kinds that
+/// populate a slot, targets no slot the source owns keeps every frame the source holds.
+pub proof fn lemma_frames_retype_call(
+    pre: CapKernel,
+    post: CapKernel,
+    root: usize,
+    frames: Map<int, (usize, Option<usize>)>,
+    kind: u64,
+    from: usize,
+    base: usize,
+    word: u64,
+    level: usize,
+    out: Outcome,
+)
+    requires
+        pre.wf(),
+        pre.sealed(root),
+        frames_held(pre, root, frames),
+        CapKernel::retype_contract(pre, post, root, kind, from, base, word, level, out),
+        (kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME || kind == RETYPE_PROCESS || kind == RETYPE_THREAD)
+            ==> forall|i: int| #[trigger] frames.contains_key(i) ==> frames[i].0 != word as usize,
+    ensures
+        frames_held(post, root, frames),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    let allowed = pre.retype_allowed(root, kind, from, base, word, level);
+    let to = word as usize;
+    let parent = pre.tables.node_of(root, from);
+    if allowed && out == status_only(STATUS_OK) && (kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME) {
+        let order: u8 = if kind == RETYPE_FRAME { 0u8 } else { 9u8 };
+        let fv = frame_view(base, order, parent);
+        assert(post.table_view(root) == pre.table_view(root).insert(to, fv));
+        assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+            == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
+        lemma_frame_blocks_keep_count(pre, post, root);
+        assert forall|i: int| #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+            implies pre.table_view(root).contains_key(frames[i].0)
+                && same_cap(post.table_view(root)[frames[i].0], pre.table_view(root)[frames[i].0]) by {
+            assert(frames[i].0 != to);
+        }
+        lemma_frames_shrunk_caps(pre, post, root, frames);
+        assert forall|i: int, j: usize, page: usize|
+            #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+                && post.table_view(root).contains_key(j) && j != frames[i].0
+                && post.table_view(root)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+                implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], page))
+                    != block_ref(&post.blocks, slot_page(post, root, frames[i].0)) by {
+            assert(frames[i].0 != to);
+            assert(pre.table_view(root).contains_key(frames[i].0));
+            assert(frame_held(pre, root, frames[i]));
+            assert((0 as int) * PAGE_SZ < block_bytes(pre.table_view(root)[frames[i].0].order));
+            assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[frames[i].0], 0))
+                == block_ref(&pre.blocks, view_frame(pre.table_view(root)[frames[i].0], 0)));
+            if j == to {
+                assert(post.table_view(root)[j] == fv);
+                assert(block_ref(&post.blocks, view_frame(fv, page))
+                    != block_ref(&pre.blocks, view_frame(pre.table_view(root)[frames[i].0], 0)));
+            } else {
+                assert(pre.table_view(root).contains_key(j));
+                assert(post.table_view(root)[j] == pre.table_view(root)[j]);
+                assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page))
+                    == block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+            }
+        }
+    } else if allowed && out == status_only(STATUS_OK) && (kind == RETYPE_PROCESS || kind == RETYPE_THREAD) {
+        let tv = if kind == RETYPE_PROCESS { process_view(base, parent) } else { thread_view(base, parent) };
+        assert(post.table_view(root) == pre.table_view(root).insert(to, tv));
+        assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+            == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
+        lemma_frame_blocks_keep_count(pre, post, root);
+        assert forall|i: int| #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+            implies pre.table_view(root).contains_key(frames[i].0)
+                && same_cap(post.table_view(root)[frames[i].0], pre.table_view(root)[frames[i].0]) by {
+            assert(frames[i].0 != to);
+        }
+        lemma_frames_shrunk_caps(pre, post, root, frames);
+        assert forall|i: int, j: usize, page: usize|
+            #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+                && post.table_view(root).contains_key(j) && j != frames[i].0
+                && post.table_view(root)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+                implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], page))
+                    != block_ref(&post.blocks, slot_page(post, root, frames[i].0)) by {
+            assert(frames[i].0 != to);
+            assert(j != to);
+            assert(pre.table_view(root).contains_key(frames[i].0));
+            assert(pre.table_view(root).contains_key(j));
+            assert(frame_held(pre, root, frames[i]));
+            assert((0 as int) * PAGE_SZ < block_bytes(pre.table_view(root)[frames[i].0].order));
+            assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[frames[i].0], 0))
+                == block_ref(&pre.blocks, view_frame(pre.table_view(root)[frames[i].0], 0)));
+            assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page))
+                == block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+        }
+    } else {
+        assert(forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t));
+        assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+            == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
+        if post.blocks == pre.blocks {
+            lemma_frames_same(pre, post, root, frames);
+        } else {
+            lemma_frames_kept(pre, post, root, frames);
+        }
+    }
+}
+
+/// Every page of a frame capability in a table's view is a tracked page in the block the capability's
+/// first page lies in, and the capability's base is a page's.
+proof fn lemma_view_frame_block(k: CapKernel, t: usize, slot: usize, page: usize)
+    requires
+        k.wf(),
+        k.table_view(t).contains_key(slot),
+        k.table_view(t)[slot].kind is Frame,
+        (page as int) * PAGE_SZ < block_bytes(k.table_view(t)[slot].order),
+    ensures
+        k.table_view(t)[slot].base as int % PAGE_SZ as int == 0,
+        k.blocks.tracks(view_frame(k.table_view(t)[slot], page) as int),
+        block_ref(&k.blocks, view_frame(k.table_view(t)[slot], page))
+            == block_ref(&k.blocks, k.table_view(t)[slot].base / PAGE_SZ),
+{
+    k.lemma_table_view(t, slot);
+    let n = k.tables.node_of(t, slot);
+    k.lemma_frame_page(n, page);
+}
+
+/// The first page of the block a child narrows a frame capability to is a page of that capability's
+/// block: which one.
+proof fn lemma_derived_first_page(source: SlotView, rights: u32, base: usize, order: u8) -> (q: usize)
+    requires
+        source.kind is Frame,
+        source.base as int % PAGE_SZ as int == 0,
+        view_narrows(source, rights, base, order),
+    ensures
+        (q as int) * PAGE_SZ < block_bytes(source.order),
+        view_frame(source, q) == base / PAGE_SZ,
+{
+    let n = vstd::arithmetic::power2::pow2(order as nat) as int;
+    let m = vstd::arithmetic::power2::pow2(source.order as nat) as int;
+    vstd::arithmetic::power2::lemma_pow2_pos(order as nat);
+    assert(derived_view(source, rights, base, order, 0).order == order);
+    assert(block_bytes(order) == n * PAGE_SZ);
+    assert(block_bytes(source.order) == m * PAGE_SZ);
+    let pg = PAGE_SZ as int;
+    let b = base as int / pg;
+    let s = source.base as int / pg;
+    lemma_shifts();
+    assert(pg == (1usize << PAGE_SHIFT) as int);
+    assert(source.base as int == pg * s);
+    assert(pg * b <= base as int);
+    assert(s <= b);
+    assert(base as int + n * pg <= source.base as int + m * pg);
+    assert(pg * b < pg * s + m * pg);
+    assert(b - s < m);
+    let q = (b - s) as usize;
+    assert((q as int) * pg < m * pg);
+    q
+}
+
+/// One frame the source holds, across a derive that put a child of the frame capability at `from`, a
+/// slot the source's frames do not name, in the slot `slot`, which they do not name either: while its
+/// slot holds it, the slot holds what it held, its block is the one it was and not the one the child
+/// counts in, at the count it had, and still no other table holds a capability of it.
+proof fn lemma_frame_derived_kept(
+    pre: CapKernel,
+    post: CapKernel,
+    root: usize,
+    frames: Map<int, (usize, Option<usize>)>,
+    from: usize,
+    slot: usize,
+    child: SlotView,
+    i: int,
+)
+    requires
+        pre.wf(),
+        frames_held(pre, root, frames),
+        pre.table_view(root).contains_key(from),
+        pre.table_view(root)[from].kind is Frame,
+        forall|k: int| #[trigger] frames.contains_key(k) ==> frames[k].0 != slot && frames[k].0 != from,
+        post.table_view(root) == pre.table_view(root).insert(slot, child),
+        forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t),
+        ({
+            let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[from], 0));
+            blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+        }),
+        frames.contains_key(i),
+        post.table_view(root).contains_key(frames[i].0),
+    ensures
+        pre.table_view(root).contains_key(frames[i].0),
+        post.table_view(root)[frames[i].0] == pre.table_view(root)[frames[i].0],
+        slot_page(post, root, frames[i].0) == slot_page(pre, root, frames[i].0),
+        pre.blocks.tracks(slot_page(pre, root, frames[i].0) as int),
+        block_ref(&post.blocks, slot_page(pre, root, frames[i].0)) == block_ref(&pre.blocks, slot_page(pre, root, frames[i].0)),
+        block_ref(&pre.blocks, slot_page(pre, root, frames[i].0)) != block_ref(&pre.blocks, view_frame(pre.table_view(root)[from], 0)),
+        frame_refs(post, slot_page(pre, root, frames[i].0)) == frame_refs(pre, slot_page(pre, root, frames[i].0)),
+        post.held_by(block_ref(&pre.blocks, slot_page(pre, root, frames[i].0)), root),
+{
+    let s = frames[i].0;
+    let source = pre.table_view(root)[from];
+    let br = block_ref(&pre.blocks, view_frame(source, 0));
+    assert(s != slot && s != from);
+    assert(pre.table_view(root).contains_key(s));
+    assert(post.table_view(root)[s] == pre.table_view(root)[s]);
+    assert(frame_held(pre, root, frames[i]));
+    let pk = slot_page(pre, root, s);
+    let x = block_ref(&pre.blocks, pk);
+    lemma_slot_page(pre, root, s);
+    vstd::arithmetic::power2::lemma_pow2_pos(source.order as nat);
+    assert((0 as int) * PAGE_SZ < block_bytes(source.order));
+    assert(block_ref(&pre.blocks, view_frame(pre.table_view(root)[from], 0)) != block_ref(&pre.blocks, slot_page(pre, root, frames[i].0)));
+    assert(block_ref(&post.blocks, pk) == x);
+    assert(block_refs(&post.blocks, x) == block_refs(&pre.blocks, x));
+    lemma_held_kept(pre, post, root, x);
+}
+
+/// A derive that put a child of the frame capability at `from`, a slot the source's frames do not name,
+/// in the slot `slot` of the same table, which they do not name either, keeps every frame the source
+/// holds: the child counts in the block `from`'s capability lies in, which is no frame's of the
+/// source's, and `q` is the page of that capability the child's block starts at.
+proof fn lemma_frames_frame_derived(
+    pre: CapKernel,
+    post: CapKernel,
+    root: usize,
+    frames: Map<int, (usize, Option<usize>)>,
+    from: usize,
+    slot: usize,
+    child: SlotView,
+    q: usize,
+)
+    requires
+        pre.wf(),
+        post.wf(),
+        frames_held(pre, root, frames),
+        pre.table_view(root).contains_key(from),
+        pre.table_view(root)[from].kind is Frame,
+        child.kind is Frame,
+        (q as int) * PAGE_SZ < block_bytes(pre.table_view(root)[from].order),
+        view_frame(pre.table_view(root)[from], q) == child.base / PAGE_SZ,
+        forall|k: int| #[trigger] frames.contains_key(k) ==> frames[k].0 != slot && frames[k].0 != from,
+        post.table_view(root) == pre.table_view(root).insert(slot, child),
+        forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t),
+        ({
+            let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[from], 0));
+            blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+        }),
+        forall|p: SpacePath| #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), root).contains_key(p)
+            ==> space_mapping(tree_of(&pre.table_pages, &pre.spaces), root).contains_key(p)
+                && space_mapping(tree_of(&post.table_pages, &post.spaces), root)[p] == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root)[p],
+    ensures
+        frames_held(post, root, frames),
+{
+    let a = space_mapping(tree_of(&pre.table_pages, &pre.spaces), root);
+    let b = space_mapping(tree_of(&post.table_pages, &post.spaces), root);
+    assert forall|i: int| #[trigger] frames.contains_key(i) implies frame_held(post, root, frames[i]) by {
+        assert(frame_held(pre, root, frames[i]));
+        if post.table_view(root).contains_key(frames[i].0) {
+            lemma_frame_derived_kept(pre, post, root, frames, from, slot, child, i);
+            if frames[i].1 is Some && b.contains_key(address_path(frames[i].1->0 as u64)) {
+                assert(a.contains_key(address_path(frames[i].1->0 as u64)));
+            }
+        }
+    }
+    assert forall|i: int, j: int|
+        frames.contains_key(i) && frames.contains_key(j) && i != j
+            && post.table_view(root).contains_key(#[trigger] frames[i].0) && post.table_view(root).contains_key(#[trigger] frames[j].0)
+            implies block_ref(&post.blocks, slot_page(post, root, frames[i].0)) != block_ref(&post.blocks, slot_page(post, root, frames[j].0)) by {
+        lemma_frame_derived_kept(pre, post, root, frames, from, slot, child, i);
+        lemma_frame_derived_kept(pre, post, root, frames, from, slot, child, j);
+    }
+    assert forall|k: int, j: usize, page: usize|
+        #[trigger] frames.contains_key(k) && post.table_view(root).contains_key(frames[k].0)
+            && post.table_view(root).contains_key(j) && j != frames[k].0
+            && post.table_view(root)[j].kind is Frame
+            && (page as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+            implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], page))
+                != block_ref(&post.blocks, slot_page(post, root, frames[k].0)) by {
+        lemma_frame_derived_kept(pre, post, root, frames, from, slot, child, k);
+        if j != slot {
+            assert(pre.table_view(root).contains_key(j) && post.table_view(root)[j] == pre.table_view(root)[j]);
+            pre.lemma_view_frame_counted(root, j, page);
+            assert(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page))
+                != block_ref(&pre.blocks, slot_page(pre, root, frames[k].0)));
+            assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page))
+                == block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+        } else {
+            assert(post.table_view(root)[j] == child);
+            lemma_view_frame_block(post, root, slot, page);
+            pre.lemma_view_frame_counted(root, from, q);
+            assert(block_ref(&pre.blocks, view_frame(pre.table_view(root)[from], q))
+                != block_ref(&pre.blocks, slot_page(pre, root, frames[k].0)));
+            assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[from], q))
+                == block_ref(&pre.blocks, view_frame(pre.table_view(root)[from], q)));
+        }
+    }
+}
+
+/// A step that put a capability that is no frame's in the slot `slot` of root's table, which no frame
+/// the source holds names, and that otherwise only took from root's table and its space, at counts the
+/// rely allows, keeps every frame the source holds.
+proof fn lemma_frames_filled(
+    pre: CapKernel,
+    post: CapKernel,
+    root: usize,
+    frames: Map<int, (usize, Option<usize>)>,
+    slot: usize,
+    child: SlotView,
+)
+    requires
+        frames_held(pre, root, frames),
+        pre.sealed(root),
+        !(child.kind is Frame),
+        forall|k: int| #[trigger] frames.contains_key(k) ==> frames[k].0 != slot,
+        post.table_view(root) == pre.table_view(root).insert(slot, child),
+        forall|p: SpacePath| #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), root).contains_key(p)
+            ==> space_mapping(tree_of(&pre.table_pages, &pre.spaces), root).contains_key(p)
+                && space_mapping(tree_of(&post.table_pages, &post.spaces), root)[p] == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root)[p],
+        CapKernel::count_kept(pre, post, root),
+    ensures
+        frames_held(post, root, frames),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    assert forall|i: int| #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+        implies pre.table_view(root).contains_key(frames[i].0)
+            && same_cap(post.table_view(root)[frames[i].0], pre.table_view(root)[frames[i].0]) by {
+        assert(frames[i].0 != slot);
+    }
+    lemma_frames_shrunk_caps(pre, post, root, frames);
+    assert forall|i: int, j: usize, page: usize|
+        #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+            && post.table_view(root).contains_key(j) && j != frames[i].0
+            && post.table_view(root)[j].kind is Frame
+            && (page as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+            implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], page))
+                != block_ref(&post.blocks, slot_page(post, root, frames[i].0)) by {
+        assert(frames[i].0 != slot);
+        assert(j != slot);
+        assert(pre.table_view(root).contains_key(frames[i].0));
+        assert(pre.table_view(root).contains_key(j));
+        assert(post.table_view(root)[j] == pre.table_view(root)[j]);
+        assert(post.table_view(root)[frames[i].0] == pre.table_view(root)[frames[i].0]);
+        assert(frame_held(pre, root, frames[i]));
+        assert((0 as int) * PAGE_SZ < block_bytes(pre.table_view(root)[frames[i].0].order));
+        assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[frames[i].0], 0))
+            == block_ref(&pre.blocks, view_frame(pre.table_view(root)[frames[i].0], 0)));
+        assert(block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page))
+            == block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)));
+        assert(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page))
+            != block_ref(&pre.blocks, slot_page(pre, root, frames[i].0)));
+    }
+}
+
+/// A guarded `derive` whose source and destination stay in the caller's table and target no slot the
+/// source holds keeps every frame the source holds.
+pub proof fn lemma_frames_derived(
+    pre: CapKernel,
+    post: CapKernel,
+    root: usize,
+    frames: Map<int, (usize, Option<usize>)>,
+    from: u64,
+    to: u64,
+    rights: u64,
+    base: u64,
+    order: u64,
+    out: Outcome,
+)
+    requires
+        pre.wf(),
+        post.wf(),
+        pre.sealed(root),
+        pre.processes.records@.contains_key(root),
+        frames_held(pre, root, frames),
+        CapKernel::derive_contract(pre, post, root, spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
+        CapKernel::space_kept(pre, post, root),
+        !reaches_through(from),
+        !reaches_through(to),
+        forall|i: int| #[trigger] frames.contains_key(i) ==> {
+            &&& spec_position(from) is Some ==> frames[i].0 != spec_position(from)->0.index
+            &&& spec_position(to) is Some ==> frames[i].0 != spec_position(to)->0.index
+        },
+    ensures
+        frames_held(post, root, frames),
+{
+    let a = space_mapping(tree_of(&pre.table_pages, &pre.spaces), root);
+    let b = space_mapping(tree_of(&post.table_pages, &post.spaces), root);
+    assert forall|p: SpacePath| #[trigger] b.contains_key(p) implies a.contains_key(p) && b[p] == a[p] by {}
+    let from_pos = spec_position(from);
+    let to_pos = spec_position(to);
+    if !pre.derive_allowed(root, from_pos, to_pos, rights, base as usize, order, 0) {
+        CapKernel::lemma_blocks_kept_keeps_count(pre, post, root);
+        assert(post.table_view(root) == pre.table_view(root));
+        lemma_frames_shrunk(pre, post, root, frames);
+        return;
+    }
+    assert(to_pos->0.through is None);
+    assert(pre.view_table_at(root, to_pos->0.through) == Some(root));
+    let i_src = from_pos->0.index;
+    let slot = to_pos->0.index;
+    let source = pre.table_view(root)[i_src];
+    let child = derived_view(source, rights as u32, base as usize, order as u8, pre.tables.node_of(root, i_src));
+    assert(post.table_view(root) == pre.table_view(root).insert(slot, child));
+    assert(forall|k: int| #[trigger] frames.contains_key(k) ==> frames[k].0 != slot && frames[k].0 != i_src);
+    if source.kind is Frame {
+        assert(child.kind is Frame && child.base == base as usize);
+        vstd::arithmetic::power2::lemma_pow2_pos(source.order as nat);
+        assert((0 as int) * PAGE_SZ < block_bytes(source.order));
+        lemma_view_frame_block(pre, root, i_src, 0);
+        let q = lemma_derived_first_page(source, rights as u32, base as usize, order as u8);
+        lemma_frames_frame_derived(pre, post, root, frames, i_src, slot, child, q);
+    } else {
+        assert(!(child.kind is Frame));
+        lemma_frame_blocks_keep_count(pre, post, root);
+        lemma_frames_filled(pre, post, root, frames, slot, child);
+    }
+}
+
+/// A guarded `move_cap` whose destination is in the caller's own table and targets no slot the
+/// source holds keeps every frame the source holds.
+pub proof fn lemma_frames_moved(
+    pre: CapKernel,
+    post: CapKernel,
+    root: usize,
+    frames: Map<int, (usize, Option<usize>)>,
+    from: Option<Position>,
+    to: u64,
+    out: Outcome,
+)
+    requires
+        pre.wf(),
+        pre.sealed(root),
+        pre.processes.records@.contains_key(root),
+        frames_held(pre, root, frames),
+        CapKernel::move_contract(pre, post, root, from, spec_position(to), out),
+        CapKernel::space_kept(pre, post, root),
+        CapKernel::count_kept(pre, post, root),
+        !reaches_through(to),
+        forall|i: int| #[trigger] frames.contains_key(i)
+            ==> (spec_position(to) is Some ==> frames[i].0 != spec_position(to)->0.index),
+    ensures
+        frames_held(post, root, frames),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    let a = space_mapping(tree_of(&pre.table_pages, &pre.spaces), root);
+    let b = space_mapping(tree_of(&post.table_pages, &post.spaces), root);
+    assert forall|p: SpacePath| #[trigger] b.contains_key(p) implies a.contains_key(p) && b[p] == a[p] by {}
+    let to_pos = spec_position(to);
+    if !pre.move_allowed(root, from, to_pos) {
+        assert(post.table_view(root) == pre.table_view(root));
+        lemma_frames_shrunk(pre, post, root, frames);
+        return;
+    }
+    let src = pre.view_table_at(root, from->0.through)->0;
+    let dst = pre.view_table_at(root, to_pos->0.through)->0;
+    pre.lemma_view_table_at(root, to_pos->0.through);
+    assert(dst == root);
+    let slot = to_pos->0.index;
+    assert forall|i: int| #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+        implies pre.table_view(root).contains_key(frames[i].0)
+            && same_cap(post.table_view(root)[frames[i].0], pre.table_view(root)[frames[i].0]) by {
+        assert(frames[i].0 != slot);
+        assert(post.table_view(root) == pre.moved_table_view(src, from->0.index, root, slot, root));
+    }
+    lemma_frames_shrunk_caps(pre, post, root, frames);
+    assert forall|i: int, j: usize, page: usize|
+        #[trigger] frames.contains_key(i) && post.table_view(root).contains_key(frames[i].0)
+            && post.table_view(root).contains_key(j) && j != frames[i].0
+            && post.table_view(root)[j].kind is Frame
+            && (page as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+            implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], page))
+                != block_ref(&post.blocks, slot_page(post, root, frames[i].0)) by {
+        assert(frames[i].0 != slot);
+        assert(post.table_view(root) == pre.moved_table_view(src, from->0.index, root, slot, root));
+        assert(frame_held(pre, root, frames[i]));
+        assert(post.blocks == pre.blocks);
+        if j != slot {
+            assert(pre.table_view(root).contains_key(j));
+            assert(same_cap(post.table_view(root)[j], pre.table_view(root)[j]));
+            assert(view_frame(post.table_view(root)[j], page) == view_frame(pre.table_view(root)[j], page));
+        } else {
+            assert(post.table_view(root)[j] == pre.table_view(src)[from->0.index]);
+            if src == root {
+                assert(frames[i].0 != from->0.index);
+            } else {
+                assert(pre.held_by(block_ref(&pre.blocks, slot_page(pre, root, frames[i].0)), root));
+            }
+        }
+    }
 }
 
 /// The level whose entry maps one page.

@@ -9,9 +9,11 @@ use vstd::arithmetic::div_mod::{lemma_fundamental_div_mod, lemma_mod_multiples_b
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
 use acall::step::{caller_alone, Caller};
+use aheap::allocator::Allocator;
 use aheap::arch::*;
+use aheap::heap::{class_for, small_layout};
 use aheap::source::*;
-use verified::capability::operation::STATUS_REFUSED;
+use verified::capability::operation::{status_only, Outcome, STATUS_REFUSED};
 use verified::capability::table::TABLE_INDICES;
 use crate::allocator::*;
 use crate::apart::{lemma_other_source_ready, lemma_other_window_unclaimed, process_ready, sources_apart};
@@ -22,6 +24,7 @@ use crate::glue::{
     lemma_acall_steps_append, lemma_acall_steps_claimed, lemma_caller_alone_split, lemma_source_ready_premises,
     lemma_window_still_unclaimed, lemma_window_unclaimed, names_own_space, own_process, source_ready, window_tokens_clear,
 };
+use crate::invoke::{GuardedCall, invoke};
 use crate::{Eager, MAX_PAGES, REGION_BYTES, TABLE_PAGES, WINDOW_BLOCKS};
 
 verus! {

@@ -123,6 +123,8 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
         pages_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
         CapKernel::retype_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), kind, untyped as usize, base as usize, word, level as usize, out),
+        CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+        CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
@@ -149,6 +151,10 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
         lemma_returned_retype_thread_fields(entry, mid, caller@.kernel(), c, pre.root(), base as usize, level as usize);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
+        lemma_returned_space_kept(entry, mid, caller@.kernel(), c, pre.root());
+        CapKernel::lemma_retype_keeps_count(entry, mid, pre.root(), frame, out, pre.root());
+        lemma_returned_count_kept(entry, mid, caller@.kernel(), c, pre.root());
         if pre.kernel().sealed(pre.root()) {
             assert forall|s: usize|
                 #[trigger] slot_names_own_space(pre.kernel(), pre.root(), s)
@@ -162,7 +168,6 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
         }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
-            CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
             lemma_space_kept_agrees(entry, mid, pre.root(), pre.pages());
             lemma_returned_agrees(caller@, mid, c);
         }
@@ -306,6 +311,7 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
         pages_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() && !reaches_through(to) ==> final(caller)@.pages_wf(),
         CapKernel::derive_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
+        CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         (out.status != STATUS_OK || !derive_from_frame(final(caller)@.entry(), final(caller)@.root(), from))
             ==> CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         out.status == STATUS_OK && derive_from_frame(final(caller)@.entry(), final(caller)@.root(), from)
@@ -379,9 +385,10 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
                 }
             };
         }
+        CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
+        lemma_returned_space_kept(entry, mid, caller@.kernel(), c, pre.root());
         if pre.pages_wf() && !reaches_through(to) {
             lemma_entry_agrees(pre, caller@);
-            CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
             lemma_space_kept_agrees(entry, mid, pre.root(), pre.pages());
             lemma_returned_agrees(caller@, mid, c);
         }
@@ -403,6 +410,8 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         pages_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
         CapKernel::inspect_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
+        CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+        CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
@@ -425,6 +434,10 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         lemma_returned_inspect_fields(entry, mid, caller@.kernel(), c);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
+        lemma_returned_space_kept(entry, mid, caller@.kernel(), c, pre.root());
+        CapKernel::lemma_inspect_keeps_count(entry, mid, pre.root(), frame, out, pre.root());
+        lemma_returned_count_kept(entry, mid, caller@.kernel(), c, pre.root());
         if pre.kernel().sealed(pre.root()) {
             assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
                 ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
@@ -432,7 +445,6 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
-            CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
             lemma_space_kept_agrees(entry, mid, pre.root(), pre.pages());
             lemma_returned_agrees(caller@, mid, c);
         }
@@ -455,6 +467,8 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
         pages_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
         CapKernel::link_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, child as usize, out),
+        CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+        CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
@@ -477,6 +491,10 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
         lemma_returned_link_fields(entry, mid, caller@.kernel(), c);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
+        CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
+        lemma_returned_space_kept(entry, mid, caller@.kernel(), c, pre.root());
+        CapKernel::lemma_link_keeps_count(entry, mid, pre.root(), frame, out, pre.root());
+        lemma_returned_count_kept(entry, mid, caller@.kernel(), c, pre.root());
         if pre.kernel().sealed(pre.root()) {
             assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
                 ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
@@ -484,7 +502,6 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
         }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
-            CapKernel::lemma_own_step_keeps_space(entry, mid, pre.root(), frame, out);
             lemma_space_kept_agrees(entry, mid, pre.root(), pre.pages());
             lemma_returned_agrees(caller@, mid, c);
         }

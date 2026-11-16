@@ -30,7 +30,7 @@ use vstd::raw_ptr::*;
 
 use acall::step::Caller;
 #[cfg(verus_keep_ghost)]
-use acall::step::{caller_alone, PageToken};
+use acall::step::{caller_alone, pages_kept, PageToken};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::Loc;
 #[cfg(verus_keep_ghost)]
@@ -43,14 +43,27 @@ use aheap::source::*;
 use verified::capability::kernel::CapKernel;
 use verified::capability::list::NODES_PER_PAGE;
 #[cfg(verus_keep_ghost)]
-use verified::capability::operation::{RETYPE_FRAME, RETYPE_TABLE_PAGE, STATUS_OK, STATUS_REFUSED};
+use verified::capability::link::tree_of;
 #[cfg(verus_keep_ghost)]
-use verified::capability::position::POSITION_INDEX_MASK;
+use verified::capability::mapping::space_mapping;
+#[cfg(verus_keep_ghost)]
+use verified::capability::operation::{
+    Outcome, RETYPE_FRAME, RETYPE_LARGE_FRAME, RETYPE_PROCESS, RETYPE_TABLE_PAGE, RETYPE_THREAD, STATUS_OK,
+    STATUS_REFUSED,
+};
+#[cfg(verus_keep_ghost)]
+use verified::capability::position::{spec_position, POSITION_INDEX_MASK};
+#[cfg(verus_keep_ghost)]
+use verified::capability::rely::{reaches_through, same_cap};
 #[cfg(verus_keep_ghost)]
 use verified::capability::table::index_ok;
 use verified::capability::table::TABLE_INDICES;
+#[cfg(verus_keep_ghost)]
+use acall::step::slot_names_own_space;
 
 use crate::glue::*;
+#[cfg(verus_keep_ghost)]
+use crate::invoke::{GuardedCall, call_keeps_source, is_source_slot, local_targets_source};
 
 verus! {
 
@@ -5885,6 +5898,471 @@ impl Eager {
         }
         Some(source)
     }
+}
+
+#[cfg(verus_keep_ghost)]
+impl Eager {
+    pub(crate) fn exec_space(&self) -> (r: u64)
+        ensures
+            r == self.space(),
+    {
+        self.record.space
+    }
+
+    pub(crate) fn exec_untyped(&self) -> (r: u64)
+        ensures
+            r == self.untyped(),
+    {
+        self.record.untyped
+    }
+
+    pub(crate) fn exec_window(&self) -> (r: usize)
+        ensures
+            r == self.window(),
+            r + WINDOW_BYTES <= usize::MAX,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        self.spans.window
+    }
+
+    pub(crate) fn exec_is_source_slot(&self, slot: usize) -> (r: bool)
+        ensures
+            r == is_source_slot(self, slot),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        if slot as u64 == self.record.space || slot as u64 == self.record.untyped {
+            return true;
+        }
+        if self.record.pages == 0 {
+            return false;
+        }
+        let first = frame_slot_at(self.record.slots, 0);
+        let last = frame_slot_at(self.record.slots, self.record.pages - 1);
+        if (slot as u64) < first || (slot as u64) > last {
+            proof {
+                assert forall|i: int| 0 <= i < self.record.pages implies frame_slot(self.record.slots as int, i) != slot as int by {
+                    if i > 0 {
+                        lemma_frame_slot(self.record.slots as int, 0, i);
+                    }
+                    if i < self.record.pages - 1 {
+                        lemma_frame_slot(self.record.slots as int, i, self.record.pages - 1);
+                    }
+                }
+            }
+            return false;
+        }
+        let mut i: usize = 0;
+        while i < self.record.pages
+            invariant
+                0 <= i <= self.record.pages,
+                self.record.inv(),
+                slot as u64 != self.record.space,
+                slot as u64 != self.record.untyped,
+                forall|k: int| 0 <= k < i ==> frame_slot(self.record.slots as int, k) != slot as int,
+            decreases self.record.pages - i,
+        {
+            if frame_slot_at(self.record.slots, i) == slot as u64 {
+                proof {
+                    assert(self.pages() == self.record.pages && self.slots() == self.record.slots);
+                    assert(0 <= i as int && (i as int) < self.pages()
+                        && frame_slot(self.slots() as int, i as int) == slot as int);
+                }
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// The slot of each frame the source holds is a source slot.
+    proof fn lemma_frames_in_source_slots(&self)
+        requires
+            self.record.inv(),
+        ensures
+            forall|i: int| #[trigger] self.record.frames().contains_key(i)
+                ==> is_source_slot(self, self.record.frames()[i].0),
+    {
+        reveal(slots_ok);
+        assert forall|i: int| #[trigger] self.record.frames().contains_key(i)
+            implies is_source_slot(self, self.record.frames()[i].0) by {
+            assert(0 <= i < self.record.pages);
+            assert(0 <= frame_slot(self.record.slots as int, i) < TABLE_INDICES);
+            assert(self.record.frames()[i].0 == frame_slot(self.record.slots as int, i) as usize);
+            assert(self.pages() == self.record.pages && self.slots() == self.record.slots);
+            assert(0 <= i < self.pages() && frame_slot(self.slots() as int, i) == self.record.frames()[i].0 as int);
+        }
+    }
+
+    /// The source serves a token whose kernel state is well formed, whose process is its own, whose
+    /// slot at the source's space names that process's space, which holds the source's frames, and
+    /// whose page tokens are those of a token the source served and agree with its space.
+    proof fn lemma_serves_parts(&self, pre: Caller, post: Caller)
+        requires
+            self.serves(pre),
+            post.wf(),
+            own_process(post),
+            names_own_space(post, self.record.space),
+            frames_held(post.kernel(), post.root(), self.record.frames()),
+            post.pages_wf(),
+            post.pages_id() == pre.pages_id(),
+        ensures
+            self.serves(post),
+    {
+    }
+
+    /// The source serves the token a call returned when it served the one the call took, the call
+    /// kept the process its own and the slot at the source's space naming its space, and from the
+    /// state it entered from it only took slots from the caller's table, each slot left holding what it
+    /// held, and entries from its space, at counts the rely allows.
+    proof fn lemma_shrunk_step_serves(&self, pre: Caller, post: Caller)
+        requires
+            self.serves(pre),
+            post.wf(),
+            post.root() == pre.root(),
+            post.entry().wf(),
+            CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
+            pages_kept(pre, post),
+            post.pages_wf(),
+            own_process(post),
+            slot_names_own_space(post.kernel(), post.root(), self.record.space as usize),
+            CapKernel::space_kept(post.entry(), post.kernel(), post.root()),
+            CapKernel::count_kept(post.entry(), post.kernel(), post.root()),
+            forall|j: usize| #[trigger] post.kernel().table_view(post.root()).contains_key(j)
+                ==> post.entry().table_view(post.root()).contains_key(j)
+                    && same_cap(post.kernel().table_view(post.root())[j], post.entry().table_view(post.root())[j]),
+        ensures
+            self.serves(post),
+    {
+        lemma_shrunk_step_keeps_frames(pre, post, self.record.frames());
+        assert(names_own_space(post, self.record.space));
+        self.lemma_serves_parts(pre, post);
+    }
+
+    /// A retype that is not into a slot of the source's keeps the source served.
+    fn guarded_retype(&self, caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, word: u64, level: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+            (kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME || kind == RETYPE_PROCESS || kind == RETYPE_THREAD)
+                ==> !is_source_slot(self, word as usize),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        proof {
+            use_type_invariant(self);
+        }
+        let out = acall::memory::retype(caller, untyped, kind, base, word, level);
+        proof {
+            let frames = self.record.frames();
+            let root = pre.root();
+            assert(names_own_space(pre, self.record.space));
+            lemma_entry_held(pre, caller@, frames);
+            self.lemma_frames_in_source_slots();
+            lemma_frames_retype_call(
+                caller@.entry(),
+                caller@.kernel(),
+                root,
+                frames,
+                kind,
+                untyped as usize,
+                base as usize,
+                word,
+                level as usize,
+                out,
+            );
+            assert(slot_names_own_space(pre.kernel(), root, self.record.space as usize));
+            assert(kind == RETYPE_PROCESS ==> word as usize != self.record.space as usize);
+            assert(slot_names_own_space(caller@.kernel(), root, self.record.space as usize));
+            assert(names_own_space(caller@, self.record.space));
+            self.lemma_serves_parts(pre, caller@);
+        }
+        out
+    }
+
+    /// A derive within the caller's own table, neither from nor into a slot of the source's, keeps the
+    /// source served.
+    fn guarded_derive(&self, caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, base: u64, order: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+            !reaches_through(from),
+            !reaches_through(to),
+            !local_targets_source(self, from),
+            !local_targets_source(self, to),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        proof {
+            use_type_invariant(self);
+        }
+        let out = acall::memory::derive(caller, from, to, rights, base, order);
+        proof {
+            let frames = self.record.frames();
+            let root = pre.root();
+            assert(names_own_space(pre, self.record.space));
+            lemma_entry_held(pre, caller@, frames);
+            self.lemma_frames_in_source_slots();
+            lemma_frames_derived(caller@.entry(), caller@.kernel(), root, frames, from, to, rights, base, order, out);
+            assert(slot_names_own_space(pre.kernel(), root, self.record.space as usize));
+            assert(spec_position(to) is Some ==> spec_position(to)->0.index != self.record.space as usize);
+            assert(slot_names_own_space(caller@.kernel(), root, self.record.space as usize));
+            assert(names_own_space(caller@, self.record.space));
+            self.lemma_serves_parts(pre, caller@);
+        }
+        out
+    }
+
+    /// A move into a slot of the caller's own table that is not the source's keeps the source served.
+    fn guarded_move(&self, caller: &mut Tracked<Caller>, from: u64, to: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+            !reaches_through(to),
+            !local_targets_source(self, to),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        proof {
+            use_type_invariant(self);
+        }
+        let out = acall::capability::move_cap(caller, from, to);
+        proof {
+            let frames = self.record.frames();
+            let root = pre.root();
+            assert(names_own_space(pre, self.record.space));
+            lemma_entry_held(pre, caller@, frames);
+            self.lemma_frames_in_source_slots();
+            lemma_frames_moved(caller@.entry(), caller@.kernel(), root, frames, spec_position(from), to, out);
+            assert(slot_names_own_space(pre.kernel(), root, self.record.space as usize));
+            assert(spec_position(to) is Some ==> spec_position(to)->0.index != self.record.space as usize);
+            assert(slot_names_own_space(caller@.kernel(), root, self.record.space as usize));
+            assert(names_own_space(caller@, self.record.space));
+            self.lemma_serves_parts(pre, caller@);
+        }
+        out
+    }
+
+    /// A delete keeps the source served: it only takes a slot.
+    fn guarded_delete(&self, caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::capability::delete(caller, at);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// A revoke keeps the source served: it only takes slots.
+    fn guarded_revoke(&self, caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::capability::revoke(caller, at);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// A destroy keeps the source served: no table's view changes.
+    fn guarded_destroy(&self, caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::capability::destroy(caller, slot);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// A place keeps the source served: no table's view changes.
+    fn guarded_place(&self, caller: &mut Tracked<Caller>, slot: u64, core: u64, priority: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::capability::place(caller, slot, core, priority);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// A start keeps the source served: no table's view changes.
+    fn guarded_start(&self, caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::capability::start(caller, slot);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// A suspend keeps the source served: no table's view changes.
+    fn guarded_suspend(&self, caller: &mut Tracked<Caller>, slot: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::capability::suspend(caller, slot);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// A read of a thread's registers keeps the source served: no table's view changes.
+    fn guarded_read_registers(&self, caller: &mut Tracked<Caller>, slot: u64, index: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::capability::read_registers(caller, slot, index);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// A write of a thread's registers keeps the source served: no table's view changes.
+    fn guarded_write_registers(&self, caller: &mut Tracked<Caller>, slot: u64, index: u64, words: [u64; 4]) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::capability::write_registers(caller, slot, index, words);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// An inspect keeps the source served: no table's view changes.
+    fn guarded_inspect(&self, caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::memory::inspect(caller, at);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// A link keeps the source served: no table's view and no space's mapping changes.
+    fn guarded_link(&self, caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u64, child: u64) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+        ensures
+            self.serves(final(caller)@),
+    {
+        let ghost pre = caller@;
+        let out = acall::memory::link(caller, slot, va, level, from, child);
+        proof {
+            assert(slot_names_own_space(pre.kernel(), pre.root(), self.record.space as usize));
+            self.lemma_shrunk_step_serves(pre, caller@);
+        }
+        out
+    }
+
+    /// Makes the call `call`, which keeps the source's slots, on the token the source serves, and
+    /// serves the token it returns.
+    pub(crate) fn invoke_guarded(&self, caller: &mut Tracked<Caller>, call: GuardedCall) -> (out: Outcome)
+        requires
+            self.serves(old(caller)@),
+            call_keeps_source(self, call),
+        ensures
+            self.serves(final(caller)@),
+    {
+        match call {
+            GuardedCall::Retype { untyped, kind, base, word, level } => self.guarded_retype(caller, untyped, kind, base, word, level),
+            GuardedCall::Derive { from, to, rights, base, order } => self.guarded_derive(caller, from, to, rights, base, order),
+            GuardedCall::MoveCap { from, to } => self.guarded_move(caller, from, to),
+            GuardedCall::Delete { at } => self.guarded_delete(caller, at),
+            GuardedCall::Revoke { at } => self.guarded_revoke(caller, at),
+            GuardedCall::Destroy { slot } => self.guarded_destroy(caller, slot),
+            GuardedCall::Place { slot, core, priority } => self.guarded_place(caller, slot, core, priority),
+            GuardedCall::Start { slot } => self.guarded_start(caller, slot),
+            GuardedCall::Suspend { slot } => self.guarded_suspend(caller, slot),
+            GuardedCall::ReadRegisters { slot, index } => self.guarded_read_registers(caller, slot, index),
+            GuardedCall::WriteRegisters { slot, index, words } => self.guarded_write_registers(caller, slot, index, words),
+            GuardedCall::Inspect { at } => self.guarded_inspect(caller, at),
+            GuardedCall::Link { slot, va, level, from, child } => self.guarded_link(caller, slot, va, level, from, child),
+        }
+    }
+}
+
+proof fn lemma_shrunk_step_keeps_frames(
+    pre_caller: Caller,
+    post_caller: Caller,
+    frames: Map<int, (usize, Option<usize>)>,
+)
+    requires
+        own_process(pre_caller),
+        frames_held(pre_caller.kernel(), pre_caller.root(), frames),
+        post_caller.root() == pre_caller.root(),
+        post_caller.entry().wf(),
+        CapKernel::rely(pre_caller.kernel(), post_caller.entry(), pre_caller.root()),
+        CapKernel::space_kept(post_caller.entry(), post_caller.kernel(), post_caller.root()),
+        CapKernel::count_kept(post_caller.entry(), post_caller.kernel(), post_caller.root()),
+        forall|j: usize| #[trigger] post_caller.kernel().table_view(post_caller.root()).contains_key(j)
+            ==> post_caller.entry().table_view(post_caller.root()).contains_key(j)
+                && same_cap(
+                    post_caller.kernel().table_view(post_caller.root())[j],
+                    post_caller.entry().table_view(post_caller.root())[j],
+                ),
+    ensures
+        frames_held(post_caller.kernel(), post_caller.root(), frames),
+{
+    lemma_entry_held(pre_caller, post_caller, frames);
+    let entry = post_caller.entry();
+    let post = post_caller.kernel();
+    let root = pre_caller.root();
+    let a = space_mapping(tree_of(&entry.table_pages, &entry.spaces), root);
+    let b = space_mapping(tree_of(&post.table_pages, &post.spaces), root);
+    assert forall|p: SpacePath| #[trigger] b.contains_key(p) implies a.contains_key(p) && b[p] == a[p] by {}
+    lemma_frames_shrunk(entry, post, root, frames);
 }
 
 impl SpanSource for Eager {

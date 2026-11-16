@@ -13,8 +13,10 @@
 //! `free` requires of that permission. `Allocator::alloc` decides which layouts reach the heap and
 //! returns nothing when a layout does not fit or the caller token is lent out; the rest get a null
 //! pointer. The interface carries no caller token either, so the verified `Allocator` keeps the
-//! token beside the heap and source, lends it to `with_caller` while not allocating, and `dealloc`
-//! stops the process if called with the token lent out.
+//! token beside the heap and source. `with_caller` lends that token only before the allocator is
+//! installed. Once it is, the token stays there: an arbitrary call could delete, move or revoke a
+//! frame the source holds, and nothing would then show that the source still serves the token.
+//! `dealloc` stops the process if called with the token lent out.
 #![allow(unsafe_code)]
 
 use core::alloc::{GlobalAlloc, Layout};
@@ -53,32 +55,30 @@ pub struct Global {
 #[cfg_attr(target_os = "none", global_allocator)]
 pub static GLOBAL: Global = Global { held: Mutex::new(Held { caller: None, allocator: None }) };
 
-/// Keeps the process's caller token, which the process mints once at entry. Every later system call
-/// borrows it from here.
+/// Keeps the process's caller token, which the process mints once at entry. `with_caller` borrows it
+/// until the allocator is installed.
 pub fn keep_caller(caller: Tracked<Caller>) {
     let mut held = GLOBAL.held.lock();
     assert!(held.caller.is_none() && held.allocator.is_none(), "a process keeps one caller token");
     held.caller = Some(caller);
 }
 
-/// Lends the process's caller token to `calls`. The mutex is released while it runs, and `calls`
-/// does not free while the token is lent out.
+/// Lends the process's caller token to `calls` before the heap's allocator is installed. The mutex
+/// is released while it runs, and `calls` does not free while the token is lent out. Once the
+/// allocator is installed the token stays in it, so this refuses to lend.
 pub fn with_caller<R>(calls: impl FnOnce(&mut Tracked<Caller>) -> R) -> R {
     let mut caller = {
         let mut held = GLOBAL.held.lock();
-        if let Some(allocator) = held.allocator.as_mut() {
-            allocator.lend().expect("the caller token is kept and not lent out")
-        } else {
-            held.caller.take().expect("the caller token is kept and not lent out")
-        }
+        assert!(
+            held.allocator.is_none(),
+            "the caller token stays in the allocator once the heap is installed",
+        );
+        held.caller.take().expect("the caller token is kept and not lent out")
     };
     let r = calls(&mut caller);
     let mut held = GLOBAL.held.lock();
-    if let Some(allocator) = held.allocator.as_mut() {
-        allocator.give_back(caller);
-    } else {
-        held.caller = Some(caller);
-    }
+    assert!(held.allocator.is_none(), "the heap is not installed while the caller token is lent");
+    held.caller = Some(caller);
     r
 }
 

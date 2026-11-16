@@ -1410,12 +1410,13 @@ impl CapKernel {
         pre.sealed(root) ==> forall|j: usize, page: usize|
             pre.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
                 && pre.table_view(root)[j].kind is Frame
-                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
-                && pre.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) ==> {
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order) ==> {
                 let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
                 &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page)) == br
-                &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
-                &&& post.held_by(br, root)
+                &&& pre.held_by(br, root) ==> {
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                    &&& post.held_by(br, root)
+                }
             }
     }
 
@@ -1465,12 +1466,13 @@ impl CapKernel {
             assert forall|j: usize, page: usize|
                 a.table_view(root).contains_key(j) && c.table_view(root).contains_key(j)
                     && a.table_view(root)[j].kind is Frame
-                    && (page as int) * PAGE_SZ < block_bytes(a.table_view(root)[j].order)
-                    && a.held_by(block_ref(&a.blocks, view_frame(a.table_view(root)[j], page)), root) implies {
+                    && (page as int) * PAGE_SZ < block_bytes(a.table_view(root)[j].order) implies {
                     let br = block_ref(&a.blocks, view_frame(a.table_view(root)[j], page));
                     &&& #[trigger] block_ref(&c.blocks, view_frame(a.table_view(root)[j], page)) == br
-                    &&& block_refs(&c.blocks, br) <= block_refs(&a.blocks, br)
-                    &&& c.held_by(br, root)
+                    &&& a.held_by(br, root) ==> {
+                        &&& block_refs(&c.blocks, br) <= block_refs(&a.blocks, br)
+                        &&& c.held_by(br, root)
+                    }
                 } by {
                 assert(b.table_view(root).contains_key(j));
                 assert(same_cap(b.table_view(root)[j], a.table_view(root)[j]));
@@ -1498,22 +1500,25 @@ impl CapKernel {
         assert forall|j: usize, page: usize|
             pre.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
                 && pre.table_view(root)[j].kind is Frame
-                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
-                && pre.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) implies {
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order) implies {
                 let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
                 &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page)) == br
-                &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
-                &&& post.held_by(br, root)
+                &&& pre.held_by(br, root) ==> {
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                    &&& post.held_by(br, root)
+                }
             } by {
             let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
             pre.lemma_view_frame_counted(root, j, page);
-            assert forall|t: usize, i: usize, p: usize|
-                t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
-                    && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
-                    implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
-                assert(post.table_view(t) == pre.table_view(t));
-                pre.lemma_view_frame_counted(t, i, p);
-                assert(block_ref(&pre.blocks, view_frame(pre.table_view(t)[i], p)) != br);
+            if pre.held_by(br, root) {
+                assert forall|t: usize, i: usize, p: usize|
+                    t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
+                        && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
+                        implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
+                    assert(post.table_view(t) == pre.table_view(t));
+                    pre.lemma_view_frame_counted(t, i, p);
+                    assert(block_ref(&pre.blocks, view_frame(pre.table_view(t)[i], p)) != br);
+                }
             }
         }
     }
@@ -1529,16 +1534,23 @@ impl CapKernel {
         assert forall|j: usize, page: usize|
             pre.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
                 && pre.table_view(root)[j].kind is Frame
-                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
-                && pre.held_by(#[trigger] block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) implies
-                post.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) by {
+                && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order) implies {
+                let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page)) == br
+                &&& pre.held_by(br, root) ==> {
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                    &&& post.held_by(br, root)
+                }
+            } by {
             let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
-            assert forall|t: usize, i: usize, p: usize|
-                t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
-                    && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
-                    implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
-                assert(post.table_view(t) == pre.table_view(t));
-                assert(block_ref(&pre.blocks, view_frame(pre.table_view(t)[i], p)) != br);
+            if pre.held_by(br, root) {
+                assert forall|t: usize, i: usize, p: usize|
+                    t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
+                        && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
+                        implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
+                    assert(post.table_view(t) == pre.table_view(t));
+                    assert(block_ref(&pre.blocks, view_frame(pre.table_view(t)[i], p)) != br);
+                }
             }
         }
     }
@@ -1684,25 +1696,28 @@ impl CapKernel {
             assert forall|j: usize, page: usize|
                 pre.table_view(root).contains_key(j) && post.table_view(root).contains_key(j)
                     && pre.table_view(root)[j].kind is Frame
-                    && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order)
-                    && pre.held_by(block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page)), root) implies {
+                    && (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[j].order) implies {
                     let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
                     &&& #[trigger] block_ref(&post.blocks, view_frame(pre.table_view(root)[j], page)) == br
-                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
-                    &&& post.held_by(br, root)
+                    &&& pre.held_by(br, root) ==> {
+                        &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+                        &&& post.held_by(br, root)
+                    }
                 } by {
                 let br = block_ref(&pre.blocks, view_frame(pre.table_view(root)[j], page));
-                assert forall|t: usize, i: usize, p: usize|
-                    t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
-                        && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
-                        implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
-                    if !(t == xt && i == xj) {
-                        let (t2, j2) = choose|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
-                            && same_cap(pre.table_view(t2)[j2], post.table_view(t)[i]);
-                        let f = view_frame(pre.table_view(t2)[j2], p);
-                        assert(f == view_frame(post.table_view(t)[i], p));
-                        assert(block_ref(&pre.blocks, view_frame(pre.table_view(t2)[j2], p)) != br);
-                        assert(block_ref(&post.blocks, view_frame(pre.table_view(t2)[j2], p)) == block_ref(&pre.blocks, f));
+                if pre.held_by(br, root) {
+                    assert forall|t: usize, i: usize, p: usize|
+                        t != root && post.table_view(t).contains_key(i) && post.table_view(t)[i].kind is Frame
+                            && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[i].order)
+                            implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[i], p)) != br by {
+                        if !(t == xt && i == xj) {
+                            let (t2, j2) = choose|t2: usize, j2: usize| t2 != root && #[trigger] pre.table_view(t2).contains_key(j2)
+                                && same_cap(pre.table_view(t2)[j2], post.table_view(t)[i]);
+                            let f = view_frame(pre.table_view(t2)[j2], p);
+                            assert(f == view_frame(post.table_view(t)[i], p));
+                            assert(block_ref(&pre.blocks, view_frame(pre.table_view(t2)[j2], p)) != br);
+                            assert(block_ref(&post.blocks, view_frame(pre.table_view(t2)[j2], p)) == block_ref(&pre.blocks, f));
+                        }
                     }
                 }
             }
