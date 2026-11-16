@@ -56,7 +56,6 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.dont_write_bytecode = True  # round-status.py is imported from the tree: leave no __pycache__ in it
 
 AGE = 5
 PORT = 8377

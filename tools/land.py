@@ -75,7 +75,6 @@ import time
 import unittest
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 LANDED, CHANGE_FAILS, NOT_RUN, CONFLICT, BASE_FAILS, NOT_LANDED, BASE_UNJUDGED, UNAPPROVED = range(8)
 LEDGER = "logs/gate-ledger"

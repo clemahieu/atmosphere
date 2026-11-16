@@ -44,7 +44,6 @@ import threading
 import time
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 BOARD = "orangepi5"
 SHELL_MARK = "UEFI Interactive Shell"

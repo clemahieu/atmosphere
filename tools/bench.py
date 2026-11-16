@@ -67,7 +67,6 @@ import time
 import unittest
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 TOOLS_DIR = Path(__file__).resolve().parent
 TREE = TOOLS_DIR.parent

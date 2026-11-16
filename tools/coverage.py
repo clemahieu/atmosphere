@@ -35,7 +35,6 @@ import time
 import tomllib
 import unittest
 
-sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("check_boot_stack", "tools/check-boot-stack.py")
 check_boot_stack = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check_boot_stack)

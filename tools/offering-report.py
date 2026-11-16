@@ -95,7 +95,6 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 TREE = Path(__file__).resolve().parents[1]
 ROOT = TREE.parent

@@ -21,7 +21,6 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
 SUFFIXES = (".rs", ".py", ".sh", ".c", ".h", ".S")

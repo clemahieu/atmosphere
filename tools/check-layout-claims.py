@@ -41,7 +41,6 @@ import tomllib
 import unittest
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
 # Each architecture the gate builds, and the triple the check compiles it for: rustc ships both, and

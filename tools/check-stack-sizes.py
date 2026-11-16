@@ -18,7 +18,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 DEFAULT_LIMIT = 16 * 1024 * 1024
 TOP = 10

@@ -16,7 +16,6 @@ usage: tools/build-design-index.py            (from the workspace root; rewrites
 import sys
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
 DESIGN = REPO / "design"

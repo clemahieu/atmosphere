@@ -88,7 +88,6 @@ import unittest
 from collections import Counter, namedtuple
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
 LIST_PATH = "tools/external-body-list"

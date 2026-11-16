@@ -17,3 +17,5 @@ serial.log
 
 .claude/settings.local.json
 .claude/hooks/license-guard.local
+
+__pycache__/

@@ -40,7 +40,6 @@ from collections import Counter, namedtuple
 from pathlib import Path, PurePosixPath
 from unittest import mock
 
-sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
 X86_64, AARCH64 = "x86_64", "aarch64"

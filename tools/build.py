@@ -28,7 +28,6 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 TREE = Path(__file__).resolve().parent.parent
 STACK_SIZES_CHECK = TREE / "tools/check-stack-sizes.py"

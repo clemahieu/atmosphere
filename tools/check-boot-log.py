@@ -26,7 +26,6 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 # The line dom0 prints through its console when every fixed-slot check held.
 CONSOLE_LINE = "dom0 slot checks held"

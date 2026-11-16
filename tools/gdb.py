@@ -22,7 +22,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
 # What tools/run.py --gdb writes while its loader waits.

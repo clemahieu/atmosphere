@@ -40,7 +40,6 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 # importlib loading does not put this file's directory on the path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import elfstrip

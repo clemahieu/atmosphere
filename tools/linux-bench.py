@@ -49,7 +49,6 @@ import threading
 import unittest
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 TOOLS = Path(__file__).resolve().parent
 TREE = TOOLS.parent

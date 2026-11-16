@@ -24,7 +24,6 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.dont_write_bytecode = True
 
 TREE = Path(__file__).resolve().parent.parent
 ESP = "target/orangepi-stack-overflow/{stack}/esp"
