@@ -163,10 +163,11 @@ pub open spec fn register_names(r: BaseRegister, space: Option<usize>, lists: Ma
     }
 }
 
-/// The cores' TLB model as boot makes it: one set of entries and one of tags per core, each empty,
-/// since no space is loaded yet.
+/// The cores' TLB model as boot makes it: well formed, with one set of entries and one of tags per
+/// core, each empty, since no space is loaded yet.
 pub open spec fn boot_tlb(tlb: TlbModel) -> bool {
     &&& tlb.len() == NUM_CPUS
+    &&& tlb.wf()
     &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] tlb[c] == Set::<TlbEntry>::empty()
     &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] tlb.tags(c) == Set::<usize>::empty()
 }
@@ -1678,6 +1679,7 @@ impl CapKernel {
     /// handed out. The same holds of each IOMMU.
     pub open spec fn tlb_wf(&self) -> bool {
         &&& self.tlb@.len() == NUM_CPUS
+        &&& self.tlb@.wf()
         &&& tags_wf(self.cores@, self.tlb@)
         &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] self.acked(c) <= self.flush_epoch
         &&& self.stale_epoch.bounded(self.flush_epoch as int)
@@ -2326,6 +2328,7 @@ impl CapKernel {
     /// IOMMUs', each IOMMU's set empty. The page metadata's columns are placed in the carve at `carve`,
     /// which `carve_perm` grants, as metadata_layout lays them out for `pages`, the count of pages the
     /// block table tracks. In place, since the kernel is too large to move by value.
+    #[verifier::spinoff_prover]
     pub(crate) fn init(
         &mut self,
         root: usize,
@@ -2427,6 +2430,8 @@ impl CapKernel {
             reveal(ids_wf);
             assert(registers_wf(self.spaces.registers@, self.cores@, self.spaces.loaded@, self.spaces.kernel_root@)) by {
                 reveal(registers_wf);
+                assert(self.spaces.registers@ == registers);
+                assert(self.spaces.kernel_root@ == kernel_root);
                 assert forall|c: int| 0 <= c < NUM_CPUS implies {
                     &&& #[trigger] self.spaces.registers@.contains_key(c)
                     &&& register_names(self.spaces.registers@[c], self.cores@[c].space, self.spaces.loaded@, c, self.spaces.kernel_root@)
@@ -3484,6 +3489,9 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         let epoch = self.flush_epoch;
+        proof {
+            self.tlb@.lemma_wf_has(c as int);
+        }
         flush_every_context(Tracked(self.tlb.borrow_mut()), c);
         proof {
             assert(pre.acked(c as int) <= pre.flush_epoch);

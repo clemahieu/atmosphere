@@ -654,9 +654,12 @@ pub assume_specification[spin_hint]();
 pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbModel>, core: usize)
     ensures
         final(model).len() == old(model).len(),
-        final(model)[core as int] == Set::<TlbEntry>::empty(),
+        old(model).pieces_wf() ==> final(model).pieces_wf(),
+        old(model).wf() ==> final(model).wf(),
+        forall|d: int| #[trigger] final(model).has(d) == old(model).has(d),
+        old(model).has(core as int) ==> final(model)[core as int] == Set::<TlbEntry>::empty(),
         forall|d: int| d != core ==> #[trigger] final(model)[d] == old(model)[d],
-        final(model).tags(core as int) == Set::<usize>::empty(),
+        old(model).has(core as int) ==> final(model).tags(core as int) == Set::<usize>::empty(),
         forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d);
 
 /// Whether core `core` tags its TLB entries with the PCID its CR3 is written with: CR4.PCIDE, bit 17,
@@ -687,11 +690,15 @@ pub assume_specification[write_cr3](Tracked(register): Tracked<&mut BaseRegister
     requires
         value & 0x7ff0_0000_0000_0000usize == 0,
         tags_tlb(old(register).core()) || value & 0x8000_0000_0000_0fe7usize == 0,
+        old(model).has(old(register).core()),
     ensures
         final(register).core() == old(register).core(),
         final(register).root() == value & 0x000f_ffff_ffff_f000usize,
         final(register).tag() == tag_written(old(register).core(), value & 0xfffusize),
         final(model).len() == old(model).len(),
+        old(model).pieces_wf() ==> final(model).pieces_wf(),
+        old(model).wf() ==> final(model).wf(),
+        forall|d: int| #[trigger] final(model).has(d) == old(model).has(d),
         forall|d: int| #[trigger] final(model)[d] == old(model)[d],
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), value & 0xfffusize)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d);
@@ -709,11 +716,15 @@ pub fn load_translation_root(
     requires
         root & (!MEM_MASK) as usize == 0,
         id < PCID_MAX,
+        old(model).has(old(register).core()),
     ensures
         final(register).core() == old(register).core(),
         final(register).root() == root,
         final(register).tag() == tag_written(old(register).core(), id),
         final(model).len() == old(model).len(),
+        old(model).pieces_wf() ==> final(model).pieces_wf(),
+        old(model).wf() ==> final(model).wf(),
+        forall|d: int| #[trigger] final(model).has(d) == old(model).has(d),
         forall|d: int| #[trigger] final(model)[d] == old(model)[d],
         final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), id)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),

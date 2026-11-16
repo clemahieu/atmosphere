@@ -547,6 +547,7 @@ impl CapKernel {
             assert(pre.spaces.registers@[c as int].core() == c as int);
         }
         proof {
+            self.tlb@.lemma_wf_has(c as int);
             if let Some(s) = space {
                 assert(pre.spaces.roots@.contains_key(s));
                 assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));

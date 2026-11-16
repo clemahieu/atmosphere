@@ -54,45 +54,232 @@ pub open spec fn tag_written(core: int, id: usize) -> usize {
     if tags_tlb(core) { id } else { 0 }
 }
 
-/// What each core's TLB may hold that the kernel's model tracks: one set of entries per core, indexed
-/// by core, and one set of the tags, PCIDs or ASIDs, it may hold entries under. The kernel value holds
-/// the one boot makes, with every set empty. Proof code may add to the sets of entries, since a model
-/// that holds more claims less; load_translation_root adds the tag it writes to the core's tags; and
-/// only flush_every_context empties a core's sets, so a core's model is emptied, and the tags it used
-/// freed for reuse, only by a flush of that core: design/flush-without-waiting/.
+/// One core's piece of the TLB model: the entries core `core()` may hold and the tags, PCIDs or
+/// ASIDs, it may hold entries under. Held inside [`TlbModel`] and lent out one core at a time across
+/// a flush request; fields are private to `arch`, so only the arch module can build or empty one.
+// Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
+pub tracked struct CoreTlb {
+    #[cfg(verus_keep_ghost)]
+    ghost core: int,
+    #[cfg(verus_keep_ghost)]
+    ghost held: Set<TlbEntry>,
+    #[cfg(verus_keep_ghost)]
+    ghost tags: Set<usize>,
+}
+
+impl CoreTlb {
+    pub closed spec fn core(self) -> int {
+        self.core
+    }
+
+    pub closed spec fn held(self) -> Set<TlbEntry> {
+        self.held
+    }
+
+    pub closed spec fn tags(self) -> Set<usize> {
+        self.tags
+    }
+
+    /// This core's model becomes `held`, which holds all it held. The core number and tags are kept.
+    pub proof fn grow(tracked &mut self, held: Set<TlbEntry>)
+        requires
+            old(self).held().subset_of(held),
+        ensures
+            final(self).core() == old(self).core(),
+            final(self).held() == held,
+            final(self).tags() == old(self).tags(),
+    {
+        self.held = held;
+    }
+}
+
+/// What each core's TLB may hold that the kernel's model tracks: one tracked `CoreTlb` piece per
+/// core, indexed by core, holding a set of entries and a set of the tags, PCIDs or ASIDs, it may
+/// hold entries under. The kernel value holds the one boot makes, with every set empty. Proof code
+/// may add to the sets of entries, since a model that holds more claims less; load_translation_root
+/// adds the tag it writes to the core's tags; and only flush_every_context empties a core's sets, so
+/// a core's model is emptied, and the tags it used freed for reuse, only by a flush of that core:
+/// design/flush-without-waiting/.
 // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
 pub tracked struct TlbModel {
     #[cfg(verus_keep_ghost)]
-    ghost held: Seq<Set<TlbEntry>>,
+    ghost len: nat,
     #[cfg(verus_keep_ghost)]
-    ghost tags: Seq<Set<usize>>,
+    tracked pieces: Map<int, CoreTlb>,
 }
 
 impl TlbModel {
     pub closed spec fn len(self) -> nat {
-        self.held.len()
+        self.len
+    }
+
+    /// Whether core `c`'s piece is presently in the model (not lent out).
+    pub closed spec fn has(self, c: int) -> bool {
+        self.pieces.contains_key(c)
+    }
+
+    /// Every piece held in the model belongs to its own valid core index.
+    pub closed spec fn pieces_wf(self) -> bool {
+        forall|c: int| #[trigger] self.pieces.contains_key(c) ==> 0 <= c < self.len && self.pieces[c].core() == c
+    }
+
+    /// Every core `0 <= c < len` has its piece in the model and each belongs to its core index.
+    pub closed spec fn wf(self) -> bool {
+        &&& self.pieces_wf()
+        &&& forall|c: int| 0 <= c < self.len ==> #[trigger] self.pieces.contains_key(c)
+    }
+
+    /// Every core `0 <= c < self.len()` has its piece when `self.wf()` holds.
+    pub proof fn lemma_wf_has(self, c: int)
+        requires
+            self.wf(),
+            0 <= c < self.len(),
+        ensures
+            self.has(c),
+    {
+    }
+
+    /// A model whose present pieces are valid and whose cores `0..len` all have pieces is `wf()`.
+    pub(in crate::arch) proof fn lemma_wf_from_pieces(self)
+        requires
+            self.pieces_wf(),
+            forall|c: int| 0 <= c < self.len() ==> #[trigger] self.has(c),
+        ensures
+            self.wf(),
+    {
+        assert forall|c: int| 0 <= c < self.len implies #[trigger] self.pieces.contains_key(c) by {
+            assert(self.has(c));
+        }
     }
 
     pub closed spec fn spec_index(self, c: int) -> Set<TlbEntry> {
-        self.held[c]
+        self.pieces[c].held()
     }
 
     /// The tags core c may hold entries under.
     pub closed spec fn tags(self, c: int) -> Set<usize> {
-        self.tags[c]
+        self.pieces[c].tags()
+    }
+
+    /// Takes core `c`'s piece out of the model, leaving `!final(self).has(c)` and `!final(self).wf()`.
+    pub(in crate::arch) proof fn take(tracked &mut self, c: int) -> (tracked piece: CoreTlb)
+        requires
+            old(self).pieces_wf(),
+            old(self).has(c),
+        ensures
+            piece.core() == c,
+            piece.held() == old(self)[c],
+            piece.tags() == old(self).tags(c),
+            final(self).len() == old(self).len(),
+            final(self).pieces_wf(),
+            !final(self).has(c),
+            !final(self).wf(),
+            forall|d: int| d != c ==> #[trigger] final(self).has(d) == old(self).has(d),
+            forall|d: int| d != c ==> #[trigger] final(self)[d] == old(self)[d],
+            forall|d: int| d != c ==> #[trigger] final(self).tags(d) == old(self).tags(d),
+    {
+        self.pieces.tracked_remove(c)
+    }
+
+    /// Returns core `c`'s piece to the model, restoring `final(self).has(c)`.
+    pub(in crate::arch) proof fn put(tracked &mut self, c: int, tracked piece: CoreTlb)
+        requires
+            old(self).pieces_wf(),
+            0 <= c < old(self).len(),
+            !old(self).has(c),
+            piece.core() == c,
+        ensures
+            final(self).len() == old(self).len(),
+            final(self).pieces_wf(),
+            final(self).has(c),
+            final(self)[c] == piece.held(),
+            final(self).tags(c) == piece.tags(),
+            forall|d: int| d != c ==> #[trigger] final(self).has(d) == old(self).has(d),
+            forall|d: int| d != c ==> #[trigger] final(self)[d] == old(self)[d],
+            forall|d: int| d != c ==> #[trigger] final(self).tags(d) == old(self).tags(d),
+    {
+        self.pieces.tracked_insert(c, piece);
+    }
+
+    proof fn grow_range(tracked pieces: &mut Map<int, CoreTlb>, held: Seq<Set<TlbEntry>>, k: int)
+        requires
+            0 <= k <= held.len(),
+            forall|c: int| 0 <= c < held.len() ==> #[trigger] old(pieces).contains_key(c),
+            forall|c: int| #[trigger] old(pieces).contains_key(c) ==> 0 <= c < held.len() && old(pieces)[c].core() == c,
+            forall|c: int| k <= c < held.len() ==> old(pieces)[c].held().subset_of(#[trigger] held[c]),
+        ensures
+            forall|c: int| 0 <= c < held.len() ==> #[trigger] final(pieces).contains_key(c),
+            forall|c: int| #[trigger] final(pieces).contains_key(c) ==> 0 <= c < held.len() && final(pieces)[c].core() == c,
+            forall|c: int| 0 <= c < k ==> #[trigger] final(pieces)[c] == old(pieces)[c],
+            forall|c: int| k <= c < held.len() ==> {
+                &&& #[trigger] final(pieces)[c].core() == old(pieces)[c].core()
+                &&& final(pieces)[c].held() == held[c]
+                &&& final(pieces)[c].tags() == old(pieces)[c].tags()
+            },
+        decreases held.len() - k,
+    {
+        if k < held.len() {
+            let tracked mut piece = pieces.tracked_remove(k);
+            piece.grow(held[k]);
+            pieces.tracked_insert(k, piece);
+            let ghost mid = *pieces;
+            Self::grow_range(pieces, held, k + 1);
+            assert forall|c: int| 0 <= c < k implies #[trigger] final(pieces)[c] == old(pieces)[c] by {
+                assert(mid[c] == old(pieces)[c]);
+            }
+            assert forall|c: int| k <= c < held.len() implies {
+                &&& #[trigger] final(pieces)[c].core() == old(pieces)[c].core()
+                &&& final(pieces)[c].held() == held[c]
+                &&& final(pieces)[c].tags() == old(pieces)[c].tags()
+            } by {
+                if c == k {
+                    assert(final(pieces)[k] == mid[k]);
+                } else {
+                    assert(mid[c] == old(pieces)[c]);
+                }
+            }
+        }
     }
 
     /// Each core's model becomes `held`'s set for it, which holds all it held. The tags are kept.
     pub proof fn grow(tracked &mut self, held: Seq<Set<TlbEntry>>)
         requires
+            old(self).wf(),
             held.len() == old(self).len(),
             forall|c: int| 0 <= c < held.len() ==> old(self)[c].subset_of(#[trigger] held[c]),
         ensures
+            final(self).wf(),
             final(self).len() == old(self).len(),
+            forall|c: int| #[trigger] final(self).has(c) == old(self).has(c),
             forall|c: int| 0 <= c < held.len() ==> #[trigger] final(self)[c] == held[c],
-            forall|c: int| #[trigger] final(self).tags(c) == old(self).tags(c),
+            forall|c: int| 0 <= c < held.len() ==> #[trigger] final(self).tags(c) == old(self).tags(c),
     {
-        self.held = held;
+        assert forall|c: int| 0 <= c < held.len() implies #[trigger] self.pieces.contains_key(c) by {
+            assert(self.has(c));
+        }
+        assert forall|c: int| 0 <= c < held.len() implies old(self).pieces[c].held().subset_of(#[trigger] held[c]) by {
+            assert(old(self)[c].subset_of(held[c]));
+        }
+        Self::grow_range(&mut self.pieces, held, 0);
+        assert forall|c: int| 0 <= c < self.len() implies #[trigger] self.has(c) by {
+            assert(self.pieces.contains_key(c));
+        }
+        assert forall|c: int| #[trigger] final(self).has(c) == old(self).has(c) by {
+            if old(self).has(c) {
+                assert(old(self).pieces.contains_key(c));
+                assert(0 <= c < held.len());
+            }
+            if final(self).has(c) {
+                assert(final(self).pieces.contains_key(c));
+                assert(0 <= c < held.len());
+            }
+        }
+        assert forall|c: int| 0 <= c < held.len() implies #[trigger] final(self)[c] == held[c] by {
+            assert(self.pieces[c].core() == old(self).pieces[c].core());
+        }
+        assert forall|c: int| 0 <= c < held.len() implies #[trigger] final(self).tags(c) == old(self).tags(c) by {
+            assert(self.pieces[c].core() == old(self).pieces[c].core());
+        }
     }
 }
 
