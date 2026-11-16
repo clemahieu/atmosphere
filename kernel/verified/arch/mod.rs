@@ -283,6 +283,18 @@ impl TlbModel {
     }
 }
 
+/// Whether `targets`, a mask with bit `c` for core `c`, names core `c`.
+pub open spec fn flush_target(targets: u64, c: int) -> bool {
+    0 <= c < 64 && targets & (1u64 << (c as u64)) != 0
+}
+
+/// Whether flush_cores, called on core `me` with `targets`, empties core `c`'s piece of the TLB model:
+/// the calling core's, each target's, and, where the flush is one broadcast that reaches every core
+/// (flush_reaches_every_core), every core's.
+pub open spec fn flushed(me: usize, targets: u64, c: int) -> bool {
+    c == me || flush_target(targets, c) || spec_flush_reaches_every_core()
+}
+
 /// What each IOMMU's IOTLB may hold that its device spaces' tables no longer say: one set of entries per
 /// IOMMU, indexed by IOMMU. The kernel value holds the one boot makes, with every set empty. Proof code
 /// may add to the sets, and only invalidate_iommu_all empties one, once the IOMMU has finished the

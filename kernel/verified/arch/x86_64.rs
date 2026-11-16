@@ -9,9 +9,13 @@ verus! {
 use crate::capability::kernel::CommandBuffers;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::{CommandBuffer, TlbEntry};
-use crate::arch::{BaseRegister, IotlbModel, TlbModel};
+use crate::arch::{BaseRegister, CoreTlb, IotlbModel, TlbModel};
 #[cfg(verus_keep_ghost)]
-use crate::arch::tag_written;
+use crate::arch::{flushed, tag_written};
+use crate::core_bridge::{ChannelOp, CoreBridge};
+#[cfg(verus_keep_ghost)]
+use crate::core_bridge::{Req, Srv};
+use crate::define::NUM_CPUS;
 use crate::capability::operation::Outcome;
 use crate::capability::steps::Steps;
 use crate::define::PAddr;
@@ -747,6 +751,341 @@ pub fn load_translation_root(
         ;
         write_cr3(Tracked(register), Tracked(model), root);
     }
+}
+
+// The cross-core flush: design/flush-without-waiting/. A core's piece of the TLB model is lent to that
+// core through the flush bridge, a core_bridge::CoreBridge carrying CoreTlb, emptied there by
+// flush_core_tlb and taken back by the requester, which holds the kernel's lock.
+
+/// Whether one flush on one core empties every core's TLB: no on x86_64, where an INVLPG or a CR4 write
+/// acts on the core that runs it alone, so another core flushes only when it is asked to.
+pub open spec fn spec_flush_reaches_every_core() -> bool {
+    false
+}
+
+#[verifier(when_used_as_spec(spec_flush_reaches_every_core))]
+pub fn flush_reaches_every_core() -> (ret: bool)
+    ensures
+        ret == spec_flush_reaches_every_core(),
+{
+    false
+}
+
+/// Flushes every context on this core, all PCIDs and paging-structure caches, as flush_every_context
+/// does, and empties `piece`, the piece of the TLB model of the core this runs on: the caller is the
+/// core that holds the piece, by lending or by its own model.
+// cite: amd-apm2 5.5.1 Process Context Identifier
+// cite: amd-apm2 5.5.3 TLB Management, Implicit Invalidations
+// cite: amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
+pub assume_specification[flush_core_tlb](Tracked(piece): Tracked<&mut CoreTlb>)
+    ensures
+        final(piece).core() == old(piece).core(),
+        final(piece).held() == Set::<TlbEntry>::empty(),
+        final(piece).tags() == Set::<usize>::empty();
+
+/// What a server does with a piece lent to it: empties it, keeping its core.
+pub struct FlushOp;
+
+impl ChannelOp<CoreTlb> for FlushOp {
+    open spec fn pre(v: CoreTlb) -> bool {
+        true
+    }
+
+    open spec fn post(input: CoreTlb, output: CoreTlb) -> bool {
+        &&& output.core() == input.core()
+        &&& output.held() == Set::<TlbEntry>::empty()
+        &&& output.tags() == Set::<usize>::empty()
+    }
+}
+
+/// One request word and one served word per core, through which the holder of the kernel's lock lends
+/// a core its piece of the TLB model and takes it back emptied.
+pub struct FlushBridge {
+    bridge: CoreBridge<CoreTlb, FlushOp>,
+}
+
+/// The requester's side of the flush bridge: one idle request token per core. The kernel's lock holds
+/// it beside the TLB model.
+// Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
+pub tracked struct FlushRequester {
+    #[cfg(verus_keep_ghost)]
+    tracked reqs: Map<int, Req<CoreTlb, FlushOp>>,
+}
+
+/// Core `core()`'s side of the flush bridge, which only that core's serve_flush uses.
+// Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
+pub tracked struct FlushServer {
+    #[cfg(verus_keep_ghost)]
+    tracked srv: Srv<CoreTlb, FlushOp>,
+}
+
+impl FlushBridge {
+    pub closed spec fn wf(self) -> bool {
+        self.bridge.wf()
+    }
+
+    /// A bridge with every core's words equal, the requester's tokens and one server token per core.
+    pub const fn new() -> (r: (Self, Tracked<FlushRequester>, Tracked<Map<int, FlushServer>>))
+        ensures
+            r.0.wf(),
+            r.1@.wf(r.0),
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] r.2@.contains_key(c) && r.2@[c].wf(r.0) && r.2@[c].core() == c,
+    {
+        let (bridge, Tracked(reqs), Tracked(srvs)) = CoreBridge::<CoreTlb, FlushOp>::new();
+        let tracked servers = wrap_servers(srvs, bridge, 0);
+        let tracked requester = FlushRequester { reqs };
+        let r = FlushBridge { bridge };
+        proof {
+            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] servers.contains_key(c) && servers[c].wf(r) && servers[c].core() == c by {
+                assert(servers.contains_key(c));
+            }
+        }
+        (r, Tracked(requester), Tracked(servers))
+    }
+}
+
+impl FlushRequester {
+    /// Every core's request token is here, idle, and of `bridge`: no piece is lent.
+    pub closed spec fn wf(self, bridge: FlushBridge) -> bool {
+        forall|c: int| 0 <= c < NUM_CPUS ==> {
+            &&& #[trigger] self.reqs.contains_key(c)
+            &&& self.reqs[c].idle()
+            &&& self.reqs[c].cpu() == c
+            &&& self.reqs[c].for_bridge(bridge.bridge)
+        }
+    }
+}
+
+impl FlushServer {
+    pub closed spec fn core(self) -> int {
+        self.srv.cpu()
+    }
+
+    pub closed spec fn wf(self, bridge: FlushBridge) -> bool {
+        &&& self.srv.wf()
+        &&& self.srv.for_bridge(bridge.bridge)
+        &&& 0 <= self.srv.cpu() < NUM_CPUS
+    }
+}
+
+proof fn wrap_servers(tracked srvs: Map<int, Srv<CoreTlb, FlushOp>>, bridge: CoreBridge<CoreTlb, FlushOp>, from: int) -> (tracked r: Map<int, FlushServer>)
+    requires
+        0 <= from <= NUM_CPUS,
+        forall|c: int| from <= c < NUM_CPUS ==> #[trigger] srvs.contains_key(c) && srvs[c].wf() && srvs[c].cpu() == c && srvs[c].for_bridge(bridge),
+    ensures
+        forall|c: int| from <= c < NUM_CPUS ==> #[trigger] r.contains_key(c) && r[c].srv.wf() && r[c].srv.cpu() == c && r[c].srv.for_bridge(bridge),
+    decreases NUM_CPUS - from,
+{
+    if from == NUM_CPUS {
+        Map::tracked_empty()
+    } else {
+        let tracked mut srvs = srvs;
+        let tracked srv = srvs.tracked_remove(from);
+        let tracked mut rest = wrap_servers(srvs, bridge, from + 1);
+        rest.tracked_insert(from, FlushServer { srv });
+        rest
+    }
+}
+
+/// Whether core `c` is a core flush_cores lends a piece to: a target other than the caller.
+spec fn remote(me: usize, targets: u64, c: int) -> bool {
+    c != me && crate::arch::flush_target(targets, c)
+}
+
+/// The requester's tokens while flush_cores runs: each remote core below `upto` has its piece lent,
+/// whose core it is, and every other core's token is idle.
+spec fn lending(reqs: Map<int, Req<CoreTlb, FlushOp>>, bridge: CoreBridge<CoreTlb, FlushOp>, me: usize, targets: u64, from: int, upto: int) -> bool {
+    forall|c: int| 0 <= c < NUM_CPUS ==> {
+        &&& #[trigger] reqs.contains_key(c)
+        &&& reqs[c].cpu() == c
+        &&& reqs[c].for_bridge(bridge)
+        &&& if from <= c < upto && remote(me, targets, c) {
+            reqs[c].pending() && reqs[c].input().core() == c
+        } else {
+            reqs[c].idle()
+        }
+    }
+}
+
+/// Empties the pieces of the TLB model of the calling core `me` and of each core `targets` names. Each
+/// other target's piece is lent to it through `bridge` and the flush IPI sent to it by `send_ipi`; this
+/// core flushes its own, then waits for each target to return its piece emptied, which it does from
+/// serve_flush. The wait is one unit: it is for other cores, which answer whatever any core's IF says.
+pub fn flush_cores<F: Fn(usize)>(
+    bridge: &FlushBridge,
+    Tracked(requester): Tracked<&mut FlushRequester>,
+    Tracked(model): Tracked<&mut TlbModel>,
+    me: usize,
+    targets: u64,
+    send_ipi: F,
+    Tracked(steps): Tracked<&mut Steps>,
+)
+    requires
+        bridge.wf(),
+        old(requester).wf(*bridge),
+        old(model).wf(),
+        old(model).len() == NUM_CPUS,
+        me < NUM_CPUS,
+        forall|c: usize| c < NUM_CPUS ==> #[trigger] send_ipi.requires((c,)),
+    ensures
+        final(requester).wf(*bridge),
+        final(model).wf(),
+        final(model).len() == old(model).len(),
+        final(steps).count == old(steps).count + 1,
+        forall|c: int| 0 <= c < NUM_CPUS && flushed(me, targets, c) ==> #[trigger] final(model)[c] == Set::<TlbEntry>::empty() && final(model).tags(c) == Set::<usize>::empty(),
+        forall|c: int| 0 <= c < NUM_CPUS && !flushed(me, targets, c) ==> #[trigger] final(model)[c] == old(model)[c] && final(model).tags(c) == old(model).tags(c),
+{
+    let ghost m0 = *model;
+    let ghost b = bridge.bridge;
+    proof {
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] requester.reqs.contains_key(d) && requester.reqs[d].idle() by {
+            assert(old(requester).reqs.contains_key(d));
+        }
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] requester.reqs.contains_key(d) && requester.reqs[d].cpu() == d by {
+            assert(old(requester).reqs.contains_key(d));
+        }
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] requester.reqs.contains_key(d) && requester.reqs[d].for_bridge(b) by {
+            assert(old(requester).reqs.contains_key(d));
+        }
+        assert(lending(requester.reqs, b, me, targets, 0, 0));
+    }
+    let mut c: usize = 0;
+    while c < NUM_CPUS
+        invariant
+            bridge.wf(),
+            b == bridge.bridge,
+            me < NUM_CPUS,
+            c <= NUM_CPUS,
+            m0.wf(),
+            m0.len() == NUM_CPUS,
+            forall|d: usize| d < NUM_CPUS ==> #[trigger] send_ipi.requires((d,)),
+            model.len() == NUM_CPUS,
+            model.pieces_wf(),
+            forall|d: int| 0 <= d < NUM_CPUS ==> (#[trigger] model.has(d) <==> !(d < c && remote(me, targets, d))),
+            forall|d: int| #[trigger] model.has(d) ==> model[d] == m0[d] && model.tags(d) == m0.tags(d),
+            lending(requester.reqs, b, me, targets, 0, c as int),
+        decreases NUM_CPUS - c,
+    {
+        if c != me && targets & (1u64 << (c as u64)) != 0 {
+            proof {
+                m0.lemma_wf_has(c as int);
+                assert(model.has(c as int));
+            }
+            let ghost before = requester.reqs;
+            proof {
+                assert(before.contains_key(c as int));
+            }
+            let tracked piece = model.take(c as int);
+            let tracked mut req = requester.reqs.tracked_remove(c as int);
+            bridge.bridge.send(c, Tracked(&mut req), Tracked(piece));
+            proof {
+                requester.reqs.tracked_insert(c as int, req);
+                assert forall|d: int| 0 <= d < NUM_CPUS && d != c implies #[trigger] requester.reqs.contains_key(d) && requester.reqs[d] == before[d] by {
+                    assert(before.contains_key(d));
+                }
+            }
+            send_ipi(c);
+        }
+        proof {
+            let ghost after = requester.reqs;
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] after.contains_key(d) && after[d].cpu() == d && after[d].for_bridge(b) && if 0 <= d < c + 1 && remote(me, targets, d) {
+                after[d].pending() && after[d].input().core() == d
+            } else {
+                after[d].idle()
+            } by {
+                assert(after.contains_key(d));
+            }
+        }
+        c += 1;
+    }
+    proof {
+        assert(model.has(me as int));
+    }
+    let tracked mut mine = model.take(me as int);
+    flush_core_tlb(Tracked(&mut mine));
+    proof {
+        model.put(me as int, mine);
+    }
+    let mut c: usize = 0;
+    while c < NUM_CPUS
+        invariant
+            bridge.wf(),
+            b == bridge.bridge,
+            me < NUM_CPUS,
+            c <= NUM_CPUS,
+            m0.len() == NUM_CPUS,
+            model.len() == NUM_CPUS,
+            model.pieces_wf(),
+            forall|d: int| 0 <= d < NUM_CPUS ==> (#[trigger] model.has(d) <==> !(c <= d && remote(me, targets, d))),
+            forall|d: int| #[trigger] model.has(d) && (d == me || (d < c && remote(me, targets, d))) ==> model[d] == Set::<TlbEntry>::empty() && model.tags(d) == Set::<usize>::empty(),
+            forall|d: int| #[trigger] model.has(d) && !(d == me || remote(me, targets, d)) ==> model[d] == m0[d] && model.tags(d) == m0.tags(d),
+            lending(requester.reqs, b, me, targets, c as int, NUM_CPUS as int),
+        decreases NUM_CPUS - c,
+    {
+        if c != me && targets & (1u64 << (c as u64)) != 0 {
+            let ghost before = requester.reqs;
+            proof {
+                assert(before.contains_key(c as int));
+            }
+            let tracked mut req = requester.reqs.tracked_remove(c as int);
+            let Tracked(piece) = bridge.bridge.wait(c, Tracked(&mut req));
+            proof {
+                requester.reqs.tracked_insert(c as int, req);
+                assert forall|d: int| 0 <= d < NUM_CPUS && d != c implies #[trigger] requester.reqs.contains_key(d) && requester.reqs[d] == before[d] by {
+                    assert(before.contains_key(d));
+                }
+                model.put(c as int, piece);
+            }
+        }
+        proof {
+            let ghost after = requester.reqs;
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] after.contains_key(d) && after[d].cpu() == d && after[d].for_bridge(b) && if c + 1 <= d < NUM_CPUS && remote(me, targets, d) {
+                after[d].pending() && after[d].input().core() == d
+            } else {
+                after[d].idle()
+            } by {
+                assert(after.contains_key(d));
+            }
+        }
+        c += 1;
+    }
+    proof {
+        model.lemma_wf_from_pieces();
+        steps.step();
+        assert forall|d: int| 0 <= d < NUM_CPUS && flushed(me, targets, d) implies #[trigger] model[d] == Set::<TlbEntry>::empty() && model.tags(d) == Set::<usize>::empty() by {
+            assert(model.has(d));
+        }
+        assert forall|d: int| 0 <= d < NUM_CPUS && !flushed(me, targets, d) implies #[trigger] model[d] == m0[d] && model.tags(d) == m0.tags(d) by {
+            assert(model.has(d));
+        }
+    }
+}
+
+/// Serves a flush lent to core `core`, the core this runs on, if one stands: empties the piece with
+/// flush_core_tlb and returns it through the bridge, then returns true; returns false when none stands.
+/// Called by the flush IPI's handler and by the queue lock's wait loop, and takes no lock.
+pub fn serve_flush(bridge: &FlushBridge, Tracked(server): Tracked<&mut FlushServer>, core: usize) -> (served: bool)
+    requires
+        bridge.wf(),
+        old(server).wf(*bridge),
+        old(server).core() == core,
+    ensures
+        final(server).wf(*bridge),
+        final(server).core() == old(server).core(),
+{
+    bridge.bridge.serve(
+        core,
+        |t: Tracked<CoreTlb>| -> (out: Tracked<CoreTlb>)
+            ensures
+                FlushOp::post(t@, out@),
+        {
+            let Tracked(mut piece) = t;
+            flush_core_tlb(Tracked(&mut piece));
+            Tracked(piece)
+        },
+        Tracked(&mut server.srv),
+        Tracked(None),
+    )
 }
 
 // The IOMMU's command ring: AMD-Vi's, the IOMMU of the PC this target runs on. capability/kernel.rs's
@@ -1539,6 +1878,25 @@ pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
     }
 }
 
+#[cfg(not(test))]
+pub fn flush_core_tlb(_piece: Tracked<&mut CoreTlb>) {
+    unsafe {
+        core::arch::asm!(
+            "mov {cr4}, cr4",
+            "xor {cr4}, {pge}",
+            "mov cr4, {cr4}",
+            "xor {cr4}, {pge}",
+            "mov cr4, {cr4}",
+            cr4 = out(reg) _,
+            pge = const 1 << 7,
+        );
+    }
+}
+
+// A host test runs in user mode, where a CR4 write faults; it exercises the bridge, not the flush.
+#[cfg(test)]
+pub fn flush_core_tlb(_piece: Tracked<&mut CoreTlb>) {}
+
 pub fn serial_write_byte(byte: u8) {
     unsafe {
         loop {
@@ -1608,5 +1966,89 @@ pub fn store_command(_commands: &CommandBuffers, _i: usize, address: usize, comm
     unsafe {
         core::ptr::write_volatile(address as *mut u64, command.0);
         core::ptr::write_volatile((address as *mut u64).add(1), command.1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::thread;
+
+    use super::*;
+
+    verus! {
+        // A cargo build erases ghost and tracked state, so the model and the tokens below are not
+        // checked here; the test runs the bridge's words, which tools/verify.py proves flush_cores and
+        // serve_flush use as they say.
+        fn test_flush_rounds() {
+            let rounds: usize = 20_000;
+            let me: usize = 0;
+            let target: usize = NUM_CPUS - 1;
+            let (bridge, Tracked(mut requester), Tracked(mut servers)) = FlushBridge::new();
+            let tracked mut server = servers.tracked_remove(target as int);
+            let tracked mut model: TlbModel = TlbModel { len: NUM_CPUS as nat, pieces: Map::tracked_empty() };
+            let tracked mut steps = Steps::fresh();
+
+            let ipis = AtomicUsize::new(0);
+            let served = AtomicUsize::new(0);
+            let done = AtomicBool::new(false);
+
+            // No flush stands, so a serve does nothing.
+            let idle = serve_flush(&bridge, Tracked(&mut server), target);
+            assert!(!idle);
+
+            thread::scope(|s| {
+                s.spawn(|| {
+                    while !done.load(Ordering::Acquire) {
+                        if serve_flush(&bridge, Tracked(&mut server), target) {
+                            served.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut r: usize = 0;
+                    while r < rounds {
+                        // Odd rounds name the caller too, which is flushed locally and lent nothing.
+                        let targets: u64 = if r % 2 == 1 { (1u64 << target as u64) | 1u64 } else { 1u64 << target as u64 };
+                        flush_cores(
+                            &bridge,
+                            Tracked(&mut requester),
+                            Tracked(&mut model),
+                            me,
+                            targets,
+                            |c: usize| {
+                                assert_eq!(c, target);
+                                ipis.fetch_add(1, Ordering::Relaxed);
+                            },
+                            Tracked(&mut steps),
+                        );
+                        assert_eq!(ipis.load(Ordering::Relaxed), r + 1);
+                        // The server counts a serve after its store ends the wait, so the count may
+                        // lag by the round just served, and no more: it serves one round at a time.
+                        let count = served.load(Ordering::Relaxed);
+                        assert!(count == r || count == r + 1);
+                        r += 1;
+                    }
+                    // No target: nothing is lent, sent or waited for, so the IPI count below stays at rounds.
+                    flush_cores(&bridge, Tracked(&mut requester), Tracked(&mut model), me, 0, |_c: usize| {
+                        ipis.fetch_add(1, Ordering::Relaxed);
+                    }, Tracked(&mut steps));
+                }));
+                done.store(true, Ordering::Release);
+                if let Err(payload) = result {
+                    std::panic::resume_unwind(payload);
+                }
+            });
+            assert_eq!(ipis.load(Ordering::Relaxed), rounds);
+            assert_eq!(served.load(Ordering::Relaxed), rounds);
+        }
+    }
+
+    #[test]
+    fn host_flush_cores_and_serve_flush_two_threads_many_rounds() {
+        test_flush_rounds();
     }
 }

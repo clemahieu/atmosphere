@@ -14,7 +14,9 @@ use crate::capability::kernel::CommandBuffers;
 use crate::capability::kernel::{CommandBuffer, TlbEntry};
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 #[cfg(verus_keep_ghost)]
-use crate::arch::tag_written;
+use crate::arch::{flushed, tag_written};
+#[cfg(verus_keep_ghost)]
+use crate::define::NUM_CPUS;
 use crate::capability::operation::Outcome;
 use crate::capability::steps::Steps;
 use crate::define::PAddr;
@@ -1438,11 +1440,174 @@ pub const PL011_TRANSMIT_FULL: u32 = 1 << 5;
 // cite: arm-pl011 3.3.1 Data register, UARTDR
 pub assume_specification[serial_write_byte](byte: u8);
 
+// The cross-core flush: design/flush-without-waiting/. One broadcast TLBI from any core empties every
+// core's TLB, so no piece of the TLB model is lent, the bridge holds nothing and no core serves.
+
+/// Whether one flush on one core empties every core's TLB: yes on aarch64, where TLBI VMALLE1IS acts on
+/// every core in the Inner Shareable domain, and every core is in it.
+pub open spec fn spec_flush_reaches_every_core() -> bool {
+    true
+}
+
+#[verifier(when_used_as_spec(spec_flush_reaches_every_core))]
+pub fn flush_reaches_every_core() -> (ret: bool)
+    ensures
+        ret == spec_flush_reaches_every_core(),
+{
+    true
+}
+
+/// Flushes every context on every core: TLBI VMALLE1IS drops the stage-1 entries of the EL1&0 regime
+/// with any ASID, global ones too, from every level of the walk, on every core in the Inner Shareable
+/// domain. The DSB before it orders this core's table writes ahead of it, and the DSB ISH after it
+/// waits until every core has completed it, the ISB then synchronising this core's own context
+/// (D8.17.8). It empties every core's piece of `model`.
+// cite: arm-arm C5.5.78 TLBI VMALLE1IS, TLBI VMALLE1ISNXS
+// cite: arm-arm D8.17.8 Ordering and completion of TLB maintenance instructions
+pub assume_specification[flush_every_core](Tracked(model): Tracked<&mut TlbModel>)
+    ensures
+        final(model).len() == old(model).len(),
+        old(model).pieces_wf() ==> final(model).pieces_wf(),
+        old(model).wf() ==> final(model).wf(),
+        forall|d: int| #[trigger] final(model).has(d) == old(model).has(d),
+        forall|d: int| old(model).has(d) ==> #[trigger] final(model)[d] == Set::<TlbEntry>::empty(),
+        forall|d: int| old(model).has(d) ==> #[trigger] final(model).tags(d) == Set::<usize>::empty();
+
+/// The flush bridge of design/flush-without-waiting/, which this target does not need: it holds nothing.
+pub struct FlushBridge {}
+
+/// The requester's side of the flush bridge, which holds nothing here.
+pub tracked struct FlushRequester {}
+
+/// Core `core()`'s side of the flush bridge, which holds nothing here but the core.
+// Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
+pub tracked struct FlushServer {
+    #[cfg(verus_keep_ghost)]
+    ghost core: int,
+}
+
+impl FlushBridge {
+    pub closed spec fn wf(self) -> bool {
+        true
+    }
+
+    /// A bridge, the requester's token and one server token per core, as on x86_64; here none holds
+    /// anything but the server's core.
+    pub const fn new() -> (r: (Self, Tracked<FlushRequester>, Tracked<Map<int, FlushServer>>))
+        ensures
+            r.0.wf(),
+            r.1@.wf(r.0),
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] r.2@.contains_key(c) && r.2@[c].wf(r.0) && r.2@[c].core() == c,
+    {
+        let tracked servers = make_servers(0);
+        let r = FlushBridge {};
+        proof {
+            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] servers.contains_key(c) && servers[c].wf(r) && servers[c].core() == c by {
+                assert(servers.contains_key(c));
+            }
+        }
+        (r, Tracked(FlushRequester {}), Tracked(servers))
+    }
+}
+
+impl FlushRequester {
+    /// No piece is lent: always, since flush_cores lends none here.
+    pub closed spec fn wf(self, bridge: FlushBridge) -> bool {
+        true
+    }
+}
+
+impl FlushServer {
+    pub closed spec fn core(self) -> int {
+        self.core
+    }
+
+    pub closed spec fn wf(self, bridge: FlushBridge) -> bool {
+        0 <= self.core < NUM_CPUS
+    }
+}
+
+proof fn make_servers(from: int) -> (tracked r: Map<int, FlushServer>)
+    requires
+        0 <= from <= NUM_CPUS,
+    ensures
+        forall|c: int| from <= c < NUM_CPUS ==> #[trigger] r.contains_key(c) && r[c].core == c,
+    decreases NUM_CPUS - from,
+{
+    if from == NUM_CPUS {
+        Map::tracked_empty()
+    } else {
+        let tracked mut rest = make_servers(from + 1);
+        rest.tracked_insert(from, FlushServer { core: from });
+        rest
+    }
+}
+
+/// Empties the pieces of the TLB model of the calling core `me` and of each core `targets` names. Here
+/// one broadcast empties every core's, so no piece is lent, no IPI is sent and nothing waits but the
+/// broadcast's own DSB. That wait is one unit: it is for other cores, which answer whatever any core's
+/// IF says.
+#[allow(unused_variables)]
+pub fn flush_cores<F: Fn(usize)>(
+    bridge: &FlushBridge,
+    Tracked(requester): Tracked<&mut FlushRequester>,
+    Tracked(model): Tracked<&mut TlbModel>,
+    me: usize,
+    targets: u64,
+    send_ipi: F,
+    Tracked(steps): Tracked<&mut Steps>,
+)
+    requires
+        bridge.wf(),
+        old(requester).wf(*bridge),
+        old(model).wf(),
+        old(model).len() == NUM_CPUS,
+        me < NUM_CPUS,
+        forall|c: usize| c < NUM_CPUS ==> #[trigger] send_ipi.requires((c,)),
+    ensures
+        final(requester).wf(*bridge),
+        final(model).wf(),
+        final(model).len() == old(model).len(),
+        final(steps).count == old(steps).count + 1,
+        forall|c: int| 0 <= c < NUM_CPUS && flushed(me, targets, c) ==> #[trigger] final(model)[c] == Set::<TlbEntry>::empty() && final(model).tags(c) == Set::<usize>::empty(),
+        forall|c: int| 0 <= c < NUM_CPUS && !flushed(me, targets, c) ==> #[trigger] final(model)[c] == old(model)[c] && final(model).tags(c) == old(model).tags(c),
+{
+    let ghost m0 = *model;
+    flush_every_core(Tracked(model));
+    proof {
+        steps.step();
+        assert forall|d: int| 0 <= d < NUM_CPUS && flushed(me, targets, d) implies #[trigger] model[d] == Set::<TlbEntry>::empty() && model.tags(d) == Set::<usize>::empty() by {
+            m0.lemma_wf_has(d);
+        }
+    }
+}
+
+/// Serves a flush lent to core `core`, the core this runs on, if one stands: none ever does here, since
+/// flush_cores lends nothing, so it returns false.
+#[allow(unused_variables)]
+pub fn serve_flush(bridge: &FlushBridge, Tracked(server): Tracked<&mut FlushServer>, core: usize) -> (served: bool)
+    requires
+        bridge.wf(),
+        old(server).wf(*bridge),
+        old(server).core() == core,
+    ensures
+        final(server).wf(*bridge),
+        final(server).core() == old(server).core(),
+{
+    false
+}
+
 } // verus!
 
 pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
     unsafe {
         core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
+    }
+}
+
+pub fn flush_every_core(_model: Tracked<&mut TlbModel>) {
+    unsafe {
+        core::arch::asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb", options(nostack, preserves_flags));
     }
 }
 
