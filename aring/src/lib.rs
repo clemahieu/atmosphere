@@ -621,6 +621,8 @@ pub proof fn lemma_publish_visible<T>(p: Producer, c: Consumer, slots: Seq<T>, q
 
 } // verus!
 
+#[cfg(refused)]
+mod refused;
 #[cfg(throwaway)]
 mod throwaway;
 #[cfg(verus_keep_ghost)]

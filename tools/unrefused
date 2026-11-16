@@ -7,20 +7,6 @@
 # that adds one unless --approve names it, as path:operation:way.
 # Fields, separated by tabs: path from the repository root, operation, way.
 #
-aring/src/lib.rs	Producer::new	returns
-aring/src/lib.rs	Producer::index	returns
-aring/src/lib.rs	Producer::free	returns
-aring/src/lib.rs	Producer::slot	returns
-aring/src/lib.rs	Producer::write	returns
-aring/src/lib.rs	Producer::publish	returns
-aring/src/lib.rs	Producer::observe	true
-aring/src/lib.rs	Consumer::new	returns
-aring/src/lib.rs	Consumer::index	returns
-aring/src/lib.rs	Consumer::available	returns
-aring/src/lib.rs	Consumer::slot	returns
-aring/src/lib.rs	Consumer::read	returns
-aring/src/lib.rs	Consumer::consume	returns
-aring/src/lib.rs	Consumer::observe	true
 amailbox/src/lib.rs	Mailbox::new	returns
 amailbox/src/lib.rs	Producer::write	returns
 amailbox/src/lib.rs	Producer::publish	returns
