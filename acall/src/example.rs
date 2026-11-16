@@ -8,11 +8,21 @@
 use vstd::prelude::*;
 
 #[cfg(verus_keep_ghost)]
+use verified::capability::caller::view_frame;
+#[cfg(verus_keep_ghost)]
 use verified::capability::inspect::CAP_KIND_FRAME;
+#[cfg(verus_keep_ghost)]
+use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::*;
 #[cfg(verus_keep_ghost)]
+use verified::capability::refs::{block_ref, block_refs};
+#[cfg(verus_keep_ghost)]
 use verified::capability::rely::same_cap;
+#[cfg(verus_keep_ghost)]
+use verified::capability::table::block_bytes;
+#[cfg(verus_keep_ghost)]
+use verified::define::PAGE_SZ;
 use verified::capability::operation::*;
 
 use crate::memory::*;
@@ -81,6 +91,188 @@ pub fn read_only_child(caller: &mut Tracked<Caller>, untyped: u64, base: u64, fr
         assert(same_cap(e.table_view(root)[child as usize], derived));
     }
     Some(Inspected { kind: out.result_1, base: out.result_2, order: out.result_3, rights: out.result_4 })
+}
+
+/// Slot `slot` in `root`'s table holds a frame capability whose every page lies in a block that
+/// no other table holds a frame capability of.
+pub open spec fn sole_frame(k: CapKernel, root: usize, slot: usize) -> bool {
+    &&& k.table_view(root).contains_key(slot)
+    &&& k.table_view(root)[slot].kind is Frame
+    &&& forall|page: usize|
+        (page as int) * PAGE_SZ < block_bytes(k.table_view(root)[slot].order)
+            ==> k.held_by(
+                #[trigger] block_ref(&k.blocks, view_frame(k.table_view(root)[slot], page)),
+                root,
+            )
+}
+
+/// Every page of the frame capability at `slot` in `root`'s table keeps its capability fields,
+/// its block, a count no higher than in `pre`, and `held_by` in `post`.
+pub open spec fn frame_pages_kept(pre: CapKernel, post: CapKernel, root: usize, slot: usize) -> bool {
+    forall|page: usize|
+        (page as int) * PAGE_SZ < block_bytes(pre.table_view(root)[slot].order)
+            ==> {
+            let v0 = pre.table_view(root)[slot];
+            let v1 = post.table_view(root)[slot];
+            let br = block_ref(&pre.blocks, view_frame(v0, page));
+            &&& same_cap(v1, v0)
+            &&& #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[slot], page)) == br
+            &&& block_refs(&post.blocks, br) <= block_refs(&pre.blocks, br)
+            &&& post.held_by(br, root)
+        }
+}
+
+/// Derives from a non-frame capability at index `src` of the caller's table into `child` while
+/// tracking a frame capability at index `kept` whose block only this caller holds. Using
+/// `derive`'s `count_kept` ensures and the rely alone, if `kept` remains in the caller's table,
+/// every page of `kept` keeps its block, a count no higher than before, and sole ownership by this
+/// caller.
+pub fn derive_non_frame_keeps_frame(
+    caller: &mut Tracked<Caller>,
+    src: u64,
+    child: u64,
+    rights: u64,
+    base: u64,
+    order: u64,
+    kept: u64,
+) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+        old(caller)@.kernel().sealed(old(caller)@.root()),
+        src <= POSITION_INDEX_MASK,
+        child <= POSITION_INDEX_MASK,
+        child != kept,
+        sole_frame(old(caller)@.kernel(), old(caller)@.root(), kept as usize),
+        old(caller)@.kernel().table_view(old(caller)@.root()).contains_key(src as usize)
+            ==> !(old(caller)@.kernel().table_view(old(caller)@.root())[src as usize].kind is Frame),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.kernel().sealed(final(caller)@.root()),
+        final(caller)@.kernel().table_view(final(caller)@.root()).contains_key(kept as usize)
+            ==> frame_pages_kept(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), kept as usize),
+{
+    hide(CapKernel::frame_blocks_kept);
+    let ghost pre = caller@;
+    let ghost root = pre.root();
+    proof {
+        lemma_own_position(src);
+        lemma_own_position(child);
+    }
+    let out = derive(caller, src, child, rights, base, order);
+    proof {
+        let entry = caller@.entry();
+        let post = caller@.kernel();
+        assert(CapKernel::count_kept(entry, post, root));
+        if post.table_view(root).contains_key(kept as usize) {
+            assert(entry.table_view(root).contains_key(kept as usize));
+            let v0 = pre.kernel().table_view(root)[kept as usize];
+            assert forall|page: usize|
+                (page as int) * PAGE_SZ < block_bytes(v0.order)
+                    implies {
+                    let v1 = post.table_view(root)[kept as usize];
+                    let br = block_ref(&pre.kernel().blocks, view_frame(v0, page));
+                    &&& same_cap(v1, v0)
+                    &&& #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[kept as usize], page)) == br
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.kernel().blocks, br)
+                    &&& post.held_by(br, root)
+                } by {
+                let br = block_ref(&pre.kernel().blocks, view_frame(v0, page));
+                assert(block_ref(&entry.blocks, view_frame(v0, page)) == br);
+                assert(block_ref(&post.blocks, view_frame(entry.table_view(root)[kept as usize], page)) == br);
+            };
+        }
+    }
+    out
+}
+
+/// Derives from a frame capability at index `src` into `child` while tracking a frame capability
+/// at index `kept` in another block whose block only this caller holds. Using `derive`'s
+/// frame-source ensures and the rely alone, if `kept` remains in the caller's table, every page of
+/// `kept` keeps its block, count (equal across the call step, no higher across the rely), and
+/// `held_by`.
+pub fn derive_other_frame_keeps_frame(
+    caller: &mut Tracked<Caller>,
+    src: u64,
+    child: u64,
+    rights: u64,
+    base: u64,
+    order: u64,
+    kept: u64,
+) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+        old(caller)@.kernel().sealed(old(caller)@.root()),
+        src <= POSITION_INDEX_MASK,
+        child <= POSITION_INDEX_MASK,
+        child != kept,
+        sole_frame(old(caller)@.kernel(), old(caller)@.root(), kept as usize),
+        old(caller)@.kernel().table_view(old(caller)@.root()).contains_key(src as usize),
+        old(caller)@.kernel().table_view(old(caller)@.root())[src as usize].kind is Frame,
+        old(caller)@.kernel().held_by(
+            block_ref(&old(caller)@.kernel().blocks, view_frame(old(caller)@.kernel().table_view(old(caller)@.root())[src as usize], 0)),
+            old(caller)@.root(),
+        ),
+        forall|page: usize|
+            (page as int) * PAGE_SZ < block_bytes(old(caller)@.kernel().table_view(old(caller)@.root())[kept as usize].order)
+                ==> #[trigger] block_ref(&old(caller)@.kernel().blocks, view_frame(old(caller)@.kernel().table_view(old(caller)@.root())[kept as usize], page))
+                    != block_ref(&old(caller)@.kernel().blocks, view_frame(old(caller)@.kernel().table_view(old(caller)@.root())[src as usize], 0)),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.kernel().sealed(final(caller)@.root()),
+        final(caller)@.kernel().table_view(final(caller)@.root()).contains_key(kept as usize)
+            ==> {
+            &&& frame_pages_kept(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), kept as usize)
+            &&& forall|page: usize|
+                (page as int) * PAGE_SZ < block_bytes(old(caller)@.kernel().table_view(old(caller)@.root())[kept as usize].order)
+                    ==> {
+                    let br = block_ref(&old(caller)@.kernel().blocks, view_frame(old(caller)@.kernel().table_view(old(caller)@.root())[kept as usize], page));
+                    &&& #[trigger] block_ref(&final(caller)@.kernel().blocks, view_frame(final(caller)@.kernel().table_view(final(caller)@.root())[kept as usize], page)) == br
+                    &&& block_refs(&final(caller)@.kernel().blocks, br) == block_refs(&final(caller)@.entry().blocks, br)
+                }
+        },
+{
+    let ghost pre = caller@;
+    let ghost root = pre.root();
+    proof {
+        lemma_own_position(src);
+        lemma_own_position(child);
+    }
+    let out = derive(caller, src, child, rights, base, order);
+    proof {
+        let entry = caller@.entry();
+        let post = caller@.kernel();
+        if post.table_view(root).contains_key(kept as usize) {
+            assert(entry.table_view(root).contains_key(kept as usize));
+            let v0 = pre.kernel().table_view(root)[kept as usize];
+            let s0 = pre.kernel().table_view(root)[src as usize];
+            if out.status == STATUS_OK {
+                assert(entry.table_view(root).contains_key(src as usize));
+                assert((0usize as int) * PAGE_SZ < block_bytes(s0.order)) by {
+                    vstd::arithmetic::power2::lemma_pow2_pos(s0.order as nat);
+                }
+                let src_br = block_ref(&pre.kernel().blocks, view_frame(s0, 0));
+                assert(block_ref(&entry.blocks, view_frame(s0, 0)) == src_br);
+            }
+            assert forall|page: usize|
+                (page as int) * PAGE_SZ < block_bytes(v0.order)
+                    implies {
+                    let v1 = post.table_view(root)[kept as usize];
+                    let br = block_ref(&pre.kernel().blocks, view_frame(v0, page));
+                    &&& same_cap(v1, v0)
+                    &&& #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[kept as usize], page)) == br
+                    &&& block_refs(&post.blocks, br) == block_refs(&entry.blocks, br)
+                    &&& block_refs(&post.blocks, br) <= block_refs(&pre.kernel().blocks, br)
+                    &&& post.held_by(br, root)
+                } by {
+                let br = block_ref(&pre.kernel().blocks, view_frame(v0, page));
+                assert(block_ref(&entry.blocks, view_frame(v0, page)) == br);
+                assert(block_ref(&post.blocks, view_frame(entry.table_view(root)[kept as usize], page)) == br);
+            };
+        }
+    }
+    out
 }
 
 } // verus!

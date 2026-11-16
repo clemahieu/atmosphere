@@ -15,13 +15,19 @@ use verified::capability::position::*;
 #[cfg(verus_keep_ghost)]
 use verified::capability::rely::{reaches_through, same_cap};
 #[cfg(verus_keep_ghost)]
-use verified::capability::caller::view_frame;
+use verified::capability::caller::{derived_view, view_frame};
 #[cfg(verus_keep_ghost)]
 use verified::capability::link::tree_of;
 #[cfg(verus_keep_ghost)]
 use verified::capability::map::{address_path, frame_map_entry};
 #[cfg(verus_keep_ghost)]
 use verified::capability::mapping::{space_mapping, SpacePath};
+#[cfg(verus_keep_ghost)]
+use verified::capability::refs::{block_dead, block_ref, block_refs, blocks_refs_changed};
+#[cfg(verus_keep_ghost)]
+use verified::capability::table::block_bytes;
+#[cfg(verus_keep_ghost)]
+use verified::define::PAGE_SZ;
 
 use crate::step::*;
 
@@ -164,6 +170,128 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
     out
 }
 
+/// The capability `from` names in `root`'s table is a frame capability.
+pub open spec fn derive_from_frame(k: CapKernel, root: usize, from: u64) -> bool {
+    let f = spec_position(from);
+    &&& f is Some
+    &&& k.table_view(root).contains_key(f->0.index)
+    &&& k.table_view(root)[f->0.index].kind is Frame
+}
+
+/// A derive that is refused or whose source is not a frame keeps `count_kept`; one from a frame
+/// source keeps the block, the count and `held_by` of every frame in `root`'s table whose page
+/// lies in another block.
+proof fn lemma_derive_keeps_counts(
+    entry: CapKernel,
+    post: CapKernel,
+    root: usize,
+    from: u64,
+    to: u64,
+    rights: u64,
+    base: u64,
+    order: u64,
+    out: Outcome,
+)
+    requires
+        entry.wf(),
+        CapKernel::derive_contract(entry, post, root, spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
+    ensures
+        (out.status != STATUS_OK || !derive_from_frame(entry, root, from))
+            ==> CapKernel::count_kept(entry, post, root),
+        out.status == STATUS_OK && derive_from_frame(entry, root, from)
+            ==> forall|j: usize, page: usize|
+                entry.table_view(root).contains_key(j)
+                    && entry.table_view(root)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(entry.table_view(root)[j].order)
+                    && block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page))
+                        != block_ref(&entry.blocks, view_frame(entry.table_view(root)[spec_position(from)->0.index], 0))
+                    ==> {
+                    let br = block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page));
+                    &&& #[trigger] block_ref(&post.blocks, view_frame(entry.table_view(root)[j], page)) == br
+                    &&& block_refs(&post.blocks, br) == block_refs(&entry.blocks, br)
+                    &&& entry.held_by(br, root) ==> post.held_by(br, root)
+                },
+{
+    let from_pos = spec_position(from);
+    let to_pos = spec_position(to);
+    if out.status != STATUS_OK {
+        CapKernel::lemma_blocks_kept_keeps_count(entry, post, root);
+        return;
+    }
+    let i = from_pos->0.index;
+    let source = entry.table_view(root)[i];
+    let table = entry.view_table_at(root, to_pos->0.through)->0;
+    let slot = to_pos->0.index;
+    let child = derived_view(source, rights as u32, base as usize, order as u8, entry.tables.node_of(root, i));
+    if !(source.kind is Frame) {
+        assert forall|t: usize, j: usize, page: usize|
+            entry.table_view(t).contains_key(j) && entry.table_view(t)[j].kind is Frame
+                && (page as int) * PAGE_SZ < block_bytes(entry.table_view(t)[j].order) implies {
+                let br = block_ref(&entry.blocks, view_frame(entry.table_view(t)[j], page));
+                &&& #[trigger] block_ref(&post.blocks, view_frame(entry.table_view(t)[j], page)) == br
+                &&& block_refs(&post.blocks, br) <= block_refs(&entry.blocks, br) || !entry.held_by(br, root)
+            } by {
+            assert(CapKernel::frame_blocks_kept(entry, post));
+        }
+        assert forall|t: usize, j: usize|
+            t != root && !(t == root && j == 0usize) && #[trigger] post.table_view(t).contains_key(j)
+                && post.table_view(t)[j].kind is Frame
+                implies exists|t2: usize, j2: usize| t2 != root && #[trigger] entry.table_view(t2).contains_key(j2)
+                    && same_cap(entry.table_view(t2)[j2], post.table_view(t)[j]) by {
+            assert(entry.table_view(t).contains_key(j));
+        }
+        CapKernel::lemma_frames_kept_keeps_count(entry, post, root, root, 0);
+        return;
+    }
+    let src_br = block_ref(&entry.blocks, view_frame(source, 0));
+    assert(blocks_refs_changed(&entry.blocks, &post.blocks, src_br, (block_refs(&entry.blocks, src_br) + 1) as usize, block_dead(&entry.blocks, src_br)));
+    assert forall|j: usize, page: usize|
+        entry.table_view(root).contains_key(j)
+            && entry.table_view(root)[j].kind is Frame
+            && (page as int) * PAGE_SZ < block_bytes(entry.table_view(root)[j].order)
+            && block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page)) != src_br
+            implies {
+            let br = block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page));
+            &&& #[trigger] block_ref(&post.blocks, view_frame(entry.table_view(root)[j], page)) == br
+            &&& block_refs(&post.blocks, br) == block_refs(&entry.blocks, br)
+            &&& entry.held_by(br, root) ==> post.held_by(br, root)
+        } by {
+        let br = block_ref(&entry.blocks, view_frame(entry.table_view(root)[j], page));
+        entry.lemma_view_frame_counted(root, j, page);
+        if entry.held_by(br, root) {
+            assert forall|t: usize, k: usize, p: usize|
+                t != root && post.table_view(t).contains_key(k) && post.table_view(t)[k].kind is Frame
+                    && (p as int) * PAGE_SZ < block_bytes(post.table_view(t)[k].order)
+                    implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[k], p)) != br by {
+                if t == table && k == slot {
+                    let n = vstd::arithmetic::power2::pow2(child.order as nat) as int;
+                    let m = vstd::arithmetic::power2::pow2(source.order as nat) as int;
+                    vstd::arithmetic::power2::lemma_pow2_pos(source.order as nat);
+                    vstd::arithmetic::power2::lemma_pow2_pos(child.order as nat);
+                    let b = base as usize;
+                    let q = (b / PAGE_SZ + p - source.base / PAGE_SZ) as usize;
+                    assert(block_bytes(child.order) == n * PAGE_SZ);
+                    assert(block_bytes(source.order) == m * PAGE_SZ);
+                    assert(p < n);
+                    assert((b + n * PAGE_SZ) / (PAGE_SZ as int) == b / PAGE_SZ + n);
+                    assert((source.base + m * PAGE_SZ) / (PAGE_SZ as int) == source.base / PAGE_SZ + m);
+                    assert(0 <= b / PAGE_SZ + p - source.base / PAGE_SZ < m);
+                    assert((q as int) * PAGE_SZ < block_bytes(source.order));
+                    assert(view_frame(child, p) == view_frame(source, q));
+                    entry.lemma_table_view(root, i);
+                    entry.lemma_frame_page(entry.tables.node_of(root, i), q);
+                    entry.lemma_frame_page(entry.tables.node_of(root, i), 0);
+                    assert(view_frame(source, 0) == source.base / PAGE_SZ);
+                    assert(block_ref(&entry.blocks, view_frame(source, q)) == src_br);
+                } else {
+                    assert(entry.table_view(t).contains_key(k));
+                    entry.lemma_view_frame_counted(t, k, p);
+                }
+            }
+        }
+    }
+}
+
 /// Derives from the capability at the position `from` names, in the caller's own table, a child with
 /// `rights` and the block of `order` at `base` into the empty position `to` names.
 pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, base: u64, order: u64) -> (out: Outcome)
@@ -178,6 +306,22 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
         pages_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() && !reaches_through(to) ==> final(caller)@.pages_wf(),
         CapKernel::derive_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
+        (out.status != STATUS_OK || !derive_from_frame(final(caller)@.entry(), final(caller)@.root(), from))
+            ==> CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
+        out.status == STATUS_OK && derive_from_frame(final(caller)@.entry(), final(caller)@.root(), from)
+            ==> forall|j: usize, page: usize|
+                final(caller)@.entry().table_view(final(caller)@.root()).contains_key(j)
+                    && final(caller)@.entry().table_view(final(caller)@.root())[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(final(caller)@.entry().table_view(final(caller)@.root())[j].order)
+                    && block_ref(&final(caller)@.entry().blocks, view_frame(final(caller)@.entry().table_view(final(caller)@.root())[j], page))
+                        != block_ref(&final(caller)@.entry().blocks, view_frame(final(caller)@.entry().table_view(final(caller)@.root())[spec_position(from)->0.index], 0))
+                    ==> {
+                    let br = block_ref(&final(caller)@.entry().blocks, view_frame(final(caller)@.entry().table_view(final(caller)@.root())[j], page));
+                    &&& #[trigger] block_ref(&final(caller)@.kernel().blocks, view_frame(final(caller)@.entry().table_view(final(caller)@.root())[j], page)) == br
+                    &&& block_refs(&final(caller)@.kernel().blocks, br) == block_refs(&final(caller)@.entry().blocks, br)
+                    &&& final(caller)@.entry().held_by(br, final(caller)@.root())
+                        ==> final(caller)@.kernel().held_by(br, final(caller)@.root())
+                },
         !reaches_through(to) ==> (old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root())),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
             ==> final(caller)@.kernel().processes.records@.contains_key(final(caller)@.root()),
@@ -201,6 +345,7 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
         lemma_entered(entry, caller@.kernel(), pre.root(), frame, out, c, mid);
         lemma_number_names_one_operation(Operation::Derive);
         CapKernel::lemma_derive_contract(entry, mid, pre.root(), frame, out);
+        lemma_derive_keeps_counts(entry, caller@.kernel(), pre.root(), from, to, rights, base, order, out);
         CapKernel::lemma_own_step_keeps_record(entry, mid, pre.root(), frame, out);
         if !reaches_through(to) {
             CapKernel::lemma_own_step_keeps_sealed(entry, mid, pre.root(), frame, out);
