@@ -11,6 +11,7 @@ use core::hint::black_box;
 
 use crate::counter::{counter_delta, CounterSource, Snapshot, PMU_COUNT, PMU_SUFFIXES, PMU_UNITS};
 use crate::results::{ResultsSet, JSON_BEGIN_MARKER, JSON_END_MARKER, TEST_SUITE};
+use crate::stats::summarize;
 
 /// Number of timed runs executed per benchmark in unit-test check mode (`perftest` default).
 pub const UNIT_TEST_BATCHES: u32 = 3;
@@ -59,6 +60,7 @@ pub struct RepeatState<'a> {
     batches: u32,
     iterations_per_batch: u32,
     step_names: Vec<String>,
+    primary_step: Option<usize>,
     step_count: u32,
     started: bool,
     finished: bool,
@@ -84,6 +86,7 @@ impl<'a> RepeatState<'a> {
             batches,
             iterations_per_batch,
             step_names: Vec::new(),
+            primary_step: None,
             step_count: 0,
             started: false,
             finished: false,
@@ -119,6 +122,21 @@ impl<'a> RepeatState<'a> {
             return;
         }
         self.step_names.push(String::from(name));
+    }
+
+    /// Declares the single primary step in a multi-step test whose output keeps the test's own
+    /// name without a `.<step>` suffix.
+    pub fn declare_primary_step(&mut self) {
+        if self.started {
+            self.set_error("declare_primary_step called after keep_running");
+            return;
+        }
+        if self.primary_step.is_some() {
+            self.set_error("Found duplicate primary step in multi-step test");
+            return;
+        }
+        self.primary_step = Some(self.step_names.len());
+        self.step_names.push(String::new());
     }
 
     /// Marks the boundary between two consecutive declared steps within one iteration.
@@ -252,12 +270,18 @@ impl<'a> RepeatState<'a> {
         }
         let tsc_hz = self.counters.ticks_per_second();
         if self.step_count == 1 {
-            if self.step_names.first().is_some_and(|n| n.ends_with("_ignore")) {
+            if self.primary_step != Some(0)
+                && self.step_names.first().is_some_and(|n| n.ends_with("_ignore"))
+            {
                 return;
             }
             self.emit_single_step_series(test_suite, test_name, tsc_hz, dest);
         } else {
             for step in 0..(self.step_count as usize) {
+                if self.primary_step == Some(step) {
+                    self.emit_multi_step_series(test_suite, test_name, step, tsc_hz, dest);
+                    continue;
+                }
                 let step_name = &self.step_names[step];
                 if step_name.ends_with("_ignore") {
                     continue;
@@ -375,16 +399,26 @@ impl<'a> RepeatState<'a> {
 
 type TestFn = Box<dyn FnMut(&mut RepeatState<'_>) -> bool>;
 
+struct BaselineDiff {
+    name: String,
+    total: String,
+    baseline: String,
+}
+
 /// Named registry of benchmarks executed in deterministic sorted or seeded-random order.
 #[derive(Default)]
 pub struct Registry {
     tests: Vec<(String, TestFn)>,
+    diffs: Vec<BaselineDiff>,
 }
 
 impl Registry {
     /// Creates an empty benchmark registry.
     pub const fn new() -> Self {
-        Self { tests: Vec::new() }
+        Self {
+            tests: Vec::new(),
+            diffs: Vec::new(),
+        }
     }
 
     /// Registers a multi-step or fixture-bearing benchmark under `name`.
@@ -396,10 +430,39 @@ impl Registry {
         if name.is_empty() {
             return Err("Benchmark name must not be empty");
         }
-        if self.tests.iter().any(|(existing, _)| existing == &name) {
+        if self.tests.iter().any(|(existing, _)| existing == &name)
+            || self.diffs.iter().any(|diff| diff.name == name)
+        {
             return Err("Duplicate benchmark name");
         }
         self.tests.push((name, Box::new(func)));
+        Ok(())
+    }
+
+    /// Registers a derived series `name` equal to `max(0.0, total - median(baseline))` per batch
+    /// across every matching metric suffix emitted when both `total` and `baseline` ran.
+    pub fn register_baseline_diff(
+        &mut self,
+        name: impl Into<String>,
+        total: impl Into<String>,
+        baseline: impl Into<String>,
+    ) -> Result<(), &'static str> {
+        let name = name.into();
+        let total = total.into();
+        let baseline = baseline.into();
+        if name.is_empty() || total.is_empty() || baseline.is_empty() {
+            return Err("Benchmark name must not be empty");
+        }
+        if self.tests.iter().any(|(existing, _)| existing == &name)
+            || self.diffs.iter().any(|diff| diff.name == name)
+        {
+            return Err("Duplicate benchmark name");
+        }
+        self.diffs.push(BaselineDiff {
+            name,
+            total,
+            baseline,
+        });
         Ok(())
     }
 
@@ -503,6 +566,7 @@ impl Registry {
                 let _ = writeln!(out, "[       OK ] {name}");
             }
         }
+        append_baseline_diffs(&self.diffs, &mut results);
         if !config.quiet {
             let _ = out.write_char('\n');
             let _ = results.print_summary_table(out);
@@ -517,6 +581,57 @@ impl Registry {
 }
 
 struct UnitTestCounters;
+
+fn metric_suffix<'a>(label: &'a str, base: &str) -> Option<&'a str> {
+    if label == base {
+        return Some("");
+    }
+    label
+        .strip_prefix(base)
+        .filter(|rest| rest.starts_with('.'))
+}
+
+fn append_baseline_diffs(diffs: &[BaselineDiff], results: &mut ResultsSet) {
+    let mut derived = Vec::new();
+    for diff in diffs {
+        for total in &results.results {
+            let Some(suffix) = metric_suffix(&total.label, &diff.total) else {
+                continue;
+            };
+            let base_label = format!("{}{suffix}", diff.baseline);
+            let Some(base) = results
+                .results
+                .iter()
+                .find(|entry| entry.label == base_label && entry.unit == total.unit)
+            else {
+                continue;
+            };
+            if base.values.len() != total.values.len() {
+                continue;
+            }
+            let Some(base_stats) = summarize(&base.values) else {
+                continue;
+            };
+            let net_label = format!("{}{suffix}", diff.name);
+            if results.results.iter().any(|entry| entry.label == net_label)
+                || derived
+                    .iter()
+                    .any(|(label, _, _, _): &(String, String, String, Vec<f64>)| label == &net_label)
+            {
+                continue;
+            }
+            let values: Vec<f64> = total
+                .values
+                .iter()
+                .map(|&t| (t - base_stats.median).max(0.0))
+                .collect();
+            derived.push((net_label, total.test_suite.clone(), total.unit.clone(), values));
+        }
+    }
+    for (label, suite, unit, values) in derived {
+        results.add_test_case(&suite, &label, &unit).values = values;
+    }
+}
 
 impl CounterSource for UnitTestCounters {
     fn snapshot(&mut self) -> Snapshot {
@@ -998,5 +1113,100 @@ mod tests {
         assert_eq!(report.passed, 1);
         assert_eq!(report.failed, 1);
         assert!(out.contains("[  FAILED  ] AlwaysFail"));
+    }
+
+    #[test]
+    fn primary_step_emits_test_name_directly_without_step_suffix() {
+        let counters = Rc::new(RefCell::new(FakeCounters::new(
+            Some(1_000_000_000),
+            Some([0, 0, 0, 0]),
+        )));
+        let c_ref = counters.clone();
+        let mut reg = Registry::new();
+        reg.register("Ring/Pipelined/Send", move |state| {
+            state.declare_primary_step();
+            state.declare_step("drain_ignore");
+            while state.keep_running() {
+                c_ref.borrow_mut().advance(2); // primary: 100 ticks
+                state.next_step();
+                c_ref.borrow_mut().advance(10); // drain_ignore: 500 ticks
+            }
+            true
+        })
+        .unwrap();
+
+        let cfg = PerfConfig {
+            batches: 3,
+            iterations_per_batch: 2,
+            warmup_iterations: 1,
+            ..PerfConfig::default()
+        };
+        let mut shared = SharedCounters(counters);
+        let mut out = String::new();
+        let results = reg.run_perf_test(&cfg, &mut shared, &mut out).unwrap();
+        let labels: Vec<&str> = results.results.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Ring/Pipelined/Send",
+                "Ring/Pipelined/Send.tsc_cycles",
+                "Ring/Pipelined/Send.cycles",
+                "Ring/Pipelined/Send.instructions",
+                "Ring/Pipelined/Send.fills",
+                "Ring/Pipelined/Send.ccx_fills",
+            ]
+        );
+        assert_eq!(results.results[1].values, vec![100.0; 3]);
+    }
+
+    #[test]
+    fn baseline_diff_subtracts_all_metrics_and_clamps_to_zero() {
+        let counters = Rc::new(RefCell::new(FakeCounters::new(
+            Some(1_000_000_000),
+            Some([0, 0, 0, 0]),
+        )));
+        let c_raw = counters.clone();
+        let c_base = counters.clone();
+        let raw_calls = Rc::new(Cell::new(0u32));
+        let mut reg = Registry::new();
+        reg.register_simple("Ring/Cold/Raw", move || {
+            let call = raw_calls.get();
+            raw_calls.set(call + 1);
+            // Make batch 1 smaller than baseline on purpose to verify clamping at 0.0.
+            let factor = if call == 2 { 1 } else { 5 };
+            c_raw.borrow_mut().advance(factor);
+            true
+        })
+        .unwrap();
+        reg.register_simple("Ring/Cold/FlushBaseline", move || {
+            c_base.borrow_mut().advance(2);
+            true
+        })
+        .unwrap();
+        reg.register_baseline_diff("Ring/Cold", "Ring/Cold/Raw", "Ring/Cold/FlushBaseline")
+            .unwrap();
+
+        let cfg = PerfConfig {
+            batches: 2,
+            iterations_per_batch: 1,
+            warmup_iterations: 1,
+            random_seed: Some(9),
+            ..PerfConfig::default()
+        };
+        let mut shared = SharedCounters(counters);
+        let mut out = String::new();
+        let results = reg.run_perf_test(&cfg, &mut shared, &mut out).unwrap();
+        let net_tsc = results
+            .results
+            .iter()
+            .find(|r| r.label == "Ring/Cold.tsc_cycles")
+            .expect("net tsc_cycles series");
+        assert_eq!(net_tsc.values, vec![150.0, 0.0]);
+        let net_fills = results
+            .results
+            .iter()
+            .find(|r| r.label == "Ring/Cold.fills")
+            .expect("net fills series");
+        assert_eq!(net_fills.values, vec![12.0, 0.0]);
     }
 }
