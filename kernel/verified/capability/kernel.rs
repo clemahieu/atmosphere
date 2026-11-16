@@ -2109,8 +2109,9 @@ impl CapKernel {
         assert(1 <= self.cores@[c].generation <= ID_GENERATION_MAX);
     }
 
-    /// Only core c's state and its model of the TLB changed, and it stays on what it was running, its
-    /// last counter reading kept, which only charge writes: design/cpu-time-as-capability/.
+    /// Only core c's state, its model of the TLB, and at most its bit in `tlb_dirty` changed, and it
+    /// stays on what it was running, its last counter reading kept, which only charge writes:
+    /// design/cpu-time-as-capability/.
     pub open spec fn only_core_changed(pre: Self, post: Self, c: int) -> bool {
         &&& post.list == pre.list
         &&& post.tables == pre.tables
@@ -2132,6 +2133,12 @@ impl CapKernel {
         &&& post.endpoints == pre.endpoints
         &&& post.replies == pre.replies
         &&& post.core_tags == pre.core_tags
+        &&& (post.tlb_dirty == pre.tlb_dirty
+            || (0 <= c < NUM_CPUS && post.tlb_dirty == (pre.tlb_dirty & !(1u64 << (c as u64)))))
+        &&& post.tlb_dirty != pre.tlb_dirty ==> post.tlb@[c] == Set::<TlbEntry>::empty()
+        &&& flush_target(post.tlb_dirty, c) ==> flush_target(pre.tlb_dirty, c)
+        &&& forall|d: int| 0 <= d < NUM_CPUS && d != c
+            ==> #[trigger] flush_target(post.tlb_dirty, d) == flush_target(pre.tlb_dirty, d)
         &&& post.cores@[c].current_thread == pre.cores@[c].current_thread
         &&& post.cores@[c].space == pre.cores@[c].space
         &&& post.cores@[c].since == pre.cores@[c].since
@@ -2139,6 +2146,36 @@ impl CapKernel {
         &&& forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) ==> pre.tlb@[c].contains(e)
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@[d] == pre.tlb@[d]
+    }
+
+    /// A step satisfying `only_core_changed` keeps every other core's dirty bit, can only clear core
+    /// `c`'s dirty bit (emptying `tlb@[c]` if it clears it), and preserves the TLB mask invariant.
+    pub proof fn lemma_only_core_changed_mask(pre: Self, post: Self, c: int)
+        requires
+            pre.tlb_wf(),
+            0 <= c < NUM_CPUS,
+            Self::only_core_changed(pre, post, c),
+        ensures
+            post.tlb_dirty == pre.tlb_dirty || post.tlb_dirty == (pre.tlb_dirty & !(1u64 << (c as u64))),
+            flush_target(post.tlb_dirty, c) ==> flush_target(pre.tlb_dirty, c),
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] flush_target(post.tlb_dirty, d) == flush_target(pre.tlb_dirty, d),
+            forall|d: int| 0 <= d < NUM_CPUS && !flush_target(post.tlb_dirty, d)
+                ==> #[trigger] post.tlb@[d] == Set::<TlbEntry>::empty(),
+    {
+        assert forall|d: int| 0 <= d < NUM_CPUS && !flush_target(post.tlb_dirty, d)
+            implies #[trigger] post.tlb@[d] == Set::<TlbEntry>::empty() by {
+            if d != c {
+                assert(!flush_target(pre.tlb_dirty, d));
+                assert(pre.tlb@[d] == Set::<TlbEntry>::empty());
+            } else if post.tlb_dirty == pre.tlb_dirty {
+                assert(!flush_target(pre.tlb_dirty, c));
+                assert(pre.tlb@[c] == Set::<TlbEntry>::empty());
+                assert forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) implies false by {
+                    assert(pre.tlb@[c].contains(e));
+                }
+                assert(post.tlb@[c] =~= Set::<TlbEntry>::empty());
+            }
+        }
     }
 
     /// Like `only_core_changed`, except `enter` may also empty other cores' TLB models through
@@ -3862,9 +3899,12 @@ impl CapKernel {
                 }
             }
             lemma_current_same(pre.cores@, self.cores@, pre.threads.records@, self.threads.records@);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] flush_target(self.tlb_dirty, d)
+                == (flush_target(pre.tlb_dirty, d) && d != c as int) by {
+                Self::lemma_mask_clear_bit(pre.tlb_dirty, c, d);
+            }
             assert forall|d: int| 0 <= d < NUM_CPUS && !flush_target(self.tlb_dirty, d)
                 implies #[trigger] self.tlb@[d] == Set::<TlbEntry>::empty() by {
-                Self::lemma_mask_clear_bit(pre.tlb_dirty, c, d);
                 if d != c as int {
                     assert(!flush_target(pre.tlb_dirty, d));
                     assert(pre.tlb@[d] == Set::<TlbEntry>::empty());
