@@ -127,8 +127,8 @@ fn loader_image_range(boot_services: &BootServices, image: Handle) -> MemoryRang
     let range = MemoryRange::new(loaded_image.image_base as u64, loaded_image.image_size);
     // The firmware chooses where.
     assert!(
-        range.end_inclusive() < crate::IDENTITY_MAP_END,
-        "The loader was loaded at {}, above the memory it maps",
+        range.end_inclusive() < crate::memory::IDENTITY_MAP_FLOOR,
+        "The loader was loaded at {}, above the 4 GiB it maps whatever the RAM",
         range
     );
     range

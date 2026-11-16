@@ -1,10 +1,10 @@
 ---
 title: "Page metadata is one boot-carved region, indexed by physical address and bounded by the identity-mapped span"
-date: 2026-11-14
+date: 2026-11-16
 status: active
 tags: [memory, boot, verified]
 one_line: "The block table owns one length, the tracked page count: boot takes the highest RAM the map names, rounds it up to 1 GiB, refuses it past the identity-mapped span, and carves one region holding a page entry, region entries, counts, a stale epoch and a zeroing cursor for every page from address 0, holes included."
-revisit_if: "A machine's address holes cost more metadata than its RAM, so a dense table of only the RAM pages pays for an address-to-index translation; or the identity-mapped span has to exceed 2^48, which the page-table address mask and the device names both stop; or a boot must track RAM the loader has not identity-mapped."
+revisit_if: "A machine's address holes cost more metadata than its RAM, so a dense table of only the RAM pages pays for an address-to-index translation; or the identity-mapped span has to exceed 2^48, which the page-table address mask and the device names both stop; or a machine's RAM runs past the 16 GiB the loader keeps in its map, whose page tables the loader's pool is sized for."
 confidence: "The tiling and the overflow bound are arithmetic on the span and the 4K granule. That a closed per-element points-to map verifies at the cost of the fixed arrays is a judgement; the storage change measures it."
 ---
 
@@ -20,7 +20,9 @@ The tables cover every page from physical address 0 up to `pages`, holes include
 
 Boot computes the range from the memory map, which is at most 256 ranges. The RAM end is the maximum `base + bytes` over ranges of kind Available, Kernel, Domain or PageTable. Reserved does not move it: the loader folds firmware bookkeeping, ACPI, NVS, BIOS and PCI into Reserved, and a device window above the last RAM must not become tracked pages. Boot rounds that end up to a multiple of 1 GiB. It panics, naming the address, with reason `no RAM` when there is no such range and with reason `past the identity-mapped span` when a RAM range's end overflows or a RAM range or the rounded end lies past the span. The rounded tail, the partial last gigabyte that is not RAM, is tracked and stays reserved, so it is never the free 1G block a boot check looks for.
 
-The carve is whole pages, taken from the first Available range inside the tracked end that holds it clear of the kernel image and of dom0's reservation. Its base is that physical address. The loader's identity map leaves it equal to the virtual address, and the columns are read through that map. Finding that range is a scan of the map, before any per-page bitmap exists. The region then holds these columns, in this order, each aligned to its element and none of them interleaved:
+The carve is whole pages, taken from the first Available range inside the tracked end that holds it clear of the kernel image and of dom0's reservation. Its base is that physical address. The loader's identity map leaves it equal to the virtual address, and the columns are read through that map.
+
+The loader identity-maps every tracked page. It takes the same end from its own map before it maps anything: the end of the highest region of any kind it hands over as other than Reserved, rounded up to 1 GiB, and 4 GiB at the least, which holds the PC's 32-bit device window (`identity_map_end` in the loader's memory module). What it allocates and relabels after that only splits RAM, and moving a range's edges out to pages stays within the range's gigabyte, so the end boot computes from the ranges it is handed is never past the end the loader mapped. The loader keeps memory below 16 GiB, cutting a region that crosses it, so its page-table pool holds the map's tables, `design/test-guest-memory/`. Finding that range is a scan of the map, before any per-page bitmap exists. The region then holds these columns, in this order, each aligned to its element and none of them interleaved:
 
 1. page entries, one per tracked page
 2. 2M region entries, then 1G region entries
@@ -46,7 +48,7 @@ The literal is also what makes the arithmetic proofs close. `NUM_PAGES * PAGE_SZ
 
 Indexing by address is the arithmetic the block table, the capabilities and the page tables already share: a base, a region and a table entry are all an address divided by the page size. A table packed to the RAM pages would need a translation in front of every one of those, and a block that is contiguous in address would no longer be a contiguous run of entries. The holes this buys are the firmware's gaps and the rounded tail, each well under a gigabyte on the two test guests. At about 48 bytes a page, a gibibyte of hole is 12 MiB of entries. On virt the addresses below 1 GiB hold no RAM, `design/test-guest-memory/`, and they stay in the table for the same reason.
 
-Rounding up to 1 GiB, rather than to a page or to 2 MiB, is what keeps the two products equal to `pages`. A partial last region would turn each of them into a ceiling and put a clamp on every large-block range. The tail is reserved, so the free 1G block the boot check names is still a region the map calls available all the way across: 1 to 2 GiB on the PC, where RAM ends at 2.5 GiB and the tracked end is 3 GiB, and 2 to 3 GiB on virt, where RAM ends at 3.5 GiB and the tracked end is 4 GiB. Both ends sit inside the 4 GiB the loader identity-maps.
+Rounding up to 1 GiB, rather than to a page or to 2 MiB, is what keeps the two products equal to `pages`. A partial last region would turn each of them into a ceiling and put a clamp on every large-block range. The tail is reserved, so the free 1G block the boot check names is still a region the map calls available all the way across: 1 to 2 GiB on the PC, where RAM ends at 2.5 GiB and the tracked end is 3 GiB, and 2 to 3 GiB on virt, where RAM ends at 3.5 GiB and the tracked end is 4 GiB. A PC guest of 3 GiB has 2 GiB below the 32-bit window and 1 GiB at 4 GiB, and tracks 5 GiB.
 
 The span, rather than a tighter constant, is the bound because raising it is adding top-level entries, up to `ENTRIES`, and the block-table proofs quantify over `pages` under the span lemma. They do not mention 4 GiB or 512 GiB. A memory capability's block ends at or below 2^48, `design/capability-names-a-block/`, and a tracked page is below the span, so the same lemma is what keeps a tracked page from being a device name.
 
@@ -66,7 +68,9 @@ The carve is placed by a scan of the map because the per-page bitmap is part of 
 - **A static, or a global in `kernel/verified`.** The tables would be outside the `Kernel` value, `design/one-kernel-instance/`.
 - **Track from a non-zero physical base the target names.** Rejected in `design/test-guest-memory/`: the page arithmetic assumes the index is the address over 4K.
 - **Leave RAM past the span unused.** A machine with RAM the kernel will not track would boot a silent subset of its map. Boot refuses instead.
+- **Refuse RAM past the 4 GiB the loader maps.** A PC whose RAM does not fit below its 32-bit device window, a 3 GiB q35 guest already, would not boot. The loader maps that RAM instead, which costs a page directory a GiB.
+- **Hand the kernel the loader's mapped end and check the tracked end against it.** The two ends are computed by one rule over one map, and a second number in the handoff would only restate it.
 
 ## What this does not settle
 
-The loader identity-maps the first 4 GiB, `design/test-guest-memory/`, and the span constant is one top-level entry, 512 GiB. Both test guests' tracked ends fall inside the mapped 4 GiB. A tracked end above those 4 GiB needs the loader's identity map extended before the kernel can zero a page there; the span check does not walk the loader's tables, and this record does not change either. The byte size of a page entry stays `size_of`, not a number frozen here. The 1G frame the page-table module does not yet map, and the device, console and power names above 2^48, stay `design/capability-names-a-block/`.
+The span constant is one top-level entry, 512 GiB; the loader maps at most the 16 GiB it keeps. The byte size of a page entry stays `size_of`, not a number frozen here. The 1G frame the page-table module does not yet map, and the device, console and power names above 2^48, stay `design/capability-names-a-block/`.

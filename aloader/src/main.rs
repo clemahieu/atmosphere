@@ -40,12 +40,6 @@ use astd::memory::{USERSPACE_BASE, USERSPACE_PAYLOAD_BASE};
 
 use memory::{AddressSpace, BootMemoryType, Leaf, PhysicalAllocator, UserspaceMapper, BOOTSTRAP_SIZE};
 
-/// The end of the physical memory the loader identity maps, for itself and for the kernel.
-/// The test guest's RAM ends at 2.5 GiB. The 32-bit MMIO window sits just below 4 GiB, and the
-/// loader only allocates below 4 GiB. The map is 2M leaves, but for the kernel's image and its
-/// stack guard. design/test-guest-memory/.
-pub const IDENTITY_MAP_END: u64 = 0x1_0000_0000; // 4 GiB
-
 /// The kernel window: the image, then the stack's guard, then the stack. The loader's bump allocator
 /// is sized from it (memory::ALLOCATOR_SIZE).
 pub const KERNEL_RESERVATION: usize =
@@ -75,9 +69,11 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
 
     let mut address_space = AddressSpace::new(bootstrap_allocator);
 
-    log::info!("Mapping all physical memory");
+    // The map is 2M leaves, but for the kernel's image and its stack guard. design/test-guest-memory/.
+    let identity_end = memory::identity_map_end(&memory::get_physical_memory_map());
+    log::info!("Mapping physical memory up to {:#x}", identity_end);
     unsafe {
-        address_space.map_identity(bootstrap_allocator, IDENTITY_MAP_END, arch::device);
+        address_space.map_identity(bootstrap_allocator, identity_end, arch::device);
     }
 
     let mut boot_info = BootInfo::empty(); // stays on stack

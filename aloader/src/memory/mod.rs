@@ -35,11 +35,19 @@ pub use map::MemoryMap;
 pub use paging::AddressSpace;
 pub use userspace::UserspaceMapper;
 
+/// The most memory the loader keeps in its map: a region is cut here, so the identity map ends here
+/// at the most.
 pub const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024; // 16 GiB
-/// The loader's page tables are at most 18 pages: 6 for the 4 GiB identity map, 5 for the 4K
-/// entries of a kernel image at its bound and the stack's guard, 7 MiB wherever they start, and
-/// 7 for dom0's window and its payload. The pool is 128 pages, so the upper half stays unwritten:
-/// tools/check-boot-stack.py. design/test-guest-memory/.
+/// The least the identity map covers: 4 GiB, which holds the 32-bit device window just below it.
+/// design/test-guest-memory/.
+pub const IDENTITY_MAP_FLOOR: u64 = 1 << 32;
+/// The granule the kernel rounds the end of its tracked pages up to.
+const GIB: u64 = 1 << 30;
+/// The loader's page tables are at most 30 pages: 18 for an identity map of the 16 GiB the map
+/// keeps, a PML4, a PDPT and a page directory a GiB, 5 for the 4K entries of a kernel image at its
+/// bound and the stack's guard, 7 MiB wherever they start, and 7 for dom0's window and its payload.
+/// The pool is 128 pages, so the upper half stays unwritten: tools/check-boot-stack.py.
+/// design/test-guest-memory/.
 pub const BOOTSTRAP_SIZE: usize = 512 * 1024; // 512 KiB
 /// The kernel window and dom0's window, which are all the loader reserves from it: 12 MiB.
 /// design/test-guest-memory/.
@@ -216,10 +224,8 @@ pub fn init_physical_memory_map(
     image_ranges: impl Iterator<Item = MemoryRange>,
 ) {
     let mut map = PHYSICAL_MEMORY_MAP.lock();
-    let filtered_regions = regions.filter(|(r, _)| {
-        r.base() < MAX_PHYSICAL_MEMORY as u64
-    });
-    *map = MemoryMap::new(filtered_regions.map(|(r, t)| (r, BootMemoryType::Other(t))));
+    let kept_regions = regions.filter_map(|(r, t)| Some((kept(r)?, BootMemoryType::Other(t))));
+    *map = MemoryMap::new(kept_regions);
 
     map.relabel(MemoryRange::new(0, 1024 * 1024), BootMemoryType::Bios);
     map.relabel(loader_range, BootMemoryType::Loader);
@@ -249,6 +255,27 @@ pub fn init_physical_memory_map(
         allocator_region,
     );
     *reserved_region = Some(allocator_region.clone());
+}
+
+/// `region` cut at `MAX_PHYSICAL_MEMORY`, or none when it starts there or past it.
+fn kept(region: MemoryRange) -> Option<MemoryRange> {
+    let max = MAX_PHYSICAL_MEMORY as u64;
+    (region.base() < max)
+        .then(|| MemoryRange::new(region.base(), region.size().min(max - region.base())))
+}
+
+/// Where the identity map ends: at the end of the highest RAM in `map`, a region of any kind the
+/// kernel is handed as other than Reserved, rounded up to a GiB, and at `IDENTITY_MAP_FLOOR` at the
+/// least. The kernel tracks every page below that rounded end and reads and writes them through
+/// this map, so it maps every page the kernel tracks. Allocation and relabelling after this only
+/// split RAM, and moving a range's edges out to pages stays inside its GiB, so the end the kernel
+/// computes from the ranges it is handed is no higher. design/page-metadata-sized-from-the-memory-map/.
+pub fn identity_map_end(map: &MemoryMap<BootMemoryType>) -> u64 {
+    map.regions
+        .iter()
+        .filter(|(_, label)| PhysicalMemoryType::from(*label) != PhysicalMemoryType::Reserved)
+        .map(|(region, _)| (region.base() + region.size()).next_multiple_of(GIB))
+        .fold(IDENTITY_MAP_FLOOR, u64::max)
 }
 
 pub fn dump_physical_memory_map() {
@@ -464,5 +491,67 @@ mod tests {
             ]
         );
         assert_eq!(free, 3, "{ranges:?}");
+    }
+
+    /// RAM that ends below 4 GiB leaves the map at 4 GiB, which holds the 32-bit device window.
+    #[test]
+    fn identity_map_reaches_four_gib_at_least() {
+        let map = MemoryMap::new([
+            (MemoryRange::new(0, 2 * GIB + GIB / 2), BootMemoryType::Other(AcpiMemoryType::Memory)),
+            (MemoryRange::new(0xfec0_0000, 0x10_0000), BootMemoryType::Other(AcpiMemoryType::Reserved)),
+        ]);
+        assert_eq!(identity_map_end(&map), 4 * GIB);
+    }
+
+    /// RAM above 4 GiB, as q35 places what does not fit below its 32-bit window, moves the end to
+    /// that RAM's end rounded up to a GiB, where the kernel's tracked pages end.
+    #[test]
+    fn identity_map_reaches_the_tracked_end_of_ram_above_four_gib() {
+        let map = MemoryMap::new([
+            (MemoryRange::new(0, 2 * GIB), BootMemoryType::Other(AcpiMemoryType::Memory)),
+            (MemoryRange::new(4 * GIB, GIB + GIB / 2), BootMemoryType::Other(AcpiMemoryType::Memory)),
+        ]);
+        assert_eq!(identity_map_end(&map), 6 * GIB);
+    }
+
+    /// Every kind the kernel is handed as other than Reserved is RAM and moves the end; a Reserved
+    /// range, such as a device window above RAM, does not.
+    #[test]
+    fn identity_map_end_follows_the_kinds_the_kernel_tracks() {
+        let low = (MemoryRange::new(0, GIB), BootMemoryType::Other(AcpiMemoryType::Memory));
+        for label in [
+            BootMemoryType::Loader,
+            BootMemoryType::LoaderAllocator,
+            BootMemoryType::Kernel,
+            BootMemoryType::Domain,
+            BootMemoryType::DomainImage,
+            BootMemoryType::Payload,
+            BootMemoryType::PageTable,
+            BootMemoryType::Other(AcpiMemoryType::Memory),
+        ] {
+            let map = MemoryMap::new([low.clone(), (MemoryRange::new(8 * GIB, PAGE_BYTES), label)]);
+            assert_eq!(identity_map_end(&map), 9 * GIB, "{label:?}");
+        }
+        for label in [
+            BootMemoryType::Bios,
+            BootMemoryType::Pci,
+            BootMemoryType::KernelPageTable,
+            BootMemoryType::Other(AcpiMemoryType::Reserved),
+            BootMemoryType::Other(AcpiMemoryType::Acpi),
+            BootMemoryType::Other(AcpiMemoryType::Nvs),
+        ] {
+            let map = MemoryMap::new([low.clone(), (MemoryRange::new(8 * GIB, PAGE_BYTES), label)]);
+            assert_eq!(identity_map_end(&map), 4 * GIB, "{label:?}");
+        }
+    }
+
+    /// A region that crosses the most memory the loader keeps is cut there, and one wholly past it
+    /// is dropped, so the identity map, and the page tables it takes, stop there.
+    #[test]
+    fn regions_past_the_most_memory_kept_are_cut() {
+        let max = MAX_PHYSICAL_MEMORY as u64;
+        assert_eq!(kept(MemoryRange::new(0, GIB)), Some(MemoryRange::new(0, GIB)));
+        assert_eq!(kept(MemoryRange::new(max - GIB, 2 * GIB)), Some(MemoryRange::new(max - GIB, GIB)));
+        assert_eq!(kept(MemoryRange::new(max, GIB)), None);
     }
 }
