@@ -44,7 +44,7 @@ use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::{GhostSetAuth, GhostSubset};
 use vstd::resource::Loc;
 
-use crate::arch::spin_hint;
+use crate::arch::{serve_flush, spin_hint, FlushBridge, FlushServer};
 use crate::define::NUM_CPUS;
 
 verus! {
@@ -712,23 +712,36 @@ impl QueueLock {
         (QueueLock { tail, nodes }, Tracked(cores))
     }
 
-    /// Waits for the lock on behalf of `cpu`, which must not hold it. Between the swap that queues it
-    /// and the lock, at most NUM_CPUS - 1 holdings end: `granted - swapped` counts them.
+    /// Waits for the lock on behalf of `cpu`, which must not hold it, serving any pending flush on
+    /// `bridge` through `server` while spinning so the lock's holder cannot deadlock waiting for
+    /// this core to answer. Between the swap that queues it and the lock, at most NUM_CPUS - 1
+    /// holdings end: `granted - swapped` counts them.
     #[verifier::exec_allows_no_decreases_clause]
     // exec_allows_no_decreases_clause(unproven): the spin waits for the holder to hand over: at most NUM_CPUS - 1 holdings end first, which bounds the wait only while every core keeps executing
-    pub fn acquire(&self, cpu: usize, Tracked(core): Tracked<&mut Core>)
+    pub fn acquire(
+        &self,
+        cpu: usize,
+        Tracked(core): Tracked<&mut Core>,
+        bridge: &FlushBridge,
+        Tracked(server): Tracked<&mut FlushServer>,
+    )
         requires
             self.wf(),
             cpu < NUM_CPUS,
             old(core).idle(),
             old(core).cpu == cpu,
             old(core).for_lock(*self),
+            bridge.wf(),
+            old(server).wf(*bridge),
+            old(server).core() == cpu,
         ensures
             final(core).holding(),
             final(core).cpu == cpu,
             final(core).for_lock(*self),
             final(core).swapped <= final(core).granted,
             final(core).granted <= final(core).swapped + NUM_CPUS - 1,
+            final(server).wf(*bridge),
+            final(server).core() == cpu,
     {
         let node = &self.nodes[cpu];
         // Leave idle, taking the node's link right, behind and queued token along.
@@ -825,6 +838,9 @@ impl QueueLock {
                     core.swapped <= ticket <= core.swapped + NUM_CPUS - 1,
                     waiting ==> core.state@ == State::Queued && core.held is None && core.front is None,
                     !waiting ==> core.holding(),
+                    bridge.wf(),
+                    server.wf(*bridge),
+                    server.core() == cpu,
             {
                 let node = &self.nodes[cpu];
                 open_atomic_invariant!(node.inv.borrow() => ni => {
@@ -839,6 +855,7 @@ impl QueueLock {
                     }
                 });
                 if waiting {
+                    serve_flush(bridge, Tracked(server), cpu);
                     spin_hint();
                 }
             }
@@ -1043,11 +1060,14 @@ pub fn witness_queue_lock(cpu: usize) -> (r: (QueueLock, Tracked<Core>))
 {
     let (new_lock, Tracked(mut cores)) = QueueLock::new();
     let lock: QueueLock = new_lock;
+    let (bridge, Tracked(_requester), Tracked(mut servers)) = FlushBridge::new();
     proof {
         assert(cores.dom().contains(cpu as int));
+        assert(servers.contains_key(cpu as int));
     }
     let tracked mut core = cores.tracked_remove(cpu as int);
-    lock.acquire(cpu, Tracked(&mut core));
+    let tracked mut server = servers.tracked_remove(cpu as int);
+    lock.acquire(cpu, Tracked(&mut core), &bridge, Tracked(&mut server));
     lock.release(cpu, Tracked(&mut core));
     (lock, Tracked(core))
 }

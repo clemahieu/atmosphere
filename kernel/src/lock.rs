@@ -6,10 +6,21 @@ use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use verified::arch::{FlushBridge, FlushServer};
 use verified::queue_lock::{Core, QueueLock};
 use vstd::prelude::Tracked;
 
 use crate::cpu::{self, spin_until};
+
+/// The one flush bridge for the kernel instance, beside the lock so every wait loop serves pending
+/// requests for its core without acquiring any lock. A static cannot hand out the tracked tokens
+/// `FlushBridge::new` returns: the requester's token belongs to the lock's holder, and each core's
+/// `FlushServer` is kept with that core's `Core` token, so each call conjures the core's token as
+/// `Locked::lock` conjures `Core`.
+pub static FLUSH_BRIDGE: FlushBridge = {
+    let (bridge, _requester, _servers) = FlushBridge::new();
+    bridge
+};
 
 /// A value only the core holding the lock can reach.
 pub struct Locked<T> {
@@ -43,7 +54,8 @@ impl<T> Locked<T> {
         #[cfg(feature = "lock_stats")]
         let asked = stats::now();
         let core: Tracked<&mut Core> = Tracked::assume_new();
-        self.lock.acquire(cpu, core);
+        let server: Tracked<&mut FlushServer> = Tracked::assume_new();
+        self.lock.acquire(cpu, core, &FLUSH_BRIDGE, server);
         #[cfg(feature = "lock_stats")]
         let held_from = {
             let held_from = stats::now();

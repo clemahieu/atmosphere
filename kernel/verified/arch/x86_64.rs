@@ -2045,10 +2045,78 @@ mod tests {
             assert_eq!(ipis.load(Ordering::Relaxed), rounds);
             assert_eq!(served.load(Ordering::Relaxed), rounds);
         }
+
+        fn test_acquire_serves_flush() {
+            let rounds: usize = 1_000;
+            let holder: usize = 0;
+            let waiter: usize = NUM_CPUS - 1;
+            let (lock, Tracked(mut cores)) = crate::queue_lock::QueueLock::new();
+            let tracked mut holder_core = cores.tracked_remove(holder as int);
+            let tracked mut waiter_core = cores.tracked_remove(waiter as int);
+            let (bridge, Tracked(mut requester), Tracked(mut servers)) = FlushBridge::new();
+            let tracked mut holder_server = servers.tracked_remove(holder as int);
+            let tracked mut waiter_server = servers.tracked_remove(waiter as int);
+            let tracked mut model: TlbModel = TlbModel { len: NUM_CPUS as nat, pieces: Map::tracked_empty() };
+            let tracked mut steps = Steps::fresh();
+
+            let held_round = AtomicUsize::new(0);
+            let waiter_done = AtomicUsize::new(0);
+            let ipis = AtomicUsize::new(0);
+
+            thread::scope(|s| {
+                s.spawn(|| {
+                    let mut r: usize = 0;
+                    while r < rounds {
+                        while held_round.load(Ordering::Acquire) != r + 1 {
+                            core::hint::spin_loop();
+                        }
+                        lock.acquire(waiter, Tracked(&mut waiter_core), &bridge, Tracked(&mut waiter_server));
+                        lock.release(waiter, Tracked(&mut waiter_core));
+                        r += 1;
+                        waiter_done.store(r, Ordering::Release);
+                    }
+                });
+
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut r: usize = 0;
+                    while r < rounds {
+                        lock.acquire(holder, Tracked(&mut holder_core), &bridge, Tracked(&mut holder_server));
+                        held_round.store(r + 1, Ordering::Release);
+                        // Send no IPI (no-op callback): only QueueLock::acquire's wait loop can serve
+                        // the target's request while it waits for the lock.
+                        flush_cores(
+                            &bridge,
+                            Tracked(&mut requester),
+                            Tracked(&mut model),
+                            holder,
+                            1u64 << (waiter as u64),
+                            |_c: usize| {
+                                ipis.fetch_add(1, Ordering::Relaxed);
+                            },
+                            Tracked(&mut steps),
+                        );
+                        lock.release(holder, Tracked(&mut holder_core));
+                        r += 1;
+                        while waiter_done.load(Ordering::Acquire) != r {
+                            core::hint::spin_loop();
+                        }
+                    }
+                }));
+                if let Err(payload) = result {
+                    std::panic::resume_unwind(payload);
+                }
+            });
+            assert_eq!(ipis.load(Ordering::Relaxed), rounds);
+        }
     }
 
     #[test]
     fn host_flush_cores_and_serve_flush_two_threads_many_rounds() {
         test_flush_rounds();
+    }
+
+    #[test]
+    fn host_queue_lock_acquire_serves_flush() {
+        test_acquire_serves_flush();
     }
 }
