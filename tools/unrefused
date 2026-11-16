@@ -91,7 +91,3 @@ awire/src/length.rs	U32Le::width	returns
 awire/src/length.rs	U32Le::max	returns
 awire/src/length.rs	U32Le::len_of	returns
 awire/src/length.rs	U32Le::of_len	returns
-awire/src/length.rs	LengthPrefixed::new	returns
-awire/src/length.rs	LengthPrefixed::parse	Some
-awire/src/length.rs	LengthPrefixed::length	Some
-awire/src/length.rs	LengthPrefixed::serialize	Some

@@ -17,6 +17,9 @@ pub mod elements_get;
 pub mod elements_len;
 pub mod elements_new;
 pub mod elements_push;
+pub mod length_prefixed_length;
+pub mod length_prefixed_new;
+pub mod length_prefixed_round;
 pub mod pair_length;
 pub mod pair_round;
 pub mod tag_length;
@@ -157,6 +160,42 @@ pub trait ElementsPush<T: Copy + View, const N: usize> {
             post == pre,
         ensures
             post@ == pre@.push(t@),
+    ;
+}
+
+/// `LengthPrefixed::new` at fields that are not the arguments.
+pub trait LengthPrefixedNew<L, I> {
+    proof fn wrong(r: LengthPrefixed<L, I>, length: L, inner: I)
+        ensures
+            !(r.length == length && r.inner == inner),
+    ;
+}
+
+/// `LengthPrefixed`'s parse and serialize at the round trip they exclude.
+pub trait LengthPrefixedRound<'a, L: Length<'a>, I: Combinator<'a>> {
+    proof fn parse_trip(c: &LengthPrefixed<L, I>, s: Seq<u8>)
+        requires
+            c.wf(),
+        ensures
+            c.spec_parse(s) matches Some((n, v)) ==> c.spec_serialize(v) != s.take(n as int),
+    ;
+
+    proof fn serialize_trip(c: &LengthPrefixed<L, I>, v: I::V, rest: Seq<u8>)
+        requires
+            c.wf(),
+            c.valid(v),
+        ensures
+            c.spec_parse(c.spec_serialize(v) + rest) != Some((c.spec_serialize(v).len(), v)),
+    ;
+}
+
+/// `LengthPrefixed::length`'s Some at a length that is not the serialisation's.
+pub trait LengthPrefixedLength<'a, L: Length<'a>, I: Combinator<'a>> {
+    proof fn wrong(c: &LengthPrefixed<L, I>, v: I::V, n: nat)
+        requires
+            c.wf(),
+        ensures
+            n != c.spec_serialize(v).len(),
     ;
 }
 
