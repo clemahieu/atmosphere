@@ -25,6 +25,7 @@ use core::ptr::null_mut;
 use acall::step::Caller;
 use aeager::{AllocatorInit, Eager};
 use aheap::allocator::Allocator;
+use aheap::source::SpanSource;
 use spin::Mutex;
 use vstd::prelude::Tracked;
 
@@ -113,22 +114,254 @@ pub fn install_with(make: impl FnOnce(Tracked<Caller>) -> AllocatorInit) -> bool
     store_allocator(make(caller))
 }
 
+fn alloc_in<S: SpanSource>(allocator: &mut Allocator<S>, layout: Layout) -> *mut u8 {
+    match allocator.alloc(layout.size(), layout.align()) {
+        Some((object, _bytes)) => object,
+        None => null_mut(),
+    }
+}
+
+/// Frees `object` through `allocator` under `GlobalAlloc::dealloc`'s safety contract: `object` was
+/// returned by `alloc_in` on `allocator` for the exact `layout`, and has not yet been freed.
+unsafe fn free_in<S: SpanSource>(allocator: &mut Allocator<S>, object: *mut u8, layout: Layout) {
+    assert!(allocator.has_token(), "no free while the caller token is lent out");
+    allocator.free(object, layout.size(), layout.align(), Tracked::assume_new());
+}
+
 unsafe impl GlobalAlloc for Global {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut held = self.held.lock();
         let Some(allocator) = held.allocator.as_mut() else {
             return null_mut();
         };
-        match allocator.alloc(layout.size(), layout.align()) {
-            Some((object, _bytes)) => object,
-            None => null_mut(),
-        }
+        alloc_in(allocator, layout)
     }
 
     unsafe fn dealloc(&self, object: *mut u8, layout: Layout) {
         let mut held = self.held.lock();
         let allocator = held.allocator.as_mut().expect("an object to free came from an installed heap");
-        assert!(allocator.has_token(), "no free while the caller token is lent out");
-        allocator.free(object, layout.size(), layout.align(), Tracked::assume_new());
+        // Safety: `GlobalAlloc::dealloc` guarantees `object` came from `alloc` with `layout`.
+        unsafe { free_in(allocator, object, layout) };
+    }
+}
+
+/// A serialized `GlobalAlloc` adapter around an `aheap` `Allocator<S>` for any `SpanSource` `S`,
+/// allowing callers (such as benchmark harnesses) to swap `aeager::Eager` for another span source
+/// without duplicating `alloc`/`free` glue.
+pub struct SourcedHeap<S: SpanSource> {
+    allocator: Mutex<Allocator<S>>,
+}
+
+// An `Allocator<S>` owns addresses and permissions in its process's address space, which every
+// thread of that process shares under the mutex.
+unsafe impl<S: SpanSource> Send for SourcedHeap<S> {}
+
+impl<S: SpanSource> SourcedHeap<S> {
+    /// Wraps an already-initialized `Allocator<S>` behind a `GlobalAlloc`-compatible lock.
+    pub const fn new(allocator: Allocator<S>) -> Self {
+        Self { allocator: Mutex::new(allocator) }
+    }
+
+    /// Unwraps the inner `Allocator<S>`, consuming the adapter.
+    pub fn into_inner(self) -> Allocator<S> {
+        self.allocator.into_inner()
+    }
+}
+
+unsafe impl<S: SpanSource> GlobalAlloc for SourcedHeap<S> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let mut allocator = self.allocator.lock();
+        alloc_in(&mut allocator, layout)
+    }
+
+    unsafe fn dealloc(&self, object: *mut u8, layout: Layout) {
+        let mut allocator = self.allocator.lock();
+        // Safety: `GlobalAlloc::dealloc` guarantees `object` came from `alloc` with `layout`.
+        unsafe { free_in(&mut allocator, object, layout) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::alloc::{GlobalAlloc, Layout};
+    use std::alloc::{alloc_zeroed, dealloc};
+    use std::vec::Vec;
+
+    use aheap::allocator::Allocator;
+    use aheap::arch::{BLOCK_BYTES, PAGE_BYTES};
+    use aheap::source::SpanSource;
+    use vstd::prelude::{int, Ghost, Tracked};
+    use vstd::raw_ptr::PointsToRaw;
+
+    use super::SourcedHeap;
+
+    struct SpanRecord {
+        base: usize,
+        blocks: usize,
+        backed: Vec<bool>,
+    }
+
+    struct HostSpanSource {
+        max_backed_pages: usize,
+        backed_pages: usize,
+        spans: Vec<SpanRecord>,
+    }
+
+    impl HostSpanSource {
+        fn new(max_backed_pages: usize) -> Self {
+            Self { max_backed_pages, backed_pages: 0, spans: Vec::new() }
+        }
+    }
+
+    impl Drop for HostSpanSource {
+        fn drop(&mut self) {
+            for span in &self.spans {
+                let layout = Layout::from_size_align(span.blocks * BLOCK_BYTES, BLOCK_BYTES).unwrap();
+                unsafe { dealloc(span.base as *mut u8, layout) };
+            }
+        }
+    }
+
+    impl SpanSource for HostSpanSource {
+        type Token = ();
+
+        fn reserve(&mut self, _token: &mut Tracked<Self::Token>, blocks: usize) -> Option<*mut u8> {
+            assert!(blocks > 0);
+            let layout = Layout::from_size_align(blocks * BLOCK_BYTES, BLOCK_BYTES).ok()?;
+            let ptr = unsafe { alloc_zeroed(layout) };
+            if ptr.is_null() {
+                return None;
+            }
+            let pages = blocks * (BLOCK_BYTES / PAGE_BYTES);
+            self.spans.push(SpanRecord {
+                base: ptr as usize,
+                blocks,
+                backed: std::vec![false; pages],
+            });
+            Some(ptr)
+        }
+
+        fn back(
+            &mut self,
+            _token: &mut Tracked<Self::Token>,
+            span: Ghost<int>,
+            start: usize,
+            pages: usize,
+        ) -> Option<Tracked<PointsToRaw>> {
+            let _ = span;
+            if self.backed_pages + pages > self.max_backed_pages {
+                return None;
+            }
+            let rec = self.spans.iter_mut().find(|s| {
+                start >= s.base && start + pages * PAGE_BYTES <= s.base + s.blocks * BLOCK_BYTES
+            })?;
+            let first = (start - rec.base) / PAGE_BYTES;
+            for flag in &rec.backed[first..first + pages] {
+                assert!(!*flag, "page already backed");
+            }
+            for flag in &mut rec.backed[first..first + pages] {
+                *flag = true;
+            }
+            self.backed_pages += pages;
+            Some(Tracked::assume_new())
+        }
+
+        fn release(
+            &mut self,
+            _token: &mut Tracked<Self::Token>,
+            span: Ghost<int>,
+            start: usize,
+            pages: usize,
+            _perm: Tracked<PointsToRaw>,
+        ) {
+            let _ = span;
+            let rec = self
+                .spans
+                .iter_mut()
+                .find(|s| start >= s.base && start + pages * PAGE_BYTES <= s.base + s.blocks * BLOCK_BYTES)
+                .expect("span must exist");
+            let first = (start - rec.base) / PAGE_BYTES;
+            for flag in &mut rec.backed[first..first + pages] {
+                assert!(*flag, "page not backed");
+                *flag = false;
+            }
+            self.backed_pages -= pages;
+        }
+
+        fn release_span(&mut self, _token: &mut Tracked<Self::Token>, span: usize) {
+            let pos = self.spans.iter().position(|s| s.base == span).expect("span exists");
+            let rec = self.spans.remove(pos);
+            assert!(rec.backed.iter().all(|&b| !b), "releasing span with backed pages");
+            let layout = Layout::from_size_align(rec.blocks * BLOCK_BYTES, BLOCK_BYTES).unwrap();
+            unsafe { dealloc(rec.base as *mut u8, layout) };
+        }
+    }
+
+    #[test]
+    fn sourced_heap_allocates_small_run_large_and_retains_without_leaks() {
+        let src = HostSpanSource::new(2048);
+        let alloc = Allocator::new(0, src, Tracked::assume_new());
+        let heap = SourcedHeap::new(alloc);
+
+        for size in [64usize, 100, 1024, 8192, 65536, BLOCK_BYTES + PAGE_BYTES] {
+            let layout = Layout::from_size_align(size, 16).unwrap();
+            let ptr = unsafe { heap.alloc(layout) };
+            assert!(!ptr.is_null(), "alloc failed for size {size}");
+            assert_eq!(ptr as usize % 16, 0);
+            unsafe {
+                ptr.write_volatile(0xa5);
+                ptr.add(size - 1).write_volatile(0x5a);
+                assert_eq!(ptr.read_volatile(), 0xa5);
+                assert_eq!(ptr.add(size - 1).read_volatile(), 0x5a);
+                heap.dealloc(ptr, layout);
+            }
+        }
+
+        let mut retained = Vec::new();
+        let retain_layout = Layout::from_size_align(64, 16).unwrap();
+        let count = (512 * 1024) / 64;
+        for _ in 0..count {
+            let ptr = unsafe { heap.alloc(retain_layout) };
+            assert!(!ptr.is_null());
+            retained.push(ptr);
+        }
+        for i in 0..count {
+            let new_ptr = unsafe { heap.alloc(retain_layout) };
+            assert!(!new_ptr.is_null());
+            let old_ptr = retained[i];
+            retained[i] = new_ptr;
+            unsafe { heap.dealloc(old_ptr, retain_layout) };
+        }
+        for ptr in retained {
+            unsafe { heap.dealloc(ptr, retain_layout) };
+        }
+
+        let inner = heap.into_inner();
+        assert_eq!(inner.source().backed_pages, 0);
+        assert!(inner.source().spans.is_empty());
+    }
+
+    #[test]
+    fn sourced_heap_returns_null_on_source_refusal_and_recovers_after_free() {
+        let src = HostSpanSource::new(4);
+        let alloc = Allocator::new(0, src, Tracked::assume_new());
+        let heap = SourcedHeap::new(alloc);
+        let layout = Layout::from_size_align(8192, 16).unwrap();
+
+        let p1 = unsafe { heap.alloc(layout) };
+        assert!(!p1.is_null());
+        let p2 = unsafe { heap.alloc(layout) };
+        assert!(p2.is_null(), "3rd/4th pages exhausted after metadata + first 2-page run");
+
+        unsafe { heap.dealloc(p1, layout) };
+        let p3 = unsafe { heap.alloc(layout) };
+        assert!(!p3.is_null(), "allocation succeeds once freed pages return");
+        unsafe { heap.dealloc(p3, layout) };
+
+        let inner = heap.into_inner();
+        assert_eq!(inner.source().backed_pages, 0);
+        assert!(inner.source().spans.is_empty());
     }
 }
