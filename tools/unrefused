@@ -98,6 +98,3 @@ awire/src/length.rs	LengthPrefixed::serialize	Some
 awire/src/pair.rs	Pair::parse	Some
 awire/src/pair.rs	Pair::length	Some
 awire/src/pair.rs	Pair::serialize	Some
-awire/src/tag.rs	Tag::parse	Some
-awire/src/tag.rs	Tag::length	Some
-awire/src/tag.rs	Tag::serialize	Some

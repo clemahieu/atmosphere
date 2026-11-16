@@ -17,6 +17,8 @@ pub mod elements_get;
 pub mod elements_len;
 pub mod elements_new;
 pub mod elements_push;
+pub mod tag_length;
+pub mod tag_round;
 pub mod u16_be_le;
 
 use crate::*;
@@ -153,6 +155,34 @@ pub trait ElementsPush<T: Copy + View, const N: usize> {
             post == pre,
         ensures
             post@ == pre@.push(t@),
+    ;
+}
+
+/// `Tag`'s parse and serialize at the round trip they exclude.
+pub trait TagRound<'t> {
+    proof fn parse_trip(c: &Tag<'t>, s: Seq<u8>)
+        requires
+            c.wf(),
+        ensures
+            c.spec_parse(s) matches Some((n, v)) ==> c.spec_serialize(v) != s.take(n as int),
+    ;
+
+    proof fn serialize_trip(c: &Tag<'t>, v: (), rest: Seq<u8>)
+        requires
+            c.wf(),
+            c.valid(v),
+        ensures
+            c.spec_parse(c.spec_serialize(v) + rest) != Some((c.spec_serialize(v).len(), v)),
+    ;
+}
+
+/// `Tag::length`'s Some at a length that is not the serialisation's.
+pub trait TagLength<'t> {
+    proof fn wrong(c: &Tag<'t>, v: (), n: nat)
+        requires
+            c.wf(),
+        ensures
+            n != c.spec_serialize(v).len(),
     ;
 }
 
