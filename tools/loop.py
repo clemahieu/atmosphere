@@ -1692,12 +1692,15 @@ class Loop:
 
     def agent(self, kind, prompt, table=None, spec=None, issue=None, route=None):
         """Run one agent session in the main worktree on the offering chosen for it, or with the flags of its
-        kind's table or of the one named; its stream is shown as it comes. The session's row goes to the
+        kind's table or of the one named; its stream is shown as it comes. A round on a harness other than claude
+        is told which in its prompt, since round.md hands it to the prover later there (section 4.3). The session's row goes to the
         session record, with the issue it was given and the route it was chosen by when the loop knows them."""
         self.tune()
         if issue and issue not in self.kinds:
             self.kinds[issue] = self.classify_for_record(issue)
         spec = spec or self.spec_for(kind, table)
+        if kind == "round" and spec.harness != "claude":
+            prompt = f"{prompt} Harness: {spec.harness}."
         if spec.harness in ("agy", "grok"):
             body = agent_body(self.cwd, kind)
             full_prompt = f"{body}\n\n{prompt}" if body else prompt
@@ -3055,6 +3058,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(call[:8], ["--output-format", "stream-json", "--dangerously-skip-permissions",
                                         "--model", "gemini-4-carbon-high", "--effort", "high", "-p"])
             self.assertTrue(call[8].startswith("You run one round.\n\nRun one round. Issue atmo-1.2 is yours"))
+            self.assertTrue(call[8].endswith("take no other issue). Harness: agy."))
             self.assertNotIn("model: opus", call[8])
             self.assertEqual(call[9], loop.actor)
 
@@ -3108,6 +3112,7 @@ class Tests(unittest.TestCase):
             [call] = self.log(folder, "grok")
             self.assertEqual(call[0], "-p")
             self.assertTrue(call[1].startswith("You run one round.\n\nRun one round. Issue atmo-1.2 is yours"))
+            self.assertTrue(call[1].endswith("take no other issue). Harness: grok."))
             self.assertNotIn("model: opus", call[1])
             self.assertEqual(call[2:], ["--output-format", "streaming-messages-json", "--always-approve", "--trust",
                                         "--background-wait-timeout", str(GROK_BACKGROUND_WAIT), "--rules", "# Local rules\n",
@@ -3202,6 +3207,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(loop.drive(once=True), 0)
             self.assertIn(["update", "atmo-1.2.1", "--claim"], self.log(folder, "bd"))
             self.assertTrue(self.log(folder, "claude")[0][-2].startswith("Run one round. Issue atmo-1.2.1 is yours"))
+            self.assertNotIn("Harness:", self.log(folder, "claude")[0][-2])
 
             (folder / "ready.json").write_text(json.dumps([
                 {"id": "atmo-1.1.2", "parent": "atmo-1.1", "title": "Endpoint spec", "issue_type": "task", "priority": 0, "labels": ["kind:spec"]},
