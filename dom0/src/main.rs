@@ -135,9 +135,11 @@
 //! over a block, writing and reading each back; once all three are freed it allocates run-sized
 //! objects until the allocator refuses one, frees them, allocates one again, and prints that the heap
 //! held.
-//! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`) and memory pointer-chase
-//! microbenchmarks (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under
-//! the `bench` feature prints the full results summary and `fuchsiaperf.json` block.
+//! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`), memory pointer-chase, and
+//! core-scaling/placement (`core_bench`) microbenchmarks (`design/synthetic-benchmark-suite/`) and runs
+//! them in unit-test mode, or under the `bench` feature prints the full results summary and
+//! `fuchsiaperf.json` block; `core_bench` binds dom0-process bench threads in root entries after the
+//! heap's before the heap claims the caller token, probing the online core count with CAS helpers.
 //! dom0 prints those results through the console, then an exit marker,
 //! and ends the run with a power-off through its power capability, reporting success only when every
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
@@ -155,6 +157,7 @@
 #![no_main]
 
 mod context;
+mod core_bench;
 mod flush_cost;
 mod mmu_bench;
 mod registers;
@@ -689,6 +692,9 @@ fn benchmarks_held() -> bool {
     if !mmu_bench::register(&mut registry) {
         return false;
     }
+    if core_bench::register(&mut registry).is_err() {
+        return false;
+    }
     let mut console = ConsoleWriter::new();
     #[cfg(not(feature = "bench"))]
     let ok = registry
@@ -699,6 +705,11 @@ fn benchmarks_held() -> bool {
     #[cfg(feature = "bench")]
     let ok = {
         let config = abench::runner::PerfConfig::default();
+        assert_eq!(
+            u64::from(config.warmup_iterations + config.batches * config.iterations_per_batch),
+            core_bench::POOL,
+            "a place case has a thread for each iteration",
+        );
         let mut hw = abench::counter::HardwareCounters::new(true);
         registry.run_perf_test(&config, &mut hw, &mut console).is_ok()
     };
@@ -2784,6 +2795,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && own_core_1_nx_held(caller, empty)
                                 && eager_source_held(caller, empty)
+                                && core_bench::threads_held(caller, empty)
                         })
             })
         })
