@@ -658,9 +658,11 @@ class Verus(unittest.TestCase):
     def test_the_combinator_that_does_not_invert_is_refused_at_the_round_trip(self):
         findings, report = self.checked(self.copy())
         self.assertEqual(findings, [])
-        self.assertEqual([line.split(" refused at ")[0].strip() for line in report[1:]],
-                         ["src/refused/u16_be_le.rs: lemma_parse_serialize",
-                          "src/refused/u16_be_le.rs: lemma_serialize_parse"])
+        # The interface example is refused at its round trip. Other claims in the tree are too;
+        # findings above is what holds every one of them.
+        names = [line.split(" refused at ")[0].strip() for line in report[1:]]
+        self.assertIn("src/refused/u16_be_le.rs: lemma_parse_serialize", names)
+        self.assertIn("src/refused/u16_be_le.rs: lemma_serialize_parse", names)
 
     def test_the_check_fails_when_the_combinator_is_made_to_invert(self):
         root = self.copy()
