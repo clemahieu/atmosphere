@@ -102,12 +102,6 @@ awire/src/repeat.rs	Elements::new	returns
 awire/src/repeat.rs	Elements::len	returns
 awire/src/repeat.rs	Elements::get	returns
 awire/src/repeat.rs	Elements::push	returns
-awire/src/repeat.rs	Count::parse	Some
-awire/src/repeat.rs	Count::length	Some
-awire/src/repeat.rs	Count::serialize	Some
-awire/src/repeat.rs	Bounded::parse	Some
-awire/src/repeat.rs	Bounded::length	Some
-awire/src/repeat.rs	Bounded::serialize	Some
 awire/src/tag.rs	Tag::parse	Some
 awire/src/tag.rs	Tag::length	Some
 awire/src/tag.rs	Tag::serialize	Some
