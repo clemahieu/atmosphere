@@ -158,9 +158,10 @@ pub open spec fn moved_view(v: SlotView, i: usize, n: usize) -> SlotView {
 }
 
 impl CapKernel {
-    /// Index i of the table at root is a slot that holds a capability.
+    /// Index i of the table at root is a slot that holds a capability, whether its leaf's hidden
+    /// node is live or dead.
     pub open spec fn holds_slot(&self, root: usize, i: usize) -> bool {
-        self.tables.has_slot(&self.list, root, i) && self.is_cap(self.tables.node_of(root, i))
+        self.tables.names_slot(root, i) && self.is_cap(self.tables.node_of(root, i))
     }
 
     /// What the capability in the slot at index i of the table at root says.
@@ -189,13 +190,13 @@ impl CapKernel {
     }
 
     /// The table a position is in, read from the caller's view: the caller's own, or the table of the
-    /// process a process capability with control in the caller's view names.
+    /// process a live process capability with control in the caller's view names.
     pub open spec fn view_table_at(&self, root: usize, through: Option<usize>) -> Option<usize> {
         match through {
             None => Some(root),
             Some(cap) => {
                 let v = self.table_view(root);
-                if v.contains_key(cap) && v[cap].kind is Process && v[cap].rights & right_bit(Right::Control) != 0 {
+                if v.contains_key(cap) && v[cap].live && v[cap].kind is Process && v[cap].rights & right_bit(Right::Control) != 0 {
                     Some(v[cap].base)
                 } else {
                     None
@@ -214,27 +215,16 @@ impl CapKernel {
         broadcast use vstd::set::lemma_set_filter, vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
     }
 
-    /// Every entry of every table's view is live while `holds_slot` reads `has_slot`.
-    pub proof fn lemma_table_view_live(&self)
-        ensures
-            forall|root: usize, i: usize|
-                #[trigger] self.table_view(root).contains_key(i) ==> self.table_view(root)[i].live,
-    {
-        assert forall|root: usize, i: usize|
-            #[trigger] self.table_view(root).contains_key(i) implies self.table_view(root)[i].live by {
-            self.lemma_table_view(root, i);
-        }
-    }
-
-    /// The caller's view agrees with view_of: an index is in the table's view exactly when it is a slot
-    /// whose capability that table's process holds, and the view's entry says what view_of says the
-    /// capability names, how many pages it covers, which rights it carries and what its parent is.
+    /// The caller's view agrees with view_of: an index is in the table's view exactly when it names
+    /// a slot whose capability that table's process holds, and the view's entry says what view_of
+    /// says the capability names, how many pages it covers, which rights it carries, what its parent
+    /// is, and whether the leaf's hidden node is live.
     pub proof fn lemma_table_view_agrees(&self, root: usize, i: usize)
         requires
             self.wf(),
         ensures
             self.table_view(root).contains_key(i)
-                == (self.tables.has_slot(&self.list, root, i) && self.view().holds(root, self.tables.node_of(root, i))),
+                == (self.tables.names_slot(root, i) && self.view().holds(root, self.tables.node_of(root, i))),
             self.table_view(root).contains_key(i) ==> {
                 let n = self.tables.node_of(root, i);
                 let v = self.table_view(root)[i];
@@ -242,10 +232,11 @@ impl CapKernel {
                 &&& self.view().pages[n] == pow2(v.order as nat)
                 &&& forall|r: Right| #[trigger] self.view().rights.contains((n, r)) == (v.rights & right_bit(r) != 0)
                 &&& self.view().parent[n] == v.parent
+                &&& v.live == self.list.nodes@[self.tables.leaf(root, index_entry(i)) as int].live
             },
     {
         self.lemma_table_view(root, i);
-        if self.tables.has_slot(&self.list, root, i) {
+        if self.tables.names_slot(root, i) {
             self.lemma_slot(root, i);
         }
     }
@@ -268,12 +259,13 @@ impl CapKernel {
     }
 
     /// Delete's condition over the caller's view: the position word names a position, the position is
-    /// in a table, the slot there holds a capability, and that capability is deletable.
+    /// in a table, the slot there holds a live capability, and that capability is deletable.
     pub open spec fn delete_allowed(&self, root: usize, at: Option<Position>) -> bool {
         let table = self.view_table_at(root, at->0.through);
         &&& at is Some
         &&& table is Some
         &&& self.table_view(table->0).contains_key(at->0.index)
+        &&& self.table_view(table->0)[at->0.index].live
         &&& self.deletable(self.tables.node_of(table->0, at->0.index))
     }
 
@@ -472,7 +464,7 @@ impl CapKernel {
     }
 
     /// A step that leaves the root entries as they were and changes no node's liveness but n's and m's,
-    /// slots', leaves every table's slots as they were.
+    /// slots', leaves every table's slot names, live leaves, and leaf liveness as they were.
     pub proof fn lemma_slots_stay(pre: Self, post: Self, n: usize, m: usize, t: usize, j: usize)
         requires
             Self::caps_frame(pre, post, n, m),
@@ -481,6 +473,10 @@ impl CapKernel {
             m % PAGE_SZ != 0,
         ensures
             post.tables.has_slot(&post.list, t, j) == pre.tables.has_slot(&pre.list, t, j),
+            post.tables.names_slot(t, j) == pre.tables.names_slot(t, j),
+            pre.tables.names_slot(t, j)
+                ==> post.list.nodes@[pre.tables.leaf(t, index_entry(j)) as int].live
+                    == pre.list.nodes@[pre.tables.leaf(t, index_entry(j)) as int].live,
     {
         let leaf = pre.tables.leaf(t, index_entry(j));
         if index_ok(j) && pre.tables.roots@.contains_key(t) && leaf != NO_LEAF {
@@ -530,7 +526,7 @@ impl CapKernel {
                     pre.lemma_table_view(t, j);
                     post.lemma_table_view(t, j);
                     Self::lemma_slots_stay(pre, post, n, n, t, j);
-                    if pre.tables.has_slot(&pre.list, t, j) {
+                    if pre.tables.names_slot(t, j) {
                         pre.lemma_slot(t, j);
                         let m = pre.tables.node_of(t, j);
                         let leaf = pre.tables.leaf(t, index_entry(j));
@@ -549,15 +545,15 @@ impl CapKernel {
         }
     }
 
-    /// A slot a revoke of capability c may take from the table at t, as the kernel reads it beyond any
-    /// table's view: the capability in it is in c's run, or the leaf holding it is.
+    /// A slot a revoke of capability c may alter in the table at t, as the kernel reads it beyond any
+    /// table's view: its capability is in c's run, or the leaf holding it is.
     pub open spec fn revokes_slot(&self, c: usize, t: usize, j: usize) -> bool {
         ||| self.list.in_run(c, self.tables.node_of(t, j))
         ||| self.list.in_run(c, self.tables.leaf(t, index_entry(j)))
     }
 
     /// Revoke's condition over the caller's view: the position word names a position, the position is
-    /// in a table, the slot there holds a capability, and if the position goes through a process
+    /// in a table, the slot there holds a live capability, and if the position goes through a process
     /// capability pc, R3 does not hold: pc is not deeper than c with c's block holding pc's, which
     /// every pc in c's run is and some outside it are too. The depths read the list outside the view.
     pub open spec fn revoke_allowed(&self, root: usize, at: Option<Position>) -> bool {
@@ -565,23 +561,34 @@ impl CapKernel {
         &&& at is Some
         &&& table is Some
         &&& self.table_view(table->0).contains_key(at->0.index)
+        &&& self.table_view(table->0)[at->0.index].live
         &&& !self.revoke_through_run(root, at->0)
     }
 
     /// What revoking capability c kept of every table: each slot after was a slot before, saying the
-    /// same, and each slot gone is one revokes_slot names.
+    /// same apart from live, and is live after only if it was before; each slot gone had its capability
+    /// in c's run; and each slot that stopped being live had its leaf in c's run.
     pub open spec fn revoke_kept(pre: Self, post: Self, c: usize) -> bool {
-        &&& forall|t: usize, j: usize| #[trigger] post.table_view(t).contains_key(j)
-            ==> pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j]
+        &&& forall|t: usize, j: usize| #[trigger] post.table_view(t).contains_key(j) ==> {
+            let b = pre.table_view(t)[j];
+            let a = post.table_view(t)[j];
+            &&& pre.table_view(t).contains_key(j)
+            &&& a == SlotView { live: a.live, ..b }
+            &&& a.live ==> b.live
+        }
         &&& forall|t: usize, j: usize| #[trigger] pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j)
-            ==> pre.revokes_slot(c, t, j)
+            ==> pre.list.in_run(c, pre.tables.node_of(t, j))
+        &&& forall|t: usize, j: usize| #[trigger] pre.table_view(t).contains_key(j) && post.table_view(t).contains_key(j)
+            && pre.table_view(t)[j].live && !post.table_view(t)[j].live
+            ==> pre.list.in_run(c, pre.tables.leaf(t, index_entry(j)))
     }
 
     /// Revoke's contract over the caller's view, for the position word decoded to at: refused, with every
     /// table's view as it was, exactly when revoke_allowed fails. Otherwise the capability c at the
-    /// position lost some of its run: only nodes of c's run left the list, only slots revokes_slot names
-    /// left any table, every other slot says what it said, and c's own slot stays unless the leaf holding
-    /// it was in the run. Then refused with the flush epoch at its limit, and only from an epoch within
+    /// position lost some of its run: only nodes of c's run left the list, only slots whose capability
+    /// was in c's run left any table, only slots whose leaf was in c's run stopped being live, every
+    /// other slot says what it said, and c's own slot stays unless the leaf holding it was in the run.
+    /// Then refused with the flush epoch at its limit, and only from an epoch within
     /// REVOKE_BUDGET of it, as spec_revoked refuses, again with exactly REVOKE_BUDGET nodes of the run
     /// taken and some left, so a caller repeating on again sees the list shrink each time, or ok with c
     /// childless.
@@ -658,17 +665,28 @@ impl CapKernel {
                 assert(holders_wf(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@));
             }
             assert forall|t: usize, j: usize| #[trigger] post.table_view(t).contains_key(j) || #[trigger] pre.table_view(t).contains_key(j) implies {
-                &&& post.table_view(t).contains_key(j) ==> pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j]
-                &&& pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j) ==> pre.revokes_slot(c, t, j)
+                &&& post.table_view(t).contains_key(j) ==> {
+                    let b = pre.table_view(t)[j];
+                    let a = post.table_view(t)[j];
+                    &&& pre.table_view(t).contains_key(j)
+                    &&& a == SlotView { live: a.live, ..b }
+                    &&& a.live ==> b.live
+                }
+                &&& pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j)
+                    ==> pre.list.in_run(c, pre.tables.node_of(t, j))
+                &&& pre.table_view(t).contains_key(j) && post.table_view(t).contains_key(j)
+                    && pre.table_view(t)[j].live && !post.table_view(t)[j].live
+                    ==> pre.list.in_run(c, pre.tables.leaf(t, index_entry(j)))
             } by {
                 Self::lemma_revoke_slot(pre, post, c, t, j);
             }
-            Self::lemma_revoke_slot(pre, post, c, table, a.index);
+            post.lemma_table_view(table, a.index);
         }
     }
 
-    /// One slot across a revoke of c: a slot after was a slot before, saying the same, and a slot gone
-    /// is one revokes_slot names.
+    /// One slot across a revoke of c: a slot after was a slot before, saying the same apart from
+    /// live, and is live after only if it was before; a slot gone had its capability in c's run; and
+    /// a slot that stopped being live had its leaf in c's run.
     proof fn lemma_revoke_slot(pre: Self, post: Self, c: usize, t: usize, j: usize)
         requires
             pre.wf(),
@@ -676,10 +694,18 @@ impl CapKernel {
             post.list.parent == pre.list.parent,
             run_shrunk(pre.list, post.list, c),
         ensures
-            post.table_view(t).contains_key(j) ==> pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j],
-            pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j) ==> pre.revokes_slot(c, t, j),
-            pre.tables.has_slot(&pre.list, t, j) && !pre.list.in_run(c, pre.tables.leaf(t, index_entry(j)))
-                ==> post.tables.has_slot(&post.list, t, j),
+            post.table_view(t).contains_key(j) ==> {
+                let b = pre.table_view(t)[j];
+                let a = post.table_view(t)[j];
+                &&& pre.table_view(t).contains_key(j)
+                &&& a == SlotView { live: a.live, ..b }
+                &&& a.live ==> b.live
+            },
+            pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j)
+                ==> pre.list.in_run(c, pre.tables.node_of(t, j)),
+            pre.table_view(t).contains_key(j) && post.table_view(t).contains_key(j)
+                && pre.table_view(t)[j].live && !post.table_view(t)[j].live
+                ==> pre.list.in_run(c, pre.tables.leaf(t, index_entry(j))),
     {
         pre.lemma_table_view(t, j);
         post.lemma_table_view(t, j);
@@ -692,7 +718,7 @@ impl CapKernel {
             pre.lemma_slot_bound(leaf);
             assert(post.list.nodes@[leaf as int].live ==> pre.list.nodes@[leaf as int].live);
         }
-        if pre.tables.has_slot(&pre.list, t, j) {
+        if pre.tables.names_slot(t, j) {
             pre.lemma_slot(t, j);
             let x = pre.tables.node_of(t, j);
             pre.lemma_slot_bound(x);
@@ -726,16 +752,18 @@ impl CapKernel {
     }
 
     /// Link's condition over the caller's view, for the space capability at index slot and the untyped at
-    /// index from of the caller's table at root: the slot holds a capability that may change its space,
-    /// naming no dead process; the untyped's slot holds one that may retype the child's order-3 block,
+    /// index from of the caller's table at root: the slot holds a live capability that may change its space,
+    /// naming no dead process; the untyped's slot holds a live one that may retype the child's order-3 block,
     /// above the deepest depth; and link_fits holds in that space. The process's liveness, the untyped's
     /// depth and link_fits read the kernel outside the view.
     pub open spec fn link_allowed(&self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize) -> bool {
         let v = self.table_view(root);
         &&& v.contains_key(slot)
+        &&& v[slot].live
         &&& view_writes_space(v[slot])
         &&& !self.cap_dead(self.tables.node_of(root, slot))
         &&& v.contains_key(from)
+        &&& v[from].live
         &&& view_retypes(v[from], child, 3)
         &&& self.list.nodes@[self.tables.node_of(root, from) as int].depth < MAX_DEPTH
         &&& self.link_fits(v[slot].base, va, level, child)
@@ -865,10 +893,12 @@ impl CapKernel {
         let v = self.table_view(root);
         &&& names_entry(va, level)
         &&& v.contains_key(slot)
+        &&& v[slot].live
         &&& view_writes_space(v[slot])
         &&& !self.cap_dead(self.tables.node_of(root, slot))
         &&& self.spaces.records@[v[slot].base].value().kind == SpaceKind::Process
         &&& v.contains_key(from)
+        &&& v[from].live
         &&& v[from].kind is Frame
         &&& v[from].rights & right_bit(Right::Read) != 0
         &&& {
@@ -1047,7 +1077,7 @@ impl CapKernel {
                     pre.lemma_slot_bound(leaf);
                     assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
                 }
-                if pre.tables.has_slot(&pre.list, t, j) {
+                if pre.tables.names_slot(t, j) {
                     pre.lemma_slot(t, j);
                     let x = pre.tables.node_of(t, j);
                     pre.lemma_slot_bound(x);
@@ -1092,7 +1122,7 @@ impl CapKernel {
     }
 
     /// Unmap's condition over the caller's view, for the space capability at index slot of the caller's
-    /// table at root: the address names a level 1 entry; the slot holds a capability that may change its
+    /// table at root: the address names a level 1 entry; the slot holds a live capability that may change its
     /// space, naming no dead process and a process's space; and unmap_fits holds in that space. The
     /// process's liveness, the space's kind and unmap_fits read the kernel outside the view.
     pub open spec fn unmap_allowed(&self, root: usize, slot: usize, va: u64, level: u64) -> bool {
@@ -1100,6 +1130,7 @@ impl CapKernel {
         &&& level == 1
         &&& names_entry(va, level)
         &&& v.contains_key(slot)
+        &&& v[slot].live
         &&& view_writes_space(v[slot])
         &&& !self.cap_dead(self.tables.node_of(root, slot))
         &&& self.spaces.records@[v[slot].base].value().kind == SpaceKind::Process
@@ -1213,12 +1244,13 @@ impl CapKernel {
     }
 
     /// Inspect's condition over the caller's view: the position word names a position, the position is
-    /// in a table, and the slot there holds a capability. Nothing outside the view decides it.
+    /// in a table, and the slot there holds a live capability. Nothing outside the view decides it.
     pub open spec fn inspect_allowed(&self, root: usize, at: Option<Position>) -> bool {
         let table = self.view_table_at(root, at->0.through);
         &&& at is Some
         &&& table is Some
         &&& self.table_view(table->0).contains_key(at->0.index)
+        &&& self.table_view(table->0)[at->0.index].live
     }
 
     /// Inspect's contract over the caller's view, for the position word decoded to at: no slot of any
@@ -1319,11 +1351,12 @@ impl CapKernel {
     }
 
     /// A retype's condition on its untyped over the caller's view: index from of the table at root is a
-    /// slot whose capability may retype the block of the order at base, above the deepest depth. The
+    /// live slot whose capability may retype the block of the order at base, above the deepest depth. The
     /// depth reads the kernel outside the view.
     pub open spec fn retype_under_allowed(&self, root: usize, from: usize, base: usize, order: u8) -> bool {
         let v = self.table_view(root);
         &&& v.contains_key(from)
+        &&& v[from].live
         &&& view_retypes(v[from], base, order)
         &&& self.list.nodes@[self.tables.node_of(root, from) as int].depth < MAX_DEPTH
     }
@@ -1341,13 +1374,14 @@ impl CapKernel {
     }
 
     /// The process a thread's retype binds the thread to, over the caller's view: index j of the table
-    /// at root holds a process capability with the control right. The process's liveness, the
+    /// at root holds a live process capability with the control right. The process's liveness, the
     /// capability's depth and the reference count of the process's block read the kernel outside the
     /// view.
     pub open spec fn thread_process_allowed(&self, root: usize, j: usize) -> bool {
         let v = self.table_view(root);
         let n = self.tables.node_of(root, j);
         &&& v.contains_key(j)
+        &&& v[j].live
         &&& v[j].kind is Process
         &&& v[j].rights & right_bit(Right::Control) != 0
         &&& !self.cap_dead(n)
@@ -1736,8 +1770,18 @@ impl CapKernel {
                 && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == (if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) })[j]) by {
                 pre.lemma_table_view(t, j);
                 post.lemma_table_view(t, j);
-                if pre.tables.has_slot(&pre.list, t, j) {
+                if pre.tables.names_slot(t, j) {
                     pre.lemma_slot(t, j);
+                    let e = index_entry(j);
+                    let leaf = pre.tables.leaf(t, e);
+                    assert(0 <= e < ROOT_ENTRIES);
+                    assert(post.tables.leaf(t, e) == leaf);
+                    pre.tables.lemma_entry(t, e);
+                    pre.tables.lemma_leaf(&pre.list, leaf);
+                    assert(leaf % PAGE_SZ == 0);
+                    pre.lemma_slot_bound(leaf);
+                    assert(leaf != base);
+                    assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
                     let m = pre.tables.node_of(t, j);
                     pre.lemma_slot_bound(m);
                     if m == n {
@@ -1752,19 +1796,7 @@ impl CapKernel {
                         assert(post.list.parent@[m] == pre.list.parent@[m]);
                     }
                 } else {
-                    let e = index_entry(j);
-                    let leaf = pre.tables.leaf(t, e);
-                    if index_ok(j) && pre.tables.roots@.contains_key(t) && leaf != NO_LEAF {
-                        assert(0 <= e < ROOT_ENTRIES);
-                        assert(post.tables.leaf(t, e) == leaf);
-                        pre.tables.lemma_entry(t, e);
-                        pre.tables.lemma_leaf(&pre.list, leaf);
-                        assert(leaf % PAGE_SZ == 0);
-                        pre.lemma_slot_bound(leaf);
-                        assert(leaf != base);
-                        assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
-                    }
-                    assert(!post.tables.has_slot(&post.list, t, j));
+                    assert(!post.tables.names_slot(t, j));
                 }
             }
             assert(post.table_view(t) =~= if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) });
@@ -1901,7 +1933,7 @@ impl CapKernel {
                 pre.lemma_table_view(t, j);
                 post.lemma_table_view(t, j);
                 Self::lemma_slots_stay(pre, post, n, n, t, j);
-                if pre.tables.has_slot(&pre.list, t, j) {
+                if pre.tables.names_slot(t, j) {
                     pre.lemma_slot(t, j);
                     let m = pre.tables.node_of(t, j);
                     pre.lemma_slot_bound(m);
@@ -1919,8 +1951,8 @@ impl CapKernel {
     }
 
     /// A step that adds a table root at base that holds no leaf, changes no other root entry and no
-    /// node's liveness but n's, a slot's, leaves every table's slots as they were, each of the node it
-    /// was.
+    /// node's liveness but n's, a slot's, leaves every table's slot names and slots as they were,
+    /// each of the node and leaf liveness it had.
     pub proof fn lemma_slots_stay_root_added(pre: Self, post: Self, n: usize, base: usize, t: usize, j: usize)
         requires
             Self::caps_frame(pre, post, n, n),
@@ -1932,7 +1964,13 @@ impl CapKernel {
                 ==> #[trigger] post.tables.leaf(r, e) == pre.tables.leaf(r, e),
         ensures
             post.tables.has_slot(&post.list, t, j) == pre.tables.has_slot(&pre.list, t, j),
+            post.tables.names_slot(t, j) == pre.tables.names_slot(t, j),
             pre.tables.has_slot(&pre.list, t, j) ==> post.tables.node_of(t, j) == pre.tables.node_of(t, j),
+            pre.tables.names_slot(t, j) ==> {
+                &&& post.tables.node_of(t, j) == pre.tables.node_of(t, j)
+                &&& post.list.nodes@[pre.tables.leaf(t, index_entry(j)) as int].live
+                    == pre.list.nodes@[pre.tables.leaf(t, index_entry(j)) as int].live
+            },
     {
         if index_ok(j) {
             let e = index_entry(j);
@@ -1981,7 +2019,7 @@ impl CapKernel {
                 pre.lemma_table_view(t, j);
                 post.lemma_table_view(t, j);
                 Self::lemma_slots_stay_root_added(pre, post, n, base, t, j);
-                if pre.tables.has_slot(&pre.list, t, j) {
+                if pre.tables.names_slot(t, j) {
                     pre.lemma_slot(t, j);
                     let m = pre.tables.node_of(t, j);
                     pre.lemma_slot_bound(m);
@@ -2084,25 +2122,27 @@ impl CapKernel {
                 pre.lemma_table_view(t, j);
                 post.lemma_table_view(t, j);
                 let e = index_entry(j);
-                if pre.tables.has_slot(&pre.list, t, j) {
+                if pre.tables.names_slot(t, j) {
                     let x = pre.tables.node_of(t, j);
-                    assert(post.tables.has_slot(&post.list, t, j));
+                    let leaf = pre.tables.leaf(t, e);
+                    assert(0 <= e < ROOT_ENTRIES);
+                    pre.tables.lemma_entry(t, e);
+                    pre.tables.lemma_leaf(&pre.list, leaf);
+                    assert(pre.blocks.pages@[(leaf / PAGE_SZ) as int].kind is Base);
+                    assert(leaf != base);
+                    assert(page_of(leaf) == leaf);
+                    pre.lemma_slot_bound(leaf);
+                    assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+                    assert(post.tables.names_slot(t, j));
                     if pre.is_cap(x) {
                         assert(post.is_cap(x));
                         assert(x != base);
                     }
-                } else if post.tables.has_slot(&post.list, t, j) {
+                } else if post.tables.names_slot(t, j) {
                     assert(pre.tables.roots@.contains_key(t));
                     assert(0 <= e < ROOT_ENTRIES);
                     if t != table || e != at.index as int {
-                        let leaf = pre.tables.leaf(t, e);
-                        assert(post.tables.leaf(t, e) == leaf);
-                        pre.tables.lemma_entry(t, e);
-                        assert(pre.blocks.pages@[(leaf / PAGE_SZ) as int].kind is Base);
-                        assert(leaf != base);
-                        pre.tables.lemma_leaf(&pre.list, leaf);
-                        assert(page_of(leaf) == leaf);
-                        pre.lemma_slot_bound(leaf);
+                        assert(post.tables.leaf(t, e) == pre.tables.leaf(t, e));
                         assert(false);
                     }
                 }
@@ -2363,6 +2403,7 @@ impl CapKernel {
         &&& to->0.through is Some ==> !self.processes.records@[table->0].value().dead
         &&& self.empty_slot(table->0, to->0.index)
         &&& v.contains_key(i)
+        &&& v[i].live
         &&& !(v[i].kind is Device)
         &&& !(v[i].kind is Reply)
         &&& view_narrows(v[i], rights as u32, base, order as u8)
@@ -2531,6 +2572,7 @@ impl CapKernel {
         &&& dst is Some
         &&& to->0.through is Some ==> !self.processes.records@[dst->0].value().dead
         &&& self.table_view(src->0).contains_key(from->0.index)
+        &&& self.table_view(src->0)[from->0.index].live
         &&& self.empty_slot(dst->0, to->0.index)
         &&& src->0 == root ==> !self.cap_dead(self.tables.node_of(root, from->0.index))
     }
@@ -2627,7 +2669,7 @@ impl CapKernel {
                     pre.lemma_table_view(t, j);
                     post.lemma_table_view(t, j);
                     Self::lemma_slots_stay(pre, post, i, n, t, j);
-                    if pre.tables.has_slot(&pre.list, t, j) {
+                    if pre.tables.names_slot(t, j) {
                         pre.lemma_slot(t, j);
                         let m = pre.tables.node_of(t, j);
                         pre.lemma_slot_bound(m);

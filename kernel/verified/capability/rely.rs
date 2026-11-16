@@ -158,7 +158,7 @@ impl CapKernel {
             }
         }
         assert forall|t: usize, j: usize| #[trigger] post.table_view(t).contains_key(j)
-            implies pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j] by {
+            implies pre.table_view(t).contains_key(j) && same_cap(post.table_view(t)[j], pre.table_view(t)[j]) by {
             if !pre.revoke_allowed(caller, spec_position(frame.slot())) {
                 assert(post.table_view(t) == pre.table_view(t));
             }
@@ -181,7 +181,8 @@ impl CapKernel {
                 let c = pre.tables.node_of(table, at->0.index);
                 pre.lemma_sealed_table_not_root(caller, at->0.through, root);
                 assert forall|j: usize| #[trigger] pre.table_view(root).contains_key(j)
-                    implies post.table_view(root).contains_key(j) by {
+                    implies post.table_view(root).contains_key(j)
+                        && post.table_view(root)[j] == pre.table_view(root)[j] by {
                     assert(pre.table_view(table).contains_key(at->0.index));
                     assert(!pre.revokes_slot(c, root, j));
                 }
@@ -413,7 +414,7 @@ impl CapKernel {
                         || !post.list.nodes@[leaf as int].live);
                     assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
                 }
-                if pre.tables.has_slot(&pre.list, t, j) {
+                if pre.tables.names_slot(t, j) {
                     pre.lemma_slot(t, j);
                     let x = pre.tables.node_of(t, j);
                     pre.lemma_slot_bound(x);

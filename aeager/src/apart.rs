@@ -99,9 +99,11 @@ pub open spec fn own_kernel_ready(
     let tree = tree_of(&k.table_pages, &k.spaces);
     &&& k.spaces.roots@.contains_key(root)
     &&& v.contains_key(space as usize)
+    &&& v[space as usize].live
     &&& view_writes_space(v[space as usize])
     &&& v[space as usize].base == root
     &&& v.contains_key(untyped as usize)
+    &&& v[untyped as usize].live
     &&& v[untyped as usize].kind is Untyped
     &&& v[untyped as usize].rights & right_bit(Right::Retype) != 0
     &&& v[untyped as usize].base <= memory as usize

@@ -131,6 +131,7 @@ pub mod revoke_done;
 pub mod revoke_budget;
 pub mod revoke_through_run;
 pub mod revoke_through_run_contract;
+pub mod sealed_dead_leaf;
 pub mod core_bridge_new;
 pub mod core_bridge_send;
 pub mod core_bridge_try_take;
@@ -2438,6 +2439,27 @@ pub trait RevokeThroughRunContract {
             out != status_only(STATUS_REFUSED),
         ensures
             CapKernel::revoke_contract(pre, post, root, Some(at), out),
+    ;
+}
+
+/// A process whose table is at root is not sealed while another table holds, in a leaf whose
+/// hidden node is dead, a process capability naming root.
+/// design/refused-claim-per-way/.
+pub trait SealedDeadLeaf {
+    proof fn wrong(k: CapKernel, root: usize, other: usize, j: usize)
+        requires
+            k.wf(),
+            other != root,
+            k.tables.names_slot(other, j),
+            !k.list.nodes@[k.tables.leaf(other, crate::capability::table::index_entry(j)) as int].live,
+            k.is_cap(k.tables.node_of(other, j)),
+            k.payload_of(k.tables.node_of(other, j)).kind is Process,
+            k.payload_of(k.tables.node_of(other, j)).base == root,
+            forall|t: usize, i: usize| t != root && #[trigger] k.tables.has_slot(&k.list, t, i)
+                && k.is_cap(k.tables.node_of(t, i))
+                ==> !k.names_process(k.slot_view(t, i), root),
+        ensures
+            k.sealed(root),
     ;
 }
 
