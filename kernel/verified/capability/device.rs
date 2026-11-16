@@ -2191,6 +2191,7 @@ impl CapKernel {
                     ==> !#[trigger] final(self).can_bind_device(q, a, b)
             },
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         proof {
@@ -2306,6 +2307,8 @@ impl CapKernel {
             // The device's last unbind is past its IOMMU's acknowledgement, so no bind of it is allowed.
             assert(pre.iommu_acked(record.iommu as int) <= pre.flush_epoch);
             assert(post.devices.records@[d as int].unbound == post.flush_epoch);
+            // A device binding is no Binding node, and the thread records are untouched.
+            Self::lemma_bound_threads_same(pre, post);
         }
         true
     }
