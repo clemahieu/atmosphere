@@ -24,7 +24,12 @@ pub mod pair_length;
 pub mod pair_round;
 pub mod tag_length;
 pub mod tag_round;
+pub mod u16_be_encoding;
 pub mod u16_be_le;
+pub mod u16_le_encoding;
+pub mod u32_be_encoding;
+pub mod u32_le_encoding;
+pub mod u8_encoding;
 
 use crate::*;
 
@@ -252,6 +257,41 @@ pub trait TagLength<'t> {
             c.wf(),
         ensures
             n != c.spec_serialize(v).len(),
+    ;
+}
+
+/// A length encoding's `width`, `max`, `len_of` and `of_len` at an output the ensures excludes.
+/// Each operation returns the spec value; this is that ensures at the other output, and the
+/// requires are the operation's. One impl per encoding, so the claim is about that type.
+pub trait LengthEncodingReturns<'a, L: Length<'a>> {
+    proof fn width(c: &L, w: usize)
+        requires
+            c.wf(),
+        ensures
+            w != c.spec_width(),
+    ;
+
+    proof fn max(c: &L, m: usize)
+        requires
+            c.wf(),
+        ensures
+            m != c.spec_max(),
+    ;
+
+    proof fn len_of(c: &L, t: &L::T, n: usize)
+        requires
+            c.wf(),
+            c.valid(t@),
+        ensures
+            n != c.spec_len(t@),
+    ;
+
+    proof fn of_len(c: &L, n: usize, t: L::T)
+        requires
+            c.wf(),
+            n <= c.spec_max(),
+        ensures
+            t@ != c.spec_of_len(n as nat),
     ;
 }
 
