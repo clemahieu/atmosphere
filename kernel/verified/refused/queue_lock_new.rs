@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-//! QueueLock::new's ensures at a lock whose fields are not the ones it ensures. The core map is idle
-//! and belongs to the lock, which is what new ensures of the cores, and the lock is not well-formed.
-//! design/refused-claim-per-way/.
+//! QueueLock::new's ensures at a core map in which core 0 holds the lock. Every core is in the domain,
+//! with its cpu and this lock, which is what new ensures of the cores besides idle, and idle is open
+//! where the lock's wf is closed. design/refused-claim-per-way/.
 //!
 //! covers: kernel/verified/queue_lock.rs	QueueLock::new	returns
-//! refused: wrong: lock.wf()
+//! refused: wrong: forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] cores.dom().contains(c) && cores[c].idle() && cores[c].cpu == c && cores[c].for_lock(lock)
 
 use vstd::prelude::*;
 

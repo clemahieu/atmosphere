@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-//! revoke's Again meets no unchanged kernel: the run did not shrink by the budget.
-//! design/refused-claim-per-way/.
+//! revoke's Again meets no unchanged kernel whose slot holds a capability that has children: the run
+//! did not shrink by the budget. design/refused-claim-per-way/.
 //!
 //! covers: kernel/verified/capability/revoke.rs	revoke	Again
-//! refused: unchanged: CapKernel::revoke_answered(pre, post, root, at, ret)
-//! refused: unchanged: !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at)
+//! refused: unchanged: ret is Again ==> pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET
 
 use vstd::prelude::*;
 

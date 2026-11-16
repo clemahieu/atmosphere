@@ -5,7 +5,7 @@
 //! and enter_flush, and for tick, switch_thread, the boot thread and check_current. An unchanged
 //! kernel meets no ok or again arm whose specification does not admit it, and no success ensures of
 //! destroy, place, start, suspend, unmap or the register operations. No contract lets a slot it does
-//! not name change. QueueLock::new's ensures fails for a lock that is not well-formed, and acquire's
+//! not name change. QueueLock::new's ensures fails for a core that holds the lock rather than sitting idle, and acquire's
 //! and release's ensures fail for an unchanged core on the lock the operation borrows. kernel_init's
 //! Some at an unchanged kernel is not the booted state, charge does not leave the counter it was
 //! given, signal and wait do not write the notification word, print and power_off at the other bool
@@ -25,13 +25,14 @@
 //! reclaim_large_frame's Freed once the frame is acknowledged. The three Again ways stay exempt.
 //! retype_endpoint and retype_notification do not make the free page a live endpoint or notification,
 //! retype_reply does not make it a reply, and retype_space does not make the free block a space.
-//! revoke's Exhausted does not put the flush epoch at its limit.
+//! revoke's Exhausted, at a capability and an epoch below its limit, does not put the flush epoch there.
 //! delete's Some does not take the capability out, derive does not put a child under the parent,
 //! link_at does not link the table, map_at does not map the page and move_cap does not move the
 //! capability. retype_frame, retype_leaf, retype_process, retype_table_page and retype_thread do not
 //! type the free block, retype_large_frame's Done does not finish the frame and its Again does not
-//! advance the zeroing. revoke's Done does not leave the capability childless and its Again does not
-//! shorten the run by the budget. The caller's contracts for these stay beside the operation claims.
+//! advance the zeroing. revoke's Done, at a capability that has children, does not leave it childless
+//! and its Again, at a capability that has children, does not shorten the run by the budget. The
+//! caller's contracts for these stay beside the operation claims.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -156,7 +157,7 @@ use crate::capability::device::{DeviceInfo, MAX_DEVICES, binding_node, device_of
 use crate::capability::device_space::DeviceRange;
 use crate::capability::guest_space::GuestPhysRange;
 use crate::capability::list::{NODE_SPACE, NODES_PER_PAGE};
-use crate::capability::revoke::{RevokeStep, REVOKE_STEP_STEPS, UNLINK_ARM_STEPS};
+use crate::capability::revoke::{RevokeStep, REVOKE_BUDGET, REVOKE_STEP_STEPS, UNLINK_ARM_STEPS};
 use crate::capability::retype::RetypeStep;
 use crate::capability::link::tree_of;
 use crate::capability::mapping::{space_mapping, space_says, SpacePath};
@@ -585,14 +586,17 @@ pub trait UnnamedMove {
     ;
 }
 
-/// `QueueLock::new` at a lock that is not well-formed. The core map is the one new ensures.
+/// `QueueLock::new` at a core map in which core 0 holds the lock. The ensures are the ones new states
+/// that this module can see: every core idle, on this lock. `idle` is open, so a holding core
+/// contradicts it. The lock's `wf` is closed and is not the clause.
 pub trait QueueLockNew {
     proof fn wrong(lock: QueueLock, cores: Map<int, Core>)
         requires
-            !lock.wf(),
-            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] cores.dom().contains(c) && cores[c].idle() && cores[c].cpu == c && cores[c].for_lock(lock),
+            0 < NUM_CPUS,
+            cores.dom().contains(0),
+            cores[0].holding(),
+            forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] cores.dom().contains(c) && cores[c].cpu == c && cores[c].for_lock(lock),
         ensures
-            lock.wf(),
             forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] cores.dom().contains(c) && cores[c].idle() && cores[c].cpu == c && cores[c].for_lock(lock),
     ;
 }
@@ -2074,8 +2078,8 @@ pub trait RetypeSpaceOk {
     ;
 }
 
-/// revoke's Exhausted meets no unchanged kernel: the flush epoch is not at its limit, and the run was not taken.
-/// design/refused-claim-per-way/.
+/// revoke's Exhausted meets no unchanged kernel whose slot holds a capability and whose epoch is below
+/// the limit: the flush epoch is not at its limit. design/refused-claim-per-way/.
 pub trait RevokeExhausted {
     proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, at: Position, ret: RevokeStep)
         requires
@@ -2084,16 +2088,15 @@ pub trait RevokeExhausted {
             pre.root_live(root),
             post == pre,
             ret is Exhausted,
+            pre.cap_at(root, at) is Some,
+            pre.can_revoke_at(root, at),
+            pre.flush_epoch < usize::MAX,
         ensures
             CapKernel::page_count_kept(pre, post),
             post.wf(),
-            CapKernel::mappings_shrunk(pre, post),
             CapKernel::records_shrunk(pre, post),
-            CapKernel::blocks_revoked(pre, post),
             CapKernel::revoke_preserved(pre, post),
-            CapKernel::revoke_answered(pre, post, root, at, ret),
-            !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at),
-            ret is Done ==> CapKernel::cap_revoked_at(pre, post, root, at),
+            ret is Exhausted ==> post.flush_epoch == usize::MAX,
     ;
 }
 
@@ -2357,8 +2360,8 @@ pub trait RetypeThreadDone {
     ;
 }
 
-/// revoke's Done meets no unchanged kernel: the capability is not left childless.
-/// design/refused-claim-per-way/.
+/// revoke's Done meets no unchanged kernel whose slot holds a capability that has children: the
+/// capability is not left childless. design/refused-claim-per-way/.
 pub trait RevokeDone {
     proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, at: Position, ret: RevokeStep)
         requires
@@ -2367,21 +2370,20 @@ pub trait RevokeDone {
             pre.root_live(root),
             post == pre,
             ret is Done,
+            pre.cap_at(root, at) is Some,
+            pre.can_revoke_at(root, at),
+            !pre.list.childless(pre.cap_at(root, at)->0),
         ensures
             CapKernel::page_count_kept(pre, post),
             post.wf(),
-            CapKernel::mappings_shrunk(pre, post),
             CapKernel::records_shrunk(pre, post),
-            CapKernel::blocks_revoked(pre, post),
             CapKernel::revoke_preserved(pre, post),
-            CapKernel::revoke_answered(pre, post, root, at, ret),
-            !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at),
-            ret is Done ==> CapKernel::cap_revoked_at(pre, post, root, at),
+            !(ret is Refused) ==> (ret is Done == post.list.childless(pre.cap_at(root, at)->0)),
     ;
 }
 
-/// revoke's Again meets no unchanged kernel: the run did not shrink by the budget.
-/// design/refused-claim-per-way/.
+/// revoke's Again meets no unchanged kernel whose slot holds a capability that has children: the run
+/// did not shrink by the budget. design/refused-claim-per-way/.
 pub trait RevokeBudget {
     proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, at: Position, ret: RevokeStep)
         requires
@@ -2390,16 +2392,15 @@ pub trait RevokeBudget {
             pre.root_live(root),
             post == pre,
             ret is Again,
+            pre.cap_at(root, at) is Some,
+            pre.can_revoke_at(root, at),
+            !pre.list.childless(pre.cap_at(root, at)->0),
         ensures
             CapKernel::page_count_kept(pre, post),
             post.wf(),
-            CapKernel::mappings_shrunk(pre, post),
             CapKernel::records_shrunk(pre, post),
-            CapKernel::blocks_revoked(pre, post),
             CapKernel::revoke_preserved(pre, post),
-            CapKernel::revoke_answered(pre, post, root, at, ret),
-            !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at),
-            ret is Done ==> CapKernel::cap_revoked_at(pre, post, root, at),
+            ret is Again ==> pre.list.seq@.len() - post.list.seq@.len() == REVOKE_BUDGET,
     ;
 }
 

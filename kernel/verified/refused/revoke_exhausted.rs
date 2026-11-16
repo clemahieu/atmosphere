@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-//! revoke's Exhausted meets no unchanged kernel: the flush epoch is not at its limit, and the run was not taken.
-//! design/refused-claim-per-way/.
+//! revoke's Exhausted meets no unchanged kernel whose slot holds a capability and whose epoch is below
+//! the limit: the flush epoch is not at its limit. design/refused-claim-per-way/.
 //!
 //! covers: kernel/verified/capability/revoke.rs	revoke	Exhausted
-//! refused: unchanged: CapKernel::revoke_answered(pre, post, root, at, ret)
-//! refused: unchanged: !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at)
+//! refused: unchanged: ret is Exhausted ==> post.flush_epoch == usize::MAX
 
 use vstd::prelude::*;
 
