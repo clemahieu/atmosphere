@@ -250,6 +250,8 @@ pub proof fn lemma_scan_finds_pending<T>(
 
 } // verus!
 
+#[cfg(refused)]
+mod refused;
 #[cfg(throwaway)]
 pub mod throwaway;
 #[cfg(verus_keep_ghost)]
