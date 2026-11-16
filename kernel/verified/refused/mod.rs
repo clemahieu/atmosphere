@@ -26,6 +26,12 @@
 //! retype_endpoint and retype_notification do not make the free page a live endpoint or notification,
 //! retype_reply does not make it a reply, and retype_space does not make the free block a space.
 //! revoke's Exhausted does not put the flush epoch at its limit.
+//! delete's Some does not take the capability out, derive does not put a child under the parent,
+//! link_at does not link the table, map_at does not map the page and move_cap does not move the
+//! capability. retype_frame, retype_leaf, retype_process, retype_table_page and retype_thread do not
+//! type the free block, retype_large_frame's Done does not finish the frame and its Again does not
+//! advance the zeroing. revoke's Done does not leave the capability childless and its Again does not
+//! shorten the run by the budget. The caller's contracts for these stay beside the operation claims.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -108,6 +114,20 @@ pub mod retype_notification_ok;
 pub mod retype_reply_ok;
 pub mod retype_space_ok;
 pub mod revoke_exhausted;
+pub mod delete_some;
+pub mod derive_at_ok;
+pub mod link_at_ok;
+pub mod map_at_ok;
+pub mod move_cap_ok;
+pub mod retype_process_done;
+pub mod retype_frame_done;
+pub mod retype_leaf_done;
+pub mod retype_large_zeroing;
+pub mod retype_large_done;
+pub mod retype_table_done;
+pub mod retype_thread_done;
+pub mod revoke_done;
+pub mod revoke_budget;
 pub mod core_bridge_new;
 pub mod core_bridge_send;
 pub mod core_bridge_try_take;
@@ -135,6 +155,7 @@ use crate::capability::device_space::DeviceRange;
 use crate::capability::guest_space::GuestPhysRange;
 use crate::capability::list::{NODE_SPACE, NODES_PER_PAGE};
 use crate::capability::revoke::{RevokeStep, REVOKE_STEP_STEPS, UNLINK_ARM_STEPS};
+use crate::capability::retype::RetypeStep;
 use crate::capability::link::tree_of;
 use crate::capability::mapping::{space_mapping, space_says, SpacePath};
 use crate::capability::probe::Probed;
@@ -2056,6 +2077,312 @@ pub trait RevokeExhausted {
             pre.root_live(root),
             post == pre,
             ret is Exhausted,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::mappings_shrunk(pre, post),
+            CapKernel::records_shrunk(pre, post),
+            CapKernel::blocks_revoked(pre, post),
+            CapKernel::revoke_preserved(pre, post),
+            CapKernel::revoke_answered(pre, post, root, at, ret),
+            !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at),
+            ret is Done ==> CapKernel::cap_revoked_at(pre, post, root, at),
+    ;
+}
+
+/// delete's Some meets no unchanged kernel: the capability is still in the slot, and its object still holds the reference.
+/// design/refused-claim-per-way/.
+pub trait DeleteSome {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, at: Position, ret: Option<Payload>)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret is Some,
+            pre.can_delete_at(root, at),
+            ret.unwrap() == pre.payload_of(pre.cap_at(root, at)->0),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::delete_answered(pre, post, root, at, ret),
+            ret is Some ==> CapKernel::cap_deleted_at(pre, post, root, at),
+            ret is Some ==> CapKernel::object_dropped(pre, post, pre.cap_at(root, at)->0),
+            CapKernel::delete_kept(pre, post, root),
+    ;
+}
+
+/// derive's success meets no unchanged kernel: no child is linked under the parent.
+/// design/refused-claim-per-way/.
+pub trait DeriveAtOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: Position, rights: u32, base: usize, order: u8, badge: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_derive_at(root, from, to, rights, base, order, badge),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::derive_answered(pre, post, root, from, to, rights, base, order, badge, ret),
+            CapKernel::derive_kept(pre, post),
+            CapKernel::same_tree(pre, post),
+            ret ==> CapKernel::derive_step(pre, post, pre.tables.node_of(pre.table_at(root, to.through)->0, to.index)),
+            ret ==> CapKernel::cap_derived_at(pre, post, root, from, to, rights, base, order, badge),
+            ret ==> CapKernel::derive_counted(pre, post, pre.tables.node_of(root, from)),
+            ret ==> CapKernel::derive_linked(pre, post, pre.tables.node_of(pre.table_at(root, to.through)->0, to.index), pre.tables.node_of(root, from)),
+            ret ==> CapKernel::derive_untracked(pre, post, pre.tables.node_of(root, from)),
+    ;
+}
+
+/// link_at's success meets no unchanged kernel: the table page is not linked at the entry.
+/// design/refused-claim-per-way/.
+pub trait LinkAtOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_link_at(root, slot, va, level, from, child),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::link_answered(pre, post, root, slot, va, level, from, child, ret),
+            ret ==> CapKernel::table_linked(pre, post, root, slot, va, level, from, child),
+            CapKernel::link_kept(pre, post),
+    ;
+}
+
+/// map_at's success meets no unchanged kernel: the page is not mapped at the entry.
+/// design/refused-claim-per-way/.
+pub trait MapAtOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_map_at(root, slot, va, level, from, page),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::map_answered(pre, post, root, slot, va, level, from, page, ret),
+            ret ==> CapKernel::page_mapped(pre, post, root, slot, va, level, from, page),
+            CapKernel::map_kept(pre, post),
+    ;
+}
+
+/// move_cap's success meets no unchanged kernel: the capability is still in the source slot.
+/// design/refused-claim-per-way/.
+pub trait MoveCapOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: Position, to: Position, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_move_at(root, from, to),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::move_answered(pre, post, root, from, to, ret),
+            CapKernel::same_tree(pre, post),
+            ret ==> CapKernel::cap_moved_at(pre, post, root, from, to),
+            CapKernel::move_kept(pre, post),
+    ;
+}
+
+/// retype_process's success meets no unchanged kernel: the free block is not a process.
+/// design/refused-claim-per-way/.
+pub trait RetypeProcessDone {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_retype_block(root, from, to, base, PROCESS_ORDER),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::process_retype_answered(pre, post, root, from, to, base, ret),
+            CapKernel::process_retype_kept(pre, post),
+            ret ==> CapKernel::process_retype_done(pre, post, root, from, to, base),
+            ret ==> CapKernel::process_retyped(pre, post, root, from, to, base),
+    ;
+}
+
+/// retype_frame's success meets no unchanged kernel: the free page is not a frame.
+/// design/refused-claim-per-way/.
+pub trait RetypeFrameDone {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_retype_frame(root, from, to, base),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::same_tree(pre, post),
+            CapKernel::frame_retype_answered(pre, post, root, from, to, base, ret),
+            CapKernel::frame_retype_kept(pre, post),
+            ret ==> CapKernel::frame_retyped(pre, post, root, from, to, base),
+            ret ==> CapKernel::retype_keeps(pre, post, pre.tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None),
+    ;
+}
+
+/// retype_leaf's success meets no unchanged kernel: the free pages are not a table leaf.
+/// design/refused-claim-per-way/.
+pub trait RetypeLeafDone {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, at: Position, base: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_retype_leaf(root, from, at, base),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::same_tree(pre, post),
+            CapKernel::leaf_retype_answered(pre, post, root, from, at, base, ret),
+            CapKernel::leaf_retype_kept(pre, post),
+            ret ==> CapKernel::leaf_retyped(pre, post, root, from, at, base),
+            ret ==> CapKernel::leaf_retype_spared(pre, post, base),
+    ;
+}
+
+/// retype_large_frame's Again meets no unchanged kernel: the zeroing cursor did not move.
+/// design/refused-claim-per-way/.
+pub trait RetypeLargeZeroing {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, order: u8, ret: RetypeStep)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret is Again,
+            pre.can_retype_large(root, from, to, base, order),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::same_tree(pre, post),
+            CapKernel::large_retype_answered(pre, post, root, from, to, base, order, ret is Refused),
+            CapKernel::large_retype_kept(pre, post),
+            CapKernel::large_retype_cursor(pre, post, base, ret is Refused),
+            ret is Again ==> CapKernel::large_frame_zeroing(pre, post, root, from, to, base, order),
+            ret is Done ==> CapKernel::large_frame_retyped(pre, post, root, from, to, base, order),
+    ;
+}
+
+/// retype_large_frame's Done meets no unchanged kernel: the block is not a large frame.
+/// design/refused-claim-per-way/.
+pub trait RetypeLargeDone {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, order: u8, ret: RetypeStep)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret is Done,
+            pre.can_retype_large(root, from, to, base, order),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::same_tree(pre, post),
+            CapKernel::large_retype_answered(pre, post, root, from, to, base, order, ret is Refused),
+            CapKernel::large_retype_kept(pre, post),
+            CapKernel::large_retype_cursor(pre, post, base, ret is Refused),
+            ret is Again ==> CapKernel::large_frame_zeroing(pre, post, root, from, to, base, order),
+            ret is Done ==> CapKernel::large_frame_retyped(pre, post, root, from, to, base, order),
+    ;
+}
+
+/// retype_table_page's success meets no unchanged kernel: the free block is not a table page.
+/// design/refused-claim-per-way/.
+pub trait RetypeTableDone {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, base: usize, level: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_retype_table_page(root, from, base, level),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::table_page_retype_answered(pre, post, root, from, base, level, ret),
+            CapKernel::table_page_retype_kept(pre, post),
+            ret ==> CapKernel::table_page_retype_done(pre, post, root, from, base, level),
+    ;
+}
+
+/// retype_thread's success meets no unchanged kernel: the free block is not a thread.
+/// design/refused-claim-per-way/.
+pub trait RetypeThreadDone {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, j: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret,
+            pre.can_retype_thread(root, from, to, base, j),
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::thread_retype_answered(pre, post, root, from, to, base, j, ret),
+            CapKernel::thread_retype_kept(pre, post),
+            ret ==> CapKernel::thread_retype_done(pre, post, root, from, to, base, j),
+            ret ==> CapKernel::thread_retyped(pre, post, root, from, to, base, j),
+    ;
+}
+
+/// revoke's Done meets no unchanged kernel: the capability is not left childless.
+/// design/refused-claim-per-way/.
+pub trait RevokeDone {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, at: Position, ret: RevokeStep)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret is Done,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::mappings_shrunk(pre, post),
+            CapKernel::records_shrunk(pre, post),
+            CapKernel::blocks_revoked(pre, post),
+            CapKernel::revoke_preserved(pre, post),
+            CapKernel::revoke_answered(pre, post, root, at, ret),
+            !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at),
+            ret is Done ==> CapKernel::cap_revoked_at(pre, post, root, at),
+    ;
+}
+
+/// revoke's Again meets no unchanged kernel: the run did not shrink by the budget.
+/// design/refused-claim-per-way/.
+pub trait RevokeBudget {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, at: Position, ret: RevokeStep)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret is Again,
         ensures
             CapKernel::page_count_kept(pre, post),
             post.wf(),

@@ -7,22 +7,6 @@
 # that adds one unless --approve names it, as path:operation:way.
 # Fields, separated by tabs: path from the repository root, operation, way.
 #
-kernel/verified/capability/delete.rs	delete	Some
-kernel/verified/capability/derive.rs	derive	true
-kernel/verified/capability/map.rs	link_at	true
-kernel/verified/capability/map.rs	map_at	true
-kernel/verified/capability/moving.rs	move_cap	true
-kernel/verified/capability/operation.rs	dispatch	Some
-kernel/verified/capability/operation.rs	enter	Some
-kernel/verified/capability/process.rs	retype_process	true
-kernel/verified/capability/retype.rs	retype_frame	true
-kernel/verified/capability/retype.rs	retype_leaf	true
-kernel/verified/capability/retype.rs	retype_large_frame	Again
-kernel/verified/capability/retype.rs	retype_large_frame	Done
-kernel/verified/capability/revoke.rs	revoke	Done
-kernel/verified/capability/revoke.rs	revoke	Again
-kernel/verified/capability/space.rs	retype_table_page	true
-kernel/verified/capability/thread.rs	retype_thread	true
 aring/src/lib.rs	Producer::new	returns
 aring/src/lib.rs	Producer::index	returns
 aring/src/lib.rs	Producer::free	returns
@@ -131,11 +115,3 @@ awire/src/repeat.rs	Bounded::serialize	Some
 awire/src/tag.rs	Tag::parse	Some
 awire/src/tag.rs	Tag::length	Some
 awire/src/tag.rs	Tag::serialize	Some
-acall/src/capability.rs	move_cap	OPERATION_MOVE=3
-acall/src/capability.rs	delete	OPERATION_DELETE=5
-acall/src/capability.rs	revoke	OPERATION_REVOKE=6
-acall/src/memory.rs	retype	OPERATION_RETYPE=1
-acall/src/memory.rs	derive	OPERATION_DERIVE=2
-acall/src/memory.rs	link	OPERATION_LINK=16
-acall/src/memory.rs	map	OPERATION_MAP=7
-acall/src/memory.rs	map_own	OPERATION_MAP=7
