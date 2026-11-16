@@ -54,7 +54,7 @@ confidence: high
    | `boot stack` | `x86_64` | `tools/check-boot-stack.py`, `tools/run.py`, `tools/elfstrip.py`, `tools/firmware.py`, `IMAGE_CRATES` |
    | `coverage` | `x86_64` | `tools/coverage.py`, `tools/check-boot-stack.py`, `tools/run.py`, `tools/elfstrip.py`, `tools/firmware.py`, `IMAGE_CRATES`, `user/**` |
    | `iommu boot` | `x86_64` | `tools/run.py`, `tools/elfstrip.py`, `tools/firmware.py`, `tools/check-boot-log.py`, `IMAGE_CRATES` |
-   | `boot` | `x86_64` | `tools/run.py`, `tools/elfstrip.py`, `tools/firmware.py`, `tools/check-boot-log.py`, `IMAGE_CRATES` |
+   | `boot` | `x86_64` | `tools/run.py`, `tools/gdb.py`, `tools/gdb-helper.py`, `tools/elfstrip.py`, `tools/firmware.py`, `tools/check-boot-log.py`, `IMAGE_CRATES` |
    | `aarch64 boot` | `aarch64` | `tools/board.py`, `tools/aarch64-esp.py`, `tools/build.py`, `tools/check-stack-sizes.py`, `tools/elfstrip.py`, `tools/orangepi-kvm.py`, `tools/check-boot-log.py`, `IMAGE_CRATES` |
 
    Every step added in the future declares its own `inputs` alongside its runner, and `tools/gate.py` exposes the set of uncovered paths dynamically (`--unread`) instead of maintaining an exception list.

@@ -10,14 +10,23 @@ boot's, comes above those lines as each step runs. tools/land.py runs it with to
 
 --target aarch64 runs that target's verify and its boot on the Orange Pi; --target x86_64 runs every
 other step, since the workstation that checks the tree as a whole is the x86_64 host. --step runs the
-steps it names, in the gate's order, to see one step again without the rest.
+steps it names, in the gate's order, to see one step again without the rest. --since BASE selects
+only unbounded steps and the bounded steps whose declared inputs intersect the diff since BASE.
+--steps prints the selected step names without running them. --unread prints tracked files covered
+by no bounded step.
 
-usage: tools/gate.py [--target x86_64|aarch64] [--step NAME]... [--boot-timeout SECONDS]
+usage: tools/gate.py [--target x86_64|aarch64] [--step NAME]... [--since BASE] [--steps] [--boot-timeout SECONDS]
+       tools/gate.py --unread
        tools/gate.py --test    (this script's own tests)
 """
 import argparse
+import contextlib
+import hashlib
+import importlib.util
+import io
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -25,7 +34,7 @@ import tempfile
 import time
 import unittest
 from collections import Counter, namedtuple
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.dont_write_bytecode = True
 
@@ -522,49 +531,486 @@ def board(gate):
     return f"{BOARD} --gate: {last_line(ran.stdout)}"
 
 
-Step = namedtuple("Step", "name target check")
+GATE_SELF = ("tools/gate.py",)
+TOOLCHAIN_PINS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/env.sh")
 
-STEPS = (
-    Step("file sizes", X86_64, file_sizes),
-    Step("build", X86_64, build),
-    Step("workspace tests", X86_64, workspace_tests),
-    Step("forced lints", X86_64, forced_lints),
-    Step("license", X86_64, self_tested(LICENSE_CHECK)),
-    Step("source licenses", X86_64, self_tested(SOURCE_LICENSE_CHECK)),
-    Step("hooks", X86_64, hooks),
-    Step("verify", X86_64, verify),
-    # After verify, whose exported crates a throwaway run of a crate that depends on one reads.
-    Step("throwaways", X86_64, self_tested(THROWAWAY_CHECK)),
-    Step("unwitnessed", X86_64, unwitnessed),
-    # After verify too: a false claim a verified crate keeps, held to Verus's refusal where it says.
-    Step("refused", X86_64, self_tested(REFUSED_CHECK)),
-    # After refused, whose accepted modules are the ones a covers line may name.
-    Step("unrefused", X86_64, unrefused),
-    Step("verify aarch64", AARCH64, verify_for("--target", AARCH64)),
-    Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK)),
-    # Verus takes a layout claim as stated; the build checks it, for both targets.
-    Step("layout claims", X86_64, self_tested(LAYOUT_CLAIMS_CHECK)),
-    # What unverified crates hand verified code unchecked, from rustc's THIR of both targets.
-    Step("boundary", X86_64, self_tested(BOUNDARY_CHECK)),
-    Step("invoked arms", X86_64, invoked_arms),
-    Step("page literals", X86_64, self_tested(PAGE_LITERALS_CHECK)),
-    Step("arch sources", X86_64, self_tested(ARCH_SOURCES_CHECK)),
-    Step("upstream copies", X86_64, self_tested(UPSTREAM_COPIES_CHECK)),
-    Step("design index", X86_64, design_index),
-    Step("faq", X86_64, faq),
-    Step("boot stack", X86_64, boot_stack),
-    Step("coverage", X86_64, coverage),
-    # The plain boot comes after it, so the serial.log the gate leaves has no IOMMU.
-    Step("iommu boot", X86_64, boot_with("--iommu")),
-    Step("boot", X86_64, boot),
-    Step("aarch64 boot", AARCH64, board),
+VERIFIED_CRATES = (
+    "kernel/verified/**",
+    "aheap/**",
+    "acall/**",
+    "aeager/**",
+    "aring/**",
+    "amailbox/**",
+    "afanin/**",
+    "pager-policy/**",
+    "adivider/**",
+    "awire/**",
+    "asys/**",
+)
+BOUNDARY_CRATES = tuple(dict.fromkeys((
+    "kernel/**",
+    "dom0/**",
+    "astd/**",
+    "abench/**",
+    "acontext/**",
+    "asys/**",
+    "kernel-logger/**",
+    "machine/**",
+    "ns16550a/**",
+    *VERIFIED_CRATES,
+)))
+IMAGE_CRATES = tuple(dict.fromkeys((
+    "aloader/**",
+    "aelf/**",
+    "kernel/**",
+    "dom0/**",
+    "user/hello/**",
+    "user/.cargo/**",
+    "user/*-unknown-aloader.json",
+    "astd/**",
+    "acall/**",
+    "aeager/**",
+    "aheap/**",
+    "asys/**",
+    "kernel-logger/**",
+    "machine/**",
+    "ns16550a/**",
+    "abench/**",
+    "acontext/**",
+    "kernel/verified/**",
+)))
+WORKSPACE_CRATES = tuple(dict.fromkeys((
+    *IMAGE_CRATES,
+    "aring/**",
+    "amailbox/**",
+    "afanin/**",
+    "pager-policy/**",
+    "adivider/**",
+    "awire/**",
+    "file-service/**",
+    "boot-host-tests/**",
+)))
+WORKSPACE_MANIFESTS = (
+    "abench/Cargo.toml",
+    "acall/Cargo.toml",
+    "acontext/Cargo.toml",
+    "adivider/Cargo.toml",
+    "aeager/Cargo.toml",
+    "aelf/Cargo.toml",
+    "afanin/Cargo.toml",
+    "aheap/Cargo.toml",
+    "aloader/Cargo.toml",
+    "amailbox/Cargo.toml",
+    "aring/Cargo.toml",
+    "astd/Cargo.toml",
+    "asys/Cargo.toml",
+    "awire/Cargo.toml",
+    "boot-host-tests/Cargo.toml",
+    "dom0/Cargo.toml",
+    "file-service/Cargo.toml",
+    "kernel-logger/Cargo.toml",
+    "kernel/Cargo.toml",
+    "kernel/verified/Cargo.toml",
+    "machine/pc/Cargo.toml",
+    "machine/virt/Cargo.toml",
+    "ns16550a/Cargo.toml",
+    "pager-policy/Cargo.toml",
+    "user/hello/Cargo.toml",
 )
 
 
-def chosen(target=None, names=None):
-    """The steps the gate runs, in its order: those of target, or of both, and of names when given."""
+def bounded(*globs):
+    """Inputs for a bounded step: gate runner, toolchain pins, and step-specific globs."""
+    return tuple(dict.fromkeys((*GATE_SELF, *TOOLCHAIN_PINS, *globs)))
+
+
+Step = namedtuple("Step", "name target check inputs")
+
+STEPS = (
+    Step("file sizes", X86_64, file_sizes, None),
+    Step("build", X86_64, build, bounded(BUILD, STACK_SIZES_CHECK, *WORKSPACE_CRATES)),
+    Step("workspace tests", X86_64, workspace_tests, bounded(*WORKSPACE_CRATES, INVOKED_ARMS_CHECK)),
+    Step("forced lints", X86_64, forced_lints, bounded(*WORKSPACE_CRATES)),
+    Step("license", X86_64, self_tested(LICENSE_CHECK), bounded(LICENSE_CHECK, "tools/license-allowlist", *WORKSPACE_MANIFESTS)),
+    Step("source licenses", X86_64, self_tested(SOURCE_LICENSE_CHECK), None),
+    Step("hooks", X86_64, hooks, bounded(
+        "AGENTS.md", ".agents/hooks.json",
+        ".claude/hooks/license-guard.sh", ".claude/hooks/license-guard-test.sh",
+        ".claude/hooks/beads-actor.sh", ".claude/hooks/beads-actor-test.sh",
+        ".claude/hooks/agy-session-start.sh",
+    )),
+    Step("verify", X86_64, verify, bounded(VERIFY, VERIFY_ALLOWANCE, *VERIFIED_CRATES)),
+    # After verify, whose exported crates a throwaway run of a crate that depends on one reads.
+    Step("throwaways", X86_64, self_tested(THROWAWAY_CHECK), bounded(VERIFY, THROWAWAY_CHECK, *VERIFIED_CRATES)),
+    Step("unwitnessed", X86_64, unwitnessed, bounded(VERIFY, THROWAWAY_CHECK, WITNESS_INVENTORY, UNWITNESSED, *VERIFIED_CRATES)),
+    # After verify too: a false claim a verified crate keeps, held to Verus's refusal where it says.
+    Step("refused", X86_64, self_tested(REFUSED_CHECK), bounded(VERIFY, THROWAWAY_CHECK, WITNESS_INVENTORY, REFUSED_CHECK, *VERIFIED_CRATES)),
+    # After refused, whose accepted modules are the ones a covers line may name.
+    Step("unrefused", X86_64, unrefused, bounded(VERIFY, THROWAWAY_CHECK, WITNESS_INVENTORY, REFUSED_CHECK, "tools/refused-exempt", UNREFUSED, *VERIFIED_CRATES)),
+    Step("verify aarch64", AARCH64, verify_for("--target", AARCH64), bounded(VERIFY, VERIFY_ALLOWANCE, *VERIFIED_CRATES)),
+    Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK), bounded(EXTERNAL_BODY_CHECK, "tools/external-body-list", "tools/hardware-documents", *VERIFIED_CRATES, "kernel/**")),
+    # Verus takes a layout claim as stated; the build checks it, for both targets.
+    Step("layout claims", X86_64, self_tested(LAYOUT_CLAIMS_CHECK), bounded(LAYOUT_CLAIMS_CHECK, *VERIFIED_CRATES)),
+    # What unverified crates hand verified code unchecked, from rustc's THIR of both targets.
+    Step("boundary", X86_64, self_tested(BOUNDARY_CHECK), bounded(BOUNDARY_CHECK, EXTERNAL_BODY_CHECK, "tools/boundary-list", "tools/hardware-documents", *BOUNDARY_CRATES)),
+    Step("invoked arms", X86_64, invoked_arms, bounded(INVOKED_ARMS_CHECK, "kernel/verified/**")),
+    Step("page literals", X86_64, self_tested(PAGE_LITERALS_CHECK), bounded(PAGE_LITERALS_CHECK, *VERIFIED_CRATES)),
+    Step("arch sources", X86_64, self_tested(ARCH_SOURCES_CHECK), bounded(ARCH_SOURCES_CHECK, "kernel/src/**")),
+    Step("upstream copies", X86_64, self_tested(UPSTREAM_COPIES_CHECK), bounded(UPSTREAM_COPIES_CHECK, "tools/upstream-copies/**", "kernel/verified/pptr.rs")),
+    Step("design index", X86_64, design_index, bounded(DESIGN_INDEX, "design/*/DECISION.md", "design/INDEX.md")),
+    Step("faq", X86_64, faq, bounded(FAQ_RENDER, "docs/faq/**", "kernel/verified/define.rs", "kernel/verified/layouts.rs", "kernel/verified/capability/**")),
+    Step("boot stack", X86_64, boot_stack, bounded(BOOT_STACK_CHECK, RUN, "tools/elfstrip.py", "tools/firmware.py", *IMAGE_CRATES)),
+    Step("coverage", X86_64, coverage, bounded(COVERAGE, BOOT_STACK_CHECK, RUN, "tools/elfstrip.py", "tools/firmware.py", *IMAGE_CRATES, "user/**")),
+    # The plain boot comes after it, so the serial.log the gate leaves has no IOMMU.
+    Step("iommu boot", X86_64, boot_with("--iommu"), bounded(RUN, "tools/elfstrip.py", "tools/firmware.py", BOOT_LOG_CHECK, *IMAGE_CRATES)),
+    Step("boot", X86_64, boot, bounded(RUN, GDB, "tools/gdb-helper.py", "tools/elfstrip.py", "tools/firmware.py", BOOT_LOG_CHECK, *IMAGE_CRATES)),
+    Step("aarch64 boot", AARCH64, board, bounded(BOARD, "tools/aarch64-esp.py", BUILD, STACK_SIZES_CHECK, "tools/elfstrip.py", "tools/orangepi-kvm.py", BOOT_LOG_CHECK, *IMAGE_CRATES)),
+)
+
+
+def normalize_repo_path(path):
+    """Normalizes a repo-relative path to POSIX form without leading './'."""
+    text = str(path).replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    if not text or text == ".":
+        return ""
+    norm = PurePosixPath(text).as_posix()
+    return "" if norm == "." else norm
+
+
+def matches_globs(path, globs):
+    """Whether a repo-relative path matches any glob in globs under PurePosixPath.full_match."""
+    norm = normalize_repo_path(path)
+    if not norm:
+        return False
+    posix = PurePosixPath(norm)
+    return any(posix.full_match(glob) for glob in globs)
+
+
+def parse_ls_tree(raw):
+    """Parses `git ls-tree -r -z` output into sorted-ready `(mode, sha, path)` entries."""
+    text = raw.decode("utf-8", errors="surrogateescape") if isinstance(raw, (bytes, bytearray)) else raw
+    entries = []
+    for record in text.split("\0"):
+        if not record:
+            continue
+        meta, path = record.split("\t", 1)
+        mode, kind, sha = meta.split(" ", 2)
+        if kind == "tree":
+            continue
+        entries.append((mode, sha, normalize_repo_path(path)))
+    return entries
+
+
+def input_slice_digest(entries, inputs):
+    """SHA-256 hex digest over sorted `(mode, blob_sha, path)` entries matching `inputs`, or None."""
+    if inputs is None:
+        return None
+    matched = sorted(
+        (mode, sha, norm)
+        for mode, sha, path in entries
+        if (norm := normalize_repo_path(path)) and matches_globs(norm, inputs)
+    )
+    digest = hashlib.sha256()
+    for mode, sha, path in matched:
+        digest.update(f"{mode} {sha}\t{path}\0".encode("utf-8"))
+    return digest.hexdigest()
+
+
+def git_run(root, *args):
+    """Runs git in `root`, raising Failure on nonzero exit, and returns raw stdout bytes."""
+    done = subprocess.run(["git", "-C", str(root), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if done.returncode != 0:
+        err = done.stderr.decode(errors="replace").strip()
+        raise Failure(f"git {' '.join(args)}: {err or status(done.returncode)}")
+    return done.stdout
+
+
+def ls_tree_entries(root, tree):
+    """`(mode, sha, path)` entries of `git ls-tree -r -z tree` in `root`."""
+    return parse_ls_tree(git_run(root, "ls-tree", "-r", "-z", tree))
+
+
+def input_hash(root, tree, step):
+    """Input-slice digest for `step` at `tree` in `root`, or None for an unbounded step."""
+    if step.inputs is None:
+        return None
+    return input_slice_digest(ls_tree_entries(root, tree), step.inputs)
+
+
+def input_hashes(root, tree, steps=STEPS):
+    """Map of step name to input-slice digest (or None) for `steps` at `tree` in `root`."""
+    entries = ls_tree_entries(root, tree)
+    return {step.name: input_slice_digest(entries, step.inputs) for step in steps}
+
+
+def parse_nul_paths(raw):
+    """Normalized non-empty paths from NUL-delimited git output."""
+    text = raw.decode("utf-8", errors="surrogateescape") if isinstance(raw, (bytes, bytearray)) else raw
+    return [norm for entry in text.split("\0") if entry and (norm := normalize_repo_path(entry))]
+
+
+def changed_paths_since(root, base):
+    """Sorted unique repo-relative paths changed between `base` and the working tree (incl. untracked)."""
+    diffed = parse_nul_paths(git_run(root, "diff", "--name-only", "-z", "--no-renames", base))
+    untracked = parse_nul_paths(git_run(root, "ls-files", "-z", "--others", "--exclude-standard"))
+    return sorted(set(diffed) | set(untracked))
+
+
+def tracked_paths(root):
+    """Normalized tracked files in `root` from `git ls-files -z`."""
+    return parse_nul_paths(git_run(root, "ls-files", "-z"))
+
+
+def step_affected(step, changed):
+    """Whether `step` is affected by `changed`; unbounded steps (`inputs is None`) always run."""
+    if step.inputs is None:
+        return True
+    return any(matches_globs(path, step.inputs) for path in changed)
+
+
+def is_covered(path, steps=STEPS):
+    """Whether any bounded step in `steps` declares an input glob matching `path`."""
+    return any(step.inputs is not None and matches_globs(path, step.inputs) for step in steps)
+
+
+def unread_paths(paths, steps=STEPS):
+    """Normalized paths from `paths` covered by no bounded step in `steps`."""
+    return [norm for path in paths if (norm := normalize_repo_path(path)) and not is_covered(norm, steps)]
+
+
+def load_cargo_metadata(repo=REPO):
+    """Workspace package manifests and direct dependency declarations via cargo metadata."""
+    done = subprocess.run(list(WORKSPACE_MEMBERS), cwd=repo, stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if done.returncode != 0:
+        raise Failure(f"{' '.join(WORKSPACE_MEMBERS)}: {done.stderr.strip() or status(done.returncode)}")
+    return json.loads(done.stdout)
+
+
+def load_faq_paths(repo=REPO):
+    """Paths read by tools/faq.py (constants files, layouts, template/output dirs)."""
+    spec = importlib.util.spec_from_file_location("atmo_faq", repo / FAQ_RENDER)
+    faq_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(faq_mod)
+    paths = set(faq_mod.CONSTANTS.values())
+    paths.add(f"{faq_mod.FAQ.as_posix()}/README.md")
+    paths.add(f"{faq_mod.SOURCES.as_posix()}/sample.md")
+    paths.add("kernel/verified/layouts.rs")
+    return sorted(paths)
+
+
+def load_patch_targets(repo=REPO):
+    """Patch files and in-repo source/target paths named in tools/upstream-copies/*.patch headers."""
+    targets = []
+    for patch in sorted((repo / "tools/upstream-copies").glob("*.patch")):
+        targets.append(patch.relative_to(repo).as_posix())
+        lines = patch.read_text(encoding="utf-8").splitlines()
+        for prefix, line in (("--- ", lines[0]), ("+++ ", lines[1])):
+            if not line.startswith(prefix):
+                continue
+            target = line[len(prefix):].strip()
+            if target and not target.startswith("../"):
+                targets.append(normalize_repo_path(target))
+    return sorted(set(targets))
+
+
+def collect_step_tool_calls():
+    """Runs every bounded step against FakeGate to capture repo-relative tools invoked by gate.py."""
+    verified = (0, "verification results:: 1 verified, 0 errors\n")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tools").mkdir()
+        (root / VERIFY_ALLOWANCE).write_text("2\n")
+        (root / UNWITNESSED).write_text("# a comment\n")
+        (root / UNREFUSED).write_text("# a comment\n")
+        answers = {
+            VERIFY: verified,
+            f"{VERIFY} --target {AARCH64}": verified,
+            "cargo " + " ".join(WORKSPACE_TESTS): (0, "test result: ok. 1 passed; 0 failed\n"),
+            " ".join(WORKSPACE_MEMBERS): (0, json.dumps({"packages": [{"manifest_path": str(root / "aheap/Cargo.toml")}]})),
+        }
+        calls = {}
+        for step in STEPS:
+            if step.inputs is None:
+                continue
+            fake = FakeGate(root, dict(answers))
+            step.check(fake)
+            calls[step.name] = [argv[0] for argv in fake.calls if "/" in argv[0]]
+        return calls
+
+
+def workspace_dep_closure(metadata, roots, repo, include_dev=False):
+    """Transitive workspace member directories reachable from `roots`."""
+    repo_resolved = Path(repo).resolve()
+    by_dir = {}
+    by_name = {}
+    for pkg in metadata["packages"]:
+        rel_dir = Path(pkg["manifest_path"]).resolve().parent.relative_to(repo_resolved).as_posix()
+        by_dir[rel_dir] = pkg
+        by_name[pkg["name"]] = (rel_dir, pkg)
+    by_abs = {str((repo_resolved / rel_dir).resolve()): rel_dir for rel_dir in by_dir}
+
+    seen = set()
+    stack = list(roots)
+    while stack:
+        rel_dir = stack.pop()
+        if rel_dir in seen or rel_dir not in by_dir:
+            continue
+        seen.add(rel_dir)
+        for dep in by_dir[rel_dir].get("dependencies") or []:
+            kind = dep.get("kind")
+            if not include_dev and kind in ("dev", "build"):
+                continue
+            target_dir = None
+            dep_path = dep.get("path")
+            if dep_path:
+                resolved = str((repo_resolved / dep_path).resolve()) if not Path(dep_path).is_absolute() else str(Path(dep_path).resolve())
+                target_dir = by_abs.get(resolved)
+            if target_dir is None and dep["name"] in by_name:
+                target_dir = by_name[dep["name"]][0]
+            if target_dir is not None and target_dir not in seen:
+                stack.append(target_dir)
+    return sorted(seen)
+
+
+def step_input_errors(steps, repo=REPO, metadata=None, faq_paths=None, patch_targets=None, tool_calls=None):
+    """Returns error messages for any missing or incomplete Step.inputs entry in `steps`."""
+    errors = []
+    by_name = {step.name: step for step in steps}
+    if metadata is None:
+        metadata = load_cargo_metadata(repo)
+    if faq_paths is None:
+        faq_paths = load_faq_paths(repo)
+    if patch_targets is None:
+        patch_targets = load_patch_targets(repo)
+    if tool_calls is None:
+        tool_calls = collect_step_tool_calls()
+
+    def require_covers(step_name, path, reason):
+        step = by_name.get(step_name)
+        if step is None:
+            errors.append(f"missing step {step_name!r}")
+            return
+        if step.inputs is None or not matches_globs(path, step.inputs):
+            errors.append(f"step {step_name!r} inputs do not cover {path!r} ({reason})")
+
+    def require_crate(step_name, rel_dir, reason):
+        require_covers(step_name, f"{rel_dir}/Cargo.toml", reason)
+        require_covers(step_name, f"{rel_dir}/src/probe.rs", reason)
+
+    for name in ("file sizes", "source licenses"):
+        if name not in by_name or by_name[name].inputs is not None:
+            errors.append(f"unbounded step {name!r} must have inputs=None")
+
+    for step in steps:
+        if step.name in ("file sizes", "source licenses"):
+            continue
+        if not isinstance(step.inputs, tuple) or not step.inputs:
+            errors.append(f"bounded step {step.name!r} must declare a non-empty tuple of inputs")
+            continue
+        for shared in (*GATE_SELF, *TOOLCHAIN_PINS):
+            require_covers(step.name, shared, "shared pin")
+
+    repo_resolved = Path(repo).resolve()
+    member_dirs = []
+    verified_dirs = []
+    for pkg in metadata["packages"]:
+        rel_dir = Path(pkg["manifest_path"]).resolve().parent.relative_to(repo_resolved).as_posix()
+        member_dirs.append(rel_dir)
+        if ((pkg.get("metadata") or {}).get("atmosphere") or {}).get("verified"):
+            verified_dirs.append(rel_dir)
+
+    for rel_dir in member_dirs:
+        require_covers("license", f"{rel_dir}/Cargo.toml", "workspace member manifest")
+        for step_name in ("build", "workspace tests", "forced lints"):
+            require_crate(step_name, rel_dir, "workspace member")
+
+    verified_closure = workspace_dep_closure(metadata, verified_dirs, repo)
+    for step_name in ("verify", "verify aarch64", "throwaways", "unwitnessed", "refused", "unrefused",
+                      "page literals", "layout claims"):
+        for rel_dir in verified_closure:
+            require_crate(step_name, rel_dir, "verified crate or transitive dep")
+
+    for rel_dir in [*verified_closure, "kernel"]:
+        require_crate("external body", rel_dir, "verified crate closure or kernel target")
+
+    for rel_dir in workspace_dep_closure(metadata, ["kernel/verified"], repo):
+        require_crate("invoked arms", rel_dir, "kernel/verified closure")
+
+    for rel_dir in workspace_dep_closure(metadata, ["kernel", "dom0", "astd", *verified_dirs], repo):
+        require_crate("boundary", rel_dir, "boundary crate or transitive dep")
+
+    image_closure = workspace_dep_closure(metadata, ["aloader", "kernel", "dom0", "user/hello"], repo)
+    for step_name in ("boot stack", "coverage", "iommu boot", "boot", "aarch64 boot"):
+        for rel_dir in image_closure:
+            require_crate(step_name, rel_dir, "boot image crate or transitive dep")
+        require_covers(step_name, "user/.cargo/config.toml", "user cargo config")
+        require_covers(step_name, "user/x86_64-unknown-aloader.json", "user target spec")
+        require_covers(step_name, "user/aarch64-unknown-aloader.json", "user aarch64 target spec")
+
+    for rel_dir in member_dirs:
+        if rel_dir.startswith("user/"):
+            require_crate("coverage", rel_dir, "user workspace member")
+
+    for rel_dir in workspace_dep_closure(metadata, member_dirs, repo, include_dev=True):
+        require_crate("workspace tests", rel_dir, "workspace test dependency")
+    require_covers("workspace tests", "kernel/src/boot/free_ranges.rs", "boot-host-tests #[path]")
+    require_covers("workspace tests", "kernel/src/boot/mapped_runs.rs", "boot-host-tests #[path]")
+    require_covers("workspace tests", INVOKED_ARMS_CHECK, "boot-host-tests invoked_arms_test")
+
+    for directory, target in FORCED_LINT_AARCH64:
+        require_covers("forced lints", f"{directory}/Cargo.toml", "FORCED_LINT_AARCH64 member")
+        if target.endswith(".json"):
+            spec_path = posixpath.normpath(f"{directory}/{target}")
+            for step_name in ("forced lints", "build", "workspace tests", "boot stack", "coverage",
+                              "iommu boot", "boot", "aarch64 boot"):
+                require_covers(step_name, spec_path, "FORCED_LINT_AARCH64 target spec")
+
+    for target in patch_targets:
+        require_covers("upstream copies", target, "upstream-copies patch or target")
+
+    for path in faq_paths:
+        require_covers("faq", path, "tools/faq.py path")
+
+    extra_tools = {
+        "license": ("tools/license-allowlist",),
+        "hooks": ("AGENTS.md", ".agents/hooks.json", ".claude/hooks/license-guard.sh",
+                  ".claude/hooks/beads-actor.sh", ".claude/hooks/agy-session-start.sh", *HOOK_TESTS),
+        "design index": ("design/INDEX.md", "design/example/DECISION.md"),
+        "arch sources": ("kernel/src/main.rs",),
+        "verify": (VERIFY_ALLOWANCE,),
+        "verify aarch64": (VERIFY_ALLOWANCE,),
+        "unwitnessed": (VERIFY, THROWAWAY_CHECK, UNWITNESSED),
+        "refused": (VERIFY, THROWAWAY_CHECK, WITNESS_INVENTORY),
+        "unrefused": (VERIFY, THROWAWAY_CHECK, WITNESS_INVENTORY, "tools/refused-exempt", UNREFUSED),
+        "external body": ("tools/external-body-list", "tools/hardware-documents"),
+        "boundary": (EXTERNAL_BODY_CHECK, "tools/boundary-list", "tools/hardware-documents"),
+        "boot stack": (RUN, "tools/elfstrip.py", "tools/firmware.py"),
+        "coverage": (BOOT_STACK_CHECK, RUN, "tools/elfstrip.py", "tools/firmware.py"),
+        "iommu boot": ("tools/elfstrip.py", "tools/firmware.py"),
+        "boot": ("tools/gdb-helper.py", "tools/elfstrip.py", "tools/firmware.py"),
+        "aarch64 boot": ("tools/aarch64-esp.py", BUILD, STACK_SIZES_CHECK, "tools/elfstrip.py",
+                         "tools/orangepi-kvm.py", BOOT_LOG_CHECK),
+    }
+    for step_name, paths in extra_tools.items():
+        for path in paths:
+            require_covers(step_name, path, "step tool or config")
+
+    for step_name, invoked in tool_calls.items():
+        for tool in invoked:
+            require_covers(step_name, tool, "tool invoked by step")
+
+    return errors
+
+
+def chosen(target=None, names=None, changed=None):
+    """The steps the gate runs, in its order: those of target, of names, and affected by changed."""
     return [step for step in STEPS
-            if (target is None or step.target == target) and (names is None or step.name in names)]
+            if (target is None or step.target == target)
+            and (names is None or step.name in names)
+            and (changed is None or step_affected(step, changed))]
 
 
 def step_line(name, ok, detail, seconds):
@@ -600,14 +1046,37 @@ def arguments(argv):
                         help="one target's steps: aarch64 is its verify and its boot on the Orange Pi, x86_64 every other step")
     parser.add_argument("--step", action="append", choices=[step.name for step in STEPS], metavar="NAME",
                         help="run this step; repeat for more (default every step)")
+    parser.add_argument("--since", metavar="BASE",
+                        help="select only unbounded steps and bounded steps whose inputs changed since BASE")
+    parser.add_argument("--steps", action="store_true",
+                        help="print the selected step names in gate order instead of running them")
+    parser.add_argument("--unread", action="store_true",
+                        help="print tracked files covered by no bounded step and exit")
     parser.add_argument("--boot-timeout", type=int, default=BOOT_TIMEOUT,
                         help=f"seconds dom0 has to boot and finish before the run counts as a hang (default {BOOT_TIMEOUT})")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.unread and (args.since or args.steps or args.step or args.target):
+        parser.error("--unread cannot be combined with --target, --step, --since, or --steps")
+    return args
 
 
-def main(argv):
+def main(argv, repo=REPO):
     args = arguments(argv)
-    lines, code = run_gate(Gate(REPO, args.boot_timeout), chosen(args.target, args.step))
+    if args.unread:
+        for path in unread_paths(tracked_paths(repo)):
+            print(path)
+        return 0
+    try:
+        changed = changed_paths_since(repo, args.since) if args.since is not None else None
+    except Failure as error:
+        print(f"tools/gate.py: {error}", file=sys.stderr)
+        return 1
+    selected = chosen(args.target, args.step, changed)
+    if args.steps:
+        for step in selected:
+            print(step.name)
+        return 0
+    lines, code = run_gate(Gate(repo, args.boot_timeout), selected)
     print()
     print("\n".join(lines))
     return code
@@ -970,6 +1439,193 @@ class Tests(unittest.TestCase):
     def test_a_program_that_cannot_start_fails_its_step(self):
         with self.assertRaisesRegex(Failure, "^tools/missing.py: No such file or directory$"):
             Gate(self.root, BOOT_TIMEOUT).call(["tools/missing.py"])
+
+    def test_glob_matching_follows_posix_tree_semantics(self):
+        self.assertTrue(matches_globs("kernel/verified/pptr.rs", ("kernel/verified/**",)))
+        self.assertTrue(matches_globs("./kernel/verified/capability/retype.rs", ("kernel/verified/**",)))
+        self.assertFalse(matches_globs("kernel/verified-extra/a.rs", ("kernel/verified/**",)))
+        self.assertTrue(matches_globs("kernel/.cargo/config.toml", ("kernel/**",)))
+        self.assertTrue(matches_globs("user/x86_64-unknown-aloader.json", ("user/*-unknown-aloader.json",)))
+        self.assertFalse(matches_globs("user/hello/x86_64-unknown-aloader.json", ("user/*-unknown-aloader.json",)))
+        self.assertTrue(matches_globs("design/gate-runs-steps-whose-inputs-changed/DECISION.md", ("design/*/DECISION.md",)))
+        self.assertFalse(matches_globs("design/README.md", ("design/*/DECISION.md",)))
+        self.assertTrue(matches_globs("Cargo.toml", ("Cargo.toml",)))
+        self.assertFalse(matches_globs("kernel/Cargo.toml", ("Cargo.toml",)))
+        self.assertFalse(matches_globs("", ("**",)))
+
+    def test_input_slice_digest_hashes_only_matching_entries_deterministically(self):
+        base_entries = [
+            ("100644", "b" * 40, ".claude/agents/round.md"),
+            ("100644", "a" * 40, "kernel/verified/lib.rs"),
+            ("100644", "c" * 40, "kernel/src/main.rs"),
+        ]
+        verify_step = next(step for step in STEPS if step.name == "verify")
+        self.assertIsNone(input_slice_digest(base_entries, None))
+        d1 = input_slice_digest(base_entries, verify_step.inputs)
+        d2 = input_slice_digest(reversed(base_entries), verify_step.inputs)
+        self.assertEqual(d1, d2)
+        # An edit outside verify.inputs keeps the exact same digest.
+        touched_unverified = [
+            ("100644", "b" * 40, ".claude/agents/round.md"),
+            ("100644", "a" * 40, "kernel/verified/lib.rs"),
+            ("100644", "d" * 40, "kernel/src/main.rs"),
+        ]
+        self.assertEqual(input_slice_digest(touched_unverified, verify_step.inputs), d1)
+        # An edit to mode or blob SHA inside verify.inputs changes the digest.
+        touched_mode = [
+            ("100644", "b" * 40, ".claude/agents/round.md"),
+            ("100755", "a" * 40, "kernel/verified/lib.rs"),
+            ("100644", "c" * 40, "kernel/src/main.rs"),
+        ]
+        self.assertNotEqual(input_slice_digest(touched_mode, verify_step.inputs), d1)
+        touched_blob = [
+            ("100644", "b" * 40, ".claude/agents/round.md"),
+            ("100644", "e" * 40, "kernel/verified/lib.rs"),
+            ("100644", "c" * 40, "kernel/src/main.rs"),
+        ]
+        self.assertNotEqual(input_slice_digest(touched_blob, verify_step.inputs), d1)
+
+    def test_parse_ls_tree_reads_nul_records(self):
+        raw = b"100644 blob " + b"1" * 40 + b"\tCargo.toml\x00120000 blob " + b"2" * 40 + b"\tAGENTS.md\x00"
+        self.assertEqual(parse_ls_tree(raw), [
+            ("100644", "1" * 40, "Cargo.toml"),
+            ("120000", "2" * 40, "AGENTS.md"),
+        ])
+
+    def test_step_selection_for_diff_and_unread_paths(self):
+        names = lambda changed: [step.name for step in chosen(changed=changed)]
+        self.assertEqual(names([".claude/agents/round.md"]), ["file sizes", "source licenses"])
+        self.assertEqual(names(["CLAUDE.md", "tools/loop.py"]), ["file sizes", "source licenses"])
+
+        unverified_kernel = names(["kernel/src/boot/free_ranges.rs"])
+        for omitted in ("verify", "verify aarch64", "throwaways", "unwitnessed", "refused", "unrefused",
+                        "page literals", "invoked arms", "layout claims", "upstream copies", "faq"):
+            self.assertNotIn(omitted, unverified_kernel)
+        for included in ("file sizes", "source licenses", "build", "workspace tests", "forced lints",
+                         "external body", "boundary", "arch sources", "boot stack", "coverage",
+                         "iommu boot", "boot", "aarch64 boot"):
+            self.assertIn(included, unverified_kernel)
+
+        verified_kernel = names(["kernel/verified/kernel.rs"])
+        self.assertIn("verify", verified_kernel)
+        self.assertIn("verify aarch64", verified_kernel)
+
+        cargo_change = names(["Cargo.toml"])
+        self.assertEqual(cargo_change, [step.name for step in STEPS])
+
+        self.assertEqual(
+            unread_paths(["Cargo.toml", ".claude/agents/round.md", "kernel/src/main.rs", "tools/loop.py", "README.md"]),
+            [".claude/agents/round.md", "tools/loop.py", "README.md"],
+        )
+
+    def test_real_steps_inputs_are_complete_against_repo_metadata(self):
+        self.assertEqual(step_input_errors(STEPS, repo=REPO), [])
+
+    def test_missing_workspace_transitive_or_tool_glob_is_caught(self):
+        base_meta = load_cargo_metadata(REPO)
+        faq_paths = load_faq_paths(REPO)
+        patch_targets = load_patch_targets(REPO)
+        tool_calls = collect_step_tool_calls()
+
+        def drop_glob(step_name, glob):
+            mutated = []
+            for step in STEPS:
+                if step.name == step_name:
+                    reduced = tuple(g for g in step.inputs if g != glob)
+                    self.assertNotEqual(reduced, step.inputs, f"{glob} not in {step_name}")
+                    mutated.append(step._replace(inputs=reduced))
+                else:
+                    mutated.append(step)
+            return tuple(mutated)
+
+        # Missing workspace member glob in build and in license.
+        self.assertTrue(step_input_errors(drop_glob("build", "file-service/**"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        self.assertTrue(step_input_errors(drop_glob("license", "file-service/Cargo.toml"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        # Missing transitive dependency glob in verify (asys) and in boot (aelf).
+        self.assertTrue(step_input_errors(drop_glob("verify", "asys/**"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        self.assertTrue(step_input_errors(drop_glob("boot", "aelf/**"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        # Missing tool glob in boot (tools/gdb.py) and in build (tools/check-stack-sizes.py) and in faq (tools/faq.py).
+        self.assertTrue(step_input_errors(drop_glob("boot", "tools/gdb.py"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        self.assertTrue(step_input_errors(drop_glob("build", "tools/check-stack-sizes.py"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        self.assertTrue(step_input_errors(drop_glob("faq", "tools/faq.py"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        # Missing upstream patch target or faq constant path.
+        self.assertTrue(step_input_errors(drop_glob("upstream copies", "kernel/verified/pptr.rs"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        self.assertTrue(step_input_errors(drop_glob("faq", "kernel/verified/define.rs"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+        # Missing FORCED_LINT_AARCH64 target spec.
+        self.assertTrue(step_input_errors(drop_glob("forced lints", "user/*-unknown-aloader.json"), REPO, base_meta, faq_paths, patch_targets, tool_calls))
+
+        # Simulated new workspace crate and new transitive verified crate dependency.
+        extra_meta = json.loads(json.dumps(base_meta))
+        extra_meta["packages"].append({
+            "name": "new-crate",
+            "manifest_path": str(REPO / "new-crate/Cargo.toml"),
+            "metadata": {"atmosphere": {"verified": True}},
+            "dependencies": [],
+        })
+        self.assertTrue(step_input_errors(STEPS, REPO, extra_meta, faq_paths, patch_targets, tool_calls))
+
+    def test_since_and_steps_and_unread_cli_in_temp_git_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t.invalid"], check=True)
+            for rel in ("Cargo.toml", ".claude/agents/round.md", "kernel/src/main.rs", "kernel/verified/lib.rs"):
+                p = repo / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("seed\n")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "seed"], check=True)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            self.assertEqual(unread_paths(tracked_paths(repo)), [".claude/agents/round.md"])
+
+            (repo / ".claude/agents/round.md").write_text("edited\n")
+            subprocess.run(["git", "-C", str(repo), "commit", "-qam", "doc"], check=True)
+            self.assertEqual([s.name for s in chosen(changed=changed_paths_since(repo, base))],
+                             ["file sizes", "source licenses"])
+            entries_base = ls_tree_entries(repo, base)
+            entries_head = ls_tree_entries(repo, "HEAD")
+            verify_step = next(s for s in STEPS if s.name == "verify")
+            self.assertEqual(input_slice_digest(entries_base, verify_step.inputs),
+                             input_slice_digest(entries_head, verify_step.inputs))
+
+            (repo / "kernel/src/main.rs").write_text("edited\n")
+            subprocess.run(["git", "-C", str(repo), "commit", "-qam", "src"], check=True)
+            since_src = [s.name for s in chosen(changed=changed_paths_since(repo, "HEAD~1"))]
+            self.assertNotIn("verify", since_src)
+            self.assertIn("build", since_src)
+
+            (repo / "kernel/verified/lib.rs").write_text("edited\n")
+            subprocess.run(["git", "-C", str(repo), "commit", "-qam", "ver"], check=True)
+            since_ver = [s.name for s in chosen(changed=changed_paths_since(repo, "HEAD~1"))]
+            self.assertIn("verify", since_ver)
+            self.assertIn("verify aarch64", since_ver)
+
+            unread_out = io.StringIO()
+            with contextlib.redirect_stdout(unread_out):
+                self.assertEqual(main(["--unread"], repo=repo), 0)
+            self.assertEqual(unread_out.getvalue().splitlines(), [".claude/agents/round.md"])
+
+            steps_out = io.StringIO()
+            with contextlib.redirect_stdout(steps_out):
+                self.assertEqual(main(["--since", "HEAD~2", "--steps"], repo=repo), 0)
+            steps_lines = steps_out.getvalue().splitlines()
+            self.assertIn("file sizes", steps_lines)
+            self.assertIn("source licenses", steps_lines)
+            self.assertIn("verify", steps_lines)
+
+            err_out = io.StringIO()
+            with contextlib.redirect_stderr(err_out):
+                self.assertEqual(main(["--since", "no-such-ref", "--steps"], repo=repo), 1)
+            self.assertIn("tools/gate.py:", err_out.getvalue())
+
+    def test_arguments_accept_since_steps_and_unread(self):
+        args = arguments(["--since", "main", "--steps"])
+        self.assertEqual(args.since, "main")
+        self.assertTrue(args.steps)
+        self.assertFalse(args.unread)
+        self.assertTrue(arguments(["--unread"]).unread)
 
 
 if __name__ == "__main__":
