@@ -339,6 +339,8 @@ dependencies = [
  "acontext",
  "aeager",
  "aheap",
+ "amailbox",
+ "aring",
  "astd",
  "asys",
  "vstd",

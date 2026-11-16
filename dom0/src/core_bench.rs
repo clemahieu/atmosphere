@@ -89,7 +89,7 @@ const WAKE_WORD: u64 = 0x7761_6b65_5f6c_6f63;
 
 /// How many reads of a word dom0 makes before it gives up on a thread on another core changing it:
 /// tens of milliseconds.
-const WAKE_READS: u64 = 1 << 24;
+pub(crate) const WAKE_READS: u64 = 1 << 24;
 
 /// How many again returns a suspend of a thread running on another core may take before dom0 gives up on
 /// that core taking the reschedule IPI, as core_1_restarted_held allows.
@@ -204,7 +204,7 @@ fn invoked(operation: u64, thread: u64, arguments: [u64; 5]) -> u64 {
 
 /// Whether the thread at `thread` is suspended: a suspend returns ok, after again while it runs on
 /// another core, within STOP_AGAIN_MAX.
-fn stopped(thread: u64) -> bool {
+pub(crate) fn stopped(thread: u64) -> bool {
     let mut again = 0;
     loop {
         match invoked(operation::SUSPEND, thread, [0; 5]) {

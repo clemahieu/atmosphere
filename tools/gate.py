@@ -627,6 +627,8 @@ IMAGE_CRATES = tuple(dict.fromkeys((
     "acall/**",
     "aeager/**",
     "aheap/**",
+    "aring/**",
+    "amailbox/**",
     "asys/**",
     "kernel-logger/**",
     "machine/**",
@@ -637,8 +639,6 @@ IMAGE_CRATES = tuple(dict.fromkeys((
 )))
 WORKSPACE_CRATES = tuple(dict.fromkeys((
     *IMAGE_CRATES,
-    "aring/**",
-    "amailbox/**",
     "afanin/**",
     "pager-policy/**",
     "adivider/**",

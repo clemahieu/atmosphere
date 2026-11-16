@@ -23,12 +23,12 @@ const PAGE_BYTES: u64 = 4096;
 const POOL_OFFSET_BYTES: u64 = 64 * 1024 * 1024;
 
 /// First root capability table entry probed for placing this suite's single table leaf.
-const BENCH_CAP_ENTRY_START: u64 = 32;
+pub(crate) const BENCH_CAP_ENTRY_START: u64 = 32;
 
 /// Distinct level-4 user address windows used by the 4K, 2M, and span/teardown benchmarks.
-const BENCH_4K_WINDOW: u64 = 16 << 39;
-const BENCH_2M_WINDOW: u64 = 17 << 39;
-const BENCH_SPAN_WINDOW: u64 = 18 << 39;
+pub(crate) const BENCH_4K_WINDOW: u64 = 16 << 39;
+pub(crate) const BENCH_2M_WINDOW: u64 = 17 << 39;
+pub(crate) const BENCH_SPAN_WINDOW: u64 = 18 << 39;
 const BENCH_SPAN_4K_BASE: u64 = BENCH_SPAN_WINDOW;
 const BENCH_SPAN_2M_BASE: u64 = BENCH_SPAN_WINDOW + LARGE_FRAME_BYTES;
 
@@ -66,7 +66,7 @@ struct MmuBenchFixture {
     teardown_2m_phys: u64,
 }
 
-fn find_gigabyte_untyped() -> Option<(u64, operation::Capability)> {
+pub(crate) fn find_gigabyte_untyped() -> Option<(u64, operation::Capability)> {
     let min_pages = 1u64 << 18;
     let mut slot = operation::ROOT_UNTYPED_SLOT;
     let mut found = None;
@@ -88,7 +88,7 @@ fn find_gigabyte_untyped() -> Option<(u64, operation::Capability)> {
     found
 }
 
-fn retype_large_frame_until_done(untyped: u64, base: u64, destination: u64) -> bool {
+pub(crate) fn retype_large_frame_until_done(untyped: u64, base: u64, destination: u64) -> bool {
     for _ in 0..RETYPE_LARGE_AGAIN_MAX {
         match operation::retype_large_frame(untyped, base, destination) {
             operation::STATUS_OK => return true,
@@ -133,7 +133,7 @@ fn retype_free_until_done(untyped: u64, base: u64, order: u64) -> bool {
     false
 }
 
-fn alloc_and_link_table(untyped: u64, next_table: &mut u64, va: u64, level: u64) -> bool {
+pub(crate) fn alloc_and_link_table(untyped: u64, next_table: &mut u64, va: u64, level: u64) -> bool {
     let base = *next_table;
     *next_table += TABLE_PAGE_BYTES;
     operation::retype_table_page(untyped, base, level) == operation::STATUS_OK

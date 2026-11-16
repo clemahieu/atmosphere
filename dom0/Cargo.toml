@@ -12,6 +12,8 @@ acall = { path = "../acall" }
 acontext = { path = "../acontext" }
 aeager = { path = "../aeager" }
 aheap = { path = "../aheap" }
+amailbox = { path = "../amailbox" }
+aring = { path = "../aring" }
 astd = { path = "../astd", features = ["heap"] }
 asys = { path = "../asys" }
 

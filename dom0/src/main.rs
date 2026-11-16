@@ -136,8 +136,9 @@
 //! objects until the allocator refuses one, frees them, allocates one again, and prints that the heap
 //! held.
 //! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`), memory pointer-chase,
-//! core-scaling/placement (`core_bench`), scaled/contended capability (`cap_bench`), and heap
-//! allocator / working-set churn (`heap_bench`) microbenchmarks (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under
+//! core-scaling/placement (`core_bench`), scaled/contended capability (`cap_bench`), heap
+//! allocator / working-set churn (`heap_bench`), and shared-frame ring/mailbox (`ring_bench`)
+//! microbenchmarks (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under
 //! the `bench` feature prints the full results summary and `fuchsiaperf.json` block; `core_bench`
 //! binds dom0-process bench threads in root entries after the heap's before the heap claims the
 //! caller token, probing the online core count with CAS helpers.
@@ -164,6 +165,7 @@ mod flush_cost;
 mod heap_bench;
 mod mmu_bench;
 mod registers;
+mod ring_bench;
 
 extern crate alloc;
 
@@ -702,6 +704,9 @@ fn benchmarks_held() -> bool {
         return false;
     }
     if !heap_bench::register(&mut registry) {
+        return false;
+    }
+    if !ring_bench::register(&mut registry) {
         return false;
     }
     let mut console = ConsoleWriter::new();
