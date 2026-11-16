@@ -135,7 +135,10 @@
 //! over a block, writing and reading each back; once all three are freed it allocates run-sized
 //! objects until the allocator refuses one, frees them, allocates one again, and prints that the heap
 //! held.
-//! dom0 prints that result through the console, then an exit marker,
+//! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`) and memory pointer-chase
+//! microbenchmarks (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under
+//! the `bench` feature prints the full results summary and `fuchsiaperf.json` block.
+//! dom0 prints those results through the console, then an exit marker,
 //! and ends the run with a power-off through its power capability, reporting success only when every
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
 //! `svc #1` returns unknown and prints nothing.
@@ -153,6 +156,7 @@
 
 mod context;
 mod flush_cost;
+mod mmu_bench;
 mod registers;
 
 extern crate alloc;
@@ -225,10 +229,10 @@ fn own_consumed_held(caller: &mut Tracked<Caller>) -> bool {
 }
 
 /// The largest order a capability's block has: 2^36 pages reach the end of the 48-bit space.
-const MAX_ORDER: u64 = 36;
+pub(crate) const MAX_ORDER: u64 = 36;
 
 /// The last slot of the table's first leaf, where boot's untyped end.
-const FIRST_LEAF_END: u64 = operation::ROOT_FRAME_SLOT - 2;
+pub(crate) const FIRST_LEAF_END: u64 = operation::ROOT_FRAME_SLOT - 2;
 
 /// A word with a bit set above those a table position uses, so it names no position.
 const NO_POSITION: u64 = 1 << operation::POSITION_WIDTH;
@@ -302,7 +306,7 @@ fn retyped_frame_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
 const PATH_ADDRESS: u64 = 2 << 39;
 
 /// The bytes of a table page's block, order 3.
-const TABLE_PAGE_BYTES: u64 = 8 * 4096;
+pub(crate) const TABLE_PAGE_BYTES: u64 = 8 * 4096;
 
 /// The last untyped from `empty` down whose block holds at least `pages` 4K pages, if any.
 fn untyped_of_pages(caller: &mut Tracked<Caller>, empty: u64, pages: u64) -> Option<(u64, operation::Capability)> {
@@ -446,7 +450,7 @@ fn moved_frame_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
 }
 
 /// The pages of a 2M frame's block, order 9.
-const LARGE_FRAME_PAGES: u64 = 512;
+pub(crate) const LARGE_FRAME_PAGES: u64 = 512;
 
 /// The start of the line dom0 prints once its 2M retype is done, before the number of again returns it
 /// took.
@@ -680,6 +684,9 @@ fn benchmarks_held() -> bool {
         })
         .is_err()
     {
+        return false;
+    }
+    if !mmu_bench::register(&mut registry) {
         return false;
     }
     let mut console = ConsoleWriter::new();
@@ -2248,13 +2255,13 @@ fn retyped_large_frame_held(caller: &mut Tracked<Caller>, empty: u64, destinatio
 }
 
 /// The read right, as the kernel numbers rights.
-const RIGHT_READ: u64 = 1;
+pub(crate) const RIGHT_READ: u64 = 1;
 
 /// The retype right, which no frame has.
 const RIGHT_RETYPE: u64 = 8;
 
 /// The bytes of a 2M frame's block.
-const LARGE_FRAME_BYTES: u64 = LARGE_FRAME_PAGES * 4096;
+pub(crate) const LARGE_FRAME_BYTES: u64 = LARGE_FRAME_PAGES * 4096;
 
 /// Whether dom0 derives from the 2M frame at `large` a child with only the read right, for the second
 /// page of its block, into the empty slot `child`: a derive from the empty slot `empty`, with the frame's
@@ -2371,10 +2378,10 @@ fn derived_power_held(caller: &mut Tracked<Caller>, child: u64) -> bool {
 const LEAF_INDICES: u64 = 128;
 
 /// The root entries of a capability table.
-const ROOT_ENTRIES: u64 = operation::TABLE_INDICES / LEAF_INDICES;
+pub(crate) const ROOT_ENTRIES: u64 = operation::TABLE_INDICES / LEAF_INDICES;
 
 /// The first slot of root entry `entry`, past its leaf's hidden node.
-const fn first_slot(entry: u64) -> u64 {
+pub(crate) const fn first_slot(entry: u64) -> u64 {
     entry * LEAF_INDICES + 1
 }
 
@@ -2443,7 +2450,7 @@ const EAGER_BELOW_TOP: u64 = 256 * 4096;
 
 /// The address of the eager source's window: the start of root entry 3 of dom0's space, past
 /// PATH_ADDRESS's, which nothing maps.
-const EAGER_WINDOW: u64 = 3 << 39;
+pub(crate) const EAGER_WINDOW: u64 = 3 << 39;
 
 /// The bytes a root entry of a space spans, on both targets.
 const ROOT_ENTRY_BYTES: u64 = 1 << 39;
@@ -2459,7 +2466,7 @@ unsafe extern "C" {
 /// maps dom0's image from USERSPACE_BASE to `_end`, its payload from USERSPACE_PAYLOAD_BASE and its
 /// stack, which holds this function's frame; dom0 maps and links pages of its own space under
 /// PATH_ADDRESS, and its sources under their windows.
-fn window_clear(window: u64, taken: &[u64]) -> bool {
+pub(crate) fn window_clear(window: u64, taken: &[u64]) -> bool {
     let entry = |address: u64| address / ROOT_ENTRY_BYTES;
     let here = 0u8;
     let image = entry(USERSPACE_BASE)..=entry(&raw const _end as u64 - 1);
@@ -2544,7 +2551,7 @@ const HEAP_BELOW_TOP: u64 = 2 * (4096 << HEAP_ORDER);
 
 /// The address of the heap's source's window: the start of root entry 4 of dom0's space, past the eager
 /// source's, since a window links its own tables above its blocks.
-const HEAP_WINDOW: u64 = 4 << 39;
+pub(crate) const HEAP_WINDOW: u64 = 4 << 39;
 
 /// The bytes of the run-sized objects dom0 allocates until its heap refuses one: a quarter of a block.
 const RUN_OBJECT: usize = aheap::arch::BLOCK_BYTES / 4;
