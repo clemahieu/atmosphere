@@ -378,6 +378,9 @@ pub mod msr {
 
     /// EFER.SCE, which enables SYSCALL and SYSRET. APM 2 §3.1.7, Figure 3-9.
     pub const EFER_SCE: u64 = 1 << 0;
+    /// EFER.NXE, which enables bit 63 as no-execute in paging entries; without it, bit 63 is
+    /// reserved and raises #PF. APM 2 §3.1.7, Figure 3-9, §5.4.1 and §5.6.3.
+    pub const EFER_NXE: u64 = 1 << 11;
 
     /// APM 2 §6.2.5.
     pub unsafe fn rdmsr(msr: u32) -> u64 {

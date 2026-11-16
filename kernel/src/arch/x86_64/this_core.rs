@@ -151,11 +151,18 @@ const CR0_CACHE_DISABLE: u64 = 1 << 30;
 /// CR4.OSFXSR and CR4.OSXMMEXCPT.
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
+/// CPUID Fn8000_0000 EAX (largest extended function) and Fn8000_0001 EDX bit 20, NX: processor
+/// supports EFER.NXE and bit 63 as no-execute. APM 3 Appendix E.4.1, E.4.2; APM 2 §3.1.7, §5.6.3.
+const CPUID_EXTENDED_MAX: u32 = 0x8000_0000;
+const CPUID_EXTENDED_FEATURES: u32 = 0x8000_0001;
+const CPUID_NX: u32 = 1 << 20;
 
 /// Sets the control bits the kernel relies on. Ring 0 cannot write through a read-only mapping,
-/// caching is on, and threads can use x87 and SSE: no x87 emulation, WAIT checks CR0.TS, x87
-/// errors raise #MF, the SSE instructions and FXSAVE are on, and an unmasked SIMD exception raises
-/// #XM. Every core sets this itself, so none depends on what firmware or the trampoline left.
+/// caching is on, threads can use x87 and SSE (no x87 emulation, WAIT checks CR0.TS, x87 errors
+/// raise #MF, the SSE instructions and FXSAVE are on, and an unmasked SIMD exception raises #XM),
+/// and EFER.NXE is set so bit 63 of a paging entry marks a page no-execute rather than faulting as
+/// reserved (APM 2 §3.1.7, Figure 3-9, §5.4.1 and §5.6.3). Every core sets this itself, so none
+/// depends on what firmware or the trampoline left.
 unsafe fn init_control_registers() {
     let mut cr0 = super::read_cr0();
     let mut cr4 = super::read_cr4();
@@ -164,7 +171,15 @@ unsafe fn init_control_registers() {
     cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
     super::write_cr0(cr0);
     super::write_cr4(cr4);
-    log::info!("CPU {}: CR0 {:#x}, CR4 {:#x}", crate::cpu::get_cpu_id(), cr0, cr4);
+    assert!(
+        core::arch::x86_64::__cpuid(CPUID_EXTENDED_MAX).eax >= CPUID_EXTENDED_FEATURES
+            && core::arch::x86_64::__cpuid(CPUID_EXTENDED_FEATURES).edx & CPUID_NX != 0,
+        "CPU {}: processor does not support EFER.NXE",
+        crate::cpu::get_cpu_id(),
+    );
+    let efer = msr::rdmsr(msr::EFER) | msr::EFER_NXE;
+    msr::wrmsr(msr::EFER, efer);
+    log::info!("CPU {}: CR0 {:#x}, CR4 {:#x}, EFER {:#x}", crate::cpu::get_cpu_id(), cr0, cr4, efer);
 }
 
 /// CR4.PCE, which lets RDPMC run outside ring 0. APM 2 §3.1.3, Figure 3-7.

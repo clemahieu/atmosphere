@@ -120,6 +120,10 @@
 //! the placed third thread, bound to it too, and a derive into its table are refused. A move from the dead child's first slot into an empty slot of
 //! dom0's own claims the capability: inspect finds it there and refuses the child's slot, and dom0 prints
 //! that it held.
+//! On x86_64, it retypes a thread bound to its own process from the gigabyte untyped into the second
+//! empty root entry's leaf, places it on core 1 and starts it at dom0_child_entry to write a word into
+//! a static in dom0's .bss (mapped no-execute) and suspend itself, reads the word change, waits for
+//! suspend, and prints that it held.
 //! It retypes a third leaf into root entry 4 and derives into its first slot a child untyped of 64 pages
 //! of the gigabyte untyped, from which aeager's eager span source backs page runs of a window in root
 //! entry 3 of its space; aeager's verified exercise reserves a span, backs it a page at a time until the
@@ -2082,6 +2086,82 @@ fn suspended_thread_held(caller: &mut Tracked<Caller>, copy: u64) -> bool {
 /// thread check's, above the eager source's block, where nothing else retypes.
 const CHILD_LEAF_BELOW_TOP: u64 = THREADS_BELOW_TOP + LEAF_BYTES;
 
+/// How far below the top of the gigabyte untyped the own-process core 1 thread's order-1 block starts:
+/// right below CHILD_LEAF_BELOW_TOP, clear of every other block taken from that top.
+#[cfg(target_arch = "x86_64")]
+const OWN_THREAD_BELOW_TOP: u64 = CHILD_LEAF_BELOW_TOP + THREAD_BYTES;
+
+/// What dom0 prints once a thread bound to dom0's own process ran on core 1 and wrote a word on a
+/// no-execute page of dom0's image, which the gate looks for on x86_64.
+#[cfg(target_arch = "x86_64")]
+const OWN_CORE_1_NX_HELD: [u64; 5] = operation::print_words(b"dom0 own thread wrote nx page\n");
+
+/// The word in dom0's .bss (mapped no-execute, bit 63) that the own-process thread on core 1 writes.
+#[cfg(target_arch = "x86_64")]
+static OWN_CORE_1_WORD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The non-zero value the own-process thread on core 1 writes into [`OWN_CORE_1_WORD`].
+#[cfg(target_arch = "x86_64")]
+const OWN_CORE_1_VALUE: u64 = 0x6f77_6e5f_6e78_6f6b;
+
+/// Whether on x86_64 a thread bound to dom0's own process runs on core 1 and writes a word on a
+/// no-execute page of dom0's image (.bss) and dom0 sees it change. The thread is retyped from the
+/// gigabyte untyped at OWN_THREAD_BELOW_TOP below its top into the second slot of the leaf at
+/// FIRST_EMPTY_ENTRY + 1, placed on core 1, and started at dom0_child_entry (which is in .text) with
+/// OWN_CORE_1_WORD's address, OWN_CORE_1_VALUE, and its own slot. Without EFER.NXE set on the AP,
+/// accessing dom0's no-execute .bss page on core 1 raises a reserved-bit page fault. Once dom0 sees
+/// the word change, it suspends until the thread is Inactive so core 1 is idle again, and prints that
+/// it held. On aarch64 the x86_64 EFER.NXE path is absent, so aarch64 returns true unchanged.
+fn own_core_1_nx_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::sync::atomic::Ordering;
+
+        let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
+            return false;
+        };
+        let base = block.base + (4096 << block.order) - OWN_THREAD_BELOW_TOP;
+        let thread = first_slot(FIRST_EMPTY_ENTRY + 1) + 1;
+        let entry = dom0_child_entry as *const () as u64;
+        let target = (&raw const OWN_CORE_1_WORD) as u64;
+        let arguments = [target, OWN_CORE_1_VALUE, thread];
+        if retype(
+            caller,
+            untyped,
+            operation::RETYPE_THREAD,
+            base,
+            thread,
+            operation::ROOT_PROCESS_SLOT,
+        )
+        .status
+            != operation::STATUS_OK
+            || set_frame_word(caller, thread, operation::PC_WORD, entry) != operation::STATUS_OK
+            || !(0..3).all(|k| {
+                set_frame_word(caller, thread, ARGUMENT_WORDS[k], arguments[k]) == operation::STATUS_OK
+            })
+            || place(caller, thread, operation::ROOT_CORE_SLOT + SECOND_CORE, 1).status
+                != operation::STATUS_OK
+            || OWN_CORE_1_WORD.load(Ordering::Acquire) != 0
+            || start(caller, thread).status != operation::STATUS_OK
+        {
+            return false;
+        }
+        if !(0..SWITCH_READS).any(|_| OWN_CORE_1_WORD.load(Ordering::Acquire) == OWN_CORE_1_VALUE) {
+            return false;
+        }
+        // Wait for the thread's own suspend (or force it) so core 1 is idle before continuing.
+        let stopped = (0..SWITCH_READS).any(|_| suspend(caller, thread).status == operation::STATUS_OK);
+        stopped
+            && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, OWN_CORE_1_NX_HELD) }
+                == operation::STATUS_OK
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = (caller, empty);
+        true
+    }
+}
+
 /// What dom0 prints once it destroyed its child process and claimed a capability from the dead child's
 /// table, which the gate looks for.
 const DESTROYED_HELD: [u64; 5] = operation::print_words(b"dom0 process destroyed\n");
@@ -2695,6 +2775,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && core_1_counting_held(caller)
                                 && core_1_restarted_held(caller)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
+                                && own_core_1_nx_held(caller, empty)
                                 && eager_source_held(caller, empty)
                         })
             })

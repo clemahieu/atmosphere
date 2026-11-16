@@ -21,6 +21,10 @@ use core::ptr;
 /// Where the trampoline runs: the page a STARTUP IPI names.
 const BASE: u16 = 0x7000;
 
+/// EFER.LME (bit 8) and EFER.NXE (bit 11), MSR C000_0080h: AMD APM Vol. 2 §3.1.7, Figure 3-9.
+const EFER_LME: u32 = 1 << 8;
+const EFER_NXE: u32 = 1 << 11;
+
 global_asm!(
     ".pushsection .rodata.ap_trampoline, \"a\"",
     ".balign 16",
@@ -61,10 +65,11 @@ global_asm!(
     "mov %cr4, %eax",
     "or $(1 << 5), %eax",
     "mov %eax, %cr4",
-    // Enable long mode in EFER.
+    // Enable long mode (LME) and no-execute protection (NXE) in EFER (MSR C000_0080h): AMD APM
+    // Vol. 2 §3.1.7, Figure 3-9, and §5.6.3.
     "mov $0xc0000080, %ecx",
     "rdmsr",
-    "or $(1 << 8), %eax",
+    "or ${efer}, %eax",
     "wrmsr",
     // Enable paging.
     "mov %cr0, %eax",
@@ -119,6 +124,7 @@ global_asm!(
     "ap_trampoline_end:",
     ".popsection",
     base = const BASE,
+    efer = const EFER_LME | EFER_NXE,
     options(att_syntax),
 );
 

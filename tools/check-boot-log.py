@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
-line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line and the segments line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 Each of CPU 0 and CPU 1 prints its processor report once; on x86_64 its invpcid bit is the host's, CPUID
 Fn0000_0007 EBX bit 10 as /proc/cpuinfo's invpcid flag gives it, which the output records, and its specres bit
 is clear; on aarch64 its x86_64 bits are clear.
@@ -108,6 +108,10 @@ GS_LOADED_LINE = "dom0 gs loaded across entries"
 # The line dom0 prints on x86_64 once a thread of its child, resumed on core 0 after dom0 loaded FS, DS and ES with
 # its own data selector, found all three null and an FS base of 0: a core does not pass them from one thread to the next.
 SEGMENTS_LINE = "dom0 segments not passed on"
+
+# The line dom0 prints on x86_64 once a thread bound to dom0's own process ran on core 1 and wrote a word
+# on a no-execute page of dom0's image (.bss), showing EFER.NXE is set on the AP as well as the BSP.
+OWN_CORE_1_NX_LINE = "dom0 own thread wrote nx page"
 
 # The lines dom0 prints once every register the syscall ABI preserves kept a distinct value across a
 # cheap invocation and across a timer preemption, on both targets. design/syscall-abi-in-registers/.
@@ -466,6 +470,8 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
         raise Refused(f'the serial log does not show dom0 entering the kernel with GS loaded: "{GS_LOADED_LINE}"')
     if arch == "x86_64" and not line_printed(serial, SEGMENTS_LINE):
         raise Refused(f'the serial log does not show a thread finding null segments after dom0 loaded them: "{SEGMENTS_LINE}"')
+    if arch == "x86_64" and not line_printed(serial, OWN_CORE_1_NX_LINE):
+        raise Refused(f'the serial log does not show a thread of dom0 on core 1 writing a no-execute page: "{OWN_CORE_1_NX_LINE}"')
     if not line_printed(serial, SYSCALL_REGISTERS_LINE):
         raise Refused(f'the serial log does not show dom0 keeping preserved registers across an invocation: "{SYSCALL_REGISTERS_LINE}"')
     if not line_printed(serial, PREEMPTION_REGISTERS_LINE):
@@ -493,7 +499,7 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
     reports = processor_reports_held(serial, arch, host_invpcid() if invpcid is None and arch == "x86_64" else invpcid)
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
             f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
-            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}syscall registers line, preemption registers line, context switch registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
+            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, own nx page line, ' if arch == 'x86_64' else ''}syscall registers line, preemption registers line, context switch registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended, {reports}")
     if translation:
@@ -576,6 +582,7 @@ def boot_log():
             "dom0 thread killed on core 1\n"
             "core 1 lag 2000 counts\n"
             "dom0 process destroyed\n"
+            "dom0 own thread wrote nx page\n"
             "dom0 eager backed 40\n"
             "dom0 heap allocator held\n"
             "dom0 slot checks held\n"
@@ -632,6 +639,7 @@ class Tests(unittest.TestCase):
             ("thread counted 39000000 in 3 turns\n", "both counting"),
             ("dom0 gs loaded across entries\n", "GS loaded"),
             ("dom0 segments not passed on\n", "null segments"),
+            ("dom0 own thread wrote nx page\n", "no-execute page"),
             ("dom0 syscall registers held\n", "across an invocation"),
             ("dom0 preemption registers held\n", "across a preemption"),
             ("dom0 context switch registers held\n", "across a context switch"),
@@ -662,13 +670,19 @@ class Tests(unittest.TestCase):
 
     def test_the_gs_and_segments_lines_are_asked_only_on_x86_64(self):
         virt = boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
-        without = virt.replace("dom0 gs loaded across entries\n", "").replace("dom0 segments not passed on\n", "")
+        without = (
+            virt.replace("dom0 gs loaded across entries\n", "")
+            .replace("dom0 segments not passed on\n", "")
+            .replace("dom0 own thread wrote nx page\n", "")
+        )
         held = boot_log_accepted(without, "aarch64")
         self.assertNotIn("GS line", held)
         self.assertNotIn("segments line", held)
+        self.assertNotIn("own nx page line", held)
         held = boot_log_accepted(boot_log(), "x86_64")
         self.assertIn("GS line", held)
         self.assertIn("segments line", held)
+        self.assertIn("own nx page line", held)
 
     def test_the_preserved_register_lines_are_asked_on_both_targets(self):
         virt = boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
