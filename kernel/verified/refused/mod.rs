@@ -23,6 +23,9 @@
 //! reclaim's Freed, at a dead queue the untyped covers, its Unlinked, at a live leaf node, and its
 //! Slice, at a leaf with a slot left, meet no unchanged kernel, and neither does reclaim_frame's or
 //! reclaim_large_frame's Freed once the frame is acknowledged. The three Again ways stay exempt.
+//! retype_endpoint and retype_notification do not make the free page a live endpoint or notification,
+//! retype_reply does not make it a reply, and retype_space does not make the free block a space.
+//! revoke's Exhausted does not put the flush epoch at its limit.
 //! tools/check-refused.py runs each module under cfg(refused), which nothing else sets, so the claims
 //! are in no image and no verify count. design/refused-claim-per-way/.
 //!
@@ -100,6 +103,11 @@ pub mod reclaim_unlinked;
 pub mod reclaim_slice;
 pub mod reclaim_frame_freed;
 pub mod reclaim_large_freed;
+pub mod retype_endpoint_ok;
+pub mod retype_notification_ok;
+pub mod retype_reply_ok;
+pub mod retype_space_ok;
+pub mod revoke_exhausted;
 
 use vstd::prelude::*;
 
@@ -108,7 +116,8 @@ verus! {
 use crate::arch::{user_rip, FrameKind, Registers, saved_frame, tag_written};
 use crate::capability::thread::{CurrentStep, SuspendStep, ThreadState, entry_frame_save, runs_in_space, same_record_perm_but_links};
 use crate::capability::unmap::Unmapped;
-use crate::define::{NUM_CPUS, NUM_IOMMUS, PAGE_SZ, PAGES_PER_1G, PAGES_PER_2M, PCID_MAX};
+use crate::define::{ENTRIES, NUM_CPUS, NUM_IOMMUS, PAGE_SZ, PAGES_PER_1G, PAGES_PER_2M, PCID_MAX};
+use vstd::arithmetic::power2::pow2;
 use crate::util::page_ptr_util_u::mem_valid;
 use crate::capability::boot_image::{image_blocks, ImageRun, ROOT_FRAME_SLOTS};
 use crate::capability::boot_memory::{runs_blocks, ROOT_UNTYPED_SLOTS};
@@ -120,19 +129,20 @@ use crate::capability::device::{DeviceInfo, MAX_DEVICES, binding_node, device_of
 use crate::capability::device_space::DeviceRange;
 use crate::capability::guest_space::GuestPhysRange;
 use crate::capability::list::{NODE_SPACE, NODES_PER_PAGE};
-use crate::capability::revoke::{REVOKE_STEP_STEPS, UNLINK_ARM_STEPS};
+use crate::capability::revoke::{RevokeStep, REVOKE_STEP_STEPS, UNLINK_ARM_STEPS};
 use crate::capability::link::tree_of;
-use crate::capability::mapping::space_says;
+use crate::capability::mapping::{space_mapping, space_says, SpacePath};
 use crate::capability::probe::Probed;
 use crate::capability::reach::{discharges, Effect, Right, saves_own_frame};
 use crate::capability::schedule::{at_back_of_priority, queued_at_back, thread_priority};
-use crate::capability::space::{SPACE_ROOT_PAGE, Spaces};
+use crate::capability::space::{fresh_root, space_of, SPACE_ROOT_PAGE, SpaceKind, Spaces};
+use crate::capability::reply::{fresh_reply, reply_of};
 use crate::capability::switch::TickStep;
 use crate::capability::view::bound_threads;
-use crate::capability::block::{Large, SMALL_PAGES_MAX};
+use crate::capability::block::{Large, ObjectType, PageKind, SMALL_PAGES_MAX};
 use crate::capability::process::PROCESS_ORDER;
 use crate::capability::reclaim::{FrameReclaimStep, LEAF_SLICE_BUDGET, ReclaimStep};
-use crate::capability::table::{Payload, MAX_ORDER};
+use crate::capability::table::{CapKind, Payload, MAX_ORDER};
 use crate::capability::zero::{large_level, level_pages};
 use crate::queue_lock::{Core, QueueLock};
 use crate::capability::operation::*;
@@ -1859,6 +1869,197 @@ pub trait ReclaimLargeFreed {
             CapKernel::same_tree(pre, post),
             CapKernel::large_reclaim_answered(pre, post, root, from, base, order, ret),
             ret is Freed ==> pre.large_frame_freed(post, c, root, from, base, order),
+    ;
+}
+
+/// retype_reply's success block, from its ensures: the free page at `base` is a live reply and the
+/// capability at `to` is its one holder. design/refused-claim-per-way/.
+pub open spec fn reply_retyped(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize) -> bool {
+    let parent = pre.tables.node_of(root, from);
+    let child = pre.tables.node_of(root, to);
+    let page = (base / PAGE_SZ) as int;
+    &&& pre.view().holds_right(root, parent, Right::Retype)
+    &&& post.blocks.pages@[page].kind is Base
+    &&& post.blocks.pages@[page].object is Reply
+    &&& post.blocks.pages@[page].order == 0
+    &&& post.blocks.pages@[page].refs == 1
+    &&& !post.blocks.pages@[page].dead
+    &&& forall|i: int| pre.blocks.tracks(i) && i != page
+        ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i]
+    &&& post.replies.records@.contains_key(base)
+    &&& post.replies.records@[base].value() == fresh_reply()
+    &&& post.view().holds(root, child)
+    &&& post.payload_of(child) == reply_of(base)
+    &&& post.list.is_child(parent, child)
+    &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
+    &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+    &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
+        ==> post.list.nodes@[i].live == pre.list.nodes@[i].live
+    &&& CapKernel::retype_keeps(pre, post, child, page, 0, None)
+    &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(0), into: None })
+}
+
+/// retype_space's success block, from its ensures: the free block at `base` is a space of `kind` and
+/// the capability at `to` is its one holder. design/refused-claim-per-way/.
+pub open spec fn space_retyped(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, kind: SpaceKind) -> bool {
+    let parent = pre.tables.node_of(root, from);
+    let child = pre.tables.node_of(root, to);
+    &&& CapKernel::retype_keeps(pre, post, child, (base / PAGE_SZ) as int, 3, None)
+    &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+    &&& pre.view().holds_right(root, parent, Right::Retype)
+    &&& pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Free
+    &&& post.view().holds(root, child)
+    &&& post.payload_of(child) == space_of(base)
+    &&& post.list.is_child(parent, child)
+    &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
+    &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
+        ==> post.list.nodes@[i].live == pre.list.nodes@[i].live
+    &&& post.spaces.roots@.contains_key(base)
+    &&& post.spaces.records@[base].value().kind == kind
+    &&& post.spaces.records@[base].value().table == fresh_root(base)
+    &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] post.loaded(c, base)
+    &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] holds_id(post.cores@, post.spaces.loaded@, c, base)
+    &&& space_mapping(tree_of(&post.table_pages, &post.spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty()
+    &&& forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
+        space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+            == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
+    &&& forall|i: usize| i < ENTRIES ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty()
+    &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+    &&& post.spaces.registers == pre.spaces.registers
+    &&& post.spaces.kernel_root == pre.spaces.kernel_root
+    &&& post.spaces.bound@ == pre.spaces.bound@.insert(base, Set::<usize>::empty())
+    &&& forall|s: usize| #[trigger] pre.spaces.roots@.contains_key(s) ==> post.spaces.roots@[s] == pre.spaces.roots@[s]
+    &&& post.blocks.pages@[(base / PAGE_SZ) as int].refs == 1
+    &&& !post.blocks.pages@[(base / PAGE_SZ) as int].dead
+    &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
+}
+
+/// retype_endpoint's success meets no unchanged kernel: the free page is still free, so it is not a live endpoint.
+/// design/refused-claim-per-way/.
+pub trait RetypeEndpointOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_retype_block(root, from, to, base, 0),
+            post == pre,
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            CapKernel::queue_retype_keeps(pre, post),
+            ret == pre.can_retype_block(root, from, to, base, 0),
+            !ret ==> post == pre,
+            ret ==> CapKernel::queue_retyped(pre, post, root, from, to, base, CapKind::Endpoint),
+    ;
+}
+
+/// retype_notification's success meets no unchanged kernel: the free page is still free, so it is not a live notification.
+/// design/refused-claim-per-way/.
+pub trait RetypeNotificationOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_retype_block(root, from, to, base, 0),
+            post == pre,
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            CapKernel::queue_retype_keeps(pre, post),
+            ret == pre.can_retype_block(root, from, to, base, 0),
+            !ret ==> post == pre,
+            ret ==> CapKernel::queue_retyped(pre, post, root, from, to, base, CapKind::Notification),
+    ;
+}
+
+/// retype_reply's success meets no unchanged kernel: the free page is still free, so it is not a live reply.
+/// design/refused-claim-per-way/.
+pub trait RetypeReplyOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, ret: bool)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_retype_block(root, from, to, base, 0),
+            post == pre,
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+            CapKernel::same_tree(pre, post),
+            post.stale_epoch == pre.stale_epoch,
+            post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
+            post.cores == pre.cores,
+            post.iommus == pre.iommus,
+            post.devices == pre.devices,
+            post.threads == pre.threads,
+            post.processes == pre.processes,
+            post.mappings == pre.mappings,
+            ret == pre.can_retype_block(root, from, to, base, 0),
+            !ret ==> post == pre,
+            ret ==> reply_retyped(pre, post, root, from, to, base),
+    ;
+}
+
+/// retype_space's success meets no unchanged kernel: the free block is still free, so it is not a space.
+/// design/refused-claim-per-way/.
+pub trait RetypeSpaceOk {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, from: usize, to: usize, base: usize, kind: SpaceKind, ret: bool)
+        requires
+            !(kind is Process),
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.can_retype_block(root, from, to, base, 3),
+            post == pre,
+            ret,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+            ret == pre.can_retype_block(root, from, to, base, 3),
+            !ret ==> post == pre,
+            post.devices == pre.devices,
+            post.iommus == pre.iommus,
+            post.processes == pre.processes,
+            post.endpoints == pre.endpoints,
+            post.replies == pre.replies,
+            post.tables.roots == pre.tables.roots,
+            post.table_pages == pre.table_pages,
+            post.stale_epoch == pre.stale_epoch,
+            post.flush_epoch == pre.flush_epoch,
+            post.targeted == pre.targeted,
+            post.cores == pre.cores,
+            ret ==> space_retyped(pre, post, root, from, to, base, kind),
+    ;
+}
+
+/// revoke's Exhausted meets no unchanged kernel: the flush epoch is not at its limit, and the run was not taken.
+/// design/refused-claim-per-way/.
+pub trait RevokeExhausted {
+    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, at: Position, ret: RevokeStep)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            post == pre,
+            ret is Exhausted,
+        ensures
+            CapKernel::page_count_kept(pre, post),
+            post.wf(),
+            CapKernel::mappings_shrunk(pre, post),
+            CapKernel::records_shrunk(pre, post),
+            CapKernel::blocks_revoked(pre, post),
+            CapKernel::revoke_preserved(pre, post),
+            CapKernel::revoke_answered(pre, post, root, at, ret),
+            !(ret is Refused) ==> CapKernel::cap_revoking_at(pre, post, root, at),
+            ret is Done ==> CapKernel::cap_revoked_at(pre, post, root, at),
     ;
 }
 } // verus!
