@@ -29,7 +29,6 @@ amailbox/src/lib.rs	Consumer::observe	true
 amailbox/src/lib.rs	held_apart	returns
 afanin/src/lib.rs	scan	Idle
 afanin/src/lib.rs	scan	Ready
-adivider/src/lib.rs	check	true
 aheap/src/allocator.rs	Allocator::new	returns
 aheap/src/allocator.rs	Allocator::has_token	true
 aheap/src/allocator.rs	Allocator::alloc	Some

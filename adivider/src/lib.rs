@@ -39,6 +39,8 @@ mod define;
 pub use define::*;
 #[cfg(throwaway)]
 mod throwaway;
+#[cfg(refused)]
+mod refused;
 #[cfg(verus_keep_ghost)]
 mod witness;
 
