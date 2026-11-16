@@ -36,7 +36,7 @@ It first checks that the Verus checkout, verus at the project root, beside the w
 Verus commit the workspace Cargo.toml pins as vstd's revision, and exits naming both commits when it is
 not, since the crates would otherwise be checked by a Verus other than the one their vstd comes from.
 
-Expects tools/env.sh to be sourced, which puts rust_verify on PATH.
+It sets the environment rust_verify runs in itself, from tools/toolchain.py.
 
 usage: tools/verify.py [--target aarch64] [rust_verify argument...]
        tools/verify.py --test    (this script's own tests)
@@ -54,11 +54,13 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+import toolchain
+
 REPO = Path(__file__).resolve().parent.parent
 
-# The Verus checkout tools/setup-verus.sh builds and tools/env.sh puts on PATH: one at the project root,
-# outside every tree, which every worktree's tools read.
-VERUS = REPO.parent / "verus"
+# The Verus checkout tools/setup-verus.sh builds, at the project root outside every tree, which every
+# worktree's tools read.
+VERUS = toolchain.VERUS
 
 # The rustc target each --target names. tools/setup-verus.sh builds vstd and verus_builtin for each
 # under source/target-verus/<triple> in the checkout.
@@ -569,17 +571,6 @@ class Tests(unittest.TestCase):
                 self.assertEqual(vstd, {"workspace": True}, package["name"])
         self.assertIn("verified", with_vstd)
 
-    def test_env_sh_and_this_script_read_the_one_checkout_outside_the_tree(self):
-        """A build inside a tree would be one worktree's alone; every worktree's tools read this one."""
-        self.assertNotIn(REPO, VERUS.parents)
-        root = subprocess.run(
-            ["bash", "-c", 'source "$1" && printf %s "$VERUS_ROOT"', "bash", str(REPO / "tools" / "env.sh")],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout
-        self.assertEqual(Path(root), VERUS / "source" / "target-verus" / "release")
-
     def test_a_checkout_at_the_pin_passes_and_one_elsewhere_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory) / "verus"
@@ -721,6 +712,7 @@ class Tests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    toolchain.apply()
     if sys.argv[1:] == ["--test"]:
         unittest.main(argv=[sys.argv[0]])
     sys.exit(main(sys.argv[1:]))

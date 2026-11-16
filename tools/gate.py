@@ -6,7 +6,7 @@
 Runs every step in its order, each a check under tools/ or a cargo command from the project root,
 then prints one line per step, 'gate <step>: ok|FAIL in <s> s: <detail>', and 'gate total: <s> s'.
 It exits 0 when every step it ran passed and 1 otherwise. The steps' own output, a build's or a
-boot's, comes above those lines as each step runs. tools/land.py runs it with tools/env.sh sourced.
+boot's, comes above those lines as each step runs. It sets the toolchain's environment itself (tools/toolchain.py).
 
 --target aarch64 runs that target's verify and its boot on the Orange Pi; --target x86_64 runs every
 other step, since the workstation that checks the tree as a whole is the x86_64 host. --step runs the
@@ -589,7 +589,7 @@ DEP_INFO_STEPS = frozenset((
 
 
 GATE_SELF = ("tools/gate.py",)
-TOOLCHAIN_PINS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/env.sh")
+TOOLCHAIN_PINS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/toolchain.py")
 
 VERIFIED_CRATES = (
     "kernel/verified/**",
@@ -2207,6 +2207,8 @@ class Tests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    import toolchain
+    toolchain.apply()
     if sys.argv[1:] == ["--test"]:
         unittest.main(argv=[sys.argv[0]])
     sys.exit(main(sys.argv[1:]))

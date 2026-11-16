@@ -3,7 +3,7 @@
 
 """Gate the change in this worktree selectively and land it on main, with no lock around either.
 
-Run from a task worktree whose change is committed, with tools/env.sh sourced. The branch is rebased
+Run from a task worktree whose change is committed. The branch is rebased
 onto main and tools/gate.py runs selectively on that: all unbounded steps (file sizes, source
 licenses) always run, and each bounded step runs unless its input-slice digest is unchanged since base
 and logs/gate-ledger already holds a pass for that (step_name, slice_hash)

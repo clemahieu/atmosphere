@@ -4,7 +4,7 @@ date: 2026-11-15
 status: active
 tags: [gate, landing, process]
 one_line: Each gate step declares the repo-relative path globs it reads (or unbounded for file sizes and source licenses), a landing skips bounded steps whose inputs did not change and whose base input-slice hash passed in logs/gate-ledger, UNREAD is deleted, and the map is checked mechanically.
-revisit_if: External host dependencies unpinned by Cargo.toml, rust-toolchain.toml, or tools/env.sh affect step outcomes; every gate step becomes fast enough that selective gating is unnecessary; or a hermetic build system replaces the custom gate and ledger.
+revisit_if: External host dependencies unpinned by Cargo.toml, rust-toolchain.toml, or tools/toolchain.py affect step outcomes; every gate step becomes fast enough that selective gating is unnecessary; or a hermetic build system replaces the custom gate and ledger.
 confidence: high
 ---
 
@@ -17,7 +17,7 @@ confidence: high
 
    Two shared sets enter every bounded step:
    - `GATE_SELF`: `("tools/gate.py",)` because changing the runner can change any step's command, filter, or declared inputs.
-   - `TOOLCHAIN_PINS`: `("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/env.sh")` because workspace manifests, crate lock versions, the pinned `vstd` revision (checked against `../verus`), the Rust toolchain and `rust-src` sysroot, and Verus/OVMF/QEMU environment variables govern builds, verification, and boots.
+   - `TOOLCHAIN_PINS`: `("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/toolchain.py")` because workspace manifests, crate lock versions, the pinned `vstd` revision (checked against `../verus`), the Rust toolchain and `rust-src` sysroot, and the Verus environment the tools derive govern builds, verification, and boots.
 
    Using shorthand constants:
    - `VERIFIED_CRATES` = the crates carrying `[package.metadata.atmosphere] verified = true` (`kernel/verified/**`, `aheap/**`, `acall/**`, `aeager/**`, `aring/**`, `amailbox/**`, `afanin/**`, `pager-policy/**`, `adivider/**`, `awire/**`) plus their non-dev workspace dependency `asys/**`.
@@ -114,4 +114,4 @@ Previously, `design/no-gate-for-what-no-step-reads/` avoided running the gate on
 
 - **Parallel execution of independent steps.** Declaring `inputs` and decoupling `target/` assumptions (`throwaways`/`refused`/`workspace tests`) enables running independent steps concurrently later, but step scheduling within `tools/gate.py` stays sequential for now.
 - **Shared `target/` or sccache across worktrees.** Skipping untouched steps avoids running them at all; speeding up steps that *do* run on a changed input by warming caches from `main` is left separate.
-- **External environment mutations not tracked in git.** Changes to the host OS, QEMU/OVMF packages, LLVM, or an unpinned dirty checkout in `../verus` outside `Cargo.toml` and `tools/env.sh` are outside git-tree hashing; `verify.py` continues checking the clean `vstd` revision match explicitly.
+- **External environment mutations not tracked in git.** Changes to the host OS, QEMU/OVMF packages, LLVM, or an unpinned dirty checkout in `../verus` outside `Cargo.toml` and `tools/toolchain.py` are outside git-tree hashing; `verify.py` continues checking the clean `vstd` revision match explicitly.

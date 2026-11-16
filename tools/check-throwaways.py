@@ -23,7 +23,7 @@ from the witness's text, with the `use` lines of the witness's file, and the che
 exactly those bytes, so a witness whose requires or parameters change fails the check until
 --write has been run again.
 
-The check, with tools/env.sh sourced, first prepares any missing or stale dependency exports via
+The check first prepares any missing or stale dependency exports via
 tools/verify.py (`--no-verify`), then runs for each crate with a throwaway one
 `rust_verify --cfg throwaway --verify-module <module>...` at
 the verify budget, the crates side by side. Each of those runs goes through the cap tools/verify.py
@@ -59,6 +59,7 @@ from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import toolchain  # noqa: E402
 import verify  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -934,6 +935,7 @@ impl CapKernel {
         self.assertEqual(order[1], ("run", "user"))
 
 if __name__ == "__main__":
+    toolchain.apply()
     if sys.argv[1:] == ["--test"]:
         unittest.main(argv=[sys.argv[0]])
     sys.exit(main(sys.argv[1:]))

@@ -83,7 +83,7 @@ An implement round's gate output is `logs/<id>-gate.log` at the project root, be
 Each tool's opening comment is its manual: what it does, its options and its exit statuses. A line here says only when to reach for it.
 
 ```
-source tools/env.sh     # Verus and RUSTC_BOOTSTRAP
+source tools/env.sh     # for cargo, rust_verify or QEMU run by hand; the tools set it themselves
 tools/gate.py           # the gate; --target, --step, and --since BASE select steps, --unread lists uncovered files, --check-inputs checks step inputs in isolation
 cargo test --workspace  # every member's host tests, from the root, after a build
 tools/run.py            # build the images and boot them under QEMU; --iommu, --no-kvm, --gdb, --memory MIB, --kernel-feature FEATURE

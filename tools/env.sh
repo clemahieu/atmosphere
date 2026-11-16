@@ -1,31 +1,18 @@
 # SPDX-License-Identifier: MIT
 
-# Source this file to get the Atmosphere toolchain on PATH.
+# Source this file for a shell that runs cargo, rust_verify or QEMU by hand.
 #
 #   source tools/env.sh
 #
-# Expects: rustup (rust-toolchain.toml picks the nightly), a Verus build under
-# verus at the project root, beside the worktrees, made by tools/setup-verus.sh,
-# and qemu, edk2-ovmf and gdb from the system package manager.
+# The tools set this environment themselves; a shell needs it only for commands it runs directly.
+# tools/toolchain.py derives Verus's variables, the pinned sysroot and RUSTC_BOOTSTRAP, and
+# tools/firmware.py finds OVMF and QEMU (an override already in the environment wins).
 
 ATMO_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERUS_SRC="$(cd "$ATMO_TOOLS/../.." && pwd)/verus/source"
-
-# Verus is built against the Rust that rust-toolchain.toml pins, and its binaries link to that sysroot.
-VERUS_RUST_LIB="$(cd "$ATMO_TOOLS" && rustc --print sysroot)/lib"
-
-export VERUS_ROOT="$VERUS_SRC/target-verus/release"
-export VERUS_Z3_PATH="$VERUS_SRC/z3"
-export LD_LIBRARY_PATH="$VERUS_RUST_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-# The kernel crates use unstable features on a pinned nightly.
-export RUSTC_BOOTSTRAP=1
-
-export PATH="$VERUS_ROOT:$PATH"
-
-# OVMF and QEMU. An override already in the environment wins; otherwise the known
-# distribution paths. The Python tools import firmware.py themselves.
+if toolchain=$(python3 "$ATMO_TOOLS/toolchain.py"); then
+    eval "$toolchain"
+fi
 if firmware=$(python3 "$ATMO_TOOLS/firmware.py"); then
     eval "$firmware"
 fi
-unset firmware
+unset toolchain firmware

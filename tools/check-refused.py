@@ -17,7 +17,7 @@ the trailing comma:
 
   //! refused: <function>: <clause>
 
-The check, with tools/env.sh sourced, first prepares any missing or stale dependency exports via
+The check first prepares any missing or stale dependency exports via
 tools/verify.py (`--no-verify`), then runs for each crate with a refused directory one `rust_verify --cfg refused --verify-module
 refused::<name>...` through the cap tools/verify.py puts on rust_verify, the crates side by side.
 It passes when
@@ -54,7 +54,7 @@ to tools/unrefused (design/refused-claim-per-way/).
 
 usage: tools/check-refused.py            the check
        tools/check-refused.py --coverage the report
-       tools/check-refused.py --test     this script's own tests; one runs Verus, so tools/env.sh first
+       tools/check-refused.py --test     this script's own tests; one runs Verus
 """
 import importlib.util
 import os
@@ -71,6 +71,7 @@ from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import toolchain  # noqa: E402
 import verify  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -822,6 +823,7 @@ class Coverage(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    toolchain.apply()
     if sys.argv[1:] == ["--test"]:
         unittest.main(argv=sys.argv[:1])
     else:
