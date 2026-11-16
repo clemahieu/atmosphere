@@ -57,7 +57,8 @@ use crate::capability::view::*;
 use crate::capability::zero::{large_level, level_pages};
 
 /// What a slot holding a capability says to the process whose table it is in: the capability's kind,
-/// the block or object it names and the block's order, its rights, and the node it was derived from.
+/// the block or object it names and the block's order, its rights, the node it was derived from, and
+/// whether the leaf holding the slot has its hidden node.
 pub ghost struct SlotView {
     pub kind: CapKind,
     pub base: usize,
@@ -66,6 +67,7 @@ pub ghost struct SlotView {
     /// A core capability's maximum priority, as its payload's.
     pub priority: usize,
     pub parent: usize,
+    pub live: bool,
 }
 
 /// Two indices of a table with the same root entry and the same place in its leaf are one index.
@@ -101,19 +103,19 @@ pub open spec fn view_retypes(v: SlotView, base: usize, order: u8) -> bool {
 /// What a slot says that holds the frame capability a retype makes of the block of the order at base,
 /// under the capability at node parent.
 pub open spec fn frame_view(base: usize, order: u8, parent: usize) -> SlotView {
-    SlotView { kind: CapKind::Frame, base, order, rights: FRAME_RIGHTS, priority: 0, parent }
+    SlotView { kind: CapKind::Frame, base, order, rights: FRAME_RIGHTS, priority: 0, parent, live: true }
 }
 
 /// What a slot says that holds the process capability a retype makes of the order-3 block at base,
 /// under the capability at node parent.
 pub open spec fn process_view(base: usize, parent: usize) -> SlotView {
-    SlotView { kind: CapKind::Process, base, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, priority: 0, parent }
+    SlotView { kind: CapKind::Process, base, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, priority: 0, parent, live: true }
 }
 
 /// What a slot says that holds the thread capability a retype makes of the order-1 block at base,
 /// under the capability at node parent.
 pub open spec fn thread_view(base: usize, parent: usize) -> SlotView {
-    SlotView { kind: CapKind::Thread, base, order: THREAD_ORDER, rights: THREAD_RIGHTS, priority: 0, parent }
+    SlotView { kind: CapKind::Thread, base, order: THREAD_ORDER, rights: THREAD_RIGHTS, priority: 0, parent, live: true }
 }
 
 /// The page at this offset of the block a slot's frame capability names, as frame_of reads it.
@@ -143,16 +145,16 @@ pub open spec fn view_narrows(v: SlotView, rights: u32, base: usize, order: u8) 
 /// these rights and this block, under the capability at node parent.
 pub open spec fn derived_view(v: SlotView, rights: u32, base: usize, order: u8, parent: usize) -> SlotView {
     if v.kind is Core {
-        SlotView { kind: v.kind, base, order: 0, rights, priority: order as usize, parent }
+        SlotView { kind: v.kind, base, order: 0, rights, priority: order as usize, parent, live: true }
     } else {
-        SlotView { kind: v.kind, base, order, rights, priority: 0, parent }
+        SlotView { kind: v.kind, base, order, rights, priority: 0, parent, live: true }
     }
 }
 
 /// What a slot says after a move of the capability at node i to node n: a capability derived from the
 /// one moved names n as its parent.
 pub open spec fn moved_view(v: SlotView, i: usize, n: usize) -> SlotView {
-    SlotView { kind: v.kind, base: v.base, order: v.order, rights: v.rights, priority: v.priority, parent: rename(v.parent, i, n) }
+    SlotView { kind: v.kind, base: v.base, order: v.order, rights: v.rights, priority: v.priority, parent: rename(v.parent, i, n), live: v.live }
 }
 
 impl CapKernel {
@@ -165,7 +167,16 @@ impl CapKernel {
     pub open spec fn slot_view(&self, root: usize, i: usize) -> SlotView {
         let n = self.tables.node_of(root, i);
         let p = self.payload_of(n);
-        SlotView { kind: p.kind, base: p.base, order: p.order, rights: p.rights, priority: p.priority, parent: self.list.parent@[n] }
+        let leaf = self.tables.leaf(root, index_entry(i));
+        SlotView {
+            kind: p.kind,
+            base: p.base,
+            order: p.order,
+            rights: p.rights,
+            priority: p.priority,
+            parent: self.list.parent@[n],
+            live: leaf != NO_LEAF && self.list.nodes@[leaf as int].live,
+        }
     }
 
     /// The table at root as its process reads it: each index that is a slot holding a capability, and
@@ -201,6 +212,18 @@ impl CapKernel {
             self.holds_slot(root, i) ==> self.table_view(root)[i] == self.slot_view(root, i),
     {
         broadcast use vstd::set::lemma_set_filter, vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
+    }
+
+    /// Every entry of every table's view is live while `holds_slot` reads `has_slot`.
+    pub proof fn lemma_table_view_live(&self)
+        ensures
+            forall|root: usize, i: usize|
+                #[trigger] self.table_view(root).contains_key(i) ==> self.table_view(root)[i].live,
+    {
+        assert forall|root: usize, i: usize|
+            #[trigger] self.table_view(root).contains_key(i) implies self.table_view(root)[i].live by {
+            self.lemma_table_view(root, i);
+        }
     }
 
     /// The caller's view agrees with view_of: an index is in the table's view exactly when it is a slot
@@ -2200,6 +2223,8 @@ impl CapKernel {
                     Self::lemma_large_still_allowed(post, root, from, to, base, word, level);
                 }
             } else {
+                pre.lemma_slot(root, to);
+                Self::lemma_slots_stay(pre, post, child, child, root, to);
                 assert(post.is_cap(child));
                 assert(post.slot_view(root, to) == frame_view(base, 9, parent));
                 Self::lemma_slot_added(pre, post, root, to, frame_view(base, 9, parent));
@@ -2430,6 +2455,8 @@ impl CapKernel {
             let table = pre.table_at(root, to->0.through)->0;
             let child = pre.tables.node_of(table, to->0.index);
             let v = derived_view(pre.table_view(root)[i], rights, base, order, pre.tables.node_of(root, i));
+            pre.lemma_slot(table, to->0.index);
+            Self::lemma_slots_stay(pre, post, child, child, table, to->0.index);
             assert(post.is_cap(child));
             assert(post.slot_view(table, to->0.index) == v);
             Self::lemma_slot_added(pre, post, table, to->0.index, v);
