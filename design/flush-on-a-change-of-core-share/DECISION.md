@@ -21,6 +21,8 @@ The commands, run on the core the token names:
 - x86_64: WRMSR to PRED_CMD (MSR 049h) with IBPB, bit 0, where CPUID Fn8000_0008_EBX[IBPB] (bit 12) is 1, which stops older indirect branch predictions influencing later indirect branches (amd-apm2 3.2.9, Figure 3-14); then WRMSR to FLUSH_CMD (MSR 10Bh) with L1D_FLUSH, bit 0, where CPUID Fn0000_0007_EDX[L1D_FLUSH] (bit 28) is 1, which writes back and invalidates the L1 data cache (amd-apm2 6.6.1, Figure 6-3). Each write is dispatch serializing, so no younger instruction runs before it completes.
 - aarch64: where ID_AA64ISAR1_EL1.SPECRES reports FEAT_SPECRES, CFP RCTX, DVP RCTX and CPP RCTX with an argument naming EL0 of every ASID in the current VMID and Security state, then DSB and ISB, after which no control flow, data value or cache prefetch prediction for those contexts is influenced by execution before them (arm-arm A2.2 FEAT_SPECRES, B2.5.7, C5.6.1, C5.6.3, C5.6.4). There is no L1D command.
 
+Both targets take those reports from the core's processor report, read once at that core's boot, `design/processor-report-read-once/`. The flush does not execute CPUID or read an ID register.
+
 The flush reports which commands the core ran, so the glue can say it on the serial line; the proof's claim is that the flush ran, not what the hardware cleared.
 
 The numbers have a limit: a derive of a core capability is refused once the next number is the largest 64 bits hold, as an unmap is refused once the flush epoch is at its own, `design/flush-without-waiting/`. At one derive a nanosecond the limit is 584 years away.

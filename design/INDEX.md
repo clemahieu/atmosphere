@@ -2,7 +2,7 @@
 
 # Design decisions
 
-55 records: 55 active, 0 superseded.
+56 records: 56 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -109,6 +109,9 @@ in `revisit if` what would make it worth reopening.
 - **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-14): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area.
   - *confidence:* A structural choice; the no-cycles property it buys is what rules out the delete-cascade problem Nevill's thesis describes, and the table invariant is proven in kernel/verified/capability/table.rs.
   - *revisit if:* Threads in one process need distinct authority, or a process needs more slots than the two levels give, or a table must be passed as a capability, or a supported core's XSAVE area outgrows the 3072 bytes a thread's record page leaves it.
+- **[processor-report-read-once](./processor-report-read-once/DECISION.md)** (2026-11-16): Each core, in its own boot, reads the features its processor reports into an exec value of the arch module held in that core's Cpu block and passed into the flush; where the value reports INVPCID the every-context flush is INVPCID type 2 and no CR4 write, and otherwise the CR4.PGE toggle, and the claim that type 2 empties the paging-structure caches holds because boot clears EFER.TCE and nothing sets it again. The core-share flush's commands and the PCID branch of a translation-root load read the same value.
+  - *confidence:* What INVPCID type 2 invalidates, and what EFER.TCE changes about cached upper-level entries, is the manuals' word, cited below. That the read is per core, and that the value lives in the core's block rather than the kernel value, follows from CPUID and EFER being per logical processor and from the flush running before the kernel value exists.
+  - *revisit if:* INVPCID type 2 is shown to drop every cached upper-level entry while EFER.TCE is set, which is when boot stops clearing TCE; or a logical processor can gain or lose a feature after its boot read.
 - **[refused-claim-per-way](./refused-claim-per-way/DECISION.md)** (2026-11-15): A state change and an again are refused by an unchanged component meeting the way's postcondition, a query by a result other than the one the state gives, and a pure function by a wrong output, as the round trip does. A way whose specification admits the unchanged component is exempt, quoted from that arm. A claim names the inventory lines it covers; the ways with neither a claim nor an exemption are a list in the tree that only the human lengthens. An entry line is covered by the operations it reaches.
   - *confidence:* The placement of today's 190 lines was checked against tools/witness-inventory.py on c9fb16bad228. That a refused postcondition shows the ensures says enough is Verus's. Which form a kind takes, and which ways are exempt, is judgement, argued below. The cost is measured for the one claim the tree holds.
   - *revisit if:* A claim the table calls a state change verifies, because the specification admits an unchanged component for that way; or the refused step, once the ways have claims, costs more than the verify step it runs beside; or an empty proof whose ensures the requires meet is no longer refused by Verus.
@@ -182,9 +185,9 @@ A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: arch-module, gs-base-swapped-at-ring-3, one-kernel-instance, register-convention-of-an-assembly-leaf, synthetic-benchmark-suite, syscall-abi-in-registers, thread-pointer-cleared-on-switch
 - `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
-- `arch`: register-convention-of-an-assembly-leaf, who-vouches-for-an-unproven-claim
+- `arch`: processor-report-read-once, register-convention-of-an-assembly-leaf, who-vouches-for-an-unproven-claim
 - `bench`: synthetic-benchmark-suite
-- `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, root-process-at-boot, test-guest-memory
+- `boot`: machine-glue-below-the-kernel, page-metadata-sized-from-the-memory-map, processor-report-read-once, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, flush-on-a-change-of-core-share, invoked-arm-is-the-operation-postcondition, ipc-with-reply-object, notification-word-reserves-the-waiter-bit, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
 - `entry`: invoked-arm-is-the-operation-postcondition
@@ -220,10 +223,11 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `test`: synthetic-benchmark-suite, test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
+- `tlb`: processor-report-read-once
 - `tools`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, refused-claim-per-way, witness-per-way-an-operation-succeeds
 - `tracker`: loops-select-by-work-kind-and-stage, p0-is-the-path-to-the-target, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `trusted-base`: boundary-into-verified-code-counted, divider-proven-by-invariant, region-map-owns-the-address-space, register-convention-of-an-assembly-leaf, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
-- `verified`: arch-module, boundary-into-verified-code-counted, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-on-a-change-of-core-share, flush-without-waiting, heap-size-classes, invoked-arm-is-the-operation-postcondition, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, refused-claim-per-way, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, wire-combinators-written-here, witness-per-way-an-operation-succeeds
+- `verified`: arch-module, boundary-into-verified-code-counted, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-on-a-change-of-core-share, flush-without-waiting, heap-size-classes, invoked-arm-is-the-operation-postcondition, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, page-metadata-sized-from-the-memory-map, processor-report-read-once, refused-claim-per-way, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim, wire-combinators-written-here, witness-per-way-an-operation-succeeds
 - `virtualization`: vmm-over-svm
 - `witness`: refused-claim-per-way, witness-per-way-an-operation-succeeds
