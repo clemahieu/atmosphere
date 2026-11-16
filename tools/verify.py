@@ -133,12 +133,25 @@ def plain_crate(package, dep, dependent):
     return {"extern": dep.get("rename") or crate, "crate": crate, "src": lib["src_path"], "edition": package["edition"]}
 
 
-def plain_command(plain, triple, verus_out):
+def emit_dep_info_args(dep_info, compile_artifact=False):
+    """Compiler flags that write a dep-info file without dropping compiled outputs."""
+    return (["--emit=link"] if compile_artifact else []) + [f"--emit=dep-info={dep_info}"]
+
+
+def append_rustc_args(command, rustc_args):
+    """Append rustc pass-through flags to a rust_verify command without duplicating `--`."""
+    return [*command, *rustc_args] if "--" in command else [*command, "--", *rustc_args]
+
+
+def plain_command(plain, triple, verus_out, dep_info=None):
     """The rustc command that compiles a plain dependency into verus_out for the triple."""
     command = ["rustc", "--crate-type", "lib", "--crate-name", plain["crate"], "--edition", plain["edition"]]
     if triple is not None:
         command += ["--target", triple]
-    return command + [plain["src"], "--out-dir", str(verus_out)]
+    command += [plain["src"], "--out-dir", str(verus_out)]
+    if dep_info is not None:
+        command += emit_dep_info_args(dep_info, compile_artifact=True)
+    return command
 
 
 def order_crates(crates):
@@ -164,7 +177,7 @@ def order_crates(crates):
     return ordered
 
 
-def verify_command(crate, depended_on, triple, verus_out, extra_args):
+def verify_command(crate, depended_on, triple, verus_out, extra_args, dep_info=None):
     command = ["rust_verify", "--crate-type", "lib", crate["src"], "--rlimit", "100"]
     if triple is not None:
         command += ["--target", triple]
@@ -177,7 +190,8 @@ def verify_command(crate, depended_on, triple, verus_out, extra_args):
         command += ["--extern", f"{dep['extern']}={rlib}", "--import", f"{dep['extern']}={vir}"]
     for plain in crate["plain"]:
         command += ["--extern", f"{plain['extern']}={verus_out / ('lib' + plain['crate'] + '.rlib')}"]
-    if crate["package"] in depended_on:
+    compile_artifact = crate["package"] in depended_on
+    if compile_artifact:
         # lib.rs would otherwise compile as crate `lib`, and the rlib name follows the crate name.
         command += [
             "--crate-name",
@@ -189,6 +203,8 @@ def verify_command(crate, depended_on, triple, verus_out, extra_args):
             str(verus_out),
         ]
     command += extra_args
+    if dep_info is not None:
+        command = append_rustc_args(command, emit_dep_info_args(dep_info, compile_artifact=compile_artifact))
     return command
 
 
@@ -350,10 +366,11 @@ def prepare_deps(crates, targets, root=REPO, triple=None, checkout=VERUS):
 
     for plain in plain_deps:
         output = verus_out / f"lib{plain['crate']}.rlib"
+        dep_info = verus_out / f"{plain['crate']}.d"
         if not stale_or_missing([output], crate_inputs(plain["src"], root)):
             continue
         result = subprocess.run(
-            plain_command(plain, triple, verus_out),
+            plain_command(plain, triple, verus_out, dep_info=dep_info),
             cwd=root,
             env=ready_env(),
             stdout=subprocess.PIPE,
@@ -376,7 +393,8 @@ def prepare_deps(crates, targets, root=REPO, triple=None, checkout=VERUS):
         ]
         if not stale_or_missing(outputs, crate_inputs(crate["src"], root) + dep_outputs):
             continue
-        command = verify_command(crate, needed, triple, verus_out, ["--no-verify"])
+        command = verify_command(crate, needed, triple, verus_out, ["--no-verify"],
+                                 dep_info=verus_out / f"{crate['crate']}.d")
         unit = f"atmo-verify-deps-{os.getpid()}-{crate['crate']}"
         with tempfile.TemporaryFile(mode="w+") as log:
             returncode, out_of_memory = run_capped(
@@ -403,15 +421,17 @@ def main(args):
     verus_out = verus_out_dir(REPO, triple)
     crates = marked_crates(cargo_metadata())
     depended_on = {dep["package"] for crate in crates for dep in crate["deps"]}
-    if depended_on or any(crate["plain"] for crate in crates):
-        verus_out.mkdir(parents=True, exist_ok=True)
+    verus_out.mkdir(parents=True, exist_ok=True)
     failed = set()
     status = 0
     compiled = set()
     for crate in crates:
         for plain in crate["plain"]:
             if plain["crate"] not in compiled:
-                subprocess.run(plain_command(plain, triple, verus_out), cwd=REPO, env=env, check=True)
+                subprocess.run(
+                    plain_command(plain, triple, verus_out, dep_info=verus_out / f"{plain['crate']}.d"),
+                    cwd=REPO, env=env, check=True,
+                )
                 compiled.add(plain["crate"])
         blocked = [dep for dep in crate["deps"] if dep["package"] in failed]
         if blocked:
@@ -422,7 +442,8 @@ def main(args):
                 )
             failed.add(crate["package"])
             continue
-        command = verify_command(crate, depended_on, triple, verus_out, extra_args)
+        command = verify_command(crate, depended_on, triple, verus_out, extra_args,
+                                 dep_info=verus_out / f"{crate['crate']}.d")
         unit = f"atmo-verify-{os.getpid()}-{crate['crate']}"
         returncode, out_of_memory = run_capped(command, unit, MEMORY_MAX, cwd=REPO, env=env, stdin=subprocess.DEVNULL)
         if out_of_memory:
@@ -631,8 +652,9 @@ class Tests(unittest.TestCase):
                   mock.patch.object(sys.modules[__name__], "run_capped", side_effect=fake_capped)):
                 prepare_deps(crates, {"consumer"}, root=root)
                 self.assertEqual(len(calls), 2)
-                self.assertEqual(calls[0], plain_command(plain_asys, None, verus_out))
-                self.assertEqual(calls[1], verify_command(crates[1], {"base"}, None, verus_out, ["--no-verify"]))
+                self.assertEqual(calls[0], plain_command(plain_asys, None, verus_out, dep_info=verus_out / "asys.d"))
+                self.assertEqual(calls[1], verify_command(crates[1], {"base"}, None, verus_out, ["--no-verify"],
+                                                          dep_info=verus_out / "base.d"))
 
                 # Fresh artifacts are skipped without running rustc or rust_verify.
                 calls.clear()
@@ -649,7 +671,8 @@ class Tests(unittest.TestCase):
                 os.utime(root / "base/src/lib.rs", (later, later))
                 prepare_deps(crates, {"consumer"}, root=root)
                 self.assertEqual(len(calls), 1)
-                self.assertEqual(calls[0], verify_command(crates[1], {"base"}, None, verus_out, ["--no-verify"]))
+                self.assertEqual(calls[0], verify_command(crates[1], {"base"}, None, verus_out, ["--no-verify"],
+                                                          dep_info=verus_out / "base.d"))
 
     def test_prepare_deps_reports_oom_and_checkout_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -681,6 +704,20 @@ class Tests(unittest.TestCase):
                     prepare_deps(crates, {"consumer"}, root=root)
             self.assertIn("ran out of memory", stderr.getvalue())
             self.assertIn("boom details", stderr.getvalue())
+
+    def test_dep_info_adds_emit_flags_without_dropping_compile_output(self):
+        plain = {"extern": "asys", "crate": "asys", "src": "/w/asys/src/lib.rs", "edition": "2021"}
+        dep_path = Path("/out/asys.d")
+        self.assertEqual(
+            plain_command(plain, None, Path("/out"), dep_info=dep_path)[-2:],
+            ["--emit=link", "--emit=dep-info=/out/asys.d"],
+        )
+        crate = {"package": "aheap", "crate": "aheap", "src": "/w/aheap/src/lib.rs", "deps": [], "plain": []}
+        exported = verify_command(crate, {"aheap"}, None, Path("/out"), [], dep_info=Path("/out/aheap.d"))
+        self.assertEqual(exported[-3:], ["--", "--emit=link", "--emit=dep-info=/out/aheap.d"])
+        leaf = verify_command(crate, set(), None, Path("/out"), ["--", "--cfg", "x"], dep_info=Path("/out/aheap.d"))
+        self.assertEqual(leaf.count("--"), 1)
+        self.assertEqual(leaf[-3:], ["--cfg", "x", "--emit=dep-info=/out/aheap.d"])
 
 
 if __name__ == "__main__":

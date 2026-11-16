@@ -13,9 +13,10 @@ other step, since the workstation that checks the tree as a whole is the x86_64 
 steps it names, in the gate's order, to see one step again without the rest. --since BASE selects
 only unbounded steps and the bounded steps whose declared inputs intersect the diff since BASE.
 --steps prints the selected step names without running them. --unread prints tracked files covered
-by no bounded step.
+by no bounded step. --check-inputs materializes a sibling hardlinked tree holding only each bounded
+step's declared inputs and runs selected bounded steps inside those isolated views.
 
-usage: tools/gate.py [--target x86_64|aarch64] [--step NAME]... [--since BASE] [--steps] [--boot-timeout SECONDS]
+usage: tools/gate.py [--target x86_64|aarch64] [--step NAME]... [--since BASE] [--steps] [--check-inputs] [--boot-timeout SECONDS]
        tools/gate.py --unread
        tools/gate.py --test    (this script's own tests)
 """
@@ -28,13 +29,16 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
 from collections import Counter, namedtuple
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 sys.dont_write_bytecode = True
 
@@ -531,6 +535,59 @@ def board(gate):
     return f"{BOARD} --gate: {last_line(ran.stdout)}"
 
 
+INPUT_ISOLATION_STEP = "step inputs"
+
+# Bounded steps exercised inside input-only hardlinked sibling views during a gate run.
+# Excludes heavy Z3 proof, QEMU boot, and physical board steps so tooling/manifest edits stay fast.
+ISOLATED_CHECK_STEPS = (
+    "license",
+    "hooks",
+    "unwitnessed",
+    "unrefused",
+    "external body",
+    "layout claims",
+    "boundary",
+    "invoked arms",
+    "page literals",
+    "arch sources",
+    "upstream copies",
+    "design index",
+    "faq",
+    "build",
+    "workspace tests",
+    "forced lints",
+)
+
+
+def step_inputs(gate):
+    """Verifies declared step inputs via metadata unit tests and isolated hardlink sandboxes."""
+    run_check(gate, GATE_SELF[0], "--test")
+    argv = [GATE_SELF[0], "--check-inputs"]
+    for name in ISOLATED_CHECK_STEPS:
+        argv += ["--step", name]
+    run_check(gate, *argv)
+    return f"self-tests and {len(ISOLATED_CHECK_STEPS)} bounded steps verified in isolated input views"
+
+
+# Cargo/Verus steps whose generated .d dep-info and build/*/output files are audited after running.
+DEP_INFO_STEPS = frozenset((
+    "build",
+    "workspace tests",
+    "forced lints",
+    "verify",
+    "verify aarch64",
+    "throwaways",
+    "refused",
+    "layout claims",
+    "boundary",
+    "boot stack",
+    "coverage",
+    "iommu boot",
+    "boot",
+    "aarch64 boot",
+))
+
+
 GATE_SELF = ("tools/gate.py",)
 TOOLCHAIN_PINS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/env.sh")
 
@@ -617,6 +674,60 @@ WORKSPACE_MANIFESTS = (
     "pager-policy/Cargo.toml",
     "user/hello/Cargo.toml",
 )
+# Entrypoints required on disk by `cargo metadata --locked` when loading workspace manifests.
+WORKSPACE_CARGO_TARGETS = (
+    "*/src/lib.rs",
+    "*/src/main.rs",
+    "*/build.rs",
+    "file-service/tests/*.rs",
+    "kernel/verified/lib.rs",
+    "machine/*/src/lib.rs",
+    "user/*/src/main.rs",
+)
+HOOK_INPUTS = (
+    "AGENTS.md",
+    ".agents/hooks.json",
+    ".claude/hooks/**",
+)
+GATE_TOOLS_AND_CONFIGS = (
+    BUILD,
+    STACK_SIZES_CHECK,
+    LICENSE_CHECK,
+    "tools/license-allowlist",
+    SOURCE_LICENSE_CHECK,
+    VERIFY,
+    VERIFY_ALLOWANCE,
+    THROWAWAY_CHECK,
+    WITNESS_INVENTORY,
+    UNWITNESSED,
+    REFUSED_CHECK,
+    "tools/refused-exempt",
+    UNREFUSED,
+    EXTERNAL_BODY_CHECK,
+    "tools/external-body-list",
+    "tools/hardware-documents",
+    LAYOUT_CLAIMS_CHECK,
+    BOUNDARY_CHECK,
+    "tools/boundary-list",
+    INVOKED_ARMS_CHECK,
+    PAGE_LITERALS_CHECK,
+    ARCH_SOURCES_CHECK,
+    UPSTREAM_COPIES_CHECK,
+    "tools/upstream-copies/**",
+    DESIGN_INDEX,
+    FAQ_RENDER,
+    BOOT_STACK_CHECK,
+    COVERAGE,
+    RUN,
+    GDB,
+    "tools/gdb-helper.py",
+    "tools/elfstrip.py",
+    "tools/firmware.py",
+    BOOT_LOG_CHECK,
+    BOARD,
+    "tools/aarch64-esp.py",
+    "tools/orangepi-kvm.py",
+)
 
 
 def bounded(*globs):
@@ -631,7 +742,8 @@ STEPS = (
     Step("build", X86_64, build, bounded(BUILD, STACK_SIZES_CHECK, *WORKSPACE_CRATES)),
     Step("workspace tests", X86_64, workspace_tests, bounded(*WORKSPACE_CRATES, INVOKED_ARMS_CHECK)),
     Step("forced lints", X86_64, forced_lints, bounded(*WORKSPACE_CRATES)),
-    Step("license", X86_64, self_tested(LICENSE_CHECK), bounded(LICENSE_CHECK, "tools/license-allowlist", *WORKSPACE_MANIFESTS)),
+    Step("license", X86_64, self_tested(LICENSE_CHECK),
+         bounded(LICENSE_CHECK, "tools/license-allowlist", *WORKSPACE_MANIFESTS, *WORKSPACE_CARGO_TARGETS)),
     Step("source licenses", X86_64, self_tested(SOURCE_LICENSE_CHECK), None),
     Step("hooks", X86_64, hooks, bounded(
         "AGENTS.md", ".agents/hooks.json",
@@ -664,6 +776,8 @@ STEPS = (
     # The plain boot comes after it, so the serial.log the gate leaves has no IOMMU.
     Step("iommu boot", X86_64, boot_with("--iommu"), bounded(RUN, "tools/elfstrip.py", "tools/firmware.py", BOOT_LOG_CHECK, *IMAGE_CRATES)),
     Step("boot", X86_64, boot, bounded(RUN, GDB, "tools/gdb-helper.py", "tools/elfstrip.py", "tools/firmware.py", BOOT_LOG_CHECK, *IMAGE_CRATES)),
+    Step(INPUT_ISOLATION_STEP, X86_64, step_inputs,
+         bounded(*GATE_TOOLS_AND_CONFIGS, *HOOK_INPUTS, *WORKSPACE_MANIFESTS, "boot-host-tests/**")),
     Step("aarch64 boot", AARCH64, board, bounded(BOARD, "tools/aarch64-esp.py", BUILD, STACK_SIZES_CHECK, "tools/elfstrip.py", "tools/orangepi-kvm.py", BOOT_LOG_CHECK, *IMAGE_CRATES)),
 )
 
@@ -924,8 +1038,18 @@ def step_input_errors(steps, repo=REPO, metadata=None, faq_paths=None, patch_tar
 
     for rel_dir in member_dirs:
         require_covers("license", f"{rel_dir}/Cargo.toml", "workspace member manifest")
+        require_covers(INPUT_ISOLATION_STEP, f"{rel_dir}/Cargo.toml", "workspace member manifest")
         for step_name in ("build", "workspace tests", "forced lints"):
             require_crate(step_name, rel_dir, "workspace member")
+
+    for pkg in metadata["packages"]:
+        for target in pkg.get("targets") or []:
+            rel_src = Path(target["src_path"]).resolve().relative_to(repo_resolved).as_posix()
+            require_covers("license", rel_src, "workspace target root for cargo metadata")
+
+    for path in ("boot-host-tests/Cargo.toml", "boot-host-tests/src/lib.rs",
+                 "AGENTS.md", ".agents/hooks.json", ".claude/hooks/license-guard.sh"):
+        require_covers(INPUT_ISOLATION_STEP, path, "step inputs isolation watch path")
 
     verified_closure = workspace_dep_closure(metadata, verified_dirs, repo)
     for step_name in ("verify", "verify aarch64", "throwaways", "unwitnessed", "refused", "unrefused",
@@ -1001,8 +1125,270 @@ def step_input_errors(steps, repo=REPO, metadata=None, faq_paths=None, patch_tar
     for step_name, invoked in tool_calls.items():
         for tool in invoked:
             require_covers(step_name, tool, "tool invoked by step")
+            require_covers(INPUT_ISOLATION_STEP, tool, "tool invoked by bounded step")
 
     return errors
+
+
+def _dep_info_tokens(rhs):
+    """Split a Makefile dep-info rule RHS on unescaped whitespace, unescaping backslash escapes."""
+    tokens, current = [], []
+    i, n = 0, len(rhs)
+    escapes = {" ": " ", "\\": "\\", "#": "#", ":": ":", "$": "$", "\t": "\t"}
+    while i < n:
+        ch = rhs[i]
+        if ch in " \t":
+            if current:
+                tokens.append("".join(current))
+                current.clear()
+            i += 1
+        elif ch == "\\" and i + 1 < n and rhs[i + 1] in escapes:
+            current.append(escapes[rhs[i + 1]])
+            i += 2
+        else:
+            current.append(ch)
+            i += 1
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def parse_dep_info(text):
+    """Dependency paths named on the right-hand side of Makefile rules in a `.d` file."""
+    joined = text.replace("\\\r\n", " ").replace("\\\n", " ")
+    deps = []
+    for line in joined.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        sep = -1
+        for idx, ch in enumerate(line):
+            if ch != ":":
+                continue
+            backslashes = 0
+            j = idx - 1
+            while j >= 0 and line[j] == "\\":
+                backslashes += 1
+                j -= 1
+            if backslashes % 2 == 0:
+                sep = idx
+                break
+        if sep >= 0:
+            deps.extend(_dep_info_tokens(line[sep + 1:]))
+    return deps
+
+
+def parse_rerun_if_changed(text):
+    """Paths emitted by build.rs via `cargo:rerun-if-changed=...`."""
+    return [line.split("=", 1)[1].strip() for line in text.splitlines()
+            if line.startswith("cargo:rerun-if-changed=") and line.split("=", 1)[1].strip()]
+
+
+def workspace_package_dirs(root):
+    """Map workspace Cargo package names to repo-relative manifest directories without subprocesses."""
+    root = Path(root)
+    manifest = root / "Cargo.toml"
+    if not manifest.is_file():
+        return {}
+    members = (tomllib.loads(manifest.read_text(encoding="utf-8")).get("workspace") or {}).get("members") or ()
+    dirs = {}
+    for member in members:
+        pkg_manifest = root / member / "Cargo.toml"
+        if not pkg_manifest.is_file():
+            continue
+        pkg = tomllib.loads(pkg_manifest.read_text(encoding="utf-8")).get("package") or {}
+        if "name" in pkg:
+            dirs[pkg["name"]] = normalize_repo_path(member)
+    return dirs
+
+
+def repo_dep_paths(raw_path, base_dir, repo_abs, repo_real):
+    """Normalized repo-relative paths referenced by `raw_path`, omitting target/ build outputs."""
+    cand = raw_path if os.path.isabs(raw_path) else os.path.join(base_dir, raw_path)
+    norm = Path(os.path.normpath(cand))
+    found = []
+    if norm.is_relative_to(repo_abs):
+        rel = normalize_repo_path(norm.relative_to(repo_abs).as_posix())
+        if rel and rel != "target" and not rel.startswith("target/"):
+            found.append(rel)
+    resolved = norm.resolve()
+    if resolved.is_relative_to(repo_real):
+        rel = normalize_repo_path(resolved.relative_to(repo_real).as_posix())
+        if rel and rel != "target" and not rel.startswith("target/") and rel not in found:
+            found.append(rel)
+    return found
+
+
+def snapshot_dep_files(root):
+    """Return `{full_path: (mtime_ns, size)}` for `.d` and `build/*/output` files under `target/`."""
+    target_dir = Path(root) / "target"
+    if not target_dir.is_dir():
+        return {}
+    skip_dirs = {"incremental", ".fingerprint", "tmp", "esp", "orangepi-esp", "flush-cost-esp"}
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(target_dir):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        grandparent = os.path.basename(os.path.dirname(dirpath))
+        for name in filenames:
+            if name.endswith(".d") or (name == "output" and grandparent == "build"):
+                full = os.path.join(dirpath, name)
+                try:
+                    st = os.stat(full)
+                except FileNotFoundError:
+                    continue
+                found[full] = (st.st_mtime_ns, st.st_size)
+    return found
+
+
+def dep_info_errors(step, root, changed_files):
+    """Check `changed_files` (`.d` and `build/*/output`) against `step.inputs`."""
+    if step.inputs is None or not changed_files:
+        return []
+    repo_abs = Path(os.path.abspath(str(root)))
+    repo_real = Path(root).resolve()
+    pkg_dirs = workspace_package_dirs(root)
+    violations = []
+    seen = set()
+    for path_str in changed_files:
+        dep_path = Path(path_str)
+        try:
+            text = dep_path.read_text(encoding="utf-8", errors="replace")
+            dep_rel = dep_path.relative_to(root).as_posix()
+        except OSError:
+            continue
+        if dep_path.name == "output":
+            pkg_tag = dep_path.parent.name
+            pkg_name = pkg_tag.rsplit("-", 1)[0] if "-" in pkg_tag else pkg_tag
+            rel_pkg = pkg_dirs.get(pkg_name)
+            entries = [(p, str(repo_abs / rel_pkg) if rel_pkg is not None else None)
+                       for p in parse_rerun_if_changed(text)]
+        else:
+            entries = [(p, str(repo_abs)) for p in parse_dep_info(text)]
+        for raw, base_dir in entries:
+            if base_dir is None and not os.path.isabs(raw):
+                continue
+            for rel in repo_dep_paths(raw, base_dir or str(repo_abs), repo_abs, repo_real):
+                if not matches_globs(rel, step.inputs) and (dep_rel, rel) not in seen:
+                    seen.add((dep_rel, rel))
+                    violations.append(f"undeclared dep-info input in {dep_rel}: {rel}")
+    return violations
+
+
+def repo_listing(root):
+    """Non-ignored repo-relative paths in `root` using git when available, else os.walk."""
+    root = Path(root)
+    if (root / ".git").exists():
+        return parse_nul_paths(git_run(root, *FILE_LISTING[1:]))
+    paths = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in (".git", "target"))
+        for name in sorted(filenames):
+            rel = normalize_repo_path((Path(dirpath) / name).relative_to(root).as_posix())
+            if rel:
+                paths.append(rel)
+    return paths
+
+
+def filter_workspace_manifest(text, keep_members):
+    """Rewrite `[workspace] members` in Cargo.toml text to `keep_members`, preserving the rest."""
+    section = re.search(r"(?m)^\[workspace\]\s*$", text)
+    if section is None:
+        return text
+    next_section = re.search(r"(?m)^\[", text[section.end():])
+    section_end = section.end() + next_section.start() if next_section else len(text)
+    members = re.search(r"(?m)^members\s*=\s*\[", text[section.end():section_end])
+    if members is None:
+        return text
+    open_bracket = section.end() + members.end() - 1
+    depth, i, in_string = 0, open_bracket, None
+    while i < section_end:
+        ch = text[i]
+        if in_string == '"':
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = None
+        elif in_string == "'":
+            if ch == "'":
+                in_string = None
+        elif ch in ('"', "'"):
+            in_string = ch
+        elif ch == "#":
+            end = text.find("\n", i)
+            i = section_end if end < 0 else end + 1
+            continue
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                lines = "".join(f'  "{member}",\n' for member in keep_members)
+                replacement = f"[\n{lines}]" if keep_members else "[]"
+                return text[:open_bracket] + replacement + text[i + 1:]
+        i += 1
+    return text
+
+
+def materialize_input_view(repo, step, sandbox, all_paths=None):
+    """Hardlink only files matching `step.inputs` from `repo` into sibling directory `sandbox`."""
+    repo = Path(repo)
+    sandbox = Path(sandbox)
+    if all_paths is None:
+        all_paths = repo_listing(repo)
+    for rel in all_paths:
+        if not matches_globs(rel, step.inputs):
+            continue
+        src = repo / rel
+        dst = sandbox / rel
+        if os.path.islink(src):
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(os.readlink(src), dst)
+        elif src.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            # Cargo opens Cargo.lock R/W and partial slices rewrite Cargo.toml; never hardlink either.
+            if rel in ("Cargo.toml", "Cargo.lock"):
+                shutil.copy2(src, dst)
+            else:
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    shutil.copy2(src, dst)
+    manifest = sandbox / "Cargo.toml"
+    if manifest.is_file():
+        text = manifest.read_text(encoding="utf-8")
+        members = (tomllib.loads(text).get("workspace") or {}).get("members") or []
+        keep = [m for m in members if (sandbox / m / "Cargo.toml").is_file()]
+        if len(keep) != len(members):
+            manifest.unlink()
+            manifest.write_text(filter_workspace_manifest(text, keep), encoding="utf-8")
+    # Initialize an empty repository boundary so Cargo/git tools stay inside the sandbox instead
+    # of walking up to the project root's bare worktree control files ($root/.git -> .bare).
+    subprocess.run(["git", "init", "-q"], cwd=sandbox, stdin=subprocess.DEVNULL,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+
+def run_steps_isolated(repo, steps, boot_timeout, clock=time.monotonic):
+    """Execute each bounded step inside its own sibling hardlinked input view next to `repo`."""
+    repo = Path(repo).resolve()
+    parent = repo.parent
+    all_paths = repo_listing(repo)
+    lines, failed = [], False
+    started = clock()
+    for step in steps:
+        if step.inputs is None or step.name == INPUT_ISOLATION_STEP:
+            continue
+        start = clock()
+        with tempfile.TemporaryDirectory(dir=parent, prefix=".gate-inputs-") as td:
+            sandbox = Path(td)
+            materialize_input_view(repo, step, sandbox, all_paths=all_paths)
+            step_lines, step_code = run_gate(Gate(sandbox, boot_timeout), [step], clock=clock)
+        ok = step_code == 0
+        failed |= not ok
+        detail = step_lines[0].split(": ", 2)[-1] if step_lines else "no output"
+        lines.append(step_line(step.name, ok, detail, clock() - start))
+    lines.append(total_line(clock() - started))
+    return lines, 1 if failed else 0
 
 
 def chosen(target=None, names=None, changed=None):
@@ -1030,10 +1416,20 @@ def run_gate(gate, steps, clock=time.monotonic):
     started = clock()
     for step in steps:
         start = clock()
+        audit = step.inputs is not None and step.name in DEP_INFO_STEPS
+        before = snapshot_dep_files(gate.root) if audit else None
         try:
             ok, detail = True, step.check(gate)
         except (Failure, OSError) as error:
             ok, detail = False, str(error)
+        if audit:
+            after = snapshot_dep_files(gate.root)
+            changed = sorted(p for p, sig in after.items() if before.get(p) != sig)
+            audit_errors = dep_info_errors(step, gate.root, changed)
+            if audit_errors:
+                ok = False
+                joined = "".join(f"\n  {err}" for err in audit_errors)
+                detail = f"{detail}; {joined.lstrip()}" if detail else "".join(f"\n  {err}" for err in audit_errors).lstrip()
         failed |= not ok
         lines.append(step_line(step.name, ok, detail, clock() - start))
     lines.append(total_line(clock() - started))
@@ -1052,11 +1448,13 @@ def arguments(argv):
                         help="print the selected step names in gate order instead of running them")
     parser.add_argument("--unread", action="store_true",
                         help="print tracked files covered by no bounded step and exit")
+    parser.add_argument("--check-inputs", action="store_true",
+                        help="execute selected bounded steps inside sibling hardlinked views of declared inputs only")
     parser.add_argument("--boot-timeout", type=int, default=BOOT_TIMEOUT,
                         help=f"seconds dom0 has to boot and finish before the run counts as a hang (default {BOOT_TIMEOUT})")
     args = parser.parse_args(argv)
-    if args.unread and (args.since or args.steps or args.step or args.target):
-        parser.error("--unread cannot be combined with --target, --step, --since, or --steps")
+    if args.unread and (args.since or args.steps or args.step or args.target or args.check_inputs):
+        parser.error("--unread cannot be combined with --target, --step, --since, --steps, or --check-inputs")
     return args
 
 
@@ -1072,11 +1470,14 @@ def main(argv, repo=REPO):
         print(f"tools/gate.py: {error}", file=sys.stderr)
         return 1
     selected = chosen(args.target, args.step, changed)
+    if args.check_inputs:
+        selected = [s for s in selected if s.inputs is not None and s.name != INPUT_ISOLATION_STEP]
     if args.steps:
         for step in selected:
             print(step.name)
         return 0
-    lines, code = run_gate(Gate(repo, args.boot_timeout), selected)
+    lines, code = (run_steps_isolated(repo, selected, args.boot_timeout) if args.check_inputs
+                   else run_gate(Gate(repo, args.boot_timeout), selected))
     print()
     print("\n".join(lines))
     return code
@@ -1626,6 +2027,183 @@ class Tests(unittest.TestCase):
         self.assertTrue(args.steps)
         self.assertFalse(args.unread)
         self.assertTrue(arguments(["--unread"]).unread)
+
+    def test_arguments_accept_check_inputs_and_reject_unread_combo(self):
+        args = arguments(["--check-inputs", "--step", "hooks"])
+        self.assertTrue(args.check_inputs)
+        self.assertEqual(args.step, ["hooks"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                arguments(["--unread", "--check-inputs"])
+
+    def test_parse_dep_info_handles_continuations_escapes_and_comments(self):
+        text = (
+            "# env-dep:CARGO_MANIFEST_DIR=/tmp/x\n"
+            "/t/foo.d: a/src/lib.rs \\\n"
+            "  a/src/with\\ space.rs a/src/foo\\#1.rs\n\n"
+            "a/src/lib.rs:\n"
+        )
+        self.assertEqual(
+            parse_dep_info(text),
+            ["a/src/lib.rs", "a/src/with space.rs", "a/src/foo#1.rs"],
+        )
+
+    def test_dep_info_audit_rejects_undeclared_include_str_path_and_build_rs(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "Cargo.toml").write_text('[workspace]\nresolver = "2"\nmembers = ["a", "secret", "other"]\n')
+            for crate in ("a", "secret", "other"):
+                (repo / crate / "src").mkdir(parents=True)
+                (repo / crate / "Cargo.toml").write_text(f'[package]\nname = "{crate}"\nversion = "0.1.0"\nedition = "2021"\n')
+            (repo / "secret" / "data.txt").write_text("top-secret\n")
+            (repo / "other" / "mod.rs").write_text("pub fn helper() -> u32 { 7 }\n")
+            (repo / "a" / "src" / "lib.rs").write_text(
+                '#[path = "../../other/mod.rs"] mod extra;\n'
+                'pub fn val() -> (&\'static str, u32) { (include_str!("../../secret/data.txt"), extra::helper()) }\n'
+            )
+
+            # Pre-existing untouched stale .d outside step.inputs should not trigger false failures.
+            stale_dir = repo / "target/debug/deps"
+            stale_dir.mkdir(parents=True)
+            stale_d = stale_dir / "old.d"
+            stale_d.write_text(f"{stale_d}: unrelated/old.rs\n")
+
+            def compile_a(gate):
+                out_dir = gate.root / "target/debug/deps"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                done = gate.call([
+                    "rustc", "--crate-type", "lib", "--edition", "2021",
+                    "--emit=dep-info=" + str(out_dir / "liba.d"),
+                    "--emit=metadata=" + str(out_dir / "liba.rmeta"),
+                    str(gate.root / "a/src/lib.rs"),
+                ], capture=True, merge=True)
+                if done.code != 0:
+                    raise Failure(done.stdout)
+                return "compiled"
+
+            bounded_a = Step("build", X86_64, compile_a, bounded("a/**"))
+            lines, code = run_gate(Gate(repo, BOOT_TIMEOUT), [bounded_a])
+            self.assertEqual(code, 1, lines)
+            self.assertIn("secret/data.txt", lines[0])
+            self.assertIn("other/mod.rs", lines[0])
+
+            # build.rs cargo:rerun-if-changed outside step.inputs fails too.
+            def build_script_only(gate):
+                build_out = gate.root / "target/debug/build/a-0123456789abcdef"
+                build_out.mkdir(parents=True, exist_ok=True)
+                (build_out / "output").write_text("cargo:rerun-if-changed=../secret/blob.bin\n")
+                # Allowed external & target-generated paths should not fail by themselves.
+                (stale_dir / "ext.d").write_text(
+                    f"{stale_dir / 'ext.d'}: a/src/lib.rs ../reference/lmdb/lmdb.h target/debug/build/a/out/gen.rs\n"
+                )
+                return "ok"
+
+            lines2, code2 = run_gate(Gate(repo, BOOT_TIMEOUT), [Step("build", X86_64, build_script_only, bounded("a/**"))])
+            self.assertEqual(code2, 1, lines2)
+            self.assertIn("secret/blob.bin", lines2[0])
+
+            # Allowed dep-info passes when stale.d stays untouched.
+            def clean_compile(gate):
+                (repo / "target/debug/build/a-0123456789abcdef/output").unlink()
+                ok_d = gate.root / "target/debug/deps/ok.d"
+                ok_d.write_text(f"{ok_d}: a/src/lib.rs ../reference/lmdb/lmdb.h /usr/include/stdio.h target/debug/out/x.bin\n")
+                return "ok"
+
+            lines3, code3 = run_gate(Gate(repo, BOOT_TIMEOUT), [Step("build", X86_64, clean_compile, bounded("a/**"))])
+            self.assertEqual(code3, 0, lines3)
+
+    def test_check_inputs_sandbox_catches_undeclared_read_and_preserves_siblings(self):
+        with tempfile.TemporaryDirectory() as outer_td:
+            outer = Path(outer_td)
+            (outer / "reference").mkdir()
+            (outer / "reference/ref.txt").write_text("from-reference\n")
+            (outer / "verus").mkdir()
+            (outer / "verus/marker").write_text("v\n")
+            repo = outer / "repo"
+            repo.mkdir()
+            (repo / "Cargo.toml").write_text('[workspace]\nresolver = "2"\nmembers = ["a", "b"]\n')
+            (repo / "Cargo.lock").write_text("# lock\n")
+            for name in ("a", "b"):
+                (repo / name / "src").mkdir(parents=True)
+                (repo / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n')
+                (repo / name / "src/lib.rs").write_text("pub fn ok() {}\n")
+            (repo / "CLAUDE.md").write_text("rules\n")
+            os.symlink("CLAUDE.md", repo / "AGENTS.md")
+            (repo / "undeclared").mkdir()
+            (repo / "undeclared/secret.txt").write_text("hidden\n")
+            (repo / "declared").mkdir()
+            (repo / "declared/ok.txt").write_text("visible\n")
+            (repo / "tools").mkdir()
+            probe = repo / "tools/probe.py"
+            probe.write_text(
+                "#!/usr/bin/env python3\n"
+                "from pathlib import Path\n"
+                "import os, sys, tomllib\n"
+                "root = Path(__file__).resolve().parent.parent\n"
+                "assert (root.parent / 'reference/ref.txt').read_text().strip() == 'from-reference'\n"
+                "assert (root.parent / 'verus/marker').read_text().strip() == 'v'\n"
+                "assert (root / 'declared/ok.txt').read_text().strip() == 'visible'\n"
+                "assert os.path.islink(root / 'AGENTS.md') and os.readlink(root / 'AGENTS.md') == 'CLAUDE.md'\n"
+                "members = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['members']\n"
+                "assert members == ['a'], members\n"
+                "assert (root / 'Cargo.lock').stat().st_ino != int(os.environ['ORIG_LOCK_INO'])\n"
+                "if os.environ.get('TRY_UNDECLARED') == '1':\n"
+                "    (root / 'undeclared/secret.txt').read_text()\n"
+                "print('probe-ok')\n"
+            )
+            probe.chmod(0o755)
+            probe_step = Step(
+                "probe",
+                X86_64,
+                lambda gate: check_output(gate, "tools/probe.py").strip(),
+                ("tools/probe.py", "declared/**", "a/**", "Cargo.toml", "Cargo.lock", "AGENTS.md"),
+            )
+            orig_lock_ino = str((repo / "Cargo.lock").stat().st_ino)
+            with mock.patch.dict(os.environ, {"TRY_UNDECLARED": "0", "ORIG_LOCK_INO": orig_lock_ino}):
+                lines, code = run_steps_isolated(repo, [probe_step], BOOT_TIMEOUT)
+            self.assertEqual(code, 0, lines)
+            self.assertIn("probe-ok", lines[0])
+            # Narrowing Cargo.toml inside sandbox must never mutate original repo/Cargo.toml.
+            self.assertIn('"b"', (repo / "Cargo.toml").read_text())
+
+            with mock.patch.dict(os.environ, {"TRY_UNDECLARED": "1", "ORIG_LOCK_INO": orig_lock_ino}):
+                lines_fail, code_fail = run_steps_isolated(repo, [probe_step], BOOT_TIMEOUT)
+            self.assertEqual(code_fail, 1, lines_fail)
+            self.assertIn("FAIL", lines_fail[0])
+
+            # Adding an undeclared workspace path dependency in Cargo.toml fails inside sandbox.
+            (repo / "a/Cargo.toml").write_text(
+                '[package]\nname = "a"\nversion = "0.1.0"\nedition = "2021"\n'
+                '[dependencies]\nb = { path = "../b" }\n'
+            )
+            cargo_step = Step(
+                "cargo probe",
+                X86_64,
+                lambda gate: check_output(gate, "cargo", "metadata", "--no-deps", "--format-version", "1"),
+                ("a/**", "Cargo.toml", "Cargo.lock"),
+            )
+            lines_meta, code_meta = run_steps_isolated(repo, [cargo_step], BOOT_TIMEOUT)
+            self.assertEqual(code_meta, 1, lines_meta)
+
+            # --check-inputs --steps excludes unbounded steps and step inputs itself.
+            steps_out = io.StringIO()
+            with contextlib.redirect_stdout(steps_out):
+                self.assertEqual(main(["--check-inputs", "--steps"], repo=REPO), 0)
+            isolated_names = steps_out.getvalue().splitlines()
+            self.assertNotIn("file sizes", isolated_names)
+            self.assertNotIn("source licenses", isolated_names)
+            self.assertNotIn(INPUT_ISOLATION_STEP, isolated_names)
+            self.assertIn("hooks", isolated_names)
+
+    def test_step_inputs_step_exists_before_aarch64_boot_and_covers_tools(self):
+        names = [s.name for s in STEPS]
+        self.assertIn("step inputs", names)
+        si = next(s for s in STEPS if s.name == "step inputs")
+        self.assertEqual(si.target, X86_64)
+        self.assertLess(names.index("step inputs"), names.index("aarch64 boot"))
+        for sample in ("tools/gate.py", "tools/verify.py", ".claude/hooks/license-guard.sh",
+                       "dom0/Cargo.toml", "boot-host-tests/src/lib.rs", "AGENTS.md"):
+            self.assertTrue(matches_globs(sample, si.inputs), sample)
 
 
 if __name__ == "__main__":

@@ -25,13 +25,13 @@ confidence: high
    - `IMAGE_CRATES` = every crate linked by the boot images (`aloader`, `kernel`, `dom0`, `user/hello`) plus their transitive workspace dependencies and target configs: `aloader/**`, `aelf/**`, `kernel/**`, `dom0/**`, `user/hello/**`, `user/.cargo/**`, `user/*-unknown-aloader.json`, `astd/**`, `acall/**`, `aeager/**`, `aheap/**`, `asys/**`, `kernel-logger/**`, `machine/**`, `ns16550a/**`, `abench/**`, `acontext/**`, `kernel/verified/**`. (Note that `kernel/**` covers `kernel/.cargo/**`, `kernel/src/*.json`, `kernel/src/logo.txt`, and `kernel/verified/**`.)
    - `WORKSPACE_CRATES` = every workspace member in `Cargo.toml` (`IMAGE_CRATES` plus `aring/**`, `amailbox/**`, `afanin/**`, `pager-policy/**`, `adivider/**`, `awire/**`, `file-service/**`, `boot-host-tests/**`).
 
-   Each of the 27 steps declares:
+   Each of the 28 steps declares:
 
    | Step | Target | Inputs (`GATE_SELF + TOOLCHAIN_PINS + ...` when bounded) |
    | --- | --- | --- |
    | `file sizes` | `x86_64` | `None` (unbounded; always runs) |
    | `source licenses` | `x86_64` | `None` (unbounded; always runs) |
-   | `license` | `x86_64` | `tools/check-licenses.py`, `tools/license-allowlist`, every workspace member's `Cargo.toml` (`<member>/Cargo.toml`) |
+   | `license` | `x86_64` | `tools/check-licenses.py`, `tools/license-allowlist`, every workspace member's `Cargo.toml` (`<member>/Cargo.toml`), and workspace Cargo target entrypoints (`*/src/lib.rs`, `*/src/main.rs`, `*/build.rs`, `file-service/tests/*.rs`, `kernel/verified/lib.rs`, `machine/*/src/lib.rs`, `user/*/src/main.rs`) |
    | `hooks` | `x86_64` | `AGENTS.md`, `.agents/hooks.json`, `.claude/hooks/license-guard.sh`, `.claude/hooks/license-guard-test.sh`, `.claude/hooks/beads-actor.sh`, `.claude/hooks/beads-actor-test.sh`, `.claude/hooks/agy-session-start.sh` |
    | `design index` | `x86_64` | `tools/build-design-index.py`, `design/*/DECISION.md`, `design/INDEX.md` |
    | `faq` | `x86_64` | `tools/faq.py`, `docs/faq/**`, `kernel/verified/define.rs`, `kernel/verified/layouts.rs`, `kernel/verified/capability/**` |
@@ -55,6 +55,7 @@ confidence: high
    | `coverage` | `x86_64` | `tools/coverage.py`, `tools/check-boot-stack.py`, `tools/run.py`, `tools/elfstrip.py`, `tools/firmware.py`, `IMAGE_CRATES`, `user/**` |
    | `iommu boot` | `x86_64` | `tools/run.py`, `tools/elfstrip.py`, `tools/firmware.py`, `tools/check-boot-log.py`, `IMAGE_CRATES` |
    | `boot` | `x86_64` | `tools/run.py`, `tools/gdb.py`, `tools/gdb-helper.py`, `tools/elfstrip.py`, `tools/firmware.py`, `tools/check-boot-log.py`, `IMAGE_CRATES` |
+   | `step inputs` | `x86_64` | Gate step runners/configs (`GATE_TOOLS_AND_CONFIGS`), hooks (`AGENTS.md`, `.agents/hooks.json`, `.claude/hooks/**`), `WORKSPACE_MANIFESTS`, `boot-host-tests/**` |
    | `aarch64 boot` | `aarch64` | `tools/board.py`, `tools/aarch64-esp.py`, `tools/build.py`, `tools/check-stack-sizes.py`, `tools/elfstrip.py`, `tools/orangepi-kvm.py`, `tools/check-boot-log.py`, `IMAGE_CRATES` |
 
    Every step added in the future declares its own `inputs` alongside its runner, and `tools/gate.py` exposes the set of uncovered paths dynamically (`--unread`) instead of maintaining an exception list.

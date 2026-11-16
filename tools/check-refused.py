@@ -207,22 +207,25 @@ def account(output, crate_claims, root, out_of_memory):
     return judge(output, crate_claims, root)
 
 
-def command(crate, crate_claims, verus_out):
+def command(crate, crate_claims, verus_out, dep_info=None):
     """rust_verify over a crate's refused modules alone. Nothing is exported, so the crate is named
     as no crate depends on it."""
     extra = ["--cfg", REFUSED]
     for claim in crate_claims:
         extra += ["--verify-module", f"{REFUSED}::{claim.name}"]
-    return verify.verify_command(crate, set(), None, verus_out, extra)
+    return verify.verify_command(crate, set(), None, verus_out, extra, dep_info=dep_info)
 
 
 def run(crate, crate_claims, root):
     """The crate's refused modules, through the cap tools/verify.py puts on rust_verify. The output,
     and whether the cgroup killed the run for memory."""
+    verus_out = root / "target" / "verus"
+    verus_out.mkdir(parents=True, exist_ok=True)
+    dep_info = verus_out / f"refused-{crate['crate']}.d"
     unit = f"atmo-refused-{os.getpid()}-{crate['crate']}"
     with tempfile.TemporaryFile() as captured:
         _, out_of_memory = verify.run_capped(
-            command(crate, crate_claims, root / "target" / "verus"),
+            command(crate, crate_claims, verus_out, dep_info=dep_info),
             unit,
             verify.MEMORY_MAX,
             cwd=root,
@@ -614,6 +617,21 @@ class Tests(unittest.TestCase):
         self.assertEqual(findings, [])
         self.assertEqual(order[0], ("prepare", ["dep", "user"], {"user"}, root))
         self.assertEqual(order[1], ("run", "user"))
+
+    def test_run_requests_dep_info_in_target_verus(self):
+        root, found, _ = self.crate()
+        crate = {"package": "aheap", "crate": "aheap", "src": str(root / "src/lib.rs"), "deps": [], "plain": []}
+        calls = []
+
+        def fake_capped(cmd, unit, memory_max, **kwargs):
+            calls.append(cmd)
+            kwargs["stdout"].write(b"verification results:: 0 verified, 1 errors\n")
+            return 1, False
+
+        with mock.patch.object(verify, "run_capped", side_effect=fake_capped):
+            run(crate, found, root)
+        expected = root / "target" / "verus" / "refused-aheap.d"
+        self.assertEqual(calls[0][-2:], ["--", f"--emit=dep-info={expected}"])
 
 
 class Verus(unittest.TestCase):

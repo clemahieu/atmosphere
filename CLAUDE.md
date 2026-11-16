@@ -84,7 +84,7 @@ Each tool's opening comment is its manual: what it does, its options and its exi
 
 ```
 source tools/env.sh     # Verus and RUSTC_BOOTSTRAP
-tools/gate.py           # the gate; --target and --step run part of it
+tools/gate.py           # the gate; --target and --step run part of it, --check-inputs checks step inputs in isolation
 cargo test --workspace  # every member's host tests, from the root, after a build
 tools/run.py            # build the images and boot them under QEMU; --iommu, --no-kvm, --gdb, --memory MIB, --kernel-feature FEATURE
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify

@@ -394,23 +394,26 @@ def account(output, throwaways, root, out_of_memory):
     return judge(output, throwaways, root)
 
 
-def command(crate, throwaways, verus_out):
+def command(crate, throwaways, verus_out, dep_info=None):
     """rust_verify over a crate's throwaway modules alone. Nothing is exported, so the crate is named
     as no crate depends on it."""
     extra = ["--cfg", THROWAWAY]
     for throwaway in throwaways:
         extra += ["--verify-module", throwaway.module]
-    return verify.verify_command(crate, set(), None, verus_out, extra)
+    return verify.verify_command(crate, set(), None, verus_out, extra, dep_info=dep_info)
 
 
 def run(crate, throwaways, root):
     """The crate's throwaways, through the cap tools/verify.py puts on rust_verify. The output, and
     whether the cgroup killed the run for memory. The scope is per crate, so the crates still run
     side by side."""
+    verus_out = root / "target" / "verus"
+    verus_out.mkdir(parents=True, exist_ok=True)
+    dep_info = verus_out / f"throwaway-{crate['crate']}.d"
     unit = f"atmo-throwaway-{os.getpid()}-{crate['crate']}"
     with tempfile.TemporaryFile() as captured:
         _, out_of_memory = verify.run_capped(
-            command(crate, throwaways, root / "target" / "verus"),
+            command(crate, throwaways, verus_out, dep_info=dep_info),
             unit,
             verify.MEMORY_MAX,
             cwd=root,
@@ -835,6 +838,13 @@ impl CapKernel {
             "rust_verify", "--crate-type", "lib", str(self.user), "--rlimit", "100", "--cfg", "throwaway",
             "--verify-module", "throwaway::page", "--verify-module", "throwaway::made"])
 
+    def test_run_requests_dep_info_in_target_verus(self):
+        throwaways, _ = self.written(self.user)
+        calls = self.capped_calls(lambda: run(self.crate("aheap"), throwaways, self.root))
+        self.assertEqual(len(calls), 1)
+        expected = self.root / "target" / "verus" / "throwaway-aheap.d"
+        self.assertEqual(calls[0]["command"][-2:], ["--", f"--emit=dep-info={expected}"])
+
     def crate(self, name):
         return {"package": name, "crate": name, "src": str(self.user), "deps": [], "plain": []}
 
@@ -875,7 +885,11 @@ impl CapKernel {
             [f"atmo-throwaway-{os.getpid()}-aheap", f"atmo-throwaway-{os.getpid()}-aring"],
         )
         for call, name in zip(calls, ("aheap", "aring")):
-            self.assertEqual(call["command"], command(self.crate(name), throwaways, self.root / "target" / "verus"))
+            verus_out = self.root / "target" / "verus"
+            self.assertEqual(
+                call["command"],
+                command(self.crate(name), throwaways, verus_out, dep_info=verus_out / f"throwaway-{name}.d"),
+            )
             self.assertEqual(call["kwargs"]["cwd"], self.root)
             self.assertIs(call["kwargs"]["stdin"], subprocess.DEVNULL)
         self.assertEqual(seen["aheap"], ("verifier-output\n", False))
