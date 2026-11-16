@@ -515,7 +515,7 @@ function drawFlights() {
     const ended = row.alive === false;
     return h("div", {class: "row"},
       h("div", {class: "when"},
-        h("div", {class: "stage"}, row.stage ? STAGES[row.stage] : "held"),
+        h("div", {class: "stage"}, row.stage ? STAGES[row.stage] : row.session ? "running" : "held"),
         h("div", {class: "clock muted", "data-since": row.since ?? row.started}),
       ),
       h("div", {},

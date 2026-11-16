@@ -9,9 +9,13 @@ issue of the graph opens its details: its texts and the issues around it.
 The server reads Beads only while a page asks. A request for /data runs bd when what the server
 holds is older than AGE seconds, and the page (tools/bead-status.html) asks only while its tab is
 visible. The history is each issue's creation and close time out of one `bd list --all`, so nothing
-is recorded between runs; an issue reopened counts as open from its creation. A session's stage and
-clock are the ones its status line wrote (tools/round-status.py), read from the same files. An
-issue a loop holds is worked at the harness, model and effort its pid file names (tools/loop.py).
+is recorded between runs; an issue reopened counts as open from its creation. A Claude session's
+stage and clock are the ones its status line wrote (tools/round-status.py), read from the same files.
+A loop's sessions run headless with no status line, so for an issue a loop holds the server derives
+the stage by the status line's own rule each time it reads Beads, taking prover or skeptic from the
+session its pid file names, and keeps that loop's clock in the same place; an issue whose loop runs
+no session has no stage, and the page shows it held. An issue a loop holds is worked at the harness,
+model and effort its pid file names (tools/loop.py).
 
 The tokens are the token ledger's (tools/token-ledger.py), which the server harvests every
 HARVEST seconds in a thread of its own, so a page never waits on a harvest. An issue's tokens are
@@ -291,10 +295,30 @@ def detail(issues, name, own={}):
     }
 
 
+def loop_clocks(issues, root, state, now):
+    """Write each loop's clock as a status line would: the issue it holds and the stage its session is
+    at, or nothing when it runs no session."""
+    status = round_status()
+    state.mkdir(parents=True, exist_ok=True)
+    for issue in issues:
+        actor = issue.get("assignee") or ""
+        if issue["status"] != "in_progress" or not actor.startswith("loop-"):
+            continue
+        running = session(root, actor)
+        key = ""
+        if running is not None:
+            worktree = root / issue["id"]
+            kind = running.get("kind")
+            name = status.stage(kind if kind in ("prover", "skeptic") else None, status.scripts(worktree),
+                                status.gate_exit(root / "logs" / f"{issue['id']}-gate.log"), worktree.is_dir())
+            key = f"{issue['id']} {name}"
+        status.since(state / f"{actor}.json", key, now)
+
+
 def clocks(state):
-    """What each session's status line last wrote: the issue it holds, the stage and when the stage began."""
+    """What each session's status line, or the server for a loop, last wrote: the issue it holds, the stage and when the stage began."""
     found = {}
-    for file in state.glob("claude-*.json"):
+    for file in [*state.glob("claude-*.json"), *state.glob("loop-*.json")]:
         seen = json.loads(file.read_text())
         issue, _, stage = seen["key"].partition(" ")
         found[file.stem] = {"issue": issue, "stage": stage, "since": seen["since"]}
@@ -521,7 +545,9 @@ def read(root, now, claude=(), agy=(), grok=()):
     ledger = token_ledger()
     own, hours = ledger.spent(root / LEDGER, now - HOURLY)
     meters = with_pace(list(claude) + list(agy) + list(grok), paces(root / LOOP_CONFIG), now)
-    return issues, own, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now, own, hours, meters)
+    state = round_status().state_dir(root)
+    loop_clocks(issues, root, state, now)
+    return issues, own, summary(issues, bd("ready"), clocks(state), alive, root, now, own, hours, meters)
 
 
 class Beads:
@@ -728,6 +754,34 @@ class Tests(unittest.TestCase):
             "claude-11": {"issue": "a.1.2", "stage": "gate", "since": 100.5},
             "claude-12": {"issue": "", "stage": "", "since": 50},
         })
+
+    def test_a_loops_clock_is_the_stage_of_the_session_it_runs_and_none_between_sessions(self):
+        state, pids = self.root / "state", self.root / "logs" / "loop"
+        pids.mkdir(parents=True)
+        issues = [self.issue("a.1", "in_progress", assignee="loop-71"), self.issue("a.2", "in_progress", assignee="loop-72"),
+                  self.issue("a.3", "in_progress", assignee="loop-73"), self.issue("a.4", "in_progress", assignee="claude-74"),
+                  self.issue("a.5", assignee="loop-75")]
+        (pids / "71").write_text(json.dumps({"pid": 71, "session": {"kind": "round", "harness": "agy"}}))
+        (pids / "72").write_text(json.dumps({"pid": 72, "session": {"kind": "prover", "harness": "grok"}}))
+        (pids / "73").write_text(json.dumps({"pid": 73, "session": None}))
+        loop_clocks(issues, self.root, state, 100.0)
+        self.assertEqual(clocks(state), {
+            "loop-71": {"issue": "a.1", "stage": "read", "since": 100.0},
+            "loop-72": {"issue": "a.2", "stage": "prover", "since": 100.0},
+            "loop-73": {"issue": "", "stage": "", "since": 100.0},
+        })
+        # The round makes its worktree, then lands with a failing gate: each stage starts its own clock.
+        (self.root / "a.1").mkdir()
+        loop_clocks(issues, self.root, state, 160.0)
+        self.assertEqual(clocks(state)["loop-71"], {"issue": "a.1", "stage": "work", "since": 160.0})
+        (self.root / "logs" / "a.1-gate.log").write_text("gate verify: failed\nexit 1\n")
+        loop_clocks(issues, self.root, state, 200.0)
+        loop_clocks(issues, self.root, state, 230.0)
+        self.assertEqual(clocks(state)["loop-71"], {"issue": "a.1", "stage": "fix", "since": 200.0})
+        # A loop between sessions holds its issue with no stage.
+        (pids / "71").write_text(json.dumps({"pid": 71, "session": None}))
+        loop_clocks(issues, self.root, state, 300.0)
+        self.assertEqual(clocks(state)["loop-71"], {"issue": "", "stage": "", "since": 300.0})
 
     def test_a_session_is_alive_while_a_process_named_claude_has_its_pid(self):
         self.assertIsNone(alive(None))
