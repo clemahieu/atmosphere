@@ -1572,7 +1572,8 @@ proof fn make_servers(from: int) -> (tracked r: Map<int, FlushServer>)
 /// Empties the pieces of the TLB model of the calling core `me` and of each core `targets` names. Here
 /// one broadcast empties every core's, so no piece is lent, no IPI is sent and nothing waits but the
 /// broadcast's own DSB. That wait is one unit: it is for other cores, which answer whatever any core's
-/// IF says.
+/// IF says. Takes `report` for a common arch signature (`design/arch-module/`) and does not branch on
+/// it.
 #[allow(unused_variables)]
 pub fn flush_cores<F: Fn(usize)>(
     bridge: &FlushBridge,
@@ -1581,6 +1582,7 @@ pub fn flush_cores<F: Fn(usize)>(
     me: usize,
     targets: u64,
     send_ipi: F,
+    report: Processor,
     Tracked(steps): Tracked<&mut Steps>,
 )
     requires
@@ -1609,9 +1611,10 @@ pub fn flush_cores<F: Fn(usize)>(
 }
 
 /// Serves a flush lent to core `core`, the core this runs on, if one stands: none ever does here, since
-/// flush_cores lends nothing, so it returns false.
+/// flush_cores lends nothing, so it returns false. Takes `report` for a common arch signature
+/// (`design/arch-module/`) and does not branch on it.
 #[allow(unused_variables)]
-pub fn serve_flush(bridge: &FlushBridge, Tracked(server): Tracked<&mut FlushServer>, core: usize) -> (served: bool)
+pub fn serve_flush(bridge: &FlushBridge, Tracked(server): Tracked<&mut FlushServer>, core: usize, report: Processor) -> (served: bool)
     requires
         bridge.wf(),
         old(server).wf(*bridge),

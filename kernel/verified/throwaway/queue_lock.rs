@@ -19,7 +19,7 @@ use vstd::set_lib::{lemma_int_range, lemma_len_subset, set_int_range};
 use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::{GhostSetAuth, GhostSubset};
 use vstd::resource::Loc;
-use crate::arch::{serve_flush, spin_hint, FlushBridge, FlushServer};
+use crate::arch::{serve_flush, spin_hint, FlushBridge, FlushServer, Processor};
 use crate::define::NUM_CPUS;
 
 verus! {

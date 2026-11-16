@@ -303,7 +303,7 @@ unsafe extern "C" fn timer(regs: &mut Registers) {
 unsafe extern "C" fn flush_ipi(_regs: &mut Registers) {
     let core = crate::cpu::get_cpu_id();
     let server: Tracked<&mut FlushServer> = Tracked::assume_new();
-    serve_flush(&crate::lock::FLUSH_BRIDGE, server, core);
+    serve_flush(&crate::lock::FLUSH_BRIDGE, server, core, crate::cpu::processor());
     crate::flush::handle_ipi();
     machine::end_of_interrupt();
 }

@@ -55,7 +55,7 @@ impl<T> Locked<T> {
         let asked = stats::now();
         let core: Tracked<&mut Core> = Tracked::assume_new();
         let server: Tracked<&mut FlushServer> = Tracked::assume_new();
-        self.lock.acquire(cpu, core, &FLUSH_BRIDGE, server);
+        self.lock.acquire(cpu, core, &FLUSH_BRIDGE, server, cpu::processor());
         #[cfg(feature = "lock_stats")]
         let held_from = {
             let held_from = stats::now();

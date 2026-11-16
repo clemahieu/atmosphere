@@ -810,11 +810,19 @@ pub fn flush_reaches_every_core() -> (ret: bool)
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches, as flush_every_context
 /// does, and empties `piece`, the piece of the TLB model of the core this runs on: the caller is the
-/// core that holds the piece, by lending or by its own model.
+/// core that holds the piece, by lending or by its own model. Where `report.invpcid()` holds, INVPCID
+/// type 2 (with a zero 16-byte descriptor: PCID 0, bits 63:12 zero, VA 0) drops every entry
+/// including global ones for every PCID without touching CR4; where it is clear, toggling CR4.PGE
+/// does the fallback flush of the current PCID, other PCIDs and paging-structure caches. That INVPCID
+/// type 2 drops all cached upper-level entries rests on EFER.TCE being clear: the glue claim
+/// `read_processor` makes is that each core clears EFER.TCE at boot and no later EFER write sets it
+/// again.
+// cite: amd-apm3 4 System Instruction Reference, INVPCID, operation type 2
 // cite: amd-apm2 5.5.1 Process Context Identifier
 // cite: amd-apm2 5.5.3 TLB Management, Implicit Invalidations
 // cite: amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
-pub assume_specification[flush_core_tlb](Tracked(piece): Tracked<&mut CoreTlb>)
+// cite: amd-apm2 3.1.7 Extended Feature Enable Register (EFER), Translation Cache Extension (TCE) Bit, Bit 15
+pub assume_specification[flush_core_tlb](Tracked(piece): Tracked<&mut CoreTlb>, report: Processor)
     ensures
         final(piece).core() == old(piece).core(),
         final(piece).held() == Set::<TlbEntry>::empty(),
@@ -955,6 +963,7 @@ pub fn flush_cores<F: Fn(usize)>(
     me: usize,
     targets: u64,
     send_ipi: F,
+    report: Processor,
     Tracked(steps): Tracked<&mut Steps>,
 )
     requires
@@ -1039,7 +1048,7 @@ pub fn flush_cores<F: Fn(usize)>(
         assert(model.has(me as int));
     }
     let tracked mut mine = model.take(me as int);
-    flush_core_tlb(Tracked(&mut mine));
+    flush_core_tlb(Tracked(&mut mine), report);
     proof {
         model.put(me as int, mine);
     }
@@ -1103,7 +1112,7 @@ pub fn flush_cores<F: Fn(usize)>(
 /// Serves a flush lent to core `core`, the core this runs on, if one stands: empties the piece with
 /// flush_core_tlb and returns it through the bridge, then returns true; returns false when none stands.
 /// Called by the flush IPI's handler and by the queue lock's wait loop, and takes no lock.
-pub fn serve_flush(bridge: &FlushBridge, Tracked(server): Tracked<&mut FlushServer>, core: usize) -> (served: bool)
+pub fn serve_flush(bridge: &FlushBridge, Tracked(server): Tracked<&mut FlushServer>, core: usize, report: Processor) -> (served: bool)
     requires
         bridge.wf(),
         old(server).wf(*bridge),
@@ -1119,7 +1128,7 @@ pub fn serve_flush(bridge: &FlushBridge, Tracked(server): Tracked<&mut FlushServ
                 FlushOp::post(t@, out@),
         {
             let Tracked(mut piece) = t;
-            flush_core_tlb(Tracked(&mut piece));
+            flush_core_tlb(Tracked(&mut piece), report);
             Tracked(piece)
         },
         Tracked(&mut server.srv),
@@ -1931,23 +1940,36 @@ pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize, report:
 }
 
 #[cfg(not(test))]
-pub fn flush_core_tlb(_piece: Tracked<&mut CoreTlb>) {
-    unsafe {
-        core::arch::asm!(
-            "mov {cr4}, cr4",
-            "xor {cr4}, {pge}",
-            "mov cr4, {cr4}",
-            "xor {cr4}, {pge}",
-            "mov cr4, {cr4}",
-            cr4 = out(reg) _,
-            pge = const 1 << 7,
-        );
+pub fn flush_core_tlb(_piece: Tracked<&mut CoreTlb>, report: Processor) {
+    if report.invpcid() {
+        // INVPCID type 2 ignores PCID and VA and rejects non-zero descriptor bits 63:12 with #GP.
+        let descriptor = [0u64; 2];
+        unsafe {
+            core::arch::asm!(
+                "invpcid {kind}, [{descriptor}]",
+                kind = in(reg) 2u64,
+                descriptor = in(reg) &descriptor,
+                options(nostack, preserves_flags),
+            );
+        }
+    } else {
+        unsafe {
+            core::arch::asm!(
+                "mov {cr4}, cr4",
+                "xor {cr4}, {pge}",
+                "mov cr4, {cr4}",
+                "xor {cr4}, {pge}",
+                "mov cr4, {cr4}",
+                cr4 = out(reg) _,
+                pge = const 1 << 7,
+            );
+        }
     }
 }
 
-// A host test runs in user mode, where a CR4 write faults; it exercises the bridge, not the flush.
+// A host test runs in user mode, where a CR4 write and CPL-0 INVPCID fault; it exercises the bridge, not the flush.
 #[cfg(test)]
-pub fn flush_core_tlb(_piece: Tracked<&mut CoreTlb>) {}
+pub fn flush_core_tlb(_piece: Tracked<&mut CoreTlb>, _report: Processor) {}
 
 pub fn serial_write_byte(byte: u8) {
     unsafe {
@@ -2090,13 +2112,13 @@ mod tests {
             let done = AtomicBool::new(false);
 
             // No flush stands, so a serve does nothing.
-            let idle = serve_flush(&bridge, Tracked(&mut server), target);
+            let idle = serve_flush(&bridge, Tracked(&mut server), target, Processor::none());
             assert!(!idle);
 
             thread::scope(|s| {
                 s.spawn(|| {
                     while !done.load(Ordering::Acquire) {
-                        if serve_flush(&bridge, Tracked(&mut server), target) {
+                        if serve_flush(&bridge, Tracked(&mut server), target, Processor::none()) {
                             served.fetch_add(1, Ordering::Relaxed);
                         }
                     }
@@ -2117,6 +2139,7 @@ mod tests {
                                 assert_eq!(c, target);
                                 ipis.fetch_add(1, Ordering::Relaxed);
                             },
+                            Processor::none(),
                             Tracked(&mut steps),
                         );
                         assert_eq!(ipis.load(Ordering::Relaxed), r + 1);
@@ -2129,7 +2152,7 @@ mod tests {
                     // No target: nothing is lent, sent or waited for, so the IPI count below stays at rounds.
                     flush_cores(&bridge, Tracked(&mut requester), Tracked(&mut model), me, 0, |_c: usize| {
                         ipis.fetch_add(1, Ordering::Relaxed);
-                    }, Tracked(&mut steps));
+                    }, Processor::none(), Tracked(&mut steps));
                 }));
                 done.store(true, Ordering::Release);
                 if let Err(payload) = result {
@@ -2164,7 +2187,7 @@ mod tests {
                         while held_round.load(Ordering::Acquire) != r + 1 {
                             core::hint::spin_loop();
                         }
-                        lock.acquire(waiter, Tracked(&mut waiter_core), &bridge, Tracked(&mut waiter_server));
+                        lock.acquire(waiter, Tracked(&mut waiter_core), &bridge, Tracked(&mut waiter_server), Processor::none());
                         lock.release(waiter, Tracked(&mut waiter_core));
                         r += 1;
                         waiter_done.store(r, Ordering::Release);
@@ -2174,7 +2197,7 @@ mod tests {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut r: usize = 0;
                     while r < rounds {
-                        lock.acquire(holder, Tracked(&mut holder_core), &bridge, Tracked(&mut holder_server));
+                        lock.acquire(holder, Tracked(&mut holder_core), &bridge, Tracked(&mut holder_server), Processor::none());
                         held_round.store(r + 1, Ordering::Release);
                         // Send no IPI (no-op callback): only QueueLock::acquire's wait loop can serve
                         // the target's request while it waits for the lock.
@@ -2187,6 +2210,7 @@ mod tests {
                             |_c: usize| {
                                 ipis.fetch_add(1, Ordering::Relaxed);
                             },
+                            Processor::none(),
                             Tracked(&mut steps),
                         );
                         lock.release(holder, Tracked(&mut holder_core));

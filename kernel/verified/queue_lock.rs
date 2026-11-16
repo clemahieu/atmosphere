@@ -44,7 +44,7 @@ use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::{GhostSetAuth, GhostSubset};
 use vstd::resource::Loc;
 
-use crate::arch::{serve_flush, spin_hint, FlushBridge, FlushServer};
+use crate::arch::{serve_flush, spin_hint, FlushBridge, FlushServer, Processor};
 use crate::define::NUM_CPUS;
 
 verus! {
@@ -724,6 +724,7 @@ impl QueueLock {
         Tracked(core): Tracked<&mut Core>,
         bridge: &FlushBridge,
         Tracked(server): Tracked<&mut FlushServer>,
+        report: Processor,
     )
         requires
             self.wf(),
@@ -855,7 +856,7 @@ impl QueueLock {
                     }
                 });
                 if waiting {
-                    serve_flush(bridge, Tracked(server), cpu);
+                    serve_flush(bridge, Tracked(server), cpu, report);
                     spin_hint();
                 }
             }
@@ -1067,7 +1068,7 @@ pub fn witness_queue_lock(cpu: usize) -> (r: (QueueLock, Tracked<Core>))
     }
     let tracked mut core = cores.tracked_remove(cpu as int);
     let tracked mut server = servers.tracked_remove(cpu as int);
-    lock.acquire(cpu, Tracked(&mut core), &bridge, Tracked(&mut server));
+    lock.acquire(cpu, Tracked(&mut core), &bridge, Tracked(&mut server), Processor::none());
     lock.release(cpu, Tracked(&mut core));
     (lock, Tracked(core))
 }

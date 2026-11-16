@@ -2546,6 +2546,7 @@ impl CapKernel {
                 c,
                 targets,
                 send_ipi,
+                report,
                 Tracked(steps),
             );
             self.tlb_dirty = 0;
