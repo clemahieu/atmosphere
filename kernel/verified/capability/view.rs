@@ -100,6 +100,56 @@ pub proof fn lemma_bound_threads_live(list: &Tree, tables: &Tables)
     assert(bound_threads(list, tables) =~= bound_threads(list, tables).restrict(live_nodes(list)));
 }
 
+/// Two lists whose live binding nodes are the same nodes, each under a parent naming the same base,
+/// bind the same threads to the same processes.
+pub proof fn lemma_bound_threads_kept(a: &Tree, at: &Tables, b: &Tree, bt: &Tables)
+    requires
+        forall|t: usize| #![trigger b.nodes@[t as int]] t < NODE_SPACE
+            ==> (b.nodes@[t as int].live && b.nodes@[t as int].kind is Binding) == (a.nodes@[t as int].live && a.nodes@[t as int].kind is Binding),
+        forall|t: usize| #![trigger a.nodes@[t as int]] t < NODE_SPACE && a.nodes@[t as int].live && a.nodes@[t as int].kind is Binding
+            ==> bt.payload_of(b.parent@[t]).base == at.payload_of(a.parent@[t]).base,
+    ensures
+        bound_threads(b, bt) == bound_threads(a, at),
+{
+    broadcast use vstd::set::lemma_set_filter;
+    assert forall|t: usize| #[trigger] bound_threads(b, bt).dom().contains(t) == bound_threads(a, at).dom().contains(t) by {
+        if t < NODE_SPACE {
+            assert(b.nodes@[t as int] == b.nodes@[t as int]);
+            assert(a.nodes@[t as int] == a.nodes@[t as int]);
+        }
+    }
+    assert forall|t: usize| #[trigger] bound_threads(a, at).dom().contains(t) implies bound_threads(b, bt)[t] == bound_threads(a, at)[t] by {
+        assert(a.nodes@[t as int] == a.nodes@[t as int]);
+    }
+    assert(bound_threads(b, bt) =~= bound_threads(a, at));
+}
+
+/// A list that lost node r and no other binding, under the same parents and tables, binds the threads
+/// it bound, less r: none less when r was no live binding.
+pub proof fn lemma_bound_threads_removed(a: &Tree, b: &Tree, tables: &Tables, r: usize)
+    requires
+        !b.nodes@[r as int].live,
+        forall|t: usize| #![trigger b.nodes@[t as int]] t < NODE_SPACE && t != r
+            ==> (b.nodes@[t as int].live && b.nodes@[t as int].kind is Binding) == (a.nodes@[t as int].live && a.nodes@[t as int].kind is Binding),
+        b.parent@ == a.parent@,
+    ensures
+        bound_threads(b, tables) == bound_threads(a, tables).remove(r),
+        !(r < NODE_SPACE && a.nodes@[r as int].live && a.nodes@[r as int].kind is Binding)
+            ==> bound_threads(b, tables) == bound_threads(a, tables),
+{
+    broadcast use vstd::set::lemma_set_filter;
+    let (ma, mb) = (bound_threads(a, tables), bound_threads(b, tables));
+    assert forall|t: usize| #[trigger] mb.dom().contains(t) == ma.remove(r).dom().contains(t) by {
+        if t < NODE_SPACE && t != r {
+            assert(b.nodes@[t as int] == b.nodes@[t as int]);
+        }
+    }
+    assert(mb =~= ma.remove(r));
+    if !(r < NODE_SPACE && a.nodes@[r as int].live && a.nodes@[r as int].kind is Binding) {
+        assert(ma.remove(r) =~= ma);
+    }
+}
+
 /// Space s is a space of its own, a device space or a nested table, rather than a process's: whoever
 /// holds a capability to it sees what it maps.
 pub open spec fn is_device(tree: TableTree, s: usize) -> bool {
@@ -514,7 +564,7 @@ pub open spec fn view_of(
             tables.is_cap(list, h.0) && tables.payload_of(h.0).rights & right_bit(h.1) != 0),
         parent: list.parent@,
         maps: Set::empty(),
-        process_of: Map::empty(),
+        process_of: bound_threads(list, tables),
         waiting,
         bound: Map::empty(),
         shares: shares_of(tree),
@@ -905,6 +955,72 @@ impl CapKernel {
             self.lemma_binding_parent(t);
         }
         assert(b =~= r);
+    }
+
+    /// A step that changes no node but n and m, neither of them a live binding before or after, that
+    /// keeps every live binding's parent, and that keeps the base n and m name when they were
+    /// capabilities, binds the same threads: every other capability says what it did.
+    pub proof fn lemma_bound_threads_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            !(pre.list.nodes@[n as int].live && pre.list.nodes@[n as int].kind is Binding),
+            !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Binding),
+            !(pre.list.nodes@[m as int].live && pre.list.nodes@[m as int].kind is Binding),
+            !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Binding),
+            pre.is_cap(n) ==> post.payload_of(n).base == pre.payload_of(n).base,
+            pre.is_cap(m) ==> post.payload_of(m).base == pre.payload_of(m).base,
+            forall|t: usize| #![trigger pre.list.nodes@[t as int]] t < NODE_SPACE && pre.list.nodes@[t as int].live
+                && pre.list.nodes@[t as int].kind is Binding ==> post.list.parent@[t] == pre.list.parent@[t],
+        ensures
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+    {
+        assert forall|t: usize| #![trigger pre.list.nodes@[t as int]] t < NODE_SPACE && pre.list.nodes@[t as int].live
+            && pre.list.nodes@[t as int].kind is Binding
+            implies post.tables.payload_of(post.list.parent@[t]).base == pre.tables.payload_of(pre.list.parent@[t]).base by {
+            pre.lemma_binding_parent(t);
+            let x = pre.list.parent@[t];
+            if x != n && x != m {
+                Self::lemma_caps_frame(pre, post, n, m, x);
+            }
+        }
+        assert forall|t: usize| #![trigger post.list.nodes@[t as int]] t < NODE_SPACE
+            implies (post.list.nodes@[t as int].live && post.list.nodes@[t as int].kind is Binding)
+                == (pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding) by {
+            if t != n && t != m {
+                assert(post.list.nodes@[t as int].live == pre.list.nodes@[t as int].live);
+            }
+        }
+        lemma_bound_threads_kept(&pre.list, &pre.tables, &post.list, &post.tables);
+    }
+
+    /// Only a thread is a bound thread: a bound thread has a record, whose block is a base typed
+    /// Thread, so a process, a free block or any other is no key.
+    pub proof fn lemma_unbound_unless_thread(&self, p: usize)
+        requires
+            self.wf(),
+            !(self.blocks.pages@[(p / PAGE_SZ) as int].kind is Base && self.blocks.pages@[(p / PAGE_SZ) as int].object is Thread),
+        ensures
+            !bound_threads(&self.list, &self.tables).dom().contains(p),
+    {
+        broadcast use vstd::set::lemma_set_filter;
+        if bound_threads(&self.list, &self.tables).dom().contains(p) {
+            self.lemma_binding_parent(p);
+            self.lemma_thread_wf(p);
+        }
+    }
+
+    /// No capability with the control right through which a caller reaches a table names a bound
+    /// thread: it names a process.
+    pub proof fn lemma_process_cap_unbound(&self, n: usize)
+        requires
+            self.wf(),
+            self.is_cap(n),
+            self.payload_of(n).kind is Process,
+        ensures
+            !self.view().process_of.contains_key(self.payload_of(n).base),
+    {
+        self.lemma_process_cap(n);
+        self.lemma_unbound_unless_thread(self.payload_of(n).base);
     }
 
     /// Two states whose thread records name the same process for every thread have the same bound

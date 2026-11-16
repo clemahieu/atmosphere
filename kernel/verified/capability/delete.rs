@@ -250,6 +250,8 @@ impl CapKernel {
             ret is Some ==> Self::object_dropped(*old(self), *final(self), old(self).cap_at(root, at)->0),
             Self::delete_kept(*old(self), *final(self), root),
     {
+        // The proofs below use the lemmas' ensures, so bound_threads stays folded.
+        hide(bound_threads);
         let ghost pre = *old(self);
         proof {
             pre.lemma_no_op_discharges(root);
@@ -330,8 +332,7 @@ impl CapKernel {
             Self::lemma_caps_contained_caps_frame(pre, post, n, n);
             lemma_parents_removed(pre.list, post.list, n);
             assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
-            Self::lemma_delete_removes(pre, post, n);
-            lemma_removes_cap_discharges(pre.view(), post.view(), root, n);
+            Self::lemma_delete_discharges(pre, post, root, n);
             Self::lemma_tlb_same(pre, post);
             assert(post.cores == pre.cores);
             assert(Self::same_tree(pre, post));
@@ -732,10 +733,13 @@ impl CapKernel {
             post.list.parent@ == pre.list.parent@,
             Self::same_tree(pre, post),
             post.devices == pre.devices,
+            post.tables == pre.tables,
         ensures
             removes_cap(pre.view(), post.view(), n),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
     {
         let (a, b) = (pre.view(), post.view());
+        lemma_bound_threads_kept(&pre.list, &pre.tables, &post.list, &post.tables);
         assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) implies a.held.contains(h) by {
             assert(h.1 != n);
             Self::lemma_caps_frame(pre, post, n, n, h.1);
@@ -762,6 +766,29 @@ impl CapKernel {
             Self::lemma_caps_frame(pre, post, n, n, h.0);
         }
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
+    }
+
+    /// The step as the caller's: the capability it commands goes, which a local step may do, and every
+    /// thread stays bound to its process.
+    pub proof fn lemma_delete_discharges(pre: Self, post: Self, root: usize, n: usize)
+        requires
+            post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
+            blocked_on(&post.threads) == blocked_on(&pre.threads),
+            Self::caps_frame(pre, post, n, n),
+            pre.is_cap(n),
+            !post.list.nodes@[n as int].live,
+            post.list.parent@ == pre.list.parent@,
+            Self::same_tree(pre, post),
+            post.devices == pre.devices,
+            post.tables == pre.tables,
+            pre.view().commands(root, n),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Local),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+    {
+        Self::lemma_delete_removes(pre, post, n);
+        lemma_removes_cap_discharges(pre.view(), post.view(), root, n);
     }
 
     /// A capability with a child, such as a process capability with a thread's binding below it, is not

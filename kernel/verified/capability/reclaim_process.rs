@@ -823,6 +823,9 @@ impl CapKernel {
         Self::lemma_process_freed_tree(pre, post, base);
         lemma_space_removed_same_shares(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), base);
         assert(b.shares == a.shares);
+        // The list and every payload are as they were, so every binding names the process it did.
+        lemma_bound_threads_kept(&pre.list, &pre.tables, &post.list, &post.tables);
+        assert(b.process_of == a.process_of);
         assert(b == a);
     }
 

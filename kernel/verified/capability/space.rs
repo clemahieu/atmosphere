@@ -1902,6 +1902,7 @@ impl CapKernel {
     /// query.
     pub proof fn lemma_hidden_retyped_discharges(pre: Self, post: Self, root: usize, from: usize, parent: usize, n: usize, order: u8)
         requires
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
@@ -1930,6 +1931,7 @@ impl CapKernel {
     /// only new parent entry is the hidden node's, which no capability descends from.
     pub proof fn lemma_hidden_added_discharges(pre: Self, post: Self, root: usize, parent: usize, n: usize, pages: nat)
         requires
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             n + pages * PAGE_SZ <= pre.view().names[parent] + pre.view().pages[parent] * PAGE_SZ,
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
@@ -1994,6 +1996,7 @@ impl CapKernel {
     /// node the list held has a new parent, so each state simulates the other.
     pub proof fn lemma_hidden_added_reach(pre: Self, post: Self, parent: usize, n: usize)
         requires
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
             pre.wf(),
             n < NODE_SPACE,
@@ -2480,6 +2483,7 @@ impl CapKernel {
             Self::lemma_mappings_grown(pre, post, page, 3);
         }
         Self::lemma_table_page_shares(pre, post, base, page);
+        Self::lemma_bound_threads_same(pre, post);
         Self::lemma_hidden_retyped_discharges(pre, post, root, from, parent, base, 3);
         Self::lemma_hidden_added_reach(pre, post, parent, base);
         assert forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base implies {

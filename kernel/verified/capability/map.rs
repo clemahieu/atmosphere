@@ -2123,6 +2123,7 @@ impl CapKernel {
                 Self::lemma_caps_frame(pre, post, node, node, x);
             }
         }
+        Self::lemma_bound_threads_caps_frame(pre, post, node, node);
         Self::lemma_hidden_added_reach(pre, post, f, node);
     }
 
@@ -3032,6 +3033,7 @@ impl CapKernel {
             node < NODE_SPACE,
             !pre.list.nodes@[node as int].live,
             !(post.list.nodes@[node as int].kind is Capability),
+            !(post.list.nodes@[node as int].kind is Binding),
             post.list.parent@ == pre.list.parent@.insert(node, f),
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
                 &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
@@ -3048,6 +3050,7 @@ impl CapKernel {
         let (a, b) = (State { shares: pre.view().shares, binds: pre.view().binds, ..post.view() }, pre.view());
         let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
         let g = |x: NodeId| x;
+        lemma_bound_threads_kept(&pre.list, &pre.tables, &post.list, &post.tables);
         assert(Self::caps_frame(pre, post, node, node));
         assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
             if x == node {
@@ -3103,6 +3106,7 @@ impl CapKernel {
             node < NODE_SPACE,
             !pre.list.nodes@[node as int].live,
             !(post.list.nodes@[node as int].kind is Capability),
+            !(post.list.nodes@[node as int].kind is Binding),
             post.list.parent@ == pre.list.parent@.insert(node, f),
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
                 &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
@@ -3136,6 +3140,7 @@ impl CapKernel {
             node < NODE_SPACE,
             !pre.list.nodes@[node as int].live,
             !(post.list.nodes@[node as int].kind is Capability),
+            !(post.list.nodes@[node as int].kind is Binding),
             post.list.parent@ == pre.list.parent@.insert(node, f),
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
                 &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
@@ -3166,6 +3171,7 @@ impl CapKernel {
             node < NODE_SPACE,
             !pre.list.nodes@[node as int].live,
             !(post.list.nodes@[node as int].kind is Capability),
+            !(post.list.nodes@[node as int].kind is Binding),
             post.list.parent@ == pre.list.parent@.insert(node, f),
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
                 &&& post.list.nodes@[i].live == pre.list.nodes@[i].live

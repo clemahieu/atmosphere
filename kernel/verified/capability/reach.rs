@@ -665,20 +665,21 @@ pub open spec fn adds_bound_object(
 }
 
 /// post is pre with thread t's binding undone: the process map loses t, and the binding node b, which
-/// is no capability, leaves the parent map. t waits on nothing, so no waiter is rebound. Revoke's
-/// binding arm takes such a step.
+/// is no capability, is no longer live, its entry in the parent map kept or dropped. t waits on
+/// nothing afterwards, so no waiter is rebound, and the device spaces map and bind no more than they
+/// did. Revoke's binding arm takes such a step.
 pub open spec fn unbinds(pre: State, post: State, t: ObjectId, b: NodeId) -> bool {
     &&& !pre.names.contains_key(b)
-    &&& post.parent == pre.parent.remove(b)
+    &&& post.parent == pre.parent || post.parent == pre.parent.remove(b)
     &&& post.process_of == pre.process_of.remove(t)
-    &&& forall|o: ObjectId| !#[trigger] pre.waiting.contains((o, t))
+    &&& forall|o: ObjectId| !#[trigger] post.waiting.contains((o, t))
     &&& post.held == pre.held
     &&& post.names == pre.names
     &&& post.pages == pre.pages
     &&& post.rights == pre.rights
     &&& post.maps == pre.maps
-    &&& post.shares == pre.shares
-    &&& post.binds == pre.binds
+    &&& post.shares.subset_of(pre.shares)
+    &&& binds_within(post, pre)
     &&& adds_no_waiter(pre, post)
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
@@ -1757,7 +1758,49 @@ pub proof fn lemma_adds_bound_object_discharges_retype(
     }
 }
 
-/// Walking up in post walks the same nodes in pre, since post's parent map is pre's less one entry.
+/// A retype that adds an object, as `adds_object` says of the state `typed`, and in the same step binds
+/// it under cp adds a bound object: post is typed but for the binding's parent entry and the process
+/// map, neither of which the child's own conjuncts read.
+pub proof fn lemma_adds_object_then_binding(
+    pre: State,
+    typed: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    cp: NodeId,
+    b: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+)
+    requires
+        adds_object(pre, typed, p, c, n, live, object),
+        without_binding(pre, post, c, n) == (State { process_of: post.process_of, ..typed }),
+        post.parent == pre.parent.insert(n, c).insert(b, cp),
+        b != n,
+        !live(b),
+        pre.holds_right(p, cp, Right::Control),
+        !pre.process_of.contains_key(pre.names[cp]),
+        post.process_of == pre.process_of.insert(object, pre.names[cp]),
+        forall|o: ObjectId| !#[trigger] pre.waiting.contains((o, object)),
+        forall|x: NodeId| #[trigger] pre.rights.contains((x, Right::Control)) && pre.names.contains_key(x)
+            ==> pre.names[x] != object,
+    ensures
+        adds_bound_object(pre, post, p, c, n, cp, b, live, object),
+{
+    let w = without_binding(pre, post, c, n);
+    assert(w.held == typed.held && w.names == typed.names && w.pages == typed.pages && w.rights == typed.rights);
+    assert(w.parent == typed.parent && w.maps == typed.maps && w.shares == typed.shares && w.binds == typed.binds);
+    assert(w.waiting == typed.waiting && w.contents == typed.contents);
+    assert forall|o: ObjectId| #[trigger] w.covers(n, o) implies pre.covers(c, o) by {
+        assert(typed.covers(n, o));
+    }
+    assert(places_node(pre, w, p, p, c, n, live));
+    assert(post.names == w.names);
+}
+
+/// Walking up in post walks the same nodes in pre, since post's parent map is pre's, less one entry
+/// at most.
 proof fn lemma_unbinds_descends(pre: State, post: State, t: ObjectId, b: NodeId, top: NodeId, x: NodeId, k: nat)
     requires
         unbinds(pre, post, t, b),
@@ -1866,8 +1909,8 @@ pub proof fn lemma_unbinds_discharges_revoke(pre: State, post: State, p: ObjectI
     }
     assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
         implies post.process_behind(w.1) == pre.process_behind(w.1) by {
-        assert(pre.waiting.contains(w));
-        assert(!pre.waiting.contains((w.0, t)));
+        assert(!post.waiting.contains((w.0, t)));
+        assert(w.1 != t);
     }
 }
 
@@ -3981,6 +4024,75 @@ pub proof fn lemma_unwaits_discharges(a: State, b: State, p: ObjectId, e: Effect
     assert(b.shares == a.shares && b.binds == a.binds);
     assert forall|r: ObjectId, o: ObjectId| #[trigger] b.reach(r, o) && !a.reach(r, o) implies may_grow(a, p, e, r, o) by {
         lemma_same_authority_same_reach(b, a, r, o);
+    }
+}
+
+/// b is a with fewer waiters and thread t's binding undone: the process map loses t, which no
+/// capability with the control right names, and t waits on nothing in b. No control reads what t was
+/// bound to, so nothing moves. A dead thread's reclaim takes such a step when it unlinks the binding.
+pub open spec fn unwaits_unbound(a: State, b: State, t: ObjectId) -> bool {
+    &&& b == (State { waiting: b.waiting, process_of: a.process_of.remove(t), ..a })
+    &&& adds_no_waiter(a, b)
+    &&& forall|x: NodeId| #[trigger] a.rights.contains((x, Right::Control)) && a.names.contains_key(x)
+        ==> a.names[x] != t
+    &&& forall|o: ObjectId| !#[trigger] b.waiting.contains((o, t))
+}
+
+/// A control chain in b is one in a: every control capability names something other than t, whose
+/// process is the same in both.
+proof fn lemma_unwaits_unbound_controlled(a: State, b: State, t: ObjectId, r: ObjectId, q: ObjectId, k: nat)
+    requires
+        unwaits_unbound(a, b, t),
+        b.controlled(r, q, k),
+    ensures
+        a.controlled(r, q, k),
+    decreases k,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] b.controls(m, q) && b.controlled(r, m, (k - 1) as nat);
+        lemma_unwaits_unbound_controlled(a, b, t, r, m, (k - 1) as nat);
+        let x = choose|x: NodeId| #[trigger] b.holds_right(m, x, Right::Control)
+            && b.process_behind(b.names[x]) == q;
+        assert(a.holds_right(m, x, Right::Control));
+        assert(a.names[x] != t);
+        assert(b.process_of.contains_key(a.names[x]) == a.process_of.contains_key(a.names[x]));
+        assert(a.process_behind(a.names[x]) == q);
+        assert(a.controls(m, q));
+    }
+}
+
+/// Such a step, by a process e authorizes, discharges e: it grows no reach and rebinds no waiter.
+pub proof fn lemma_unwaits_unbound_discharges(a: State, b: State, p: ObjectId, e: Effect, t: ObjectId)
+    requires
+        authorized(a, p, e),
+        unwaits_unbound(a, b, t),
+    ensures
+        discharges(a, b, p, e),
+{
+    assert(b.held == a.held && b.names == a.names && b.pages == a.pages && b.rights == a.rights);
+    assert(b.parent == a.parent && b.maps == a.maps && b.contents == a.contents);
+    assert(b.shares == a.shares && b.binds == a.binds);
+    assert forall|o: ObjectId| !#[trigger] State::changed(a, b, o) by {}
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] b.reach(r, o) implies a.reach(r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] b.controlled(r, q, k)
+            && (o == q || b.direct(q, o) || b.shared(q, o));
+        lemma_unwaits_unbound_controlled(a, b, t, r, q, k);
+        if o != q {
+            assert forall|x: ObjectId| #[trigger] b.direct(q, x) implies a.direct(q, x) || a.direct(q, x) by {
+                if !b.maps.contains((q, x)) {
+                    let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] b.descends(c, n, d)
+                        && b.holds(q, c) && b.covers(n, x);
+                    lemma_same_parent_same_descends(b, a, c, n, d);
+                }
+            }
+            lemma_edge_carries(b, a, q, q, o);
+        }
+        assert(a.controlled(r, q, k) && (o == q || a.direct(q, o) || a.shared(q, o)));
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] b.waiting.contains(w)
+        implies b.process_behind(w.1) == a.process_behind(w.1) by {
+        assert(!b.waiting.contains((w.0, t)));
+        assert(w.1 != t);
     }
 }
 

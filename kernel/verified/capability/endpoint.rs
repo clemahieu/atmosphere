@@ -1089,6 +1089,8 @@ impl CapKernel {
     /// new object, which no table root is, so it holds nothing.
     proof fn lemma_endpoint_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, kind: CapKind)
         requires
+            !bound_threads(&pre.list, &pre.tables).dom().contains(base),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
             post.frames@ == pre.frames@,
@@ -1418,6 +1420,10 @@ impl CapKernel {
             assert(post.wf());
             Self::lemma_bound_threads_same(pre, post);
             assert(right_bit(Right::Retype) == 8);
+            assert(!(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base)) by {
+                assert(pre.blocks.pages@[(base / PAGE_SZ) as int + 0].kind is Free);
+            }
+            pre.lemma_unbound_unless_thread(base);
             Self::lemma_endpoint_view(pre, post, root, from, to, base, kind);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));

@@ -1164,6 +1164,8 @@ impl CapKernel {
     /// root was no root before and holds no leaf, so it holds nothing.
     proof fn lemma_process_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
+            !bound_threads(&pre.list, &pre.tables).dom().contains(base),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
             post.frames@ == pre.frames@,
@@ -1599,6 +1601,10 @@ impl CapKernel {
             Self::lemma_space_shares(pre, post, base, page);
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
+            assert(!(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base)) by {
+                assert(pre.blocks.pages@[(base / PAGE_SZ) as int + 0].kind is Free);
+            }
+            pre.lemma_unbound_unless_thread(base);
             Self::lemma_process_view(pre, post, root, from, to, base);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));

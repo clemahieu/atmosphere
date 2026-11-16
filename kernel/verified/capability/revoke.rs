@@ -1061,6 +1061,22 @@ impl CapKernel {
             Some(found) => found,
             None => { return true; },
         };
+        proof {
+            // A binding node is node 0 of its thread's node page, a page of the list, and two
+            // permissions never share an address: no table root lies there.
+            if pre.list.nodes@[r as int].kind is Binding && pre.tables.roots@.contains_key(r) {
+                pre.lemma_binding_parent(r);
+                pre.lemma_thread_wf(r);
+                pre.tables.lemma_root(r);
+                crate::layouts::lemma_process_block_layouts();
+                crate::capability::reclaim::lemma_list_page(&pre.list, r);
+                crate::capability::reclaim::lemma_list_page_apart(
+                    self.list.pages.borrow_mut(),
+                    self.tables.roots.borrow().tracked_borrow(r),
+                );
+                assert(false);
+            }
+        }
         self.cut_hidden_table(r, Tracked(&mut *steps));
         let ghost cut = *self;
         self.unlink_arm(r, Tracked(steps));
@@ -1301,6 +1317,7 @@ impl CapKernel {
             pre.list.anc(r, (pre.list.d(r) - pre.list.d(c)) as nat) == c,
             pre.list.childless(r),
             pre.hidden_table(r) ==> pre.table_pages.records@[r].value().parent is None,
+            pre.list.nodes@[r as int].kind is Binding ==> !pre.tables.roots@.contains_key(r),
             mid.tables.wf(&pre.list),
             mid.blocks.wf(),
             mid.list == pre.list,
@@ -1559,6 +1576,12 @@ impl CapKernel {
             }
         }
         lemma_blocked_on_shrinks(&pre.threads, &post.threads);
+        if pre.list.nodes@[r as int].kind is Binding {
+            // The thread whose binding went is off Blocked, so it waits on nothing.
+            assert(!(crate::capability::thread::unbound_record(pre.threads.records@[r].value()).state is Blocked));
+            assert(waits_on(&post.threads, r) is None);
+            assert forall|o: ObjectId| !#[trigger] blocked_on(&post.threads).contains((o, r)) by {}
+        }
         Self::lemma_revoke_step(pre, post, root, c, r);
         Self::lemma_delete_caps_wf(pre, post, r);
         assert(revoked_one(pre.list, post.list, c, r));
@@ -2753,8 +2776,119 @@ impl CapKernel {
         }
     }
 
-    /// What the step does to the view: only a node of c's run can leave it, and nothing is added.
+    /// What the step does to the view: only a node of c's run can leave it, and nothing is added. A
+    /// binding node's step undoes its thread's binding, and every other leaves the process map as it was.
     proof fn lemma_revoke_step(pre: Self, post: Self, root: usize, c: usize, r: usize)
+        requires
+            post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
+            forall|w: (ObjectId, ObjectId)| #[trigger] blocked_on(&post.threads).contains(w) ==> blocked_on(&pre.threads).contains(w),
+            pre.wf(),
+            post.list.wf(),
+            pre.is_cap(c),
+            pre.tables.owner@[page_of(c)].0 == root,
+            post.tables == pre.tables,
+            post.list.parent == pre.list.parent,
+            post.view().shares.subset_of(pre.view().shares),
+            binds_within(post.view(), pre.view()),
+            r < NODE_SPACE,
+            pre.list.nodes@[r as int].live,
+            !post.list.nodes@[r as int].live,
+            has(pre.list.seq@, r),
+            pre.list.d(r) > pre.list.d(c),
+            pre.list.anc(r, (pre.list.d(r) - pre.list.d(c)) as nat) == c,
+            forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != r ==> {
+                &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
+                &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+            },
+            pre.list.nodes@[r as int].kind is Binding ==> {
+                &&& !pre.tables.roots@.contains_key(r)
+                &&& forall|o: ObjectId| !#[trigger] blocked_on(&post.threads).contains((o, r))
+            },
+        ensures
+            Self::caps_frame(pre, post, r, r),
+            discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
+    {
+        assert(Self::caps_frame(pre, post, r, r));
+        assert forall|t: usize| #![trigger post.list.nodes@[t as int]] t < NODE_SPACE && t != r
+            implies (post.list.nodes@[t as int].live && post.list.nodes@[t as int].kind is Binding)
+                == (pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding) by {
+            assert(post.list.nodes@[t as int].live == pre.list.nodes@[t as int].live);
+        }
+        lemma_bound_threads_removed(&pre.list, &post.list, &pre.tables, r);
+        if pre.list.nodes@[r as int].kind is Binding {
+            Self::lemma_revoke_step_unbinds(pre, post, root, c, r);
+        } else {
+            Self::lemma_revoke_step_simulated(pre, post, root, c, r);
+        }
+    }
+
+    /// The step that took a binding node: its thread is bound to nothing, and the view is otherwise as
+    /// it was but for the waiters, shares and binds the step dropped. The thread holds nothing, since
+    /// no table root lies in its block, and every capability naming it covers it, so control over it
+    /// now reaches the thread alone, which its holder reached already.
+    proof fn lemma_revoke_step_unbinds(pre: Self, post: Self, root: usize, c: usize, r: usize)
+        requires
+            post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
+            forall|w: (ObjectId, ObjectId)| #[trigger] blocked_on(&post.threads).contains(w) ==> blocked_on(&pre.threads).contains(w),
+            pre.wf(),
+            pre.is_cap(c),
+            pre.tables.owner@[page_of(c)].0 == root,
+            post.tables == pre.tables,
+            post.list.parent == pre.list.parent,
+            post.view().shares.subset_of(pre.view().shares),
+            binds_within(post.view(), pre.view()),
+            Self::caps_frame(pre, post, r, r),
+            r < NODE_SPACE,
+            pre.list.nodes@[r as int].live,
+            pre.list.nodes@[r as int].kind is Binding,
+            !post.list.nodes@[r as int].live,
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).remove(r),
+            !pre.tables.roots@.contains_key(r),
+            forall|o: ObjectId| !#[trigger] blocked_on(&post.threads).contains((o, r)),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
+    {
+        let (a, b) = (pre.view(), post.view());
+        assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+            && (pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)) by {
+            if x != r {
+                Self::lemma_caps_frame(pre, post, r, r, x);
+            }
+        }
+        assert(b.held =~= a.held);
+        assert(b.names =~= a.names);
+        assert(b.pages =~= a.pages);
+        assert(b.rights =~= a.rights);
+        assert(!a.names.contains_key(r));
+        assert(b.parent == a.parent);
+        assert(b.process_of == a.process_of.remove(r));
+        assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
+        assert(unbinds(a, b, r, r));
+        // The thread is no table's root, so it holds nothing.
+        assert forall|x: NodeId| !#[trigger] a.held.contains((r, x)) by {
+            if a.held.contains((r, x)) {
+                pre.tables.lemma_leaf(&pre.list, page_of(x));
+            }
+        }
+        // A capability naming the thread names its block's first page, which it covers.
+        pre.lemma_binding_parent(r);
+        pre.lemma_thread_node_apart(r);
+        assert forall|x: NodeId| #[trigger] a.names.contains_key(x) && a.names[x] == r implies a.covers(x, r) by {
+            vstd::arithmetic::power2::lemma_pow2_pos(pre.payload_of(x).order as nat);
+            assert(a.pages[x] >= 1);
+            assert(a.pages[x] * PAGE_SZ >= PAGE_SZ) by (nonlinear_arith)
+                requires
+                    a.pages[x] >= 1,
+            ;
+        }
+        lemma_unbinds_discharges_revoke(a, b, root, c, r, r);
+    }
+
+    /// The step that took any other node: every capability, parent and holding left is in pre under
+    /// the same name, and the process map is as it was.
+    proof fn lemma_revoke_step_simulated(pre: Self, post: Self, root: usize, c: usize, r: usize)
         requires
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
@@ -2767,23 +2901,18 @@ impl CapKernel {
             post.list.parent == pre.list.parent,
             post.view().shares.subset_of(pre.view().shares),
             binds_within(post.view(), pre.view()),
+            Self::caps_frame(pre, post, r, r),
             !post.list.nodes@[r as int].live,
             has(pre.list.seq@, r),
             pre.list.d(r) > pre.list.d(c),
             pre.list.anc(r, (pre.list.d(r) - pre.list.d(c)) as nat) == c,
-            forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != r ==> {
-                &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
-                &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
-            },
-            forall|x: usize| x != r ==> #[trigger] post.tables.payload_of(x) == pre.tables.payload_of(x),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
         ensures
-            Self::caps_frame(pre, post, r, r),
             discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
     {
         let (a, b) = (post.view(), pre.view());
         let live = |x: NodeId| x < NODE_SPACE && post.list.nodes@[x as int].live;
         let f = |x: NodeId| x;
-        assert(Self::caps_frame(pre, post, r, r));
         assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) && x != r && x < NODE_SPACE && post.payload_of(x) == pre.payload_of(x) by {
             assert(x != r);
             Self::lemma_caps_frame(pre, post, r, r, x);
@@ -2815,6 +2944,7 @@ impl CapKernel {
         } by {
             post.list.lemma_parent_live(x);
         }
+        assert(a.process_of == b.process_of);
         assert(simulates(a, b, live, f));
         assert(b.holds(root, c));
         assert forall|x: NodeId| #[trigger] State::removed(b, a, x) implies exists|k: nat| k > 0 && #[trigger] b.descends(c, x, k) by {

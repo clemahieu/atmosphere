@@ -12988,6 +12988,8 @@ impl CapKernel {
     {
         hide(CapKernel::wf);
         hide(entries_translatable);
+        // The steps below use the operations' specifications, so bound_threads stays folded.
+        hide(bound_threads);
         let ghost s0 = *self;
         let ghost a0 = tree_of(&s0.table_pages, &s0.spaces);
         let ghost bs = runs_blocks(free@, MAX_ORDER as nat);

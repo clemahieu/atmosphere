@@ -779,6 +779,7 @@ impl CapKernel {
             lemma_has(post.list.seq@, child);
             assert(post.list.is_child(root, child));
             assert(post.tables.has_slot(&post.list, process, i));
+            Self::lemma_bound_threads_caps_frame(mid, post, child, child);
             Self::lemma_boot_held_view(mid, post, root, process, i, child);
             Self::lemma_frame_covers(post, child, base, order, rights);
             let live = |x: NodeId| x < NODE_SPACE && mid.list.nodes@[x as int].live;

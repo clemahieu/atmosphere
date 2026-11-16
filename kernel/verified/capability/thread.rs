@@ -2317,6 +2317,8 @@ impl CapKernel {
     /// table root is, so it holds nothing.
     proof fn lemma_thread_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
+            !bound_threads(&pre.list, &pre.tables).dom().contains(base),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
             post.frames@ == pre.frames@,
@@ -2436,6 +2438,19 @@ impl CapKernel {
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
             },
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            ret ==> adds_object(
+                old(self).view(),
+                (CapKernel { threads: old(self).threads, ..*final(self) }).view(),
+                root,
+                old(self).tables.node_of(root, from),
+                old(self).tables.node_of(root, to),
+                |x: NodeId| x < NODE_SPACE && old(self).list.nodes@[x as int].live,
+                base,
+            ),
+            ret ==> base + pow2(1) * PAGE_SZ <= old(self).view().names[old(self).tables.node_of(root, from)]
+                + old(self).view().pages[old(self).tables.node_of(root, from)] * PAGE_SZ,
+            ret ==> !old(self).threads.records@.contains_key(base),
+            ret ==> final(self).threads.records@ == old(self).threads.records@.insert(base, final(self).threads.records@[base]),
     {
         // try_type proves the block counts; this body only carries them.
         hide(BlockTable::counts_wf);
@@ -2670,8 +2685,20 @@ impl CapKernel {
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+            assert(post.threads.records@[base].value() == fresh_thread());
+            // The thread is typed bound to no process, as a thread with no record is.
+            assert forall|x: usize| #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
+                if x == base && pre.threads.records@.contains_key(base) {
+                    assert(post.threads.records@[base] == pre.threads.records@[base]);
+                }
+            }
+            Self::lemma_bound_threads_same(pre, post);
             // The capability first, then the record's registers, as a write of contents alone.
             let typed = CapKernel { threads: pre.threads, ..post };
+            assert(!(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base)) by {
+                assert(pre.blocks.pages@[(base / PAGE_SZ) as int + 0].kind is Free);
+            }
+            pre.lemma_unbound_unless_thread(base);
             Self::lemma_thread_view(pre, typed, root, from, to, base);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
@@ -2681,13 +2708,6 @@ impl CapKernel {
             Self::lemma_record_then(pre, post, root, parent, base);
             Self::lemma_type_thread_keeps(pre, post, mid, root, to, page as int);
             Self::lemma_typed_nodes(pre.list, mid, post.list, child, base);
-            // The thread is typed bound to no process, as a thread with no record is.
-            assert forall|x: usize| #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
-                if x == base && pre.threads.records@.contains_key(base) {
-                    assert(post.threads.records@[base] == pre.threads.records@[base]);
-                }
-            }
-            Self::lemma_bound_threads_same(pre, post);
         }
         true
     }
@@ -3061,13 +3081,6 @@ impl CapKernel {
             lemma_has(post.list.seq@, child);
             assert(post.list.is_child(parent, child));
             assert(post.view().holds(root, child));
-            assert(saved_registers(&post.threads) =~= saved_registers(&mid.threads));
-            assert(blocked_on(&post.threads) =~= blocked_on(&mid.threads));
-            Self::lemma_leaf_added_discharges(mid, post, root, n, base);
-            assert forall|x: NodeId| #[trigger] mid.view().names.contains_key(x) implies post.view().names.contains_key(x) by {
-                assert(post.is_cap(x) == mid.is_cap(x));
-            }
-            lemma_retype_then_local(pre.view(), mid.view(), post.view(), root, parent, base, pow2(1));
             assert(post.tables.node_of(root, j) == n);
             post.lemma_parent_undeletable(root, j, base);
             assert(mid.payload_of(n) == pre.payload_of(n));
@@ -3076,6 +3089,11 @@ impl CapKernel {
                 assert(thread_process(&mid.threads, x) == thread_process(&pre.threads, x));
             }
             Self::lemma_bound_threads_insert(pre, post, base, p);
+            assert(post.threads.records@ =~= pre.threads.records@.insert(base, post.threads.records@[base]));
+            assert(!(pre.blocks.pages@[page].kind is Base)) by {
+                assert(pre.blocks.pages@[page + 0].kind is Free);
+            }
+            Self::lemma_bound_retype_discharges(pre, mid, post, root, from, to, base, j);
             Self::lemma_bind_keeps(pre, mid, post, child, page, n, base);
             assert forall|x: usize| #[trigger] pre.threads.records@.contains_key(x) implies {
                 &&& x != base
@@ -3095,6 +3113,131 @@ impl CapKernel {
             reveal(CapKernel::thread_retyped_records);
         }
         true
+    }
+
+    /// The view after a thread's retype with its binding, the thread records left as they were, is
+    /// that of the retype alone but for the binding's parent entry and the process map: the bind
+    /// changed no capability, table, space, device or frame.
+    proof fn lemma_bound_view(pre: Self, mid: Self, post: Self, parent: usize, child: usize, n: usize, base: usize)
+        requires
+            post.tables == mid.tables,
+            forall|x: usize| #[trigger] post.is_cap(x) == mid.is_cap(x),
+            post.frames == mid.frames,
+            post.spaces == mid.spaces,
+            post.table_pages == mid.table_pages,
+            post.devices == mid.devices,
+            mid.list.parent@ == pre.list.parent@.insert(child, parent),
+            post.list.parent@ == mid.list.parent@.insert(base, n),
+        ensures
+            ({
+                let t = (CapKernel { threads: pre.threads, ..mid }).view();
+                let b = (CapKernel { threads: pre.threads, ..post }).view();
+                &&& without_binding(pre.view(), b, parent, child) == (State { process_of: b.process_of, ..t })
+                &&& b.parent == pre.view().parent.insert(child, parent).insert(base, n)
+                &&& b.process_of == bound_threads(&post.list, &post.tables)
+            }),
+    {
+        let typed = CapKernel { threads: pre.threads, ..mid };
+        let bound = CapKernel { threads: pre.threads, ..post };
+        let (a, t, b) = (pre.view(), typed.view(), bound.view());
+        let w = without_binding(a, b, parent, child);
+        assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) == t.held.contains(h) by {
+            assert(post.is_cap(h.1) == mid.is_cap(h.1));
+        }
+        assert(b.held =~= t.held);
+        assert forall|x: NodeId| #[trigger] b.names.contains_key(x) == t.names.contains_key(x) by {
+            assert(post.is_cap(x) == mid.is_cap(x));
+        }
+        assert(b.names =~= t.names);
+        assert forall|x: NodeId| #[trigger] b.pages.contains_key(x) == t.pages.contains_key(x) by {
+            assert(post.is_cap(x) == mid.is_cap(x));
+        }
+        assert(b.pages =~= t.pages);
+        assert forall|h: (NodeId, Right)| #[trigger] b.rights.contains(h) == t.rights.contains(h) by {
+            assert(post.is_cap(h.0) == mid.is_cap(h.0));
+        }
+        assert(b.rights =~= t.rights);
+        assert(w.parent =~= t.parent);
+        assert(w.maps == t.maps && w.waiting == t.waiting && w.bound == t.bound);
+        assert(w.shares == t.shares && w.binds == t.binds && w.contents == t.contents);
+        assert(w == (State { process_of: b.process_of, ..t }));
+    }
+
+    /// A thread's retype with its binding is one retype that adds a bound object: the capability under
+    /// the untyped, as type_thread added it, and the binding under the process capability, which the
+    /// view reads as the thread's process. Then the record's registers, as a write of contents alone.
+    /// See design/thread-bound-at-retype/.
+    proof fn lemma_bound_retype_discharges(pre: Self, mid: Self, post: Self, root: usize, from: usize, to: usize, base: usize, j: usize)
+        requires
+            pre.wf(),
+            adds_object(
+                pre.view(),
+                (CapKernel { threads: pre.threads, ..mid }).view(),
+                root,
+                pre.tables.node_of(root, from),
+                pre.tables.node_of(root, to),
+                |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live,
+                base,
+            ),
+            base + pow2(1) * PAGE_SZ <= pre.view().names[pre.tables.node_of(root, from)]
+                + pre.view().pages[pre.tables.node_of(root, from)] * PAGE_SZ,
+            pre.view().holds_right(root, pre.tables.node_of(root, from), Right::Retype),
+            pre.can_hold_thread(root, j),
+            pre.tables.node_of(root, to) != base,
+            !pre.threads.records@.contains_key(base),
+            !(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base),
+            base < NODE_SPACE,
+            !pre.list.valid(base),
+            post.tables == mid.tables,
+            post.list.parent@ == mid.list.parent@.insert(base, pre.tables.node_of(root, j)),
+            mid.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
+            forall|x: usize| #[trigger] post.is_cap(x) == mid.is_cap(x),
+            post.frames == mid.frames,
+            post.spaces == mid.spaces,
+            post.table_pages == mid.table_pages,
+            post.devices == mid.devices,
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).insert(base, pre.payload_of(pre.tables.node_of(root, j)).base),
+            post.threads.records@ =~= pre.threads.records@.insert(base, post.threads.records@[base]),
+            !(post.threads.records@[base].value().state is Blocked),
+        ensures
+            discharges(pre.view(), post.view(), root,
+                Effect::Retype { untyped: pre.tables.node_of(root, from), object: base, pages: pow2(1), into: None }),
+    {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        let n = pre.tables.node_of(root, j);
+        let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
+        let typed = CapKernel { threads: pre.threads, ..mid };
+        let bound = CapKernel { threads: pre.threads, ..post };
+        let (a, t, b) = (pre.view(), typed.view(), bound.view());
+        Self::lemma_bound_view(pre, mid, post, parent, child, n, base);
+        assert(!live(base)) by {
+            if pre.list.nodes@[base as int].live {
+                pre.list.lemma_live_valid(base);
+            }
+        }
+        pre.lemma_process_cap_unbound(n);
+        assert(a.holds_right(root, n, Right::Control)) by {
+            pre.lemma_slot(root, j);
+            assert(right_bit(Right::Control) == 128);
+        }
+        assert(a.names[n] == pre.payload_of(n).base);
+        assert forall|o: ObjectId| !#[trigger] a.waiting.contains((o, base)) by {}
+        assert forall|x: NodeId| #[trigger] a.rights.contains((x, Right::Control)) && a.names.contains_key(x)
+            implies a.names[x] != base by {
+            assert(control_named(pre.payload_of(x)));
+            assert(right_bit(Right::Control) == CONTROL_RIGHT);
+            if pre.payload_of(x).kind is Thread {
+                pre.lemma_thread_cap(x);
+            } else {
+                pre.lemma_process_cap(x);
+                assert(pre.payload_of(x).base % PAGE_SZ == 0);
+            }
+        }
+        assert(b.process_of == a.process_of.insert(base, a.names[n]));
+        lemma_adds_object_then_binding(a, t, b, root, parent, child, n, base, live, base);
+        lemma_adds_bound_object_discharges_retype(a, b, root, parent, child, n, base, live, base, pow2(1));
+        Self::lemma_record_then(pre, post, root, parent, base);
     }
 
     /// A bind after a retype leaves what the retype left as it was: it makes live only the binding,

@@ -1689,6 +1689,7 @@ impl CapKernel {
             pre.tables.has_slot(&pre.list, dst, to),
             pre.is_cap(pre.tables.node_of(src, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(dst, to), pre.tables.node_of(src, from)),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             ({
                 let cp = post.payload_of(pre.tables.node_of(dst, to));
                 let pp = pre.payload_of(pre.tables.node_of(src, from));
@@ -1743,6 +1744,7 @@ impl CapKernel {
         assert(child_rights & !parent_rights == 0 && child_rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
         assert(right_bit(Right::Control) == 128);
         Self::lemma_derive_step_adds_cap(pre, post, child);
+        Self::lemma_bound_threads_caps_frame(pre, post, child, child);
         Self::lemma_places_child_view(pre, post, root, from, root, to);
         let (a, b) = (pre.view(), post.view());
         assert(a.names.contains_key(parent));
@@ -1774,6 +1776,7 @@ impl CapKernel {
             pre.tables.owner@[page_of(c)].0 == root,
             pre.payload_of(c).rights & right_bit(Right::Control) != 0,
             pre.payload_of(c).base == d,
+            pre.payload_of(c).kind is Process,
         ensures
             discharges(pre.view(), post.view(), root, Effect::Place { cap: c, from: pre.tables.node_of(root, from) }),
     {
@@ -1784,10 +1787,12 @@ impl CapKernel {
         assert(child_rights & !parent_rights == 0 && child_rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
         assert(right_bit(Right::Control) == 128);
         Self::lemma_derive_step_adds_cap(pre, post, child);
+        Self::lemma_bound_threads_caps_frame(pre, post, child, child);
         Self::lemma_places_child_view(pre, post, root, from, d, to);
         let a = pre.view();
         assert(a.holds_right(root, c, Right::Control));
         assert(a.names[c] == d);
+        pre.lemma_process_cap_unbound(c);
         assert(!a.process_of.contains_key(d));
         assert(a.names.contains_key(parent));
         assert forall|r: Right| #[trigger] post.view().rights.contains((child, r)) implies a.rights.contains((parent, r)) by {

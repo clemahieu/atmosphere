@@ -387,19 +387,7 @@ impl CapKernel {
                         // The caller commands the node, and its control chains lead to the table
                         // the node is in: its own, or one it names through a control capability.
                         pre.lemma_commands(root, from.through, i);
-                        assert(a.controlled(root, root, 0));
-                        let j: nat = match from.through {
-                            Some(c) => {
-                                let v = pre.tables.node_of(root, c);
-                                pre.lemma_slot(root, c);
-                                assert(a.holds_right(root, v, Right::Control));
-                                assert(a.process_behind(a.names[v]) == src);
-                                assert(a.controls(root, src));
-                                assert(a.controlled(root, src, 1));
-                                1
-                            },
-                            None => 0,
-                        };
+                        let j = pre.lemma_controls_table_at(root, from.through);
                         Self::lemma_place_discharges(pre, *self, root, pre.tables.node_of(root, d), i, n, j);
                     },
                     None => match from.through {
@@ -415,6 +403,34 @@ impl CapKernel {
             }
         }
         ret
+    }
+
+    /// The caller's control chains lead to the table a position is in: its own, at no link, or at one
+    /// link the table of the process a control capability of its names, which is no thread.
+    proof fn lemma_controls_table_at(&self, root: usize, through: Option<usize>) -> (j: nat)
+        requires
+            self.wf(),
+            self.table_at(root, through) is Some,
+        ensures
+            self.view().controlled(root, self.table_at(root, through)->0, j),
+    {
+        let a = self.view();
+        assert(a.controlled(root, root, 0));
+        match through {
+            Some(c) => {
+                let v = self.tables.node_of(root, c);
+                let src = self.table_at(root, through)->0;
+                self.lemma_slot(root, c);
+                self.lemma_process_cap_unbound(v);
+                assert(a.holds_right(root, v, Right::Control));
+                assert(a.names[v] == src);
+                assert(a.process_behind(a.names[v]) == src);
+                assert(a.controls(root, src));
+                assert(a.controlled(root, src, 1));
+                1
+            },
+            None => 0,
+        }
     }
 
     /// Moves the capability at index `from` of the table at `src` to the empty index `to` of the table at
@@ -837,6 +853,7 @@ impl CapKernel {
     proof fn lemma_move_simulates(pre: Self, post: Self, i: usize, n: usize)
         requires
             blocked_on(&post.threads) == blocked_on(&pre.threads),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.tables.owner@[page_of(n)].0 == pre.tables.owner@[page_of(i)].0,
@@ -893,6 +910,7 @@ impl CapKernel {
             lemma_moved_parent(pre.list.parent@, i, n, x);
         }
         assert(b.binds =~= a.binds);
+        assert(a.process_of == b.process_of);
         assert(simulates(a, b, live, f));
     }
 
@@ -901,6 +919,7 @@ impl CapKernel {
     proof fn lemma_move_simulated(pre: Self, post: Self, i: usize, n: usize)
         requires
             blocked_on(&post.threads) == blocked_on(&pre.threads),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
         ensures
@@ -972,6 +991,7 @@ impl CapKernel {
             assert(pre.list.parent@[old_x] != n);
         }
         assert(b.binds =~= a.binds);
+        assert(a.process_of == b.process_of);
         assert(simulates_claim(a, b, live, f, dst, src));
     }
 
@@ -998,6 +1018,7 @@ impl CapKernel {
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.tables.owner@[page_of(i)].0 == root,
@@ -1052,10 +1073,12 @@ impl CapKernel {
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.is_cap(c),
             pre.tables.owner@[page_of(c)].0 == root,
+            pre.payload_of(c).kind is Process,
             pre.payload_of(c).rights & right_bit(Right::Control) != 0,
             pre.tables.owner@[page_of(i)].0 == pre.payload_of(c).base,
             pre.tables.owner@[page_of(n)].0 == root,
@@ -1066,6 +1089,8 @@ impl CapKernel {
         Self::lemma_move_simulated(pre, post, i, n);
         assert(a.holds_right(root, c, Right::Control));
         assert(a.names[c] == pre.payload_of(c).base);
+        // The capability names a process, whose base is no thread's binding node.
+        pre.lemma_process_cap_unbound(c);
         assert(a.holds(a.names[c], i));
         assert forall|x: NodeId| #[trigger] State::removed(a, b, x) implies x == i by {
             if x != i {
@@ -1095,9 +1120,11 @@ impl CapKernel {
             post.frames@ == pre.frames@,
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.view().holds_right(root, d, Right::Control),
+            pre.payload_of(d).kind is Process,
             pre.view().names[d] == pre.tables.owner@[page_of(n)].0,
             pre.view().commands(root, i),
             pre.view().controlled(root, pre.tables.owner@[page_of(i)].0, j),
@@ -1106,6 +1133,9 @@ impl CapKernel {
     {
         let (a, b) = (pre.view(), post.view());
         Self::lemma_move_simulated(pre, post, i, n);
+        // The capability names a process, whose base is no thread's binding node.
+        assert(pre.is_cap(d));
+        pre.lemma_process_cap_unbound(d);
         assert forall|x: NodeId| #[trigger] State::removed(a, b, x) implies x == i by {
             if x != i {
                 assert(x != n);

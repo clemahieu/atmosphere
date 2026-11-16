@@ -1369,6 +1369,7 @@ impl CapKernel {
             assert(post.list.is_child(root, child));
             assert(post.tables.has_slot(&post.list, process, ROOT_PROCESS_SLOT));
             assert(post.tables.has_slot(&post.list, process, i));
+            Self::lemma_bound_threads_caps_frame(pre, post, child, child);
             Self::lemma_boot_held_view(pre, post, root, process, i, child);
             Self::lemma_object_covers(post, child);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
@@ -1581,6 +1582,7 @@ impl CapKernel {
             pre.tables.has_slot(&pre.list, process, i),
             pre.tables.node_of(process, i) == child,
             post.list.parent@ == pre.list.parent@.insert(child, root),
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             post.is_cap(child),
             post.payload_of(child).rights & CONTROL_RIGHT == 0,
         ensures
@@ -1771,6 +1773,7 @@ impl CapKernel {
             assert(post.list.is_child(root, child));
             assert(post.tables.has_slot(&post.list, process, ROOT_PROCESS_SLOT));
             assert(post.tables.has_slot(&post.list, process, i));
+            Self::lemma_bound_threads_caps_frame(pre, post, child, child);
             Self::lemma_boot_held_view(pre, post, root, process, i, child);
             Self::lemma_untyped_covers(post, child, base, order);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
@@ -1850,6 +1853,16 @@ impl CapKernel {
                 let m = choose|m: usize| #[trigger] v.controls(m, q) && v.controlled(p, m, (k - 1) as nat);
                 let c = choose|c: usize| #[trigger] v.holds_right(m, c, Right::Control) && v.process_behind(v.names[c]) == q;
                 assert(s.is_cap(c));
+                // The only binding is the thread's, under the process capability.
+                if v.process_of.contains_key(v.names[c]) {
+                    let x = v.names[c];
+                    s.lemma_binding_parent(x);
+                    let pc = s.list.parent@[x];
+                    assert(pc == a || pc == b);
+                    assert(s.payload_of(b).kind is Thread);
+                    assert(pc == a);
+                    assert(q == process);
+                }
             }
         }
         assert forall|o: usize| #[trigger] v.reach(process, o)

@@ -2272,6 +2272,15 @@ impl CapKernel {
         assert(b.pages =~= a.pages);
         assert forall|h: (NodeId, Right)| #[trigger] b.rights.contains(h) == a.rights.contains(h) by {}
         assert(b.rights =~= a.rights);
+        // Every binding's parent is a capability, none of them in the leaf, so it says what it did.
+        assert forall|t: usize| #![trigger pre.list.nodes@[t as int]] t < NODE_SPACE && pre.list.nodes@[t as int].live
+            && pre.list.nodes@[t as int].kind is Binding
+            implies post.tables.payload_of(post.list.parent@[t]).base == pre.tables.payload_of(pre.list.parent@[t]).base by {
+            pre.lemma_binding_parent(t);
+            assert(pre.tables.is_cap(&pre.list, pre.list.parent@[t]));
+        }
+        lemma_bound_threads_kept(&pre.list, &pre.tables, &post.list, &post.tables);
+        assert(b.process_of == a.process_of);
         assert(b == a);
     }
 
@@ -3622,6 +3631,8 @@ impl CapKernel {
             blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::caps_frame(pre, post, base, base),
             base % PAGE_SZ == 0,
+            pre.list.nodes@[base as int].kind is Hidden,
+            !post.list.nodes@[base as int].live,
             post.list.parent == pre.list.parent,
             pre.view().holds_right(root, untyped, Right::Retype),
             pre.view().covers(untyped, base),
@@ -3643,6 +3654,9 @@ impl CapKernel {
         assert(b.names =~= a.names);
         assert(b.pages =~= a.pages);
         assert(b.rights =~= a.rights);
+        // The hidden node was no binding, and no binding's parent changed.
+        Self::lemma_bound_threads_caps_frame(pre, post, base, base);
+        assert(b.process_of == a.process_of);
         assert(b == a);
     }
 
@@ -4753,6 +4767,9 @@ impl CapKernel {
         assert(b.names =~= a.names);
         assert(b.pages =~= a.pages);
         assert(b.rights =~= a.rights);
+        // The mapping node was no binding, and no binding's parent changed.
+        Self::lemma_bound_threads_caps_frame(pre, post, n, n);
+        assert(b.process_of == a.process_of);
         assert(b == (State { shares: b.shares, ..a }));
     }
 

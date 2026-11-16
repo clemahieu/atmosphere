@@ -557,6 +557,7 @@ impl CapKernel {
             Self::lemma_derive_step_adds_cap(pre, post, child);
             assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             assert(blocked_on(&post.threads) =~= blocked_on(&pre.threads));
+            Self::lemma_bound_threads_caps_frame(pre, post, child, child);
             Self::lemma_places_child_view(pre, post, root, from, root, to);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
@@ -2148,6 +2149,8 @@ impl CapKernel {
     /// control of the process it went into adds to the step's authority and to nothing else.
     proof fn lemma_leaf_discharges(pre: Self, post: Self, root: usize, parent: usize, leaf: usize, into: Option<usize>)
         requires
+            into is Some ==> pre.is_cap(into->0) && pre.payload_of(into->0).kind is Process,
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             saved_registers(&post.threads) == saved_registers(&pre.threads),
             blocked_on(&post.threads) == blocked_on(&pre.threads),
             Self::leaf_step(pre, post, leaf),
@@ -2172,6 +2175,9 @@ impl CapKernel {
             Self::lemma_leaf_cap(pre, post, leaf, x);
         }
         Self::lemma_hidden_added_discharges(pre, post, root, parent, leaf, 2);
+        if into is Some {
+            pre.lemma_process_cap_unbound(into->0);
+        }
         let (own, other) = (
             Effect::Retype { untyped: parent, object: leaf, pages: 2, into: None },
             Effect::Retype { untyped: parent, object: leaf, pages: 2, into },

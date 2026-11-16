@@ -150,7 +150,7 @@ impl CapKernel {
         &&& post.tlb_dirty == self.tlb_dirty
         &&& post.thread_is_dead(base)
         &&& post.thread_work(base) < self.thread_work(base)
-        &&& post.view() == (State { waiting: post.view().waiting, ..self.view() })
+        &&& post.view() == (State { waiting: post.view().waiting, process_of: self.view().process_of.remove(base), ..self.view() })
         &&& adds_no_waiter(self.view(), post.view())
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables).remove(base)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object: base })
@@ -275,9 +275,10 @@ impl CapKernel {
             post.list.parent == pre.list.parent,
             Self::same_tree(pre, post),
             post.devices == pre.devices,
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).remove(n),
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
-            post.view() == (State { waiting: post.view().waiting, ..pre.view() }),
+            post.view() == (State { waiting: post.view().waiting, process_of: pre.view().process_of.remove(n), ..pre.view() }),
             adds_no_waiter(pre.view(), post.view()),
     {
         let (a, b) = (pre.view(), post.view());
@@ -291,7 +292,7 @@ impl CapKernel {
         assert(b.names =~= a.names);
         assert(b.pages =~= a.pages);
         assert(b.rights =~= a.rights);
-        assert(b == (State { waiting: b.waiting, ..a }));
+        assert(b == (State { waiting: b.waiting, process_of: a.process_of.remove(n), ..a }));
     }
 
     /// Unlinks binding node t with its thread's binding and its reference on the process's block.
@@ -327,8 +328,13 @@ impl CapKernel {
             final(self).targeted == old(self).targeted,
             final(self).core_tags == old(self).core_tags,
             final(self).tlb_dirty == old(self).tlb_dirty,
-            final(self).view() == (State { waiting: final(self).view().waiting, ..old(self).view() }),
+            final(self).view() == (State {
+                waiting: final(self).view().waiting,
+                process_of: old(self).view().process_of.remove(t),
+                ..old(self).view()
+            }),
             adds_no_waiter(old(self).view(), final(self).view()),
+            forall|o: ObjectId| !#[trigger] final(self).view().waiting.contains((o, t)),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).remove(t),
     {
         let ghost pre = *old(self);
@@ -382,6 +388,9 @@ impl CapKernel {
                 }
             }
             lemma_blocked_on_shrinks(&pre.threads, &post.threads);
+            assert forall|o: ObjectId| !#[trigger] post.view().waiting.contains((o, t)) by {
+                assert(!(crate::capability::thread::unbound_record(pre.threads.records@[t].value()).state is Blocked));
+            }
             Self::lemma_binding_view_same(pre, post, t);
             assert(!pre.is_cap(t));
             lemma_only_child_gone(pre.list, post.list, t, p);
@@ -1080,7 +1089,21 @@ impl CapKernel {
             proof {
                 let post = *self;
                 pre.lemma_retype_covers(root, from, base, THREAD_ORDER);
-                lemma_unwaits_discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object: base });
+                // The thread is dead: no capability names it with the control right, which only a
+                // thread or a process capability carries.
+                assert forall|x: NodeId| #[trigger] pre.view().rights.contains((x, Right::Control)) && pre.view().names.contains_key(x)
+                    implies pre.view().names[x] != base by {
+                    assert(control_named(pre.payload_of(x)));
+                    assert(right_bit(Right::Control) == CONTROL_RIGHT);
+                    if pre.payload_of(x).base == base {
+                        if pre.payload_of(x).kind is Thread {
+                            pre.lemma_thread_cap(x);
+                        } else {
+                            pre.lemma_process_cap(x);
+                        }
+                    }
+                }
+                lemma_unwaits_unbound_discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: 0, object: base }, base);
                 assert(post.threads.records@.contains_key(base));
                 assert(post.blocks.pages@[page as int].refs == 0) by {
                     let p = pre.threads.records@[base].value().process->Some_0;

@@ -328,6 +328,7 @@ impl CapKernel {
                 self.lemma_slot(root, cap);
                 assert(s.holds_right(root, c, Right::Control));
                 assert(s.names[c] == self.payload_of(c).base);
+                self.lemma_process_cap_unbound(c);
                 assert(s.holds(s.names[c], n));
             },
         }
