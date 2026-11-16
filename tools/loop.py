@@ -187,7 +187,9 @@ A usage limit on an unrouted single-provider loop waits until the limit's reset 
 that fails otherwise (no report, or an error result) is followed after 1, 2 and 4 minutes by another;
 the fourth failure in a row ends the loop. When the failed round left exactly one issue in progress
 under the loop's actor, the round that follows is a retry on that issue; with none or several it is a
-plain round, whose orient recovers them. A retry is a round in every other way: its report is read the
+plain round, whose orient recovers them. A routed loop that finds every retry candidate cooled down
+or paced stamps that issue `stage:escalated` and releases it, as it does for a `Retry:` line, rather
+than holding it until one is free. A retry is a round in every other way: its report is read the
 same, and its failure counts the same.
 
 usage: tools/loop.py [--wait SECONDS]                             run a pool of loops until it stops
@@ -2137,6 +2139,9 @@ class Loop:
             if spec is None and waits is None:
                 self.escalate(issue, "route disabled")
                 return "continue", Run()
+            if spec is None and self.dispatch.routed:
+                self.escalate(issue, f"no candidate is free ({fmt_waits(waits)})")
+                return "continue", Run()
             if spec is None:
                 self.retry = issue
                 return "cooldown_wait", Run()
@@ -2934,6 +2939,21 @@ class Tests(unittest.TestCase):
                              [("medium", "Run one round."), ("high", self.RETRY.format("atmo-1.3"))])
             self.assertEqual(clock[0], 60)
             self.assertEqual(self.log(folder, "bd")[0], ["list", "-s", "in_progress", "--assignee", loop.actor, "--json"])
+
+    def test_a_routed_round_without_a_report_escalates_its_held_issue_when_no_retry_candidate_is_free(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder, agy=self.stub_agy(folder, "no loop line", "Loop: stop\n"))
+            (folder / "loop.toml").write_text(self.ROUTES)
+            (folder / "ready.json").write_text(json.dumps([
+                {"id": "atmo-1.1", "title": "Tool fix", "issue_type": "task", "priority": 1, "labels": ["kind:tool"]}]))
+            (folder / "held").write_text('[{"id": "atmo-1.1", "status": "in_progress"}]')
+            self.cool(folder, 5000.0, "claude-week", "claude-fable")
+            self.assertEqual(loop.drive(), 0)
+            self.assertIsNone(loop.retry)
+            self.assertEqual(self.log(folder, "claude"), [])
+            self.assertIn(["update", "atmo-1.1", "--add-label", "stage:escalated", "-s", "open", "--assignee", ""],
+                          self.log(folder, "bd"))
 
     def test_a_round_without_a_report_that_left_two_issues_held_is_followed_by_a_plain_round(self):
         with tempfile.TemporaryDirectory() as folder:
