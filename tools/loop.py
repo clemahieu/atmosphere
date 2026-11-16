@@ -54,9 +54,10 @@ each ready stage, leaf, or epic round by its route `[routes.<key>]` (`default`, 
 holds `candidates`, the offerings capable of that work, cheapest first, or `disabled = true`. At claim,
 and for each hand-off, the work goes to the first candidate free to take it: none of its meters, nor its
 harness as a whole, is cooled down, and each of its meters that `[meters.<name>]` paces has room for one
-more session of it beside the loops' sessions in flight on it, counted from the pid files. When no candidate is free, the
+more session of it beside the loops' sessions in flight on it, counted from the pid files, and is not held
+for waiting work of higher priority. When no candidate is free, the
 work waits, for the earliest reset when only cooldowns keep it and at most PACE_WAIT s when a pace does,
-and `--check` names each cooldown or pace it waits on. A key left out takes `default`'s candidates, or none when `default` is
+and `--check` names each cooldown or pace it waits on and the work any meter is held for. A key left out takes `default`'s candidates, or none when `default` is
 left out too. A candidate that is not under `[offerings]` is an error. When nothing matches, no LLM
 session is started: the loop waits if another loop or actor is active, and stops otherwise. Without
 `[routes]`, the loop runs plain rounds on Claude with the top-level tables' flags.
@@ -82,8 +83,11 @@ none. Under it, with h the hours to its reset, it allows (target - p) / h percen
 spent evenly over the time left. One more session fits while what the sessions in flight on it cost an
 hour and its own cost stay within that, and the first fits whatever it costs, so a meter behind its line
 catches up over the rest of its window, not at once, and one whose sessions cost more than the time
-left affords runs one while under its line and waits above it, a duty cycle. `[pool] jobs` is the only
-ceiling. A session's cost is the meter's rate a session r, its fitted rate over the mean number of the
+left affords runs one while under its line and waits above it, a duty cycle. When waiting work (a
+stage, leaf, or epic round) is kept off a paced meter only by sessions in flight on it — it would fit
+as the first and no cooldown or meter over its line keeps it out — no worker starts work of strictly
+lower priority on that meter so it drains and the waiting work takes it; work of the same or higher
+priority is not held. `[pool] jobs` is the only ceiling. A session's cost is the meter's rate a session r, its fitted rate over the mean number of the
 loops' sessions in flight on it at the readings it was fitted over (a mean under one counting as one,
 so use from outside the loops is charged to the sessions), scaled by its offering's intensity against
 the meter's: an intensity is weekly points an hour, a session's plan-weighted tokens at its model's rate
@@ -1466,6 +1470,17 @@ def fmt_waits(waits):
         for spec, cooled, paced in waits)
 
 
+def fmt_hold(priority, waiters):
+    """Human-readable label for the waiting work holding a paced meter at `priority`."""
+    return f"P{priority} " + ", ".join(f"{what} [{key}]" for what, key in waiters)
+
+
+def issue_priority(issue, default=2):
+    """An issue's integer priority (0 highest), or `default` when absent."""
+    pri = (issue or {}).get("priority")
+    return pri if isinstance(pri, int) and not isinstance(pri, bool) else default
+
+
 def limit_keys(run, spec):
     """What a session's usage limit cools: the meters its stream named, or with none named every meter the
     offering draws on; and its whole harness when none of those is a meter the offering declares, so an
@@ -1577,24 +1592,52 @@ class Loop:
         self.say("loop", f"{harness} usage limit on {', '.join(keys)}: cooling down what draws on it "
                          f"for every loop for {wait_s:.0f} s")
 
-    def paced_out(self, spec):
-        """The meters `spec` draws on whose pace in [meters] has no room for one more session of it, as
-        (meter, why)."""
+    def pace_context(self):
+        """Snapshot (meters, flying, costs, now) for paced meters, or None when no meter is paced."""
+        paces = self.dispatch.paces
+        if not paces:
+            return None
+        meters = read_state(self.pids)["meters"]
+        flying = in_flight(self.pids, self.alive)
+        now = self.now()
+        held = {meter: meters[meter] for meter in paces if meter in meters}
+        costs = offering_costs(read_sessions(self.pids), self.dispatch.offerings, held, now)
+        return meters, flying, costs, now
+
+    def evaluate_pace(self, spec, pace_ctx, priority=None, holds=None):
+        """(paced_reasons, holdable_meters) for `spec` under `pace_ctx`.
+
+        `paced_reasons` lists (meter, why) for every paced meter `spec` draws on that lacks room or
+        is held at a higher priority (< `priority`). `holdable_meters` lists the meters keeping
+        `spec` off only by sessions in flight when every unfit meter would fit as the first."""
         paces = self.dispatch.paces
         paced = [meter for meter in spec.meters if meter in paces]
-        if not paced:
-            return []
-        meters, flying, now = read_state(self.pids)["meters"], in_flight(self.pids, self.alive), self.now()
-        held = {meter: meters[meter] for meter in paced if meter in meters}
-        costs = offering_costs(read_sessions(self.pids), self.dispatch.offerings, held, now)
-        found = []
+        if not paced or pace_ctx is None:
+            return [], []
+        meters, flying, costs, now = pace_ctx
+        reasons, unfit, all_fit_first = [], [], True
         for meter in paced:
-            admitted = admission(held.get(meter), paces[meter], now)
-            spent = spends(flying.get(meter, []), costs.get(meter, {}), held.get(meter))
+            admitted = admission(meters.get(meter), paces[meter], now)
+            spent = spends(flying.get(meter, []), costs.get(meter, {}), meters.get(meter))
             cost = costs.get(meter, {}).get(spec.name)
             if not fits(admitted, spent, cost):
-                found.append((meter, fmt_paced(admitted, spent, cost)))
-        return found
+                reasons.append((meter, fmt_paced(admitted, spent, cost)))
+                unfit.append(meter)
+                if not fits(admitted, [], cost):
+                    all_fit_first = False
+            elif holds and priority is not None and meter in holds:
+                hold_pri, waiters = holds[meter]
+                if hold_pri < priority:
+                    reasons.append((meter, f"held for {fmt_hold(hold_pri, waiters)}"))
+        return reasons, (unfit if unfit and all_fit_first else [])
+
+    def paced_out(self, spec, priority=None, holds=None, pace_ctx=None):
+        """The meters `spec` draws on whose pace in [meters] has no room for one more session of it or
+        that are held for higher-priority waiting work, as (meter, why)."""
+        if not self.dispatch.paces:
+            return []
+        ctx = pace_ctx if pace_ctx is not None else self.pace_context()
+        return self.evaluate_pace(spec, ctx, priority=priority, holds=holds)[0]
 
     def keep_readings(self, run, spec):
         """Write what the session told of its meters, and any usage limit it hit, to the state file. The
@@ -1640,19 +1683,20 @@ class Loop:
             return (self.spec_for(route_key),)
         return (self.spec_for("round", RETRY if route_key == RETRY else None),)
 
-    def choose(self, route_key):
-        """(the first candidate free to take a session, None): no cooldown keeps it and every meter it draws
-        on admits one more session than it has in flight. (None, [(candidate, its cooldowns, its meters
-        with no room)]) when no candidate is free, so the work waits; (None, None) when the route is
-        disabled."""
+    def choose(self, route_key, priority=None, holds=None, pace_ctx=None):
+        """(the first candidate free to take a session, None): no cooldown keeps it, every meter it draws
+        on admits one more session than it has in flight, and none is held for higher-priority waiting
+        work. (None, [(candidate, its cooldowns, its meters with no room or held)]) when no candidate is
+        free, so the work waits; (None, None) when the route is disabled."""
         self.tune()
         candidates = self.candidates(route_key)
         if candidates is None:
             return None, None
+        ctx = pace_ctx if pace_ctx is not None else (self.pace_context() if self.dispatch.paces else None)
         waits = []
         for spec in candidates:
             cooled = self.cooled(spec)
-            paced = [] if cooled else self.paced_out(spec)
+            paced = [] if cooled else self.paced_out(spec, priority=priority, holds=holds, pace_ctx=ctx)
             if not cooled and not paced:
                 return spec, None
             waits.append((spec, cooled, paced))
@@ -1886,7 +1930,77 @@ class Loop:
                 return None
             return out.strip() or None
 
-    def inspect_work(self, claim=False):
+    def compute_holds(self, pace_ctx, ready_sorted, by_id, plan, finished_lines, p0_finished, p0_split,
+                      all_splittable, split_epics, close_route, split_route):
+        """{meter: (priority, [(what, route_key), ...])} for paced meters held for higher-priority waiting work."""
+        if not self.dispatch.routed or not self.dispatch.paces or pace_ctx is None:
+            return {}
+        if not any(pace_ctx[1].get(meter) for meter in self.dispatch.paces):
+            return {}
+        holds = {}
+
+        def add_hold(meter, pri, what, rkey):
+            if meter not in holds:
+                holds[meter] = (pri, [(what, rkey)])
+            elif holds[meter][0] == pri and (what, rkey) not in holds[meter][1]:
+                holds[meter][1].append((what, rkey))
+
+        def check_item(pri, routes, what):
+            waiting = []
+            for rkey, _ in routes:
+                candidates = self.candidates(rkey)
+                if candidates is None:
+                    continue
+                for spec in candidates:
+                    if self.cooled(spec):
+                        continue
+                    reasons, holdable = self.evaluate_pace(spec, pace_ctx, priority=pri, holds=holds)
+                    if not reasons:
+                        return True
+                    if holdable:
+                        waiting.append((rkey, holdable))
+            for rkey, holdable in waiting:
+                for meter in holdable:
+                    add_hold(meter, pri, what, rkey)
+            return False
+
+        items = []
+        ready_ids = {leaf["id"] for leaf in ready_sorted}
+        for leaf in ready_sorted:
+            pri = issue_priority(leaf)
+            stages = issue_stages(leaf)
+            if stages:
+                items.append((pri, [(STAGE_ROUTE[s], s) for s in stages], leaf["id"]))
+            else:
+                kind = classify_issue(leaf, by_id)
+                items.append((pri, [(kind, kind)], leaf["id"]))
+        if plan.stalled and plan.target_id and plan.stall_issue not in ready_ids:
+            status = by_id.get(plan.stall_issue, {}).get("status")
+            if plan.stall_issue is None or status in (None, "open"):
+                items.append((0, [("tool", "tool")], plan.stall_issue or f"stall({plan.target_id})"))
+        p0_close = bool(finished_lines and close_route is not None and (p0_finished or p0_split))
+        if p0_close:
+            epic_id = finished_epic(p0_finished[0] if p0_finished else finished_lines[0])
+            items.append((0, [("epic-close", "epic-close")], epic_id or "epics"))
+        p0_split_only = bool(p0_split and not finished_lines and split_route is not None)
+        if p0_split_only:
+            items.append((0, [("epic-split", "epic-split")], p0_split[0]["id"]))
+
+        items.sort(key=lambda item: item[0])
+        any_runnable = False
+        for pri, routes, what in items:
+            if check_item(pri, routes, what):
+                any_runnable = True
+        if not any_runnable:
+            if finished_lines and close_route is not None and not p0_close:
+                epic_id = finished_epic(finished_lines[0])
+                check_item(issue_priority(by_id.get(epic_id, {})), [("epic-close", "epic-close")], epic_id or "epics")
+            elif split_epics and not ready_sorted and split_route is not None and not p0_split_only:
+                ep = all_splittable[0]
+                check_item(issue_priority(by_id.get(ep["id"], ep)), [("epic-split", "epic-split")], ep["id"])
+        return holds
+
+    def inspect_work(self, claim=False, pace_ctx=None):
         """Inspect Beads at zero token cost for the routes of loop.toml.
 
         When claim=True, claims the first matching stage or leaf under the claim lock. A worker whose
@@ -1919,18 +2033,27 @@ class Loop:
             for iid in plan.demote:
                 self.beads("update", iid, "-p", "1")
             patch_priority((all_issues, ready, ready_epics), plan.promote, plan.demote)
+        ready_sorted = sorted(ready, key=issue_priority)
+        all_splittable = sorted(all_splittable,
+                                key=lambda ep: (issue_priority(by_id.get(ep["id"], ep)), -ep["id"].count(".")))
         p0_finished = [line for line in finished_lines if by_id.get(finished_epic(line), {}).get("priority") == 0]
         p0_split = [ep for ep in all_splittable if by_id.get(ep["id"], ep).get("priority") == 0]
-        split_epics = [ep["id"] for ep in all_splittable] if not finished_lines and not ready else []
+        split_epics = [ep["id"] for ep in all_splittable] if not finished_lines and not ready_sorted else []
+        close_route = self.candidates("epic-close")
+        split_route = self.candidates("epic-split")
+        ctx = pace_ctx if pace_ctx is not None else self.pace_context()
+        holds = self.compute_holds(ctx, ready_sorted, by_id, plan, finished_lines, p0_finished, p0_split,
+                                   all_splittable, split_epics, close_route, split_route)
 
         matched_stages = []
         matched_leaves = []
         cooled = []
 
         def consider_stages(leaf):
+            pri = issue_priority(leaf)
             for sname in issue_stages(leaf):
                 rkey = STAGE_ROUTE[sname]
-                spec, waits = self.choose(rkey)
+                spec, waits = self.choose(rkey, priority=pri, holds=holds, pace_ctx=ctx)
                 if spec is None:
                     if waits:
                         cooled.append((rkey, leaf["id"], waits))
@@ -1945,8 +2068,9 @@ class Loop:
         def consider_leaf(leaf):
             if issue_stages(leaf):
                 return None
+            pri = issue_priority(leaf)
             kind = classify_issue(leaf, by_id)
-            spec, waits = self.choose(kind)
+            spec, waits = self.choose(kind, priority=pri, holds=holds, pace_ctx=ctx)
             if spec is None:
                 if waits:
                     cooled.append((kind, leaf["id"], waits))
@@ -1958,13 +2082,13 @@ class Loop:
             return None
 
         # 1. Queued stage hand-offs in priority order.
-        for leaf in ready:
+        for leaf in ready_sorted:
             hit = consider_stages(leaf)
             if hit:
                 return *hit, {}
 
         # 2. P0 leaves, then a stalled path, then a P0 epic round, ahead of any non-P0 leaf.
-        for leaf in ready:
+        for leaf in ready_sorted:
             if leaf.get("priority") != 0:
                 continue
             hit = consider_leaf(leaf)
@@ -1974,31 +2098,30 @@ class Loop:
             stall_id = plan.stall_issue or self.file_stall(plan)
             status = next((item.get("status") for item in all_issues if item.get("id") == stall_id), None)
             if stall_id and status in (None, "open"):
-                spec, waits = self.choose("tool")
+                spec, waits = self.choose("tool", priority=0, holds=holds, pace_ctx=ctx)
                 if spec is not None and self.claim_leaf(stall_id):
                     self.kinds[stall_id] = "tool"
                     return "leaf", (stall_id, "tool", spec), {}
                 if spec is None and waits:
                     cooled.append(("tool", stall_id, waits))
 
-        close_route = self.candidates("epic-close")
-        split_route = self.candidates("epic-split")
         close_spec = close_waits = None
         if finished_lines and close_route is not None:
-            close_spec, close_waits = self.choose("epic-close")
+            close_pri = 0 if (p0_finished or p0_split) else issue_priority(by_id.get(finished_epic(finished_lines[0]), {}))
+            close_spec, close_waits = self.choose("epic-close", priority=close_pri, holds=holds, pace_ctx=ctx)
         # A finished epic is closed before a split. One at P0, or any finished epic when a P0 split is
         # what would otherwise run, is dispatched while non-P0 leaves are still ready.
-        if claim and ready and close_spec is not None and (p0_finished or (p0_split and finished_lines)):
+        if claim and ready_sorted and close_spec is not None and (p0_finished or (p0_split and finished_lines)):
             return "epic_finished", ("epic-close", close_spec), {}
-        if ready and p0_split and not finished_lines and split_route is not None:
-            spec, waits = self.choose("epic-split")
+        if ready_sorted and p0_split and not finished_lines and split_route is not None:
+            spec, waits = self.choose("epic-split", priority=0, holds=holds, pace_ctx=ctx)
             if claim and spec is not None:
                 return "epic_split", ("epic-split", spec), {}
             if spec is None and waits:
                 cooled.append(("epic-split", p0_split[0]["id"], waits))
 
         # 3. Non-P0 leaves.
-        for leaf in ready:
+        for leaf in ready_sorted:
             if leaf.get("priority") == 0:
                 continue
             hit = consider_leaf(leaf)
@@ -2009,8 +2132,9 @@ class Loop:
         split_spec = None
         if finished_lines and close_route is not None and close_spec is None:
             cooled.append(("epic-close", "epics", close_waits))
-        if split_epics and not ready and split_route is not None:
-            split_spec, waits = self.choose("epic-split")
+        if split_epics and not ready_sorted and split_route is not None:
+            split_pri = issue_priority(by_id.get(split_epics[0], all_splittable[0]))
+            split_spec, waits = self.choose("epic-split", priority=split_pri, holds=holds, pace_ctx=ctx)
             if split_spec is None:
                 cooled.append(("epic-split", split_epics[0], waits))
 
@@ -2024,6 +2148,8 @@ class Loop:
             "close_route": close_route,
             "split_route": split_route,
             "cooled": cooled,
+            "holds": holds,
+            "priorities": {item["id"]: issue_priority(item) for item in (*all_issues, *ready_sorted) if item.get("id")},
             "target": {"id": plan.target_id, "ambiguous": list(plan.ambiguous), "path_size": len(plan.path),
                        "promote": list(plan.promote), "demote": list(plan.demote), "stall": plan.stall_text},
         }
@@ -2034,7 +2160,7 @@ class Loop:
                 return "epic_split", ("epic-split", split_spec), summary
             if cooled:
                 return "cooldown_wait", None, summary
-            globally_done = not ready and not finished_lines and not split_epics and not other_live
+            globally_done = not ready_sorted and not finished_lines and not split_epics and not other_live
             if globally_done:
                 return "stop", None, summary
             if other_live or self.other_loop_alive():
@@ -2044,12 +2170,35 @@ class Loop:
 
     # The hand-offs.
 
+    def choose_for_issue(self, route_key, issue):
+        """Choose an offering for `issue` on `route_key`, respecting any meter held by higher-priority work."""
+        spec, waits = self.choose(route_key)
+        if spec is None or not self.dispatch.routed or not self.dispatch.paces:
+            return spec, waits
+        paced = [meter for meter in spec.meters if meter in self.dispatch.paces]
+        if not paced:
+            return spec, waits
+        pace_ctx = self.pace_context()
+        if pace_ctx is None or not any(pace_ctx[1].get(meter) for meter in paced):
+            return spec, waits
+        saved = self.paced
+        try:
+            _, _, summary = self.inspect_work(claim=False, pace_ctx=pace_ctx)
+        finally:
+            self.paced = saved
+        holds = summary.get("holds") or {}
+        if not any(meter in holds for meter in paced):
+            return spec, waits
+        shown = self.shown_issue(issue)
+        pri = issue_priority(shown) if shown is not None else (summary.get("priorities") or {}).get(issue, 2)
+        return self.choose(route_key, priority=pri, holds=holds, pace_ctx=pace_ctx)
+
     def hand_off(self, kind, issue, prompt):
         """Run the prover or the skeptic a round handed over on the first of its route's candidates no
         cooldown keeps, and record its report; or, when the route is disabled or every candidate is cooled
         down, stamp the issue's stage for a later loop. Then release the issue."""
         label = kind.capitalize()
-        spec, waits = self.choose(kind)
+        spec, waits = self.choose_for_issue(kind, issue)
         if spec is None:
             stage = STAGE_FOR_HAND_OFF[kind]
             why = f"no candidate is free ({fmt_waits(waits)})" if waits else "route disabled"
@@ -2120,7 +2269,7 @@ class Loop:
                           f"Review {report.skeptic}. Your input is the review's last Skeptic input note.")
         self.retry = None
         if report.retry:
-            spec, waits = self.choose(RETRY)
+            spec, waits = self.choose_for_issue(RETRY, report.retry)
             if spec is None and waits is None:
                 self.escalate(report.retry, "route disabled")
             elif spec is None and self.dispatch.routed:
@@ -2135,7 +2284,7 @@ class Loop:
         self.paced = False
         issue, self.retry = self.retry, None
         if issue:
-            spec, waits = self.choose(RETRY)
+            spec, waits = self.choose_for_issue(RETRY, issue)
             if spec is None and waits is None:
                 self.escalate(issue, "route disabled")
                 return "continue", Run()
@@ -2500,17 +2649,19 @@ def check(config=CONFIG, out=sys.stdout, loop=None):
           + ("; ".join(summary["finished_epics"]) or "none"), file=out)
     print(f"splittable epics ({len(summary['split_epics'])}{split_tag}): "
           + (", ".join(summary["split_epics"]) or "none"), file=out)
-    meters, flying, now = read_state(loop.pids)["meters"], in_flight(loop.pids, loop.alive), loop.now()
-    held = {meter: meters[meter] for meter in loop.dispatch.paces if meter in meters}
-    costs = offering_costs(read_sessions(loop.pids), loop.dispatch.offerings, held, now)
-    for meter, pace in loop.dispatch.paces.items():
-        spent = spends(flying.get(meter, []), costs.get(meter, {}), held.get(meter))
-        shown = (f"{len(spent)} in flight" + ("" if not spent else " at a cost not known" if None in spent
-                 else f" at {sum(spent):.2f}%/h"))
-        priced = ", ".join(f"{name} " + ("not known" if cost is None else f"{cost:.2f}%/h")
-                           for name, cost in costs.get(meter, {}).items())
-        print(f"meter {fmt_admission(meter, *admission(meters.get(meter), pace, now), pace)}; {shown}"
-              + (f"; a session costs {priced}" if priced else ""), file=out)
+    if loop.dispatch.paces:
+        meters, flying, costs, now = loop.pace_context()
+        holds = summary.get("holds") or {}
+        for meter, pace in loop.dispatch.paces.items():
+            spent = spends(flying.get(meter, []), costs.get(meter, {}), meters.get(meter))
+            shown = (f"{len(spent)} in flight" + ("" if not spent else " at a cost not known" if None in spent
+                     else f" at {sum(spent):.2f}%/h"))
+            priced = ", ".join(f"{name} " + ("not known" if cost is None else f"{cost:.2f}%/h")
+                               for name, cost in costs.get(meter, {}).items())
+            held_for = holds.get(meter)
+            print(f"meter {fmt_admission(meter, *admission(meters.get(meter), pace, now), pace)}; {shown}"
+                  + (f"; a session costs {priced}" if priced else "")
+                  + (f"; held for {fmt_hold(*held_for)}" if held_for else ""), file=out)
     print(f"waiting on cooldowns or pace ({len(summary['cooled'])})" + ("".join(
         f"\n  {what} [{key}]: {fmt_waits(waits)}" for key, what, waits in summary["cooled"]) or ": none"), file=out)
     return 0
@@ -4627,6 +4778,259 @@ class Tests(unittest.TestCase):
             self.assertEqual([call[call.index("--model") + 1] for call in self.log(folder, "claude")], ["opus"])
             # The session's pid file names the meters it draws on, for the other workers to count.
             self.assertEqual(self.log(folder, "pidfile")[-1]["session"]["meters"], ["claude-week", "claude-5h"])
+
+    def setup_paced_hold(self, folder, *replies, cfg=None, readings=None, flying=("opus",), **given):
+        """Set up a paced driver with opus (0.17%/h) and fable (0.83%/h) on claude-week."""
+        hour = 3600.0
+        default_cfg = textwrap.dedent("""\
+            [offerings.opus]
+            model = "opus"
+            effort = "high"
+            meters = ["claude-week", "claude-5h"]
+
+            [offerings.fable]
+            model = "fable"
+            effort = "xhigh"
+            meters = ["claude-week", "claude-fable"]
+
+            [offerings.carbon]
+            harness = "agy"
+            model = "gemini-4-carbon-high"
+            meters = ["gemini-week"]
+
+            [routes.prover]
+            candidates = ["fable"]
+
+            [routes.tool]
+            candidates = ["opus"]
+
+            [routes.spec]
+            candidates = ["opus"]
+
+            [meters.claude-week]
+            target = 95
+            window = 168
+
+            [meters.claude-5h]
+            target = 95
+            window = 5
+
+            [meters.claude-fable]
+            target = 95
+            window = 168
+
+            [meters.gemini-week]
+            target = 95
+            window = 168
+            """)
+        loop, clock = self.driver(folder, *replies, **given)
+        loop.alive = lambda pid: True
+        (folder / "loop.toml").write_text(cfg or default_cfg)
+        state = empty_state()
+        defaults = {"claude-week": ("claude", 65.0, 51 * hour), "claude-5h": ("claude", 10.0, 5 * hour),
+                    "claude-fable": ("claude", 10.0, 51 * hour), "gemini-week": ("agy", 10.0, 51 * hour)}
+        if readings:
+            defaults.update(readings)
+        for meter, (harness, pct, resets_at) in defaults.items():
+            add_reading(state, meter, harness, pct - 0.5, resets_at, 0.0, sessions=1)
+            add_reading(state, meter, harness, pct, resets_at, hour, sessions=1)
+        update_state(folder, lambda held: held.update(meters=state["meters"]))
+        clock[0] = hour
+        for offering in ("opus", "fable"):
+            record_session(folder, self.session_row(offering, offering, 0.0, 60.0, 1e6))
+        self.set_in_flight(folder, *flying)
+        return loop, clock
+
+    def set_in_flight(self, folder, *offerings):
+        for path in folder.glob("[0-9]*"):
+            path.unlink()
+        for pid, name in enumerate(offerings, start=900001):
+            meters = {"opus": ["claude-week", "claude-5h"], "fable": ["claude-week", "claude-fable"]}[name]
+            write_pid_file(folder, {"pid": pid, "pool": 1, "session": {
+                "kind": "round", "offering": name, "meters": meters}})
+
+    def test_a_paced_meter_is_held_for_higher_priority_work_until_sessions_in_flight_end(self):
+        # claude-week at 65.0% 50h out allows 0.60%/h (line 66.7%); opus costs 0.17%/h and fable 0.83%/h.
+        # With 1 opus in flight, P0 prover waits only on the session in flight and holds claude-week
+        # against P3 tool; once the session ends, P0 prover runs.
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, clock = self.setup_paced_hold(folder, "Verified 10, 0 errors.", "Loop: continue\n")
+            prover = {"id": "atmo-1.1", "title": "Prove", "issue_type": "task", "priority": 0,
+                      "labels": ["kind:proof", "stage:needs-prover"]}
+            p3 = {"id": "atmo-1.2", "title": "Tool", "issue_type": "task", "priority": 3, "labels": ["kind:tool"]}
+            (folder / "ready.json").write_text(json.dumps([prover, p3]))
+
+            shown = io.StringIO()
+            self.assertEqual(check(config=folder / "loop.toml", out=shown, loop=loop), 0)
+            text = shown.getvalue()
+            self.assertIn("matching leaves (0): none", text)
+            self.assertIn("held for P0 atmo-1.1 [prover]", text)
+
+            self.assertEqual(loop.inspect_work(claim=True)[0], "cooldown_wait")
+            self.assertEqual(self.log(folder, "claude"), [])
+
+            pauses = []
+            loop.sleep = lambda seconds: (pauses.append(seconds), clock.__setitem__(0, clock[0] + seconds),
+                                          self.set_in_flight(folder))
+            original = loop.round
+            rounds = []
+
+            def two_rounds():
+                rounds.append(1)
+                result = original()
+                if len(rounds) >= 2:
+                    loop.stopping = True
+                return result
+            loop.round = two_rounds
+            self.assertEqual(loop.drive(), 0)
+            self.assertEqual(sum(pauses), PACE_WAIT)
+            [call] = self.log(folder, "claude")
+            self.assertEqual((call[2], call[8:-2]), ("prover", ["--model", "fable", "--effort", "xhigh"]))
+            self.assertIn("atmo-1.1", call[-2])
+
+        # With only the P3 leaf waiting, it starts beside the session in flight as today.
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.setup_paced_hold(folder, "Loop: continue\n")
+            p3 = {"id": "atmo-1.2", "title": "Tool", "issue_type": "task", "priority": 3, "labels": ["kind:tool"]}
+            (folder / "ready.json").write_text(json.dumps([p3]))
+            self.assertEqual(loop.drive(once=True), 0)
+            [call] = self.log(folder, "claude")
+            self.assertEqual((call[2], call[8:-2]), ("round", ["--model", "opus", "--effort", "high"]))
+            self.assertIn("atmo-1.2 is yours", call[-2])
+
+        # A waiting stage kept out by another meter over its line (claude-fable) holds nothing.
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.setup_paced_hold(folder, "Loop: continue\n",
+                                            readings={"claude-fable": ("claude", 90.0, 51 * 3600.0)})
+            prover = {"id": "atmo-1.1", "title": "Prove", "issue_type": "task", "priority": 0,
+                      "labels": ["kind:proof", "stage:needs-prover"]}
+            p3 = {"id": "atmo-1.2", "title": "Tool", "issue_type": "task", "priority": 3, "labels": ["kind:tool"]}
+            (folder / "ready.json").write_text(json.dumps([prover, p3]))
+            shown = io.StringIO()
+            check(config=folder / "loop.toml", out=shown, loop=loop)
+            self.assertNotIn("held for", shown.getvalue())
+            self.assertEqual(loop.drive(once=True), 0)
+            [call] = self.log(folder, "claude")
+            self.assertIn("atmo-1.2 is yours", call[-2])
+
+        # Same or higher priority work is not held; a cooled other meter also holds nothing.
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.setup_paced_hold(folder, "Loop: continue\n", "Loop: continue\n")
+            prover_p1 = {"id": "atmo-1.1", "title": "Prove", "issue_type": "task", "priority": 1,
+                         "labels": ["kind:proof", "stage:needs-prover"]}
+            spec_p1 = {"id": "atmo-1.3", "title": "Spec", "issue_type": "task", "priority": 1, "labels": ["kind:spec"]}
+            (folder / "ready.json").write_text(json.dumps([prover_p1, spec_p1]))
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertIn("atmo-1.3 is yours", self.log(folder, "claude")[0][-2])
+
+            prover_p0 = {"id": "atmo-1.1", "title": "Prove", "issue_type": "task", "priority": 0,
+                         "labels": ["kind:proof", "stage:needs-prover"]}
+            p3 = {"id": "atmo-1.2", "title": "Tool", "issue_type": "task", "priority": 3, "labels": ["kind:tool"]}
+            (folder / "ready.json").write_text(json.dumps([prover_p0, p3]))
+            self.cool(folder, 5000.0, "claude-fable")
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertIn("atmo-1.2 is yours", self.log(folder, "claude")[1][-2])
+
+    def test_epic_rounds_fallback_and_hand_off_respect_meter_holds(self):
+        cfg = textwrap.dedent("""\
+            [offerings.opus]
+            model = "opus"
+            effort = "high"
+            meters = ["claude-week", "claude-5h"]
+
+            [offerings.fable]
+            model = "fable"
+            effort = "xhigh"
+            meters = ["claude-week", "claude-fable"]
+
+            [offerings.carbon]
+            harness = "agy"
+            model = "gemini-4-carbon-high"
+            meters = ["gemini-week"]
+
+            [routes.prover]
+            candidates = ["fable"]
+
+            [routes.tool]
+            candidates = ["opus", "carbon"]
+
+            [routes.review]
+            candidates = ["carbon"]
+
+            [routes.needs-land]
+            candidates = ["opus"]
+
+            [routes.epic-close]
+            candidates = ["fable"]
+
+            [routes.skeptic]
+            candidates = ["opus"]
+
+            [routes.retry]
+            candidates = ["opus"]
+
+            [meters.claude-week]
+            target = 95
+            window = 168
+
+            [meters.claude-5h]
+            target = 95
+            window = 5
+
+            [meters.claude-fable]
+            target = 95
+            window = 168
+
+            [meters.gemini-week]
+            target = 95
+            window = 168
+            """)
+
+        # P0 epic-close waits on claude-week and holds it against a P3 stage:needs-land;
+        # a P3 leaf on [opus, carbon] falls through to carbon instead of taking the held claude-week.
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.setup_paced_hold(folder, cfg=cfg, agy=self.stub_agy(folder))
+            root = self.bead("atmo-r", kind="epic", priority=0, title="Star")
+            epic = self.bead("atmo-1", parent="atmo-r", kind="epic", priority=0, title="P0 epic")
+            child = self.bead("atmo-1.1", parent="atmo-1", status="closed", priority=0, title="Done")
+            (folder / "all.json").write_text(json.dumps([root, epic, child]))
+            land_p3 = {"id": "atmo-2.1", "title": "Land", "issue_type": "task", "priority": 3,
+                       "labels": ["kind:proof", "stage:needs-land"]}
+            (folder / "ready.json").write_text(json.dumps([land_p3]))
+            self.assertEqual(loop.inspect_work(claim=True)[0], "cooldown_wait")
+            self.assertEqual(self.log(folder, "claude"), [])
+
+            tool_p3 = {"id": "atmo-2.2", "title": "Tool", "issue_type": "task", "priority": 3, "labels": ["kind:tool"]}
+            (folder / "ready.json").write_text(json.dumps([land_p3, tool_p3]))
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertEqual(self.log(folder, "claude"), [])
+            [agy_call] = self.log(folder, "agy")
+            self.assertIn("atmo-2.2 is yours", agy_call[-1])
+
+        # hand_off and Retry: queue lower-priority work instead of starting on a meter held for P0.
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.setup_paced_hold(
+                folder, cfg=cfg,
+                agy=self.stub_agy(folder, "Skeptic: atmo-2.9\nLoop: continue\n", "Retry: atmo-2.9\nLoop: continue\n"))
+            prover_p0 = {"id": "atmo-1.1", "title": "Prove", "issue_type": "task", "priority": 0,
+                         "labels": ["kind:proof", "stage:needs-prover"]}
+            review_p3 = {"id": "atmo-2.9", "title": "Review", "issue_type": "task", "priority": 3,
+                         "labels": ["review"]}
+            (folder / "ready.json").write_text(json.dumps([prover_p0, review_p3]))
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertEqual(loop.drive(once=True), 0)
+            self.assertEqual(self.log(folder, "claude"), [])
+            bd_calls = self.log(folder, "bd")
+            self.assertIn(["update", "atmo-2.9", "--add-label", "stage:needs-skeptic", "-s", "open", "--assignee", ""],
+                          bd_calls)
+            self.assertIn(["update", "atmo-2.9", "--add-label", "stage:escalated", "-s", "open", "--assignee", ""],
+                          bd_calls)
 
     def test_the_pool_recomputes_admission_every_tick_and_logs_each_change(self):
         hour = 3600.0
