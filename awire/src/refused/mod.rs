@@ -10,6 +10,8 @@ pub mod bounded_length;
 pub mod bounded_round;
 pub mod bytes_length;
 pub mod bytes_round;
+pub mod choice_length;
+pub mod choice_round;
 pub mod choice_steps;
 pub mod count_length;
 pub mod count_round;
@@ -51,6 +53,34 @@ pub trait ChoiceSteps {
             old(steps).count == 0,
         ensures
             final(steps).count == 0,
+    ;
+}
+
+/// `Choice`'s parse and serialize at the round trip they exclude.
+pub trait ChoiceRound<'a, A: Combinator<'a>, B: Combinator<'a>> {
+    proof fn parse_trip(c: &Choice<A, B>, s: Seq<u8>)
+        requires
+            c.wf(),
+        ensures
+            c.spec_parse(s) matches Some((n, v)) ==> c.spec_serialize(v) != s.take(n as int),
+    ;
+
+    proof fn serialize_trip(c: &Choice<A, B>, v: Either<A::V, B::V>, rest: Seq<u8>)
+        requires
+            c.wf(),
+            c.valid(v),
+        ensures
+            c.spec_parse(c.spec_serialize(v) + rest) != Some((c.spec_serialize(v).len(), v)),
+    ;
+}
+
+/// `Choice::length`'s Some at a length that is not the serialisation's.
+pub trait ChoiceLength<'a, A: Combinator<'a>, B: Combinator<'a>> {
+    proof fn wrong(c: &Choice<A, B>, v: Either<A::V, B::V>, n: nat)
+        requires
+            c.wf(),
+        ensures
+            n != c.spec_serialize(v).len(),
     ;
 }
 

@@ -47,6 +47,3 @@ aeager/src/eager.rs	Eager::release	returns
 aeager/src/eager.rs	Eager::release_span	returns
 aeager/src/exercise.rs	exercise	returns
 aeager/src/exercise.rs	exercise_eager	Some
-awire/src/choice.rs	Choice::parse	Some
-awire/src/choice.rs	Choice::length	Some
-awire/src/choice.rs	Choice::serialize	Some
