@@ -305,6 +305,39 @@ pub fn close_interrupts() {
     unsafe { asm!("msr DAIFSet, #0b0010", options(nomem, nostack, preserves_flags)) };
 }
 
+/// The ASID this core runs: TTBR0_EL1's ASID field, bits 63:48, with TCR_EL1.A1 clear (Arm ARM
+/// D24.2.208).
+#[cfg(feature = "flush_cost")]
+pub fn current_context() -> usize {
+    let base: u64;
+    unsafe { asm!("mrs {base}, TTBR0_EL1", base = out(reg) base, options(nomem, nostack, preserves_flags)) };
+    (base >> TTBR_ASID_SHIFT) as usize
+}
+
+/// Whether this core can flush one ASID or one page of one, naming the ASID it runs or another:
+/// always, the TLBI operations below being part of Armv8-A.
+#[cfg(feature = "flush_cost")]
+pub fn context_flush_available(_other: bool) -> bool {
+    true
+}
+
+/// Flushes ASID `context`'s non-global entries on this core: TLBI ASIDE1, its operand the ASID in bits
+/// 63:48, between the barriers flush_every_context uses.
+#[cfg(feature = "flush_cost")]
+pub fn flush_context(context: usize) {
+    let operand = (context as u64) << TTBR_ASID_SHIFT;
+    unsafe { asm!("dsb ishst", "tlbi aside1, {operand}", "dsb ish", "isb", operand = in(reg) operand, options(nostack, preserves_flags)) };
+}
+
+/// Flushes the entry for `address` under ASID `context` on this core, at every level: TLBI VAE1, its
+/// operand the ASID in bits 63:48 and the address's bits 55:12 in bits 43:0, between the barriers
+/// flush_every_context uses.
+#[cfg(feature = "flush_cost")]
+pub fn flush_page(context: usize, address: u64) {
+    let operand = (context as u64) << TTBR_ASID_SHIFT | (address >> 12) & TLBI_ADDRESS_MASK;
+    unsafe { asm!("dsb ishst", "tlbi vae1, {operand}", "dsb ish", "isb", operand = in(reg) operand, options(nostack, preserves_flags)) };
+}
+
 /// Gives up what runs on the stack whose top is `stack` and waits there for interrupts, for good: the
 /// core runs nothing, and an interrupt's handler leaves the wait by entering a thread
 /// ([`exception::enter`]), which takes SP_EL1 back to the top of the syscall stack. An IRQ from the

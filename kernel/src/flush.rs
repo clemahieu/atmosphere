@@ -74,8 +74,13 @@ pub fn handle_ipi() {
 }
 
 /// Flushes every context on `core`, the core this runs on, for the boot test's state. That state is
-/// not CapKernel's, so no TLB model is kept for it and the one made here is dropped.
+/// not CapKernel's, so no TLB model is kept for it and the one made here is dropped. In a flush_cost
+/// build the user-mode round may have chosen a narrower flush for this one.
 fn flush_this_core(core: usize) {
+    #[cfg(feature = "flush_cost")]
+    if cost::flushed_as_chosen() {
+        return;
+    }
     flush_every_context(Tracked::assume_new(), core);
 }
 
@@ -146,14 +151,81 @@ pub fn check_second_core() {
 /// then spinning with interrupts closed, as a core waiting for the queue lock does, polling a request
 /// word in its loop, which takes no IPI. The second models a lock whose wait loop serves flush
 /// requests; the queue lock itself is unchanged. Two more split the cost: the polled word answered
-/// without a flush, the cache lines' round trip alone, and the flush alone on CPU 0. A test build:
-/// tools/run.py --kernel-feature flush_cost.
+/// without a flush, the cache lines' round trip alone, and the flush alone on CPU 0. Once dom0 runs, it
+/// times the round trip to CPU 1 in user mode through [`cost::USER_OPERATION`], choosing the flush CPU 1
+/// makes, and the TLB refill that flush costs the thread there. A test build: tools/run.py
+/// --kernel-feature flush_cost.
 #[cfg(feature = "flush_cost")]
 pub mod cost {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use verified::arch::Registers;
+    use verified::capability::operation::{Outcome, STATUS_OK, STATUS_REFUSED};
 
     use super::{acknowledged, flush_this_core, start, CHECK_ROUNDS};
     use crate::{arch, cpu};
+
+    /// The operation number of the user-mode round, past every operation's and below the number dom0
+    /// checks no operation has. Argument 1 is the flush CPU 1 makes for it, one of the kinds below;
+    /// argument 2 not zero has it name another context than the one CPU 1 runs; argument 3 is the page
+    /// the one-page flush names. It returns ok and the round trip in cycles as result 1, or refused for a
+    /// kind it does not know, for a flush CPU 1 cannot make, or when CPU 1 did not acknowledge.
+    pub const USER_OPERATION: u64 = 0xfff0;
+
+    /// The flushes the user-mode round chooses from: every context, as every flush IPI makes today; one
+    /// context's entries, the id a space's entries are tagged with ([`arch::flush_context`]); one page of
+    /// one context ([`arch::flush_page`]); or none, the IPI alone.
+    const EVERY: u64 = 0;
+    const CONTEXT: u64 = 1;
+    const PAGE: u64 = 2;
+    const NONE: u64 = 3;
+
+    /// The flush CPU 1 makes for the next flush IPI, with whether it names another context and the page
+    /// it names. Every flush IPI but the user-mode round's flushes every context.
+    static KIND: AtomicU64 = AtomicU64::new(EVERY);
+    static OTHER: AtomicU64 = AtomicU64::new(0);
+    static PAGE_ADDRESS: AtomicU64 = AtomicU64::new(0);
+
+    /// Makes the flush the user-mode round chose, if it chose one, on the core this runs on, and says
+    /// whether it did. The context is the one the core runs, or with OTHER another: the id with its
+    /// lowest bit flipped, which no space the core runs has.
+    pub(super) fn flushed_as_chosen() -> bool {
+        let kind = KIND.load(Ordering::SeqCst);
+        let context = arch::current_context() ^ OTHER.load(Ordering::SeqCst) as usize;
+        match kind {
+            CONTEXT => arch::flush_context(context),
+            PAGE => arch::flush_page(context, PAGE_ADDRESS.load(Ordering::SeqCst)),
+            NONE => {}
+            _ => return false,
+        }
+        true
+    }
+
+    /// The user-mode round, for the invocation in `frame` from dom0 on CPU 0: one flush IPI to CPU 1,
+    /// which runs a thread in user mode, making the flush the invocation chose, timed from the send
+    /// until CPU 1 acknowledges. It holds no lock while it waits.
+    pub fn user_round(frame: &Registers) -> Outcome {
+        let kind = frame.argument(1);
+        let refused = Outcome { status: STATUS_REFUSED, result_1: 0, result_2: 0, result_3: 0, result_4: 0, result_5: 0 };
+        let other = frame.argument(2) != 0;
+        if kind > NONE || (matches!(kind, CONTEXT | PAGE) && !arch::context_flush_available(other)) {
+            return refused;
+        }
+        KIND.store(kind, Ordering::SeqCst);
+        OTHER.store(other as u64, Ordering::SeqCst);
+        PAGE_ADDRESS.store(frame.argument(3), Ordering::SeqCst);
+        let started = arch::cycles();
+        let epoch = start(1);
+        cpu::spin_until(|| acknowledged(1, epoch) | (arch::cycles() - started > arch::stall_cycles()));
+        let cycles = arch::cycles() - started;
+        // CPU 1 read the kind before it acknowledged.
+        KIND.store(EVERY, Ordering::SeqCst);
+        if !acknowledged(1, epoch) {
+            log::error!("flush cost: CPU 1 in user mode did not acknowledge");
+            return refused;
+        }
+        Outcome { status: STATUS_OK, result_1: cycles, ..refused }
+    }
 
     /// Where CPU 1 waits: halted for an interrupt, as when idle; running with interrupts open; spinning
     /// with them closed and polling REQUEST, flushing before it answers or not; or done, back to its

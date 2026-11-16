@@ -37,7 +37,8 @@ stray_timer = []
 # ends the run with a failure.
 boot_panic = []
 # The boot test also times a flush request to CPU 1 running with interrupts open and spinning with
-# them closed, polling a word: flush::cost.
+# them closed, polling a word, and dom0 times one to CPU 1 in user mode, choosing the flush it makes,
+# through a test operation: flush::cost.
 flush_cost = []
 
 # A freestanding binary with its own panic handler: it has no host tests, and cargo test builds no

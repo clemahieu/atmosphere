@@ -223,6 +223,44 @@ pub fn close_interrupts() {
     unsafe { asm!("cli", options(nostack)) };
 }
 
+/// The PCID this core runs: CR3 bits 11:0 while CR4.PCIDE is set (SDM Vol. 3A 4.10.1).
+#[cfg(feature = "flush_cost")]
+pub fn current_context() -> usize {
+    let cr3: u64;
+    unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)) };
+    (cr3 & 0xfff) as usize
+}
+
+/// Whether this core can flush one PCID, or one page of one, naming the PCID it runs or, when `other`,
+/// another: CPUID.(EAX=07H,ECX=0):EBX bit 10 offers INVPCID (SDM Vol. 2B, INVPCID), and another PCID
+/// needs CR4.PCIDE, bit 17, without which INVPCID refuses a PCID but 0 and the core caches no other.
+#[cfg(feature = "flush_cost")]
+pub fn context_flush_available(other: bool) -> bool {
+    let cr4: u64;
+    unsafe { asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags)) };
+    core::arch::x86_64::__cpuid_count(7, 0).ebx & 1 << 10 != 0 && (!other || cr4 & 1 << 17 != 0)
+}
+
+/// INVPCID of `kind` with the descriptor for PCID `context` and `address` (SDM Vol. 2B, INVPCID).
+#[cfg(feature = "flush_cost")]
+fn invpcid(kind: u64, context: usize, address: u64) {
+    let descriptor = [context as u64, address];
+    unsafe { asm!("invpcid {kind}, [{descriptor}]", kind = in(reg) kind, descriptor = in(reg) &descriptor, options(nostack, preserves_flags)) };
+}
+
+/// Flushes PCID `context`'s entries on this core, global ones kept: INVPCID single-context, type 1.
+#[cfg(feature = "flush_cost")]
+pub fn flush_context(context: usize) {
+    invpcid(1, context, 0);
+}
+
+/// Flushes the entry for `address` under PCID `context` on this core, and the paging-structure caches
+/// for it: INVPCID individual-address, type 0.
+#[cfg(feature = "flush_cost")]
+pub fn flush_page(context: usize, address: u64) {
+    invpcid(0, context, address);
+}
+
 /// Gives up what runs on the stack whose top is `stack` and waits there for interrupts, for good: the
 /// core runs nothing, and an interrupt's handler leaves the wait by returning to a thread. Interrupts
 /// arrive on their own stack (`interrupt::IST_IRQ`), so the wait's stack is never theirs.

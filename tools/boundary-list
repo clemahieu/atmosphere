@@ -7,6 +7,15 @@
 astd/src/heap.rs	astd::heap::with_caller	call	aheap::allocator::give_back	1	nothing	"the caller is the one lend gave out and its closure invoked no memory operation on the heap's Eager frames or space slot, so src_serves still holds when give_back returns it; tracked in atmo-6x9.5.32.4"
 astd/src/heap.rs	astd::heap::{impl#1}::dealloc	call	aheap::allocator::free	1	language	library/core/src/alloc/global.rs "`ptr` is a block of memory currently allocated via this allocator and, * `layout` is the same layout that was used to allocate that block of memory."
 astd/src/heap.rs	astd::heap::{impl#1}::dealloc	conjure	aheap::allocator::free argument 4: Tracked<vstd::raw_ptr::PointsToRaw>	1	language	library/core/src/alloc/global.rs "`ptr` is a block of memory currently allocated via this allocator and, * `layout` is the same layout that was used to allocate that block of memory."
+dom0/src/flush_cost.rs	dom0::flush_cost::walk_mapped::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/flush_cost.rs	dom0::flush_cost::walk_mapped::{closure#0}	call	acall::memory::link	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/flush_cost.rs	dom0::flush_cost::walk_mapped	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/flush_cost.rs	dom0::flush_cost::walk_mapped::{closure#2}	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/flush_cost.rs	dom0::flush_cost::walk_mapped	call	acall::memory::map	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/flush_cost.rs	dom0::flush_cost::walker_started	call	acall::memory::derive	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/flush_cost.rs	dom0::flush_cost::walker_started	call	acall::capability::place	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/flush_cost.rs	dom0::flush_cost::walker_started	call	acall::capability::start	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
+dom0/src/flush_cost.rs	dom0::flush_cost::held::{closure#0}	call	acall::memory::unmap	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::inspect	call	acall::memory::inspect	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::retyped_frame_held::{closure#0}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter
 dom0/src/main.rs	dom0::retyped_table_pages::{closure#1}	call	acall::memory::retype	1	kernel	kernel/verified/capability/operation.rs CapKernel::enter

@@ -42,6 +42,10 @@ pub static CAP_KERNEL: Locked<Option<&'static mut CapKernel>> = Locked::new("cap
 /// outcome, or nothing when the calling thread left its core, which then runs nothing: its caller
 /// waits, and the selection runs in the reschedule IPI's handler. Each target's entry calls this.
 pub fn dispatch(frame: Registers) -> Option<Outcome> {
+    #[cfg(feature = "flush_cost")]
+    if frame.operation_number() == crate::flush::cost::USER_OPERATION {
+        return Some(crate::flush::cost::user_round(&frame));
+    }
     let core = crate::cpu::get_cpu_id();
     let (returned, flushes, reschedules) = {
         let mut guard = CAP_KERNEL.lock();

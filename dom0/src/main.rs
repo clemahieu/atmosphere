@@ -99,6 +99,9 @@
 //! has acknowledged it; the frame is then freed and retyped, and the kernel's line for CPU 1's
 //! acknowledgement comes between the two lines dom0 prints around it. dom0 then lets the thread suspend
 //! itself.
+//! On a kernel built with its flush_cost feature, dom0 then times what a flush IPI costs a thread of
+//! its child walking pages on core 1, by the flush the target makes (flush_cost.rs); any other kernel
+//! answers that module's test operation unknown, and dom0 goes on.
 //! It gives the first thread an entry in its child's space that counts in the shared frame, and starts it,
 //! Runnable behind dom0 at the same priority, after a start of the console slot and of the second
 //! thread, not placed, are refused; a second start is refused, the thread being started, and dom0
@@ -145,6 +148,7 @@
 #![no_main]
 
 mod context;
+mod flush_cost;
 mod registers;
 
 extern crate alloc;
@@ -2656,6 +2660,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && core_1_thread_held(caller, empty + 4)
                                 && invoked_beside_core_1_held(caller, empty + 4)
                                 && core_1_unmap_held(caller, empty, empty + 4, empty + 7)
+                                && flush_cost::held(caller, empty, empty + 4, empty + 8)
                                 && started_thread_held(caller)
                                 && preempted_thread_held()
                                 && thread_pointer_cleared_held()
