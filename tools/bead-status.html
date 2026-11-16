@@ -82,6 +82,8 @@ section > .head { display: flex; flex-wrap: wrap; align-items: center; justify-c
 .title { overflow-wrap: anywhere; }
 a.title, .epic a { display: block; color: inherit; text-decoration: none; }
 a.title:hover .id, .epic a:hover .id { text-decoration: underline; }
+/* The row whose details are open, so the click shows where it landed. */
+a.title[aria-current="true"] { margin: -4px -8px; padding: 4px 8px; border-radius: 6px; background: var(--wash); }
 .id { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-2); margin-right: 8px; white-space: nowrap; }
 .meta { color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
 .one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -753,6 +755,16 @@ const chosen = () => location.hash.slice(1);
 let detailed = "";
 function choose() {
   for (const node of data ? data.graph : []) $("graph").querySelector(`a[href="#${CSS.escape(node.id)}"]`)?.classList.toggle("chosen", node.id === chosen());
+  for (const link of document.querySelectorAll("a.title")) link.setAttribute("aria-current", String(link.hash.slice(1) === chosen()));
+}
+/* The panel opens on the click with what the page already has of the issue, and says the rest is on its way. */
+function drawAsking(name) {
+  const row = [data.questions, data.flights, data.ready, data.closed, data.graph].flat().find(row => row.id === name);
+  $("detail").scrollTop = 0;
+  $("detailid").textContent = name;
+  fill("detailbody", row ? [h("h2", {}, row.title), meta(row.trail && trail(row))] : null, h("p", {class: "empty", role: "status"}, "Asking for its details…"));
+  detailed = "";
+  reveal(true);
 }
 function drawDetail(issue) {
   // An issue made since the graph was read is not in it yet, and says only its status.
@@ -789,6 +801,7 @@ async function showIssue() {
   const name = chosen();
   choose();
   if (!name) { reveal(false); detailed = ""; return; }
+  if ($("detailid").textContent !== name || $("detail").hidden) drawAsking(name);
   let text;
   try {
     const reply = await fetch(`/issue/${encodeURIComponent(name)}`);

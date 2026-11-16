@@ -469,14 +469,15 @@ def read(root, now, agy=()):
 
 
 class Beads:
-    """The tree as the bodies of replies, read again once it is older than AGE however many pages ask."""
+    """The tree as the bodies of replies, read again once it is older than AGE however many pages ask.
+    An issue's details come out of the tree held, however old, and wait on no read but the first: the
+    page asks for them on a click, and its poll of /data brings it a newer read within one period."""
 
     def __init__(self, root):
         self.root = root
         self.lock = threading.Lock()
         self.read_at = 0
-        self.issues = []
-        self.own = {}
+        self.tree = ([], {})
         self.held = b""
         self.agy = []
 
@@ -484,7 +485,8 @@ class Beads:
         """Read the tree again when what is held is too old; the caller holds the lock."""
         now = time.time()
         if now - self.read_at > AGE:
-            self.issues, self.own, found = read(self.root, now, self.agy)
+            issues, own, found = read(self.root, now, self.agy)
+            self.tree = (issues, own)
             self.held = json.dumps(found).encode()
             self.read_at = now
 
@@ -495,10 +497,13 @@ class Beads:
 
     def issue(self, name):
         """The details of that issue as a body, or None when the tree has no such issue."""
-        with self.lock:
-            self.fresh()
-            found = detail(self.issues, name, self.own)
-            return found and json.dumps(found).encode()
+        if not self.read_at:
+            with self.lock:
+                self.fresh()
+        # The tree and its tokens are one value, so a read landing meanwhile gives both or neither.
+        issues, own = self.tree
+        found = detail(issues, name, own)
+        return found and json.dumps(found).encode()
 
 
 class Page(BaseHTTPRequestHandler):
@@ -918,7 +923,7 @@ class Tests(unittest.TestCase):
         self.addCleanup(lambda: (os.environ.clear(), os.environ.update(environment)))
         os.environ["PATH"] = f"{tools}:{os.environ['PATH']}"
         os.environ["XDG_RUNTIME_DIR"] = str(self.root / "run")
-        serving = server(self.root, "127.0.0.1", 0)
+        serving = self.serving = server(self.root, "127.0.0.1", 0)
         thread = threading.Thread(target=serving.serve_forever)
         thread.start()
         self.addCleanup(thread.join)
@@ -955,6 +960,17 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.refused(f"{address}/issue/a.99"), (404, "no such issue\n"))
         self.assertEqual(self.refused(f"{address}/issue/"), (404, "no such issue\n"))
         self.assertEqual(found["tokens"], {"roots": [], "hours": []})
+        self.assertEqual((self.root / "calls").read_text(), "list --all --json --limit 0\nready --json --limit 0\n")
+
+    def test_an_issues_details_come_from_the_held_tree_however_old(self):
+        (self.root / "list.json").write_text(json.dumps(self.tree()))
+        address = self.serve(f'case "$1" in list) cat {self.root}/list.json;; ready) echo [];; esac')
+        # The first request reads the tree; once it is held, details never wait on bd.
+        with urllib.request.urlopen(f"{address}/issue/a.1.2") as reply:
+            self.assertEqual(json.load(reply), detail(self.tree(), "a.1.2"))
+        self.serving.beads.read_at -= AGE + 1
+        with urllib.request.urlopen(f"{address}/issue/a.1.2") as reply:
+            self.assertEqual(json.load(reply), detail(self.tree(), "a.1.2"))
         self.assertEqual((self.root / "calls").read_text(), "list --all --json --limit 0\nready --json --limit 0\n")
 
     def test_the_server_reads_the_tokens_out_of_the_ledger(self):
