@@ -17,6 +17,8 @@ pub mod elements_get;
 pub mod elements_len;
 pub mod elements_new;
 pub mod elements_push;
+pub mod pair_length;
+pub mod pair_round;
 pub mod tag_length;
 pub mod tag_round;
 pub mod u16_be_le;
@@ -155,6 +157,34 @@ pub trait ElementsPush<T: Copy + View, const N: usize> {
             post == pre,
         ensures
             post@ == pre@.push(t@),
+    ;
+}
+
+/// `Pair`'s parse and serialize at the round trip they exclude.
+pub trait PairRound<'a, A: Combinator<'a>, B: Combinator<'a>> {
+    proof fn parse_trip(c: &Pair<A, B>, s: Seq<u8>)
+        requires
+            c.wf(),
+        ensures
+            c.spec_parse(s) matches Some((n, v)) ==> c.spec_serialize(v) != s.take(n as int),
+    ;
+
+    proof fn serialize_trip(c: &Pair<A, B>, v: (A::V, B::V), rest: Seq<u8>)
+        requires
+            c.wf(),
+            c.valid(v),
+        ensures
+            c.spec_parse(c.spec_serialize(v) + rest) != Some((c.spec_serialize(v).len(), v)),
+    ;
+}
+
+/// `Pair::length`'s Some at a length that is not the serialisation's.
+pub trait PairLength<'a, A: Combinator<'a>, B: Combinator<'a>> {
+    proof fn wrong(c: &Pair<A, B>, v: (A::V, B::V), n: nat)
+        requires
+            c.wf(),
+        ensures
+            n != c.spec_serialize(v).len(),
     ;
 }
 

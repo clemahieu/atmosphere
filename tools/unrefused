@@ -95,6 +95,3 @@ awire/src/length.rs	LengthPrefixed::new	returns
 awire/src/length.rs	LengthPrefixed::parse	Some
 awire/src/length.rs	LengthPrefixed::length	Some
 awire/src/length.rs	LengthPrefixed::serialize	Some
-awire/src/pair.rs	Pair::parse	Some
-awire/src/pair.rs	Pair::length	Some
-awire/src/pair.rs	Pair::serialize	Some
