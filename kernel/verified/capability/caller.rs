@@ -1598,6 +1598,9 @@ impl CapKernel {
                 &&& allowed
                 &&& out == status_only(STATUS_AGAIN)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& post.list == pre.list
+                &&& post.tables == pre.tables
+                &&& pre.blocks.kept_but_region(post.blocks, Large::Two, region as int)
                 &&& Self::frame_blocks_kept(pre, post)
                 &&& post.zeroing.active(Large::Two, region)
                 &&& pre.zeroing.active(Large::Two, region)
@@ -1609,6 +1612,7 @@ impl CapKernel {
                 &&& kind == RETYPE_LARGE_FRAME
                 &&& allowed
                 &&& out == status_only(STATUS_OK)
+                &&& pre.zeroing.active(Large::Two, base / PAGE_SZ / level_pages(Large::Two))
                 &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 9, parent))
                 &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
                 &&& block_refs(&post.blocks, block_ref(&post.blocks, base / PAGE_SZ)) == 1

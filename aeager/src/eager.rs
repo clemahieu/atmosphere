@@ -46,9 +46,10 @@ use verified::capability::list::NODES_PER_PAGE;
 use verified::capability::link::tree_of;
 #[cfg(verus_keep_ghost)]
 use verified::capability::mapping::space_mapping;
+use verified::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use verified::capability::operation::{
-    Outcome, RETYPE_FRAME, RETYPE_LARGE_FRAME, RETYPE_PROCESS, RETYPE_TABLE_PAGE, RETYPE_THREAD, STATUS_OK,
+    RETYPE_FRAME, RETYPE_LARGE_FRAME, RETYPE_PROCESS, RETYPE_TABLE_PAGE, RETYPE_THREAD, STATUS_OK,
     STATUS_REFUSED,
 };
 #[cfg(verus_keep_ghost)]
@@ -62,8 +63,9 @@ use verified::capability::table::TABLE_INDICES;
 use acall::step::slot_names_own_space;
 
 use crate::glue::*;
+use crate::invoke::GuardedCall;
 #[cfg(verus_keep_ghost)]
-use crate::invoke::{GuardedCall, call_keeps_source, is_source_slot, local_targets_source};
+use crate::invoke::{call_contract, call_keeps_source, is_source_slot, local_targets_source};
 
 verus! {
 
@@ -5900,7 +5902,6 @@ impl Eager {
     }
 }
 
-#[cfg(verus_keep_ghost)]
 impl Eager {
     pub(crate) fn exec_space(&self) -> (r: u64)
         ensures
@@ -5977,7 +5978,10 @@ impl Eager {
         }
         false
     }
+}
 
+#[cfg(verus_keep_ghost)]
+impl Eager {
     /// The slot of each frame the source holds is a source slot.
     proof fn lemma_frames_in_source_slots(&self)
         requires
@@ -6041,7 +6045,9 @@ impl Eager {
         assert(names_own_space(post, self.record.space));
         self.lemma_serves_parts(pre, post);
     }
+}
 
+impl Eager {
     /// A retype that is not into a slot of the source's keeps the source served.
     fn guarded_retype(&self, caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, word: u64, level: u64) -> (out: Outcome)
         requires
@@ -6050,6 +6056,14 @@ impl Eager {
                 ==> !is_source_slot(self, word as usize),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::retype_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), kind, untyped as usize, base as usize, word, level as usize, out),
     {
         let ghost pre = caller@;
         proof {
@@ -6094,6 +6108,14 @@ impl Eager {
             !local_targets_source(self, to),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::derive_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
     {
         let ghost pre = caller@;
         proof {
@@ -6124,6 +6146,14 @@ impl Eager {
             !local_targets_source(self, to),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::move_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), out),
     {
         let ghost pre = caller@;
         proof {
@@ -6152,6 +6182,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::delete_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
     {
         let ghost pre = caller@;
         let out = acall::capability::delete(caller, at);
@@ -6168,6 +6206,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::revoke_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
     {
         let ghost pre = caller@;
         let out = acall::capability::revoke(caller, at);
@@ -6184,6 +6230,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::destroy_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
     {
         let ghost pre = caller@;
         let out = acall::capability::destroy(caller, slot);
@@ -6200,6 +6254,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::place_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, core as usize, priority as usize, out),
     {
         let ghost pre = caller@;
         let out = acall::capability::place(caller, slot, core, priority);
@@ -6216,6 +6278,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::start_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
     {
         let ghost pre = caller@;
         let out = acall::capability::start(caller, slot);
@@ -6232,6 +6302,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::suspend_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
     {
         let ghost pre = caller@;
         let out = acall::capability::suspend(caller, slot);
@@ -6248,6 +6326,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::read_registers_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, index, out),
     {
         let ghost pre = caller@;
         let out = acall::capability::read_registers(caller, slot, index);
@@ -6264,6 +6350,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::write_registers_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, index, out),
     {
         let ghost pre = caller@;
         let out = acall::capability::write_registers(caller, slot, index, words);
@@ -6280,6 +6374,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::inspect_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
     {
         let ghost pre = caller@;
         let out = acall::memory::inspect(caller, at);
@@ -6296,6 +6398,14 @@ impl Eager {
             self.serves(old(caller)@),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+            CapKernel::link_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, child as usize, out),
     {
         let ghost pre = caller@;
         let out = acall::memory::link(caller, slot, va, level, from, child);
@@ -6307,13 +6417,21 @@ impl Eager {
     }
 
     /// Makes the call `call`, which keeps the source's slots, on the token the source serves, and
-    /// serves the token it returns.
+    /// serves the token it returns, tying the outcome and token state to `call_contract`.
     pub(crate) fn invoke_guarded(&self, caller: &mut Tracked<Caller>, call: GuardedCall) -> (out: Outcome)
         requires
             self.serves(old(caller)@),
             call_keeps_source(self, call),
         ensures
             self.serves(final(caller)@),
+            final(caller)@.wf(),
+            final(caller)@.root() == old(caller)@.root(),
+            final(caller)@.entry().wf(),
+            CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
+            final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
+            pages_kept(old(caller)@, final(caller)@),
+            final(caller)@.pages_wf(),
+            call_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), call, out),
     {
         match call {
             GuardedCall::Retype { untyped, kind, base, word, level } => self.guarded_retype(caller, untyped, kind, base, word, level),

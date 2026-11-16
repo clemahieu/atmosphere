@@ -11,7 +11,11 @@
 //! `Eager::serves` still holds, and returns the token to the allocator.
 
 use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
+use acall::step::pages_kept;
 use aheap::allocator::Allocator;
+#[cfg(verus_keep_ghost)]
+use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::spec_position;
 #[cfg(verus_keep_ghost)]
@@ -108,10 +112,50 @@ pub open spec fn call_keeps_source(eager: &Eager, call: GuardedCall) -> bool {
     }
 }
 
+/// The `acall` caller's-view contract for `call`, from `entry` to `post` in the caller's process
+/// at `root`, returning `out`.
+pub open spec fn call_contract(
+    entry: CapKernel,
+    post: CapKernel,
+    root: usize,
+    call: GuardedCall,
+    out: Outcome,
+) -> bool {
+    match call {
+        GuardedCall::Retype { untyped, kind, base, word, level } =>
+            CapKernel::retype_contract(entry, post, root, kind, untyped as usize, base as usize, word, level as usize, out),
+        GuardedCall::Derive { from, to, rights, base, order } =>
+            CapKernel::derive_contract(entry, post, root, spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
+        GuardedCall::MoveCap { from, to } =>
+            CapKernel::move_contract(entry, post, root, spec_position(from), spec_position(to), out),
+        GuardedCall::Delete { at } =>
+            CapKernel::delete_contract(entry, post, root, spec_position(at), out),
+        GuardedCall::Revoke { at } =>
+            CapKernel::revoke_contract(entry, post, root, spec_position(at), out),
+        GuardedCall::Destroy { slot } =>
+            CapKernel::destroy_contract(entry, post, root, slot as usize, out),
+        GuardedCall::Place { slot, core, priority } =>
+            CapKernel::place_contract(entry, post, root, slot as usize, core as usize, priority as usize, out),
+        GuardedCall::Start { slot } =>
+            CapKernel::start_contract(entry, post, root, slot as usize, out),
+        GuardedCall::Suspend { slot } =>
+            CapKernel::suspend_contract(entry, post, root, slot as usize, out),
+        GuardedCall::ReadRegisters { slot, index } =>
+            CapKernel::read_registers_contract(entry, post, root, slot as usize, index, out),
+        GuardedCall::WriteRegisters { slot, index, words: _ } =>
+            CapKernel::write_registers_contract(entry, post, root, slot as usize, index, out),
+        GuardedCall::Inspect { at } =>
+            CapKernel::inspect_contract(entry, post, root, spec_position(at), out),
+        GuardedCall::Link { slot, va, level, from, child } =>
+            CapKernel::link_contract(entry, post, root, slot as usize, va, level, from as usize, child as usize, out),
+    }
+}
+
 /// Invokes `call` using the caller token held inside `alloc`, rejecting any call that would
 /// overwrite or duplicate `Eager`'s source capabilities or weaken `pages_wf` / `sealed` with
-/// `STATUS_REFUSED`.
-pub(crate) fn invoke(alloc: &mut Allocator<Eager>, call: GuardedCall) -> (out: Outcome)
+/// `STATUS_REFUSED`. When the token is held and the call is allowed, executes the `acall` wrapper
+/// and ties the returned outcome and updated token state to `call_contract`.
+pub fn invoke(alloc: &mut Allocator<Eager>, call: GuardedCall) -> (out: Outcome)
     ensures
         final(alloc).heap() == old(alloc).heap(),
         final(alloc).src() == old(alloc).src(),
@@ -119,9 +163,27 @@ pub(crate) fn invoke(alloc: &mut Allocator<Eager>, call: GuardedCall) -> (out: O
         final(alloc).spares() == old(alloc).spares(),
         final(alloc).live() == old(alloc).live(),
         final(alloc).held() == old(alloc).held(),
-        !old(alloc).held() || !call_keeps_source(&old(alloc).src(), call)
-            ==> out == status_only(STATUS_REFUSED),
+        !old(alloc).held() || !call_keeps_source(&old(alloc).src(), call) ==> {
+            &&& out == status_only(STATUS_REFUSED)
+            &&& final(alloc).token() == old(alloc).token()
+        },
+        old(alloc).held() && call_keeps_source(&old(alloc).src(), call) ==> {
+            let pre = old(alloc).token()->0;
+            let post = final(alloc).token()->0;
+            &&& final(alloc).token() is Some
+            &&& post.wf()
+            &&& post.root() == pre.root()
+            &&& post.entry().wf()
+            &&& CapKernel::rely(pre.kernel(), post.entry(), post.root())
+            &&& post.history() == pre.history().push((post.entry(), post.kernel()))
+            &&& pages_kept(pre, post)
+            &&& post.pages_wf()
+            &&& call_contract(post.entry(), post.kernel(), post.root(), call, out)
+        },
 {
+    proof {
+        alloc.lemma_wf();
+    }
     let allowed = check_call(alloc.source(), call);
     if !allowed {
         return status_only_outcome(STATUS_REFUSED);

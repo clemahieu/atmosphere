@@ -13,8 +13,16 @@ use aheap::allocator::Allocator;
 use aheap::arch::*;
 use aheap::heap::{class_for, small_layout};
 use aheap::source::*;
-use verified::capability::operation::{status_only, Outcome, STATUS_REFUSED};
+use verified::capability::block::Large;
+use verified::capability::operation::{
+    status_only, Outcome, RETYPE_FRAME, RETYPE_LARGE_FRAME, STATUS_AGAIN, STATUS_OK, STATUS_REFUSED,
+};
+use verified::capability::inspect::CAP_KIND_FRAME;
+use verified::capability::position::{lemma_position_own, spec_position};
+use verified::capability::retype::FRAME_RIGHTS;
 use verified::capability::table::TABLE_INDICES;
+use verified::capability::zero::level_pages;
+use verified::define::{PAGES_PER_2M, PAGE_SZ};
 use crate::allocator::*;
 use crate::apart::{lemma_other_source_ready, lemma_other_window_unclaimed, process_ready, sources_apart};
 use crate::eager::*;

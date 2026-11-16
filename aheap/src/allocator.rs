@@ -78,6 +78,14 @@ impl<S: SpanSource> Allocator<S> {
         self.token is Some
     }
 
+    /// The authority token currently held by the allocator, if any.
+    pub closed spec fn token(&self) -> Option<S::Token> {
+        match self.token {
+            Some(t) => Some(t@),
+            None => None,
+        }
+    }
+
     /// The number of spare idle blocks kept before returning one to the source.
     pub open spec fn spares(&self) -> nat {
         self.heap().spares()
@@ -95,6 +103,8 @@ impl<S: SpanSource> Allocator<S> {
             self.src_view().wf(),
             self.heap().wf(self.src_view()),
             self.heap().classes().len() == CLASSES,
+            self.held() <==> self.token() is Some,
+            self.token() matches Some(t) ==> self.src_serves(t),
     {
         use_type_invariant(self);
         self.heap.lemma_parts(self.src@);
@@ -108,6 +118,7 @@ impl<S: SpanSource> Allocator<S> {
             src.serves(token@),
         ensures
             r.held(),
+            r.token() == Some(token@),
             r.src() == src,
             r.src_view() == src@,
             r.spares() == spares as nat,
@@ -136,6 +147,7 @@ impl<S: SpanSource> Allocator<S> {
     pub fn alloc(&mut self, size: usize, align: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
         ensures
             final(self).held() == old(self).held(),
+            final(self).token() is Some <==> final(self).held(),
             final(self).spares() == old(self).spares(),
             (!old(self).held() || !(small_layout(size as nat, align as nat) || run_layout(
                 size as nat,
@@ -146,6 +158,7 @@ impl<S: SpanSource> Allocator<S> {
                 &&& final(self).src() == old(self).src()
                 &&& final(self).src_view() == old(self).src_view()
                 &&& final(self).live() == old(self).live()
+                &&& final(self).token() == old(self).token()
             },
             old(self).held() && small_layout(size as nat, align as nat) ==> slot_alloc(
                 old(self).heap(),
@@ -219,6 +232,7 @@ impl<S: SpanSource> Allocator<S> {
             perm@.provenance() == old(self).src_view().provenance,
         ensures
             final(self).held(),
+            final(self).token() is Some,
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
             small_layout(size as nat, align as nat) ==> slot_free(
@@ -264,13 +278,14 @@ impl<S: SpanSource> Allocator<S> {
     pub fn lend(&mut self) -> (r: Option<Tracked<S::Token>>)
         ensures
             !final(self).held(),
+            final(self).token() is None,
             final(self).heap() == old(self).heap(),
             final(self).src() == old(self).src(),
             final(self).src_view() == old(self).src_view(),
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live(),
             old(self).held() <==> r is Some,
-            r matches Some(token) ==> old(self).src_serves(token@),
+            r matches Some(token) ==> Some(token@) == old(self).token() && old(self).src_serves(token@),
     {
         proof {
             use_type_invariant(&*self);
@@ -284,6 +299,7 @@ impl<S: SpanSource> Allocator<S> {
             old(self).src_serves(token@),
         ensures
             final(self).held(),
+            final(self).token() == Some(token@),
             final(self).heap() == old(self).heap(),
             final(self).src() == old(self).src(),
             final(self).src_view() == old(self).src_view(),

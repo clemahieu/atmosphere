@@ -10,8 +10,16 @@ use aheap::allocator::Allocator;
 use aheap::arch::*;
 use aheap::heap::{class_for, small_layout};
 use aheap::source::*;
-use verified::capability::operation::{status_only, Outcome, STATUS_REFUSED};
+use verified::capability::block::Large;
+use verified::capability::operation::{
+    status_only, Outcome, RETYPE_FRAME, RETYPE_LARGE_FRAME, STATUS_AGAIN, STATUS_OK, STATUS_REFUSED,
+};
+use verified::capability::inspect::CAP_KIND_FRAME;
+use verified::capability::position::{lemma_position_own, spec_position};
+use verified::capability::retype::FRAME_RIGHTS;
 use verified::capability::table::TABLE_INDICES;
+use verified::capability::zero::level_pages;
+use verified::define::{PAGES_PER_2M, PAGE_SZ};
 
 use crate::allocator::*;
 use crate::apart::{lemma_other_source_ready, lemma_other_window_unclaimed, process_ready, sources_apart};
@@ -1333,6 +1341,7 @@ pub fn witness_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracked<
     Outcome,
     Outcome,
     bool,
+    Ghost<Caller>,
 ))
     requires
         space < TABLE_INDICES,
@@ -1345,6 +1354,8 @@ pub fn witness_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracked<
         window@.addr + WINDOW_BYTES <= usize::MAX,
     ensures
         r.0.held(),
+        caller_alone(token@, r.4@) ==> r.1.status == STATUS_OK,
+        caller_alone(token@, r.4@) ==> r.1.result_2 == token@.root() as u64,
         r.2 == status_only(STATUS_REFUSED),
 {
     proof {
@@ -1357,9 +1368,19 @@ pub fn witness_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracked<
         unreached()
     };
     let ok = invoke(&mut alloc, GuardedCall::Inspect { at: space });
+    let ghost after_ok = alloc.token()->0;
     proof {
         assert(TABLE_INDICES <= verified::capability::position::POSITION_INDEX_MASK + 1) by (compute);
         verified::capability::position::lemma_position_own(space);
+        if caller_alone(token@, after_ok) {
+            let n = token@.history().len() as int;
+            let added = after_ok.history().skip(n);
+            assert(after_ok.history().take(n) == token@.history());
+            assert(added =~= seq![(after_ok.entry(), after_ok.kernel())]);
+            assert(added.len() == 1);
+            assert(added[0] == (after_ok.entry(), after_ok.kernel()));
+            assert(after_ok.entry() == token@.kernel());
+        }
     }
     let refused = invoke(&mut alloc, GuardedCall::Delete { at: space });
     proof {
@@ -1368,7 +1389,121 @@ pub fn witness_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracked<
         assert(class_for(8, 8) == 0) by (compute);
     }
     let allocated = alloc.alloc(8, 8).is_some();
-    (alloc, ok, refused, allocated)
+    (alloc, ok, refused, allocated, Ghost(after_ok))
+}
+
+/// Bundles an eager source into an `Allocator<Eager>`, begins zeroing a 2M frame from a second
+/// untyped (`STATUS_AGAIN`), retypes a 4K frame from that untyped into a non-source slot
+/// (`STATUS_OK`), and inspects the slot the retype filled (`STATUS_OK`), proving `invoke`
+/// reaches both outcome ways and ties the token's kernel state to the `acall` contract across
+/// successive calls.
+pub fn witness_invoke_ways(
+    space: u64,
+    untyped: u64,
+    window: *mut u8,
+    other_untyped: u64,
+    big_base: u64,
+    big_slot: u64,
+    frame_base: u64,
+    slot: u64,
+    token: Tracked<Caller>,
+) -> (r: (
+    Allocator<Eager>,
+    Outcome,
+    Outcome,
+    Outcome,
+))
+    requires
+        space < TABLE_INDICES,
+        token@.pages_wf(),
+        token@.kernel() == token@.start(),
+        window_tokens_clear(token@, window@.addr),
+        source_ready(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
+        window@.addr != 0,
+        window@.addr as int % REGION_BYTES as int == 0,
+        window@.addr + WINDOW_BYTES <= usize::MAX,
+        other_untyped < TABLE_INDICES,
+        other_untyped != untyped,
+        big_slot < TABLE_INDICES,
+        big_slot != space,
+        big_slot != untyped,
+        big_slot as int > frame_slot(1, (MAX_PAGES - 1) as int),
+        slot < TABLE_INDICES,
+        slot != space,
+        slot != untyped,
+        slot != big_slot,
+        slot as int > frame_slot(1, (MAX_PAGES - 1) as int),
+        token@.kernel().retype_allowed(token@.root(), RETYPE_LARGE_FRAME, other_untyped as usize, big_base as usize, big_slot, 0),
+        !token@.kernel().zeroing.active(Large::Two, big_base as usize / PAGE_SZ / level_pages(Large::Two)),
+        token@.kernel().retype_allowed(token@.root(), RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0),
+        frame_base as usize / PAGE_SZ / PAGES_PER_2M != big_base as usize / PAGE_SZ / PAGES_PER_2M,
+        frame_base <= usize::MAX as u64,
+    ensures
+        r.0.held(),
+        r.0.token() is Some,
+        caller_alone(token@, r.0.token()->0) ==> r.1.status == STATUS_AGAIN,
+        caller_alone(token@, r.0.token()->0) ==> r.2.status == STATUS_OK,
+        caller_alone(token@, r.0.token()->0) ==> r.3.status == STATUS_OK,
+        caller_alone(token@, r.0.token()->0) ==> r.3.result_1 == CAP_KIND_FRAME,
+        caller_alone(token@, r.0.token()->0) ==> r.3.result_2 == frame_base,
+        caller_alone(token@, r.0.token()->0) ==> r.3.result_3 == 0,
+        caller_alone(token@, r.0.token()->0) ==> r.3.result_4 == FRAME_RIGHTS as u64,
+{
+    let ghost tok0 = token@;
+    proof {
+        assert(1int % LEAF_INDICES as int != 0) by (compute);
+        assert(frame_slot(1, (MAX_PAGES - 1) as int) < TABLE_INDICES) by (compute);
+        lemma_source_ready_premises(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
+        lemma_window_unclaimed(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr);
+    }
+    let AllocatorInit::Ready(mut alloc) = new_allocator(token, 0, space, untyped, 0, MAX_PAGES, 1, window) else {
+        unreached()
+    };
+    let ghost tok1 = alloc.token()->0;
+    proof {
+        assert forall|i: int| 0 <= i < MAX_PAGES implies frame_slot(1, i) < big_slot as int && frame_slot(1, i) < slot as int by {
+            if i < MAX_PAGES - 1 {
+                lemma_frame_slot(1, i, (MAX_PAGES - 1) as int);
+            }
+        };
+    }
+    let again = invoke(&mut alloc, GuardedCall::Retype { untyped: other_untyped, kind: RETYPE_LARGE_FRAME, base: big_base, word: big_slot, level: 0 });
+    let ghost tok2 = alloc.token()->0;
+    let retyped = invoke(&mut alloc, GuardedCall::Retype { untyped: other_untyped, kind: RETYPE_FRAME, base: frame_base, word: slot, level: 0 });
+    let ghost tok3 = alloc.token()->0;
+    proof {
+        assert(TABLE_INDICES <= verified::capability::position::POSITION_INDEX_MASK + 1) by (compute);
+        lemma_position_own(slot);
+    }
+    let inspected = invoke(&mut alloc, GuardedCall::Inspect { at: slot });
+    let ghost tok4 = alloc.token()->0;
+    proof {
+        if caller_alone(tok0, tok4) {
+            let n = tok0.history().len() as int;
+            let added = tok4.history().skip(n);
+            assert(tok4.history().take(n) == tok0.history());
+            assert(added =~= seq![
+                (tok2.entry(), tok2.kernel()),
+                (tok3.entry(), tok3.kernel()),
+                (tok4.entry(), tok4.kernel()),
+            ]);
+            assert(added.len() == 3);
+            assert(added[0] == (tok2.entry(), tok2.kernel()));
+            assert(added[1] == (tok3.entry(), tok3.kernel()));
+            assert(added[2] == (tok4.entry(), tok4.kernel()));
+            assert(tok2.entry() == tok0.kernel());
+            assert(tok3.entry() == tok2.kernel());
+            assert(tok4.entry() == tok3.kernel());
+            let r_big = (big_base as usize) / PAGE_SZ / level_pages(Large::Two);
+            let r_frame = (frame_base as usize) / PAGE_SZ / PAGES_PER_2M;
+            assert(level_pages(Large::Two) == PAGES_PER_2M);
+            assert(r_frame != r_big);
+            assert(tok2.kernel().blocks.regions_2m@[r_frame as int] == tok0.kernel().blocks.regions_2m@[r_frame as int]);
+            assert(tok2.kernel().retype_allowed(tok0.root(), RETYPE_FRAME, other_untyped as usize, frame_base as usize, slot, 0));
+            assert(tok3.kernel().inspect_allowed(tok0.root(), spec_position(slot)));
+        }
+    }
+    (alloc, again, retyped, inspected)
 }
 
 } // verus!

@@ -38,6 +38,7 @@ fn finish_allocator(spares: usize, eager: Eager, caller: Tracked<Caller>) -> (r:
         match r {
             AllocatorInit::Ready(alloc) => {
                 &&& alloc.held()
+                &&& alloc.token() == Some(caller@)
                 &&& alloc.spares() == spares as nat
                 &&& alloc.live() == ISet::<int>::empty()
                 &&& alloc.src() == eager
@@ -72,6 +73,14 @@ pub fn new_allocator(
             AllocatorInit::Ready(alloc) => {
                 &&& Eager::new_ok(memory, pages, slots, window)
                 &&& alloc.held()
+                &&& alloc.token() is Some
+                &&& alloc.token()->0.kernel() == caller@.kernel()
+                &&& alloc.token()->0.entry() == caller@.entry()
+                &&& alloc.token()->0.root() == caller@.root()
+                &&& alloc.token()->0.history() == caller@.history()
+                &&& alloc.token()->0.start() == caller@.start()
+                &&& alloc.token()->0.pages_id() == caller@.pages_id()
+                &&& alloc.token()->0.pages_wf()
                 &&& alloc.spares() == spares as nat
                 &&& alloc.live() == ISet::<int>::empty()
                 &&& alloc.src_view().wf()
