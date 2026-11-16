@@ -20,12 +20,12 @@ no issue the tree has are its own. The page has each of the last HOURLY seconds'
 its tokens, and each day before them.
 
 The page has a gauge for each plan meter the loop draws on, as percent used with the time it
-resets. Claude's are the token ledger's newest reading: every model's week and each scoped model's,
-such as Fable's. Gemini's, which agy's carbon models spend, are what `agy -p /usage` prints, asked
-for every USAGE seconds in a thread of its own; agy's group of Claude and GPT models is left out,
-since the loop reaches Claude through Claude Code. A failed ask keeps the gauges of the last one.
-Grok's week is the loop's latest reading of it in logs/loop/state.json (tools/loop.py, which asks
-tools/grok-usage.py), and there is none while no loop has read it.
+resets. Each harness is asked every USAGE seconds in a thread of its own, and a failed ask keeps
+the gauges of the last one: Claude's from tools/claude-usage.py, Gemini's from `agy -p /usage`
+(leaving out agy's group of Claude and GPT models, since the loop reaches Claude through Claude
+Code), and Grok's from tools/grok-usage.py. A meter loop.toml paces under `[meters.<name>]` carries a
+mark where its line stands now, the share of its target the window has reached, as tools/loop.py
+admits sessions against it.
 
 The server follows the tree. The page is read from disk at each request, and the server's own code
 is what the process loaded, so a change landing under a running server would put a new page over
@@ -48,6 +48,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import unittest
 import urllib.error
 import urllib.parse
@@ -68,10 +69,13 @@ RENEW = 2
 # time, so whatever it draws from further back than 31 days is in periods of a day or more.
 HOURLY = 31 * 86400
 LEDGER = Path("logs") / "token-ledger.sqlite"
-LOOP_STATE = Path("logs") / "loop" / "state.json"
+LOOP_CONFIG = Path("loop.toml")
+CLAUDE_USAGE = Path(__file__).resolve().with_name("claude-usage.py")
+GROK_USAGE = Path(__file__).resolve().with_name("grok-usage.py")
 USAGE = 300
 AGY_GROUP = "Gemini Models"
 WINDOWS = {"weekly": "week", "5h": "five hours"}
+METER_WINDOWS = {"week": "week", "five hours": "5h"}
 
 
 def tool(name):
@@ -385,15 +389,24 @@ def progress(issues, spent={}):
     return sorted(rows, key=lambda row: order(row["id"]))
 
 
-def claude_meters(reading):
-    """The gauges of Claude's plan out of a row of the ledger's `readings`: every model's week, then
-    each scoped limit that names a model; none without a reading."""
-    if reading is None:
-        return []
-    fetched, percent, resets_at, scoped = reading
-    gauge = lambda name, percent, resets_at: {"name": name, "window": "week", "percent": percent, "resets": seconds(resets_at), "read": fetched // 1000}
-    return [gauge("Claude", percent, resets_at)] + [
-        gauge(name, limit["percent"], limit["resets_at"]) for name, limit in sorted(json.loads(scoped).items()) if not name.startswith("{")]
+def claude_usage_meters(reply):
+    """The gauges of Claude's plan out of what tools/claude-usage.py printed."""
+    found = json.loads(reply)
+    read_at = int(found["read"])
+    gauges = []
+    for row in found["meters"]:
+        meter = row["meter"]
+        if meter == "claude-week":
+            name, window = "Claude", "week"
+        elif meter == "claude-5h":
+            name, window = "Claude", "five hours"
+        elif meter.startswith("claude-"):
+            name, window = meter.removeprefix("claude-").capitalize(), "week"
+        else:
+            continue
+        resets = int(row["resets_at"]) if row.get("resets_at") is not None else 0
+        gauges.append({"name": name, "window": window, "percent": round(float(row["percent"]), 1), "resets": resets, "read": read_at})
+    return gauges
 
 
 def agy_meters(reply, read):
@@ -405,14 +418,58 @@ def agy_meters(reply, read):
         for group in json.loads(reply)["command"]["data"]["groups"] if group["name"] == AGY_GROUP for bucket in group["buckets"]]
 
 
-def grok_meters(state):
-    """The gauge of Grok's week out of the loop's state file at `state`; none without a reading."""
-    if not state.exists():
-        return []
-    held = json.loads(state.read_text())["meters"].get("grok-week")
-    if not held or held.get("percent") is None:
-        return []
-    return [{"name": "Grok", "window": "week", "percent": round(held["percent"], 1), "resets": int(held["resets_at"]), "read": int(held["read"])}]
+def grok_usage_meters(reply):
+    """The gauge of Grok's week out of what tools/grok-usage.py printed."""
+    found = json.loads(reply)
+    return [{"name": "Grok", "window": "week", "percent": round(float(found["percent"]), 1),
+             "resets": int(found["resets_at"]), "read": int(found["read"])}]
+
+
+def paces(path):
+    """Each meter's (target, window) from [meters.<name>] in loop.toml, or empty when absent or invalid."""
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8")).get("meters")
+    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    found = {}
+    for name, table in raw.items():
+        if not isinstance(table, dict):
+            continue
+        target, window = table.get("target"), table.get("window")
+        if (isinstance(target, (int, float)) and not isinstance(target, bool) and 0 < target <= 100
+                and isinstance(window, (int, float)) and not isinstance(window, bool) and window > 0):
+            found[name] = (float(target), float(window))
+    return found
+
+
+def meter_key(gauge):
+    """The [meters.<name>] key in loop.toml for a plan gauge."""
+    window = METER_WINDOWS.get(gauge["window"], gauge["window"])
+    name = gauge["name"].lower()
+    return f"{name}-{window}" if name in ("claude", "gemini", "grok") else f"claude-{name}"
+
+
+def pace_line(gauge, configured, now):
+    """Where a paced meter's line stands at `now` as a percent, or None when unpaced or reset."""
+    pace = configured.get(meter_key(gauge))
+    if pace is None:
+        return None
+    hours = (gauge["resets"] - now) / 3600
+    if hours <= 0:
+        return None
+    target, window = pace
+    return round(target * min(max(window - hours, 0.0) / window, 1.0), 1)
+
+
+def with_pace(meters, configured, now):
+    """Attach each paced meter's current `line` when its window has not reset since it was read."""
+    out = []
+    for gauge in meters:
+        line = pace_line(gauge, configured, now)
+        out.append({**gauge, "line": line} if line is not None else gauge)
+    return out
 
 
 def summary(issues, ready, seen, running, root, now, own={}, hours=(), meters=()):
@@ -456,14 +513,14 @@ def summary(issues, ready, seen, running, root, now, own={}, hours=(), meters=()
     }
 
 
-def read(root, now, agy=()):
+def read(root, now, claude=(), agy=(), grok=()):
     """Every issue of the tree at this project root, each issue's own tokens, and their summary as it
-    is now, with agy's gauges as last asked for."""
+    is now, with each harness's gauges as last asked for."""
     bd = lambda *arguments: json.loads(subprocess.run(["bd", *arguments, "--json", "--limit", "0"], cwd=root, check=True, capture_output=True, text=True).stdout)
     issues = bd("list", "--all")
     ledger = token_ledger()
     own, hours = ledger.spent(root / LEDGER, now - HOURLY)
-    meters = claude_meters(ledger.newest(root / LEDGER)) + list(agy) + grok_meters(root / LOOP_STATE)
+    meters = with_pace(list(claude) + list(agy) + list(grok), paces(root / LOOP_CONFIG), now)
     return issues, own, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now, own, hours, meters)
 
 
@@ -478,13 +535,15 @@ class Beads:
         self.read_at = 0
         self.tree = ([], {})
         self.held = b""
+        self.claude = []
         self.agy = []
+        self.grok = []
 
     def fresh(self):
         """Read the tree again when what is held is too old; the caller holds the lock."""
         now = time.time()
         if now - self.read_at > AGE:
-            issues, own, found = read(self.root, now, self.agy)
+            issues, own, found = read(self.root, now, self.claude, self.agy, self.grok)
             self.tree = (issues, own)
             self.held = json.dumps(found).encode()
             self.read_at = now
@@ -557,21 +616,20 @@ def harvesting(root, home):
         time.sleep(HARVEST)
 
 
-def ask_agy(beads, root, agy="agy"):
-    """Ask agy for its quota once, and give the server its gauges."""
+def ask_meter(beads, attr, label, command, parse, root, timeout=120):
+    """Ask a usage tool once, and give the server its gauges."""
     try:
-        done = subprocess.run([agy, "-p", "/usage", "--output-format", "json"], cwd=root, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=120, check=True)
-        beads.agy = agy_meters(done.stdout, time.time())
+        done = subprocess.run(command, cwd=root, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, check=True)
+        setattr(beads, attr, parse(done.stdout))
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as failure:
-        # agy is another program: one it lacks, or a reply of a shape this does not know, keeps the last gauges.
-        print(f"agy usage: {failure!r}", file=sys.stderr, flush=True)
+        # A usage tool that lacks a token, or prints a reply of a shape this does not know, keeps the last gauges.
+        print(f"{label} usage: {failure!r}", file=sys.stderr, flush=True)
 
 
-def asking_agy(beads, root):
-    """Ask agy for its quota every USAGE seconds, for as long as the server runs."""
+def asking_usage(beads, attr, label, command, parse, root):
+    """Ask a usage tool every USAGE seconds, for as long as the server runs."""
     while True:
-        ask_agy(beads, root)
+        ask_meter(beads, attr, label, command, parse, root)
         time.sleep(USAGE)
 
 
@@ -583,7 +641,12 @@ def main(arguments):
     root = Path(__file__).resolve().parents[2]
     serving = server(root, options.bind, options.port)
     threading.Thread(target=harvesting, args=(root, Path.home()), daemon=True).start()
-    threading.Thread(target=asking_agy, args=(serving.beads, root), daemon=True).start()
+    for attr, label, command, parse in (
+        ("claude", "claude", [sys.executable, str(CLAUDE_USAGE)], claude_usage_meters),
+        ("agy", "agy", ["agy", "-p", "/usage", "--output-format", "json"], lambda out: agy_meters(out, time.time())),
+        ("grok", "grok", [sys.executable, str(GROK_USAGE)], grok_usage_meters),
+    ):
+        threading.Thread(target=asking_usage, args=(serving.beads, attr, label, command, parse, root), daemon=True).start()
     # The same command again, in this process: the listening socket closes with the old image.
     threading.Thread(target=renewing, args=(WATCHED, lambda: os.execv(sys.executable, [sys.executable, *sys.argv])), daemon=True).start()
     print(f"bead status: http://{options.bind}:{serving.server_address[1]}/", flush=True)
@@ -873,21 +936,45 @@ class Tests(unittest.TestCase):
         with self.assertRaises(KeyError):
             agy_meters('{"status": "SUCCESS"}', 0)
 
-    def test_claudes_gauges_are_the_week_and_each_scoped_model(self):
-        self.assertEqual(claude_meters(None), [])
-        scoped = {"Fable": {"percent": 38, "share": 50, "resets_at": "2026-11-15T05:00:00+00:00"},
-                  '{"model": null, "surface": "desk"}': {"percent": 3, "share": None, "resets_at": "2026-11-15T05:00:00+00:00"}}
-        self.assertEqual(claude_meters((1794562367836, 100, "2026-11-15T04:59:59+00:00", json.dumps(scoped))), [
-            {"name": "Claude", "window": "week", "percent": 100, "resets": seconds("2026-11-15T04:59:59+00:00"), "read": 1794562367},
-            {"name": "Fable", "window": "week", "percent": 38, "resets": seconds("2026-11-15T05:00:00+00:00"), "read": 1794562367}])
+    def test_claudes_gauges_are_each_meter_from_claude_usage(self):
+        reply = json.dumps({"read": 1794562367.8, "meters": [
+            {"meter": "claude-week", "percent": 100, "resets_at": 1794718799.0},
+            {"meter": "claude-5h", "percent": 12.34, "resets_at": 1794570000.0},
+            {"meter": "claude-fable", "percent": 38, "resets_at": 1794718800.0},
+        ]})
+        self.assertEqual(claude_usage_meters(reply), [
+            {"name": "Claude", "window": "week", "percent": 100.0, "resets": 1794718799, "read": 1794562367},
+            {"name": "Claude", "window": "five hours", "percent": 12.3, "resets": 1794570000, "read": 1794562367},
+            {"name": "Fable", "window": "week", "percent": 38.0, "resets": 1794718800, "read": 1794562367}])
 
-    def test_groks_gauge_is_the_loops_latest_reading_of_its_week(self):
-        state = self.root / "state.json"
-        self.assertEqual(grok_meters(state), [])
-        state.write_text(json.dumps({"meters": {"claude-week": {"harness": "claude", "percent": 9, "resets_at": 1, "read": 2}}, "cooldown": {}}))
-        self.assertEqual(grok_meters(state), [])
-        state.write_text(json.dumps({"meters": {"grok-week": {"harness": "grok", "percent": 5.04, "resets_at": 1795136760.0, "read": 1794603906.5, "history": []}}, "cooldown": {}}))
-        self.assertEqual(grok_meters(state), [{"name": "Grok", "window": "week", "percent": 5.0, "resets": 1795136760, "read": 1794603906}])
+    def test_groks_gauge_is_from_grok_usage(self):
+        reply = json.dumps({"plan": "SuperGrok Heavy", "percent": 5.04, "resets_at": 1795136760.0, "read": 1794603906.5})
+        self.assertEqual(grok_usage_meters(reply), [{"name": "Grok", "window": "week", "percent": 5.0, "resets": 1795136760, "read": 1794603906}])
+
+    def test_paced_meters_carry_their_pacing_line_until_reset(self):
+        config = self.root / LOOP_CONFIG
+        self.assertEqual(paces(config), {})
+        config.write_text("[meters.claude-week\n")
+        self.assertEqual(paces(config), {})
+        config.write_text("[meters.claude-week]\ntarget = 95\nwindow = 168\n"
+                          "[meters.claude-fable]\ntarget = 80\nwindow = 168\n"
+                          "[meters.gemini-5h]\ntarget = 90\nwindow = 5\n"
+                          "[meters.bad]\ntarget = 0\nwindow = 5\n")
+        configured = paces(config)
+        self.assertEqual(configured, {"claude-week": (95.0, 168.0), "claude-fable": (80.0, 168.0), "gemini-5h": (90.0, 5.0)})
+        now = 1_000_000
+        gauges = [
+            {"name": "Claude", "window": "week", "percent": 40, "resets": now + 84 * 3600, "read": now},
+            {"name": "Fable", "window": "week", "percent": 10, "resets": now - 1, "read": now - 10},
+            {"name": "Gemini", "window": "five hours", "percent": 50, "resets": now + 3600, "read": now},
+            {"name": "Grok", "window": "week", "percent": 5, "resets": now + 84 * 3600, "read": now},
+        ]
+        self.assertEqual(with_pace(gauges, configured, now), [
+            {"name": "Claude", "window": "week", "percent": 40, "resets": now + 84 * 3600, "read": now, "line": 47.5},
+            {"name": "Fable", "window": "week", "percent": 10, "resets": now - 1, "read": now - 10},
+            {"name": "Gemini", "window": "five hours", "percent": 50, "resets": now + 3600, "read": now, "line": 72.0},
+            {"name": "Grok", "window": "week", "percent": 5, "resets": now + 84 * 3600, "read": now},
+        ])
 
     def test_a_server_asks_agy_for_its_gauges_and_keeps_the_last_through_a_failure(self):
         fake = self.root / "agy"
@@ -895,15 +982,16 @@ class Tests(unittest.TestCase):
         fake.chmod(0o755)
         (self.root / "usage.json").write_text(self.AGY)
         beads = Beads(self.root)
+        parse = lambda out: agy_meters(out, time.time())
         (self.root / "fail").touch()
         with contextlib.redirect_stderr(io.StringIO()) as said:
-            ask_agy(beads, self.root, str(fake))
+            ask_meter(beads, "agy", "agy", [str(fake)], parse, self.root)
             self.assertEqual(beads.agy, [])
             (self.root / "fail").unlink()
-            ask_agy(beads, self.root, str(fake))
+            ask_meter(beads, "agy", "agy", [str(fake)], parse, self.root)
             self.assertEqual([(gauge["window"], gauge["percent"]) for gauge in beads.agy], [("week", 26.3), ("five hours", 23.3)])
             (self.root / "fail").touch()
-            ask_agy(beads, self.root, str(fake))
+            ask_meter(beads, "agy", "agy", [str(fake)], parse, self.root)
             self.assertEqual(len(beads.agy), 2)
         self.assertEqual(said.getvalue().count("agy usage: CalledProcessError"), 2)
 
@@ -986,9 +1074,9 @@ class Tests(unittest.TestCase):
         (self.root / ".claude.json").write_text(json.dumps({"cachedUsageUtilization": {"fetchedAtMs": 5000, "utilization": {
             "seven_day": {"utilization": 97, "resets_at": "2026-11-15T04:59:59+00:00"}, "limits": []}}}))
         token_ledger().harvest(self.root / LEDGER, self.root, self.root)
-        (self.root / LOOP_STATE).parent.mkdir(parents=True)
-        (self.root / LOOP_STATE).write_text(json.dumps({"meters": {"grok-week": {"harness": "grok", "percent": 5, "resets_at": 1795136760, "read": 6}}, "cooldown": {}}))
         address = self.serve(f'case "$1" in list) cat {self.root}/list.json;; ready) echo [];; esac')
+        self.serving.beads.claude = [{"name": "Claude", "window": "week", "percent": 97, "resets": seconds("2026-11-15T04:59:59+00:00"), "read": 5}]
+        self.serving.beads.grok = [{"name": "Grok", "window": "week", "percent": 5, "resets": 1795136760, "read": 6}]
         with urllib.request.urlopen(f"{address}/data") as reply:
             found = json.load(reply)
         self.assertEqual([(row["id"], row["tokens"]) for row in found["tokens"]["roots"]], [("a", [2, 20, 200, 10, 2])])
