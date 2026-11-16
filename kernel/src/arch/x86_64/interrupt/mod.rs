@@ -21,7 +21,8 @@ pub use exception::Exception;
 use exception::EXCEPTION_MAX;
 use idt::Idt;
 use crate::machine;
-use verified::arch::Registers;
+use verified::arch::{serve_flush, FlushServer, Registers};
+use vstd::prelude::Tracked;
 
 /// The first vector after the exceptions. The IDT's interrupt array starts here.
 pub const IRQ_OFFSET: usize = 32;
@@ -300,6 +301,9 @@ unsafe extern "C" fn timer(regs: &mut Registers) {
 
 /// Flush request from another CPU.
 unsafe extern "C" fn flush_ipi(_regs: &mut Registers) {
+    let core = crate::cpu::get_cpu_id();
+    let server: Tracked<&mut FlushServer> = Tracked::assume_new();
+    serve_flush(&crate::lock::FLUSH_BRIDGE, server, core);
     crate::flush::handle_ipi();
     machine::end_of_interrupt();
 }
