@@ -7,12 +7,6 @@
 # that adds one unless --approve names it, as path:operation:way.
 # Fields, separated by tabs: path from the repository root, operation, way.
 #
-amailbox/src/lib.rs	Mailbox::new	returns
-amailbox/src/lib.rs	Producer::write	returns
-amailbox/src/lib.rs	Producer::publish	returns
-amailbox/src/lib.rs	Consumer::read	returns
-amailbox/src/lib.rs	Consumer::observe	true
-amailbox/src/lib.rs	held_apart	returns
 afanin/src/lib.rs	scan	Idle
 afanin/src/lib.rs	scan	Ready
 aeager/src/exercise.rs	exercise	returns

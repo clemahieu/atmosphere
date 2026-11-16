@@ -556,6 +556,8 @@ pub fn held_apart<T>(m: &Mailbox<T>, p: &Producer<T>, c: &Consumer<T>)
 
 } // verus!
 
+#[cfg(refused)]
+mod refused;
 #[cfg(throwaway)]
 pub mod throwaway;
 #[cfg(verus_keep_ghost)]
