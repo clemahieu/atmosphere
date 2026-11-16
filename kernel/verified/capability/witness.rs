@@ -1570,7 +1570,7 @@ impl CapKernel {
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, report, Tracked(&mut steps));
         let ghost s1 = *self;
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
         let ghost s2 = *self;
@@ -1679,7 +1679,7 @@ impl CapKernel {
         }
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, report, Tracked(&mut steps));
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
         let ghost s2 = *self;
         proof {
@@ -1943,7 +1943,7 @@ impl CapKernel {
         }
         // The entry makes its own counter in this one: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let out = self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, Tracked(&mut steps));
+        let out = self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, report, Tracked(&mut steps));
         let ghost s3 = *self;
         proof {
             let mid = choose|mid: Self| #[trigger] Self::dispatched(s2, mid, 0, registers, out)
@@ -2219,7 +2219,7 @@ impl CapKernel {
         }
         // The entry makes its own counter in this one: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, Tracked(&mut steps))
+        self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, report, Tracked(&mut steps))
     }
 
     /// From the state boot leaves, with one frame mapped into the root's own space on core 0 while
@@ -2322,7 +2322,7 @@ impl CapKernel {
         }
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid0 = self.load_space(0, process, Tracked(&mut steps));
+        let pcid0 = self.load_space(0, process, report0, Tracked(&mut steps));
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid0, report0);
         self.enter_boot_thread(0, t);
         let ghost s3 = *self;
@@ -2338,7 +2338,7 @@ impl CapKernel {
             assert(1usize < ID_GENERATION_MAX) by (compute_only);
             assert(1usize != PCID_MAX) by (compute_only);
         }
-        let pcid1 = self.load_space(1, process, Tracked(&mut steps));
+        let pcid1 = self.load_space(1, process, report1, Tracked(&mut steps));
         self.switch_space(1, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid1, report1);
         let ghost s4 = *self;
         let va: u64 = (l4 as u64) * (SIZE_512G as u64);
@@ -2360,7 +2360,7 @@ impl CapKernel {
             assert(crate::capability::operation::spec_operation(registers.operation_number())
                 == Some(crate::capability::operation::Operation::Unmap));
         }
-        self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, Tracked(&mut steps))
+        self.enter(0, registers, bridge, Tracked(flush_requester), |_d: usize| {}, report0, Tracked(&mut steps))
     }
 
     /// From the state boot leaves, core 0 takes the flush IPI's entry: it has acknowledged the
@@ -2390,7 +2390,7 @@ impl CapKernel {
         }
         // The entry makes its own counter in this one: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        self.enter_flush(0, Tracked(&mut steps));
+        self.enter_flush(0, Processor::none(), Tracked(&mut steps));
     }
 
     /// From the state boot leaves, with a second process built at `base` as
@@ -2452,7 +2452,7 @@ impl CapKernel {
         }
         // The steps are the witness's own; no lock bounds them: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, report, Tracked(&mut steps));
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
         let ghost s2 = *self;
         proof {
@@ -2465,7 +2465,7 @@ impl CapKernel {
         }
         // Core 0 loads the second space while its register names the root's: the load starts no
         // new generation.
-        let pcid = self.load_space(0, base, Tracked(&mut steps));
+        let pcid = self.load_space(0, base, report, Tracked(&mut steps));
         let ghost s3 = *self;
         proof {
             assert(s3.cores@[0].current_thread is None);
@@ -2547,7 +2547,7 @@ impl CapKernel {
         }
         // The steps are the witness's own; no lock bounds them: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid = self.load_space(0, base, Tracked(&mut steps));
+        let pcid = self.load_space(0, base, report, Tracked(&mut steps));
         self.switch_space(0, Some(base), base + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
         let ghost s2 = *self;
         proof {
@@ -2579,7 +2579,7 @@ impl CapKernel {
             assert(s4.spaces.records == s1.spaces.records);
         }
         // The core names the root's space, with no thread of it.
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, report, Tracked(&mut steps));
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
         let ghost s5 = *self;
         proof {
@@ -4316,7 +4316,7 @@ impl CapKernel {
             assert(s7.spaces == (Spaces { registers: s7.spaces.registers, ..r7.spaces }));
             assert forall|d: int| 0 <= d < NUM_CPUS && d != 0 implies #[trigger] s7.cores@[d] == r7.cores@[d] by {}
         }
-        let pcid = self.load_space(0, base, Tracked(&mut steps));
+        let pcid = self.load_space(0, base, report, Tracked(&mut steps));
         let ghost m7 = *self;
         self.switch_space(0, Some(base), base + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
         let ghost n7 = *self;
@@ -4391,7 +4391,7 @@ impl CapKernel {
 
         // Core 0 loads the root's space before it takes the retire's flush, as a core entering the root's
         // thread does, and the load leaves the retire of the dead process's space in place.
-        self.load_space(0, process, Tracked(&mut steps));
+        self.load_space(0, process, report, Tracked(&mut steps));
         let ghost j7 = *self;
         proof {
             assert(j7.spaces.loaded@[base] == t7.spaces.loaded@[base]);
@@ -4402,7 +4402,7 @@ impl CapKernel {
         }
 
         // Core 0 flushes every context and acknowledges the retire's epoch.
-        self.acknowledge(0, Tracked(&mut steps));
+        self.acknowledge(0, report, Tracked(&mut steps));
         let ghost a7 = *self;
         proof {
             let f = base / PAGE_SZ;
@@ -10858,7 +10858,7 @@ impl CapKernel {
             let ghost before = *self;
             // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
             let tracked mut steps = Steps::fresh();
-            self.acknowledge(c, Tracked(&mut steps));
+            self.acknowledge(c, Processor::none(), Tracked(&mut steps));
             proof {
                 assert forall|d: int| 0 <= d < c + 1 implies #[trigger] self.acked(d) == pre.flush_epoch by {
                     if d != c {
@@ -12314,7 +12314,7 @@ impl CapKernel {
         // the space's tables say and an unmap there has an acknowledgement to wait for.
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, report, Tracked(&mut steps));
         let ghost sl = *self;
         proof {
             sl.lemma_space_root_aligned(process);
@@ -12698,7 +12698,7 @@ impl CapKernel {
         // there has an acknowledgement to wait for.
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        self.load_space(0, process, Tracked(&mut steps));
+        self.load_space(0, process, Processor::none(), Tracked(&mut steps));
         let ghost s5 = *self;
         proof {
             s5.lemma_loaded_a_space(0);
@@ -13302,7 +13302,7 @@ impl CapKernel {
         // Core 0 loads the root's space, so an unmap there has an acknowledgement to wait for.
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        self.load_space(0, process, Tracked(&mut steps));
+        self.load_space(0, process, Processor::none(), Tracked(&mut steps));
         let ghost s5 = *self;
         let ghost a5 = tree_of(&s5.table_pages, &s5.spaces);
         proof {
@@ -14669,7 +14669,7 @@ impl CapKernel {
 
         // Core 0 loads `process`; Core 1 loads `bp2` (so core 1 does not load `process`).
         let tracked mut steps = Steps::fresh();
-        self.load_space(0, process, Tracked(&mut steps));
+        self.load_space(0, process, Processor::none(), Tracked(&mut steps));
         let ghost s8 = *self;
         proof {
             s8.lemma_loaded_a_space(0);
@@ -14684,7 +14684,7 @@ impl CapKernel {
                 && s8.table_pages == s7.table_pages && s8.spaces.records == s7.spaces.records && s8.spaces.roots == s7.spaces.roots);
         }
         let tracked mut steps = Steps::fresh();
-        self.load_space(1, bp2, Tracked(&mut steps));
+        self.load_space(1, bp2, Processor::none(), Tracked(&mut steps));
         let ghost s9 = *self;
         let ghost a9 = tree_of(&s9.table_pages, &s9.spaces);
         proof {
@@ -15055,7 +15055,7 @@ impl CapKernel {
 
         // Only core 0 acknowledges and present IOMMUs flush; core 1 remains at acked 0.
         let tracked mut steps = Steps::fresh();
-        self.acknowledge(0, Tracked(&mut steps));
+        self.acknowledge(0, Processor::none(), Tracked(&mut steps));
         let ghost s14 = *self;
         proof {
             assert(s14.acked(0) == 2);
@@ -16338,7 +16338,7 @@ impl CapKernel {
         }
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, report, Tracked(&mut steps));
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
         let ghost s2 = *self;
         proof {
@@ -16537,7 +16537,7 @@ impl CapKernel {
         }
         // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, report, Tracked(&mut steps));
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report);
         let ghost s2 = *self;
         proof {
@@ -17169,7 +17169,7 @@ impl CapKernel {
             assert(s3.targeted@[0] == 0 && s3.targeted@[1] == 0);
         }
         let tracked mut steps = Steps::fresh();
-        let _ = self.load_space(0, process, Tracked(&mut steps));
+        let _ = self.load_space(0, process, Processor::none(), Tracked(&mut steps));
         let ghost s3b = *self;
         proof {
             assert(s3b.loaded(0, process));
@@ -17179,7 +17179,7 @@ impl CapKernel {
             assert(s3b.spaces.roots@.contains_key(other));
             assert(s3b.spaces.records@[other].value().kind is Process);
         }
-        let _ = self.load_space(1, other, Tracked(&mut steps));
+        let _ = self.load_space(1, other, Processor::none(), Tracked(&mut steps));
         let ghost s4 = *self;
         proof {
             assert(s4.wf());
@@ -17407,7 +17407,7 @@ impl CapKernel {
 
         // Core 0 acknowledges and every present IOMMU flushes; core 1 stays loaded on `other` with
         // `acked(1) < e` and never acknowledges.
-        self.acknowledge(0, Tracked(&mut steps));
+        self.acknowledge(0, Processor::none(), Tracked(&mut steps));
         self.witness_acknowledge_iommus();
         let ghost sa = *self;
         proof {

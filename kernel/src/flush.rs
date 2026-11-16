@@ -66,7 +66,7 @@ pub fn handle_ipi() {
         kernel.charge(core, arch::cycles());
         let state = kernel.cores.get(core);
         let logged = state.acked_epoch < kernel.flush_epoch && state.current_thread.is_some();
-        kernel.enter_flush(core, Tracked::assume_new());
+        kernel.enter_flush(core, crate::cpu::processor(), Tracked::assume_new());
         if logged {
             log::info!("CPU {} acknowledged flush epoch {}", core, kernel.flush_epoch);
         }
@@ -81,7 +81,7 @@ fn flush_this_core(core: usize) {
     if cost::flushed_as_chosen() {
         return;
     }
-    flush_every_context(Tracked::assume_new(), core);
+    flush_every_context(Tracked::assume_new(), core, crate::cpu::processor());
 }
 
 /// The flush an operation owes, given CapKernel's epoch before it ran, as the mask of cores to send the

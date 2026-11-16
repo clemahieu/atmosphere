@@ -685,7 +685,7 @@ impl CapKernel {
                     assert(s2.cores@[c as int].next_pcid == s1.cores@[c as int].next_pcid);
                     assert(holds_id(s2.cores@, s2.spaces.loaded@, c as int, p) == held);
                 }
-                let pcid = self.load_space(c, p, Tracked(steps));
+                let pcid = self.load_space(c, p, report, Tracked(steps));
                 let ghost s3 = *self;
                 proof {
                     self.lemma_space_root_aligned(p);

@@ -889,7 +889,7 @@ impl CapKernel {
         // Core 0 loads the root's space and enters its thread. Boot holds no lock, so nothing bounds
         // its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let pcid = self.load_space(0, process, report0, Tracked(&mut steps));
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid, report0);
         let ghost s3 = *self;
         proof {

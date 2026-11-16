@@ -51,7 +51,7 @@ use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
 use crate::define::*;
 use crate::pptr::*;
-use crate::arch::{flush_cores, FlushBridge, FlushRequester, FrameKind, Registers, FRAME_WORDS};
+use crate::arch::{flush_cores, FlushBridge, FlushRequester, FrameKind, Processor, Registers, FRAME_WORDS};
 #[cfg(verus_keep_ghost)]
 use crate::arch::{flush_target, flushed, lemma_register_words, lemma_registers_of, register_words, registers_of, user_rip};
 
@@ -2497,6 +2497,7 @@ impl CapKernel {
         bridge: &FlushBridge,
         Tracked(flush_requester): Tracked<&mut FlushRequester>,
         send_ipi: F,
+        report: Processor,
         Tracked(steps): Tracked<&mut Steps>,
     ) -> (ret: Option<Outcome>)
         requires
@@ -2530,7 +2531,7 @@ impl CapKernel {
             mid.lemma_flush_ready(c as int);
         }
         if self.cores.get(c).acked_epoch < self.flush_epoch {
-            self.acknowledge(c, Tracked(steps));
+            self.acknowledge(c, report, Tracked(steps));
         }
         if self.tlb_dirty != 0 {
             let targets = self.tlb_dirty;
@@ -2567,7 +2568,7 @@ impl CapKernel {
     /// Core c's entry for the flush IPI: when core c is behind the flush epoch, its acknowledgement,
     /// which flushes it, and nothing otherwise. The entry makes its one counter in steps, whatever the
     /// caller passed, and holds it to ENTRY_STEPS. design/flush-without-waiting/.
-    pub fn enter_flush(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub fn enter_flush(&mut self, c: usize, report: Processor, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -2586,7 +2587,7 @@ impl CapKernel {
             lemma_revoke_bounds_the_operations();
         }
         if self.cores.get(c).acked_epoch < self.flush_epoch {
-            self.acknowledge(c, Tracked(steps));
+            self.acknowledge(c, report, Tracked(steps));
         } else {
             self.no_op(c);
         }

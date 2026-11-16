@@ -509,19 +509,20 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
     ret
 }
 
-/// Flushes every context on this core: TLBI VMALLE1 drops the stage-1 entries of the EL1&0 regime
-/// with any ASID, global ones too, from every level of the walk, and only on this core, which is the
-/// per-core flush of design/flush-without-waiting/ (Arm ARM C5.5.77). The DSB before it orders this
-/// core's table writes ahead of it, and the DSB and ISB after it complete it for this core's own
-/// translations (D8.17.8). `core` is the core this runs on, whose set in `model` it empties.
 /// Tells the core it is in a spin loop. YIELD is a hint that the thread could yield, and is a NOP hint
 /// instruction, so it ensures nothing.
 // cite: arm-arm B1.5.3 The YIELD instruction
 pub assume_specification[spin_hint]();
 
+/// Flushes every context on this core: TLBI VMALLE1 drops the stage-1 entries of the EL1&0 regime
+/// with any ASID, global ones too, from every level of the walk, and only on this core, which is the
+/// per-core flush of design/flush-without-waiting/ (Arm ARM C5.5.77). The DSB before it orders this
+/// core's table writes ahead of it, and the DSB and ISB after it complete it for this core's own
+/// translations (D8.17.8). `core` is the core this runs on, whose set in `model` it empties. Takes
+/// `report` for a common arch signature (`design/arch-module/`) and does not branch on it.
 // cite: arm-arm C5.5.77 TLBI VMALLE1, TLBI VMALLE1NXS
 // cite: arm-arm D8.17.8 Ordering and completion of TLB maintenance instructions
-pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbModel>, core: usize)
+pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbModel>, core: usize, report: Processor)
     ensures
         final(model).len() == old(model).len(),
         old(model).pieces_wf() ==> final(model).pieces_wf(),
@@ -1624,7 +1625,7 @@ pub fn serve_flush(bridge: &FlushBridge, Tracked(server): Tracked<&mut FlushServ
 
 } // verus!
 
-pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
+pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize, _report: Processor) {
     unsafe {
         core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
     }

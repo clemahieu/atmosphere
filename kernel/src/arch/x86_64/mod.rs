@@ -207,6 +207,11 @@ pub fn log_processor(core: usize, report: verified::arch::Processor) {
         report.l1d_flush() as u8,
         report.specres() as u8,
     );
+    log::info!(
+        "CPU {} every-context flush: {}",
+        core,
+        if report.invpcid() { "invpcid type 2" } else { "cr4.pge" },
+    );
 }
 
 /// The cycle counter: the TSC.

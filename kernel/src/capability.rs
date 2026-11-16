@@ -61,6 +61,7 @@ pub fn dispatch(frame: Registers) -> Option<Outcome> {
             // The single requester token paired with FLUSH_BRIDGE, held by the caller holding CAP_KERNEL.
             Tracked::assume_new(),
             |target| crate::machine::send_ipi(target, crate::machine::FLUSH_VECTOR),
+            crate::cpu::processor(),
             Tracked::assume_new(),
         );
         // A thread that suspended itself leaves the core with an outcome; one that had to leave, with
@@ -299,7 +300,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     // does: design/root-process-at-boot/.
     assert!(kernel.place(process, ROOT_THREAD_SLOT, ROOT_CORE_SLOT, 0), "the root's thread is placed on core 0");
     // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
-    let asid = kernel.load_space(0, process, Tracked::assume_new());
+    let asid = kernel.load_space(0, process, crate::cpu::processor(), Tracked::assume_new());
     // switch_space writes the register of the core it runs on, so its caller passes that core, here CPU
     // 0: design/teardown-driven-by-retype/.
     kernel.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, asid, crate::cpu::processor());

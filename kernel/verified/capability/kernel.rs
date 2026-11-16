@@ -10,7 +10,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::{flush_every_context, invalidate_iommu_all};
-use crate::arch::{BaseRegister, IotlbModel, TlbModel};
+use crate::arch::{BaseRegister, IotlbModel, Processor, TlbModel};
 #[cfg(verus_keep_ghost)]
 use crate::arch::{flush_target, flushed, tag_written, tags_tlb};
 use crate::array::Array;
@@ -3837,7 +3837,7 @@ impl CapKernel {
     /// Core c flushes every context and acknowledges the current epoch. The flush is made here, so no
     /// register load or user code on c comes between it and the acknowledgement, and the flush is what
     /// empties c's TLB model: design/flush-without-waiting/.
-    pub fn acknowledge(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>)
+    pub fn acknowledge(&mut self, c: usize, report: Processor, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -3863,7 +3863,7 @@ impl CapKernel {
         proof {
             self.tlb@.lemma_wf_has(c as int);
         }
-        flush_every_context(Tracked(self.tlb.borrow_mut()), c);
+        flush_every_context(Tracked(self.tlb.borrow_mut()), c, report);
         proof {
             assert(pre.acked(c as int) <= pre.flush_epoch);
         }

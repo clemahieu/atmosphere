@@ -644,18 +644,24 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
     return ret;
 }
 
-/// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
-/// that where a flush of the current PCID would leave entries under the others. `core` is the core this
-/// runs on, whose set in `model` it empties.
 /// Tells the core it is in a spin loop. PAUSE is a hint that architecturally behaves as a NOP, changes
 /// no flag and raises no exception, so it ensures nothing.
 // cite: amd-apm3 3 General-Purpose Instruction Reference, PAUSE
 pub assume_specification[spin_hint]();
 
+/// Flushes every context on this core, all PCIDs and paging-structure caches: where `report.invpcid()`
+/// holds, INVPCID type 2 (with a zero 16-byte descriptor: PCID 0, bits 63:12 zero, VA 0) drops
+/// every entry including global ones for every PCID without touching CR4; where it is clear, toggling
+/// CR4.PGE does the fallback flush of the current PCID, other PCIDs and paging-structure caches.
+/// `core` is the core this runs on, whose set and tags in `model` it empties. That INVPCID type 2
+/// drops all cached upper-level entries rests on EFER.TCE being clear: the glue claim `read_processor`
+/// makes is that each core clears EFER.TCE at boot and no later EFER write sets it again.
+// cite: amd-apm3 4 System Instruction Reference, INVPCID, operation type 2
 // cite: amd-apm2 5.5.1 Process Context Identifier
 // cite: amd-apm2 5.5.3 TLB Management, Implicit Invalidations
 // cite: amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
-pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbModel>, core: usize)
+// cite: amd-apm2 3.1.7 Extended Feature Enable Register (EFER), Translation Cache Extension (TCE) Bit, Bit 15
+pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbModel>, core: usize, report: Processor)
     ensures
         final(model).len() == old(model).len(),
         old(model).pieces_wf() ==> final(model).pieces_wf(),
@@ -1897,17 +1903,30 @@ pub assume_specification[serial_write_byte](byte: u8);
 
 } // verus!
 
-pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
-    unsafe {
-        core::arch::asm!(
-            "mov {cr4}, cr4",
-            "xor {cr4}, {pge}",
-            "mov cr4, {cr4}",
-            "xor {cr4}, {pge}",
-            "mov cr4, {cr4}",
-            cr4 = out(reg) _,
-            pge = const 1 << 7,
-        );
+pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize, report: Processor) {
+    if report.invpcid() {
+        // INVPCID type 2 ignores PCID and VA and rejects non-zero descriptor bits 63:12 with #GP.
+        let descriptor = [0u64; 2];
+        unsafe {
+            core::arch::asm!(
+                "invpcid {kind}, [{descriptor}]",
+                kind = in(reg) 2u64,
+                descriptor = in(reg) &descriptor,
+                options(nostack, preserves_flags),
+            );
+        }
+    } else {
+        unsafe {
+            core::arch::asm!(
+                "mov {cr4}, cr4",
+                "xor {cr4}, {pge}",
+                "mov cr4, {cr4}",
+                "xor {cr4}, {pge}",
+                "mov cr4, {cr4}",
+                cr4 = out(reg) _,
+                pge = const 1 << 7,
+            );
+        }
     }
 }
 

@@ -183,6 +183,7 @@ class Refused(Exception):
 # report holds: design/processor-report-read-once/. Every core of the test guest prints one.
 PROCESSOR_REPORT = re.compile(r"CPU (\d+) report: invpcid ([01]), pcid ([01]), ibpb ([01]), l1d_flush ([01]), "
                               r"specres ([01])(?:\x1b\[0m)?$")
+EVERY_CONTEXT_FLUSH = re.compile(r"CPU (\d+) every-context flush: (invpcid type 2|cr4\.pge)(?:\x1b\[0m)?$")
 PROCESSOR_BITS = ("invpcid", "pcid", "ibpb", "l1d_flush", "specres")
 REPORTING_CORES = (0, 1)
 
@@ -205,6 +206,20 @@ def processor_reports(serial):
     return reports
 
 
+def every_context_flushes(serial):
+    """Each reporting core's every-context flush method, by core; Refused when a core logs it twice."""
+    flushes = {}
+    for line in lines(serial):
+        match = EVERY_CONTEXT_FLUSH.search(line)
+        if match is None:
+            continue
+        core = int(match.group(1))
+        if core in flushes:
+            raise Refused(f"the serial log shows CPU {core} logs every-context flush twice; its report is read once, at boot")
+        flushes[core] = match.group(2)
+    return flushes
+
+
 def cpuinfo_invpcid(path):
     """Whether the host's processor sets CPUID Fn0000_0007 EBX bit 10, which Linux names the flag invpcid
     in its first processor's flags line of `path`."""
@@ -217,6 +232,20 @@ def cpuinfo_invpcid(path):
 def host_invpcid():
     """Whether the host this check runs on, the one the gate boots under KVM on, sets INVPCID."""
     return cpuinfo_invpcid(Path("/proc/cpuinfo"))
+
+
+def every_context_flushes_held(serial, invpcid):
+    """What held of each core's every-context flush line on x86_64, or Refused."""
+    flushes = every_context_flushes(serial)
+    if sorted(flushes) != list(REPORTING_CORES):
+        raise Refused("the serial log does not show one every-context flush line for each of CPU 0 and CPU 1, "
+                      f"but for {', '.join(f'CPU {core}' for core in sorted(flushes)) or 'none'}")
+    expected = "invpcid type 2" if invpcid else "cr4.pge"
+    for core in REPORTING_CORES:
+        if flushes[core] != expected:
+            raise Refused(f"the serial log shows CPU {core} uses every-context flush {flushes[core]}, "
+                          f"and the host's CPUID 7 EBX bit 10 is {int(invpcid)} (expected {expected})")
+    return f"every-context flush {expected} on CPU 0 and CPU 1"
 
 
 def processor_reports_held(serial, arch, invpcid):
@@ -234,10 +263,12 @@ def processor_reports_held(serial, arch, invpcid):
             raise Refused(f"the serial log shows CPU {core} reports invpcid {int(reports[core]['invpcid'])}, "
                           f"and the host's CPUID 7 EBX bit 10 is {int(invpcid)}")
     if arch == "x86_64":
+        flushes = every_context_flushes_held(serial, invpcid)
         return (f"processor reports of CPU 0 and CPU 1, invpcid {int(invpcid)} as the host's CPUID 7 EBX bit 10, "
                 f"pcid {' '.join(str(int(reports[core]['pcid'])) for core in REPORTING_CORES)}, "
                 f"ibpb {' '.join(str(int(reports[core]['ibpb'])) for core in REPORTING_CORES)}, "
-                f"l1d_flush {' '.join(str(int(reports[core]['l1d_flush'])) for core in REPORTING_CORES)}")
+                f"l1d_flush {' '.join(str(int(reports[core]['l1d_flush'])) for core in REPORTING_CORES)}, "
+                f"{flushes}")
     return (f"processor reports of CPU 0 and CPU 1, "
             f"specres {' '.join(str(int(reports[core]['specres'])) for core in REPORTING_CORES)}")
 
@@ -551,7 +582,9 @@ def boot_log():
             "dom0 slot checks held\n"
             "dom0 capability done\n"
             "\x1b[34m INFO CPU 0 report: invpcid 0, pcid 0, ibpb 0, l1d_flush 0, specres 0\x1b[0m\n"
+            "\x1b[34m INFO CPU 0 every-context flush: cr4.pge\x1b[0m\n"
             " INFO CPU 1 report: invpcid 0, pcid 0, ibpb 0, l1d_flush 0, specres 0\n"
+            " INFO CPU 1 every-context flush: cr4.pge\n"
             "\x1b[34m INFO CPU 0 syscall stack 0x1000\x1b[0m\n"
             " INFO CPU 1 idle, syscall stack 0x2000\n"
             "flush IPI acknowledged by CPU 1\n"
@@ -663,13 +696,37 @@ class Tests(unittest.TestCase):
         with self.assertRaises(Refused) as caught:
             boot_log_accepted(log, "x86_64", invpcid=True)
         self.assertIn("CPU 0 reports invpcid 0, and the host's CPUID 7 EBX bit 10 is 1", str(caught.exception))
-        both = log.replace("invpcid 0", "invpcid 1")
+        both = (log.replace("invpcid 0", "invpcid 1")
+                .replace("every-context flush: cr4.pge", "every-context flush: invpcid type 2"))
         self.assertIn("invpcid 1 as the host's", boot_log_accepted(both, "x86_64", invpcid=True))
+        self.assertIn("every-context flush invpcid type 2 on CPU 0 and CPU 1",
+                      boot_log_accepted(both, "x86_64", invpcid=True))
         one = log.replace("CPU 1 report: invpcid 0", "CPU 1 report: invpcid 1")
         self.assertIn("CPU 1 reports invpcid 1, and the host's CPUID 7 EBX bit 10 is 0", self.refused(one))
         self.assertIn("CPU 0 reports specres, which x86_64 never sets",
                       self.refused(log.replace("CPU 0 report: invpcid 0, pcid 0, ibpb 0, l1d_flush 0, specres 0",
                                                "CPU 0 report: invpcid 0, pcid 1, ibpb 0, l1d_flush 0, specres 1")))
+
+    def test_each_core_logs_every_context_flush_matching_host_invpcid(self):
+        log = boot_log()
+        core_1 = " INFO CPU 1 every-context flush: cr4.pge\n"
+        self.assertIn("every-context flush cr4.pge on CPU 0 and CPU 1", boot_log_accepted(log, "x86_64"))
+        self.assertIn("one every-context flush line for each of CPU 0 and CPU 1",
+                      self.refused(log.replace(core_1, "")))
+        self.assertIn("CPU 1 logs every-context flush twice",
+                      self.refused(log.replace(core_1, core_1 + core_1)))
+        self.assertIn("one every-context flush line",
+                      self.refused(log.replace(core_1, core_1.replace("CPU 1", "CPU 2"))))
+        self.assertIn("one every-context flush line",
+                      self.refused(log.replace(core_1, core_1.replace("cr4.pge", "tlbi"))))
+        self.assertIn("CPU 1 uses every-context flush invpcid type 2",
+                      self.refused(log.replace(core_1, " INFO CPU 1 every-context flush: invpcid type 2\n")))
+        both = (log.replace("invpcid 0", "invpcid 1")
+                .replace("every-context flush: cr4.pge", "every-context flush: invpcid type 2"))
+        mismatch = both.replace("CPU 1 every-context flush: invpcid type 2", "CPU 1 every-context flush: cr4.pge")
+        with self.assertRaises(Refused) as caught:
+            boot_log_accepted(mismatch, "x86_64", invpcid=True)
+        self.assertIn("CPU 1 uses every-context flush cr4.pge", str(caught.exception))
 
     def test_aarch64_reports_no_x86_64_bit(self):
         virt = boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
@@ -867,15 +924,17 @@ class Tests(unittest.TestCase):
 
     def test_the_command_reads_standard_input_and_exits_by_the_result(self):
         host = int(cpuinfo_invpcid(Path("/proc/cpuinfo")))
-        passed = self.run_script(["--arch", "x86_64", "-"], boot_log().replace("invpcid 0", f"invpcid {host}"))
+        expected_flush = "invpcid type 2" if host else "cr4.pge"
+        host_log = (boot_log().replace("invpcid 0", f"invpcid {host}")
+                    .replace("every-context flush: cr4.pge", f"every-context flush: {expected_flush}"))
+        passed = self.run_script(["--arch", "x86_64", "-"], host_log)
         self.assertEqual(passed.returncode, 0, passed)
         self.assertTrue(passed.stdout.decode().startswith("exit status 0, the kernel's per-slot lines"), passed)
         failed = self.run_script(["--arch", "aarch64", "-"], boot_log())
         self.assertEqual(failed.returncode, 1, failed)
         self.assertEqual(failed.stdout.decode(),
                          "the serial log does not show the root holding 2 to 3 GiB as one 1G untyped\n")
-        refused = self.run_script(["--arch", "x86_64", "--translation", "-"],
-                                  boot_log().replace("invpcid 0", f"invpcid {host}"))
+        refused = self.run_script(["--arch", "x86_64", "--translation", "-"], host_log)
         self.assertEqual(refused.returncode, 1, refused)
         self.assertIn("translation enabled", refused.stdout.decode())
 

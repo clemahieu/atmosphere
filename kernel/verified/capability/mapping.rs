@@ -248,7 +248,7 @@ impl CapKernel {
     /// generation, which leaves no space's id valid, and a space the register named would keep a tag
     /// a later load could hand to another space, so then the register names no space, or s already.
     /// See design/core-names-a-space-while-running-its-thread/.
-    pub fn load_space(&mut self, c: usize, s: usize, Tracked(steps): Tracked<&mut Steps>) -> (pcid: usize)
+    pub fn load_space(&mut self, c: usize, s: usize, report: Processor, Tracked(steps): Tracked<&mut Steps>) -> (pcid: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -363,7 +363,7 @@ impl CapKernel {
                 reveal(ids_wf);
                 assert(names_wf(pre.cores@[c as int].space, pre.cores@[c as int].generation, pre.spaces.loaded@, c as int));
             }
-            self.fresh_pcid(c, Tracked(steps))
+            self.fresh_pcid(c, report, Tracked(steps))
         };
         let generation = self.cores.get(c).generation;
         let ghost mid = *self;
@@ -662,7 +662,7 @@ impl CapKernel {
     /// Hands out core c's next PCID. Run out, it flushes every context on this core first and starts a
     /// new generation, which leaves no space's id valid here, so then the core's base register names no
     /// space. With PCIDs left it keeps the generation, and the space the register names keeps its id.
-    fn fresh_pcid(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>) -> (p: usize)
+    fn fresh_pcid(&mut self, c: usize, report: Processor, Tracked(steps): Tracked<&mut Steps>) -> (p: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -701,7 +701,7 @@ impl CapKernel {
         }
         let state = *self.cores.get(c);
         if state.next_pcid == PCID_MAX {
-            self.acknowledge(c, Tracked(steps));
+            self.acknowledge(c, report, Tracked(steps));
             let ghost mid = *self;
             let state = *self.cores.get(c);
             self.cores.set(c, CoreState {
