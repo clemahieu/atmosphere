@@ -1937,6 +1937,7 @@ impl CapKernel {
             let mid = choose|mid: Self| #[trigger] Self::dispatched(s2, mid, 0, registers, out)
                 && Self::flushed_step(mid, s3, 0);
             assert(out is Some);
+            assert(s3.tlb_dirty == 0);
             assert(mid.cores == s2.cores);
             assert(s3.cores@[0].current_thread == Some(t));
             assert(s3.cores@[0].since == first);
@@ -2176,6 +2177,7 @@ impl CapKernel {
             ret is Some,
             final(self).wf(),
             final(self).acked(0) == final(self).flush_epoch,
+            final(self).tlb_dirty == 0,
             forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] final(self).tlb@[d] == Set::<TlbEntry>::empty(),
     {
         hide(CapKernel::wf);

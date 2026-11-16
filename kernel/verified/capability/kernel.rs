@@ -2179,7 +2179,8 @@ impl CapKernel {
     }
 
     /// Like `only_core_changed`, except `enter` may also empty other cores' TLB models through
-    /// `flush_cores`, so every surviving entry on any core was already in `pre.tlb`.
+    /// `flush_cores` and clear `tlb_dirty`, so every surviving entry on any core was already in
+    /// `pre.tlb` and `post.tlb_dirty` is 0.
     pub open spec fn flushed_step(pre: Self, post: Self, c: int) -> bool {
         &&& post.list == pre.list
         &&& post.tables == pre.tables
@@ -2201,6 +2202,7 @@ impl CapKernel {
         &&& post.endpoints == pre.endpoints
         &&& post.replies == pre.replies
         &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == 0
         &&& post.cores@[c].current_thread == pre.cores@[c].current_thread
         &&& post.cores@[c].space == pre.cores@[c].space
         &&& post.cores@[c].since == pre.cores@[c].since

@@ -2514,6 +2514,7 @@ impl CapKernel {
             exists|mid: Self| #[trigger] Self::dispatched(*old(self), mid, c as int, frame, ret)
                 && Self::flushed_step(mid, *final(self), c as int),
             final(self).acked(c as int) == final(self).flush_epoch,
+            final(self).tlb_dirty == 0,
             forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] final(self).tlb@[d] == Set::<TlbEntry>::empty(),
             forall|e: TlbEntry| #[trigger] final(self).tlb@[c as int].contains(e) ==> final(self).mapped@.contains(e.page),
     {

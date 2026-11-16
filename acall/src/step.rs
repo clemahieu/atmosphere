@@ -529,11 +529,12 @@ pub open spec fn returned_on(pre: CapKernel, post: CapKernel, root: usize) -> bo
     exists|c: int| 0 <= c < NUM_CPUS && #[trigger] pre.cores@[c].space == Some(root) && returned_clean(post, root, c)
 }
 
-/// Core `c` has the space keyed at `root` loaded in `post`, has acknowledged the flush epoch, and
-/// holds no translation of that space to a page no space maps.
+/// Core `c` has the space keyed at `root` loaded in `post`, has acknowledged the flush epoch,
+/// cleared `tlb_dirty`, and holds no translation of that space to a page no space maps.
 pub open spec fn returned_clean(post: CapKernel, root: usize, c: int) -> bool {
     &&& post.cores@[c].space == Some(root)
     &&& post.acked(c) == post.flush_epoch
+    &&& post.tlb_dirty == 0
     &&& forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post.tlb@[d] == Set::<TlbEntry>::empty()
     &&& forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) && e.space == root ==> post.mapped@.contains(e.page)
 }
@@ -558,6 +559,7 @@ pub proof fn lemma_entered(pre: CapKernel, post: CapKernel, root: usize, frame: 
         entered(pre, post, root, frame, out, c, mid),
     ensures
         returned_on(pre, post, root),
+        post.tlb_dirty == 0,
         forall|t: usize| #[trigger] post.table_view(t) == mid.table_view(t),
 {
     assert(pre.cores@[c].space == Some(root));
