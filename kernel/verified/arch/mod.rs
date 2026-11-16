@@ -10,7 +10,7 @@
 //! which Verus marks external. None is Copy or Clone, so a tracked token is used once. Only the glue
 //! that does what a token attests makes or changes it, but for TlbModel::grow and IotlbModel::grow, by
 //! which proof code may add entries to a model of what a TLB holds, since a model that holds more
-//! claims less.
+//! claims less. The one value here that is not a token is the processor report, `Processor`, below.
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::TlbEntry;
@@ -335,6 +335,99 @@ impl IotlbModel {
             final(self).queued() == old(self).queued(),
     {
         self.held = held;
+    }
+}
+
+/// What one core's processor reports, read once in that core's boot by read_processor and kept in the
+/// core's block: design/processor-report-read-once/. Its fields are private to this module, so a report
+/// with a bit set comes only from that read; code above it builds only `none`, every bit clear, which
+/// selects every fallback. Unlike the tokens above it is Copy: it names a fact of the processor that
+/// does not change, so each caller on the core passes the same bits.
+#[derive(Clone, Copy)]
+pub struct Processor {
+    /// INVPCID is implemented.
+    invpcid: bool,
+    /// The core tags its TLB entries with the PCID its base register is written with.
+    pcid: bool,
+    /// The indirect branch prediction barrier is implemented.
+    ibpb: bool,
+    /// The L1 data cache flush command is implemented.
+    l1d_flush: bool,
+    /// The prediction restriction instructions are implemented.
+    specres: bool,
+}
+
+impl Processor {
+    pub closed spec fn spec_invpcid(self) -> bool {
+        self.invpcid
+    }
+
+    pub closed spec fn spec_pcid(self) -> bool {
+        self.pcid
+    }
+
+    pub closed spec fn spec_ibpb(self) -> bool {
+        self.ibpb
+    }
+
+    pub closed spec fn spec_l1d_flush(self) -> bool {
+        self.l1d_flush
+    }
+
+    pub closed spec fn spec_specres(self) -> bool {
+        self.specres
+    }
+
+    /// The report a core holds before its read: every bit clear.
+    pub const fn none() -> (ret: Processor)
+        ensures
+            !ret.spec_invpcid(),
+            !ret.spec_pcid(),
+            !ret.spec_ibpb(),
+            !ret.spec_l1d_flush(),
+            !ret.spec_specres(),
+    {
+        Processor { invpcid: false, pcid: false, ibpb: false, l1d_flush: false, specres: false }
+    }
+
+    #[verifier(when_used_as_spec(spec_invpcid))]
+    pub fn invpcid(self) -> (ret: bool)
+        ensures
+            ret == self.spec_invpcid(),
+    {
+        self.invpcid
+    }
+
+    #[verifier(when_used_as_spec(spec_pcid))]
+    pub fn pcid(self) -> (ret: bool)
+        ensures
+            ret == self.spec_pcid(),
+    {
+        self.pcid
+    }
+
+    #[verifier(when_used_as_spec(spec_ibpb))]
+    pub fn ibpb(self) -> (ret: bool)
+        ensures
+            ret == self.spec_ibpb(),
+    {
+        self.ibpb
+    }
+
+    #[verifier(when_used_as_spec(spec_l1d_flush))]
+    pub fn l1d_flush(self) -> (ret: bool)
+        ensures
+            ret == self.spec_l1d_flush(),
+    {
+        self.l1d_flush
+    }
+
+    #[verifier(when_used_as_spec(spec_specres))]
+    pub fn specres(self) -> (ret: bool)
+        ensures
+            ret == self.spec_specres(),
+    {
+        self.specres
     }
 }
 

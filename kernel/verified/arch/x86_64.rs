@@ -9,7 +9,7 @@ verus! {
 use crate::capability::kernel::CommandBuffers;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::{CommandBuffer, TlbEntry};
-use crate::arch::{BaseRegister, CoreTlb, IotlbModel, TlbModel};
+use crate::arch::{BaseRegister, CoreTlb, IotlbModel, Processor, TlbModel};
 #[cfg(verus_keep_ghost)]
 use crate::arch::{flushed, tag_written};
 use crate::core_bridge::{ChannelOp, CoreBridge};
@@ -681,6 +681,25 @@ pub uninterp spec fn tags_tlb(core: int) -> bool;
 pub assume_specification[read_cr4](Tracked(register): Tracked<&BaseRegister>) -> (ret: u64)
     ensures
         (ret & (1u64 << 17u64) != 0) == tags_tlb(register.core());
+
+/// Reads what this core's processor reports, once, in the core's boot, and clears this core's EFER.TCE:
+/// design/processor-report-read-once/. `invpcid` is CPUID Fn0000_0007_EBX_x0 bit 10 and `l1d_flush`
+/// Fn0000_0007_EDX_x0 bit 28, where the largest standard function reaches 7; `ibpb` is Fn8000_0008_EBX
+/// bit 12 on a processor whose vendor string is AuthenticAMD and whose largest extended function
+/// reaches 8000_0008h, since that bit is AMD's; `pcid` is CPUID function 1 ECX[PCID], bit 17, where
+/// this core's CR4.PCIDE is also set; `specres` is clear. EFER.TCE, bit 15, is cleared, so INVLPG and
+/// INVPCID remove every upper-level entry cached in the TLB along with their target. Glue claim: each
+/// core runs this in its own init, and no later EFER write sets TCE again.
+// cite: amd-apm3 E.3.1 Function 0h—Maximum Standard Function Number and Vendor String
+// cite: amd-apm3 E.3.6 Function 7h—Structured Extended Feature Identifiers, CPUID Fn0000_0007_EBX_x0 bit 10 INVPCID, CPUID Fn0000_0007_EDX_x0 bit 28 L1D_FLUSH
+// cite: amd-apm3 E.4.1 Function 8000_0000h—Maximum Extended Function Number and Vendor String
+// cite: amd-apm3 E.4.7 Function 8000_0008h—Processor Capacity Parameters and Extended Feature Identification, CPUID Fn8000_0008_EBX bit 12 IBPB
+// cite: amd-apm2 5.5.1 Process Context Identifier
+// cite: amd-apm2 3.1.3 CR4 Register, Processor Context Identifier Enable (PCIDE), Bit 17
+// cite: amd-apm2 3.1.7 Extended Feature Enable Register (EFER), Translation Cache Extension (TCE) Bit, Bit 15
+pub assume_specification[read_processor]() -> (ret: Processor)
+    ensures
+        !ret.specres();
 
 /// Writes `value` to this core's CR3, whose base register `register` is. Bits 62:52 are reserved and
 /// must be zero; where CR4.PCIDE is clear, so are bits 11:5, 2:0 and 63. CR3 then names the table whose
@@ -1935,6 +1954,56 @@ fn read_cr4(_register: Tracked<&BaseRegister>) -> u64 {
         core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
     }
     cr4
+}
+
+/// The CPUID functions and bits read_processor reads: AMD APM 3 appendix E, and for PCID APM 2 5.5.1,
+/// which names the flag, at the bit the loader tests.
+const CPUID_STRUCTURED: u32 = 7;
+const CPUID_INVPCID: u32 = 1 << 10;
+const CPUID_L1D_FLUSH: u32 = 1 << 28;
+const CPUID_FEATURES: u32 = 1;
+const CPUID_PCID: u32 = 1 << 17;
+const CPUID_EXTENDED: u32 = 0x8000_0000;
+const CPUID_CAPACITY: u32 = 0x8000_0008;
+const CPUID_IBPB: u32 = 1 << 12;
+/// "AuthenticAMD" as CPUID Fn0000_0000 returns it in EBX, EDX and ECX.
+const AMD_VENDOR: [u32; 3] = [0x6874_7541, 0x6974_6e65, 0x444d_4163];
+/// CR4.PCIDE.
+const CR4_PCIDE: u64 = 1 << 17;
+/// EFER, MSR C000_0080h, and its TCE bit.
+const EFER: u32 = 0xC000_0080;
+const EFER_TCE: u64 = 1 << 15;
+
+pub fn read_processor() -> Processor {
+    use core::arch::x86_64::{__cpuid, __cpuid_count};
+    unsafe {
+        let standard = __cpuid(0);
+        let (invpcid, l1d_flush) = if standard.eax >= CPUID_STRUCTURED {
+            let structured = __cpuid_count(CPUID_STRUCTURED, 0);
+            (structured.ebx & CPUID_INVPCID != 0, structured.edx & CPUID_L1D_FLUSH != 0)
+        } else {
+            (false, false)
+        };
+        let amd = [standard.ebx, standard.edx, standard.ecx] == AMD_VENDOR;
+        let ibpb = amd && __cpuid(CPUID_EXTENDED).eax >= CPUID_CAPACITY && __cpuid(CPUID_CAPACITY).ebx & CPUID_IBPB != 0;
+        let cr4: u64;
+        core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
+        let pcid = __cpuid(CPUID_FEATURES).ecx & CPUID_PCID != 0 && cr4 & CR4_PCIDE != 0;
+        let (low, high): (u32, u32);
+        core::arch::asm!("rdmsr", in("ecx") EFER, out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags));
+        let efer = (high as u64) << 32 | low as u64;
+        if efer & EFER_TCE != 0 {
+            let efer = efer & !EFER_TCE;
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") EFER,
+                in("eax") efer as u32,
+                in("edx") (efer >> 32) as u32,
+                options(nostack, preserves_flags),
+            );
+        }
+        Processor { invpcid, pcid, ibpb, l1d_flush, specres: false }
+    }
 }
 
 fn write_cr3(_register: Tracked<&mut BaseRegister>, _model: Tracked<&mut TlbModel>, value: usize) {

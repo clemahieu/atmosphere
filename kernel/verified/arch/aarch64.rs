@@ -12,7 +12,7 @@ verus! {
 use crate::capability::kernel::CommandBuffers;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::{CommandBuffer, TlbEntry};
-use crate::arch::{BaseRegister, IotlbModel, TlbModel};
+use crate::arch::{BaseRegister, IotlbModel, Processor, TlbModel};
 #[cfg(verus_keep_ghost)]
 use crate::arch::{flushed, tag_written};
 #[cfg(verus_keep_ghost)]
@@ -538,6 +538,17 @@ pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbMo
 pub open spec fn tags_tlb(core: int) -> bool {
     true
 }
+
+/// Reads what this core's processor reports, once, in the core's boot: design/processor-report-read-once/.
+/// `specres` is ID_AA64ISAR1_EL1.SPECRES, bits 43:40, at 0b0001 or above, where the CFP, DVP and CPP
+/// RCTX instructions are implemented. The x86_64 bits are clear.
+// cite: arm-arm D24.2.84 ID_AA64ISAR1_EL1, AArch64 Instruction Set Attribute Register 1, SPECRES, bits [43:40]
+pub assume_specification[read_processor]() -> (ret: Processor)
+    ensures
+        !ret.invpcid(),
+        !ret.pcid(),
+        !ret.ibpb(),
+        !ret.l1d_flush();
 
 /// Writes `value` to this core's TTBR0_EL1, whose base register `register` is, then synchronises the
 /// context with an ISB. Bits 47:12 of `value` are the base of the table whose top level the walks from
@@ -1637,6 +1648,19 @@ pub fn serial_write_byte(byte: u8) {
             options(nostack, preserves_flags),
         );
     }
+}
+
+/// ID_AA64ISAR1_EL1.SPECRES, bits 43:40. Arm ARM D24.2.84.
+const SPECRES_SHIFT: u32 = 40;
+const SPECRES_MASK: u64 = 0b1111;
+
+pub fn read_processor() -> Processor {
+    let features: u64;
+    unsafe {
+        core::arch::asm!("mrs {features}, ID_AA64ISAR1_EL1", features = out(reg) features, options(nomem, nostack, preserves_flags));
+    }
+    let specres = (features >> SPECRES_SHIFT) & SPECRES_MASK != 0;
+    Processor { invpcid: false, pcid: false, ibpb: false, l1d_flush: false, specres }
 }
 
 fn write_ttbr0(_register: Tracked<&mut BaseRegister>, _model: Tracked<&mut TlbModel>, value: usize) {

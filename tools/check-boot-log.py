@@ -7,6 +7,9 @@ The log shows, in order, the kernel's line for each of the root's fixed slots wi
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
 line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line and the segments line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+Each of CPU 0 and CPU 1 prints its processor report once; on x86_64 its invpcid bit is the host's, CPUID
+Fn0000_0007 EBX bit 10 as /proc/cpuinfo's invpcid flag gives it, which the output records, and its specres bit
+is clear; on aarch64 its x86_64 bits are clear.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
 usage: tools/check-boot-log.py --arch x86_64|aarch64 [--translation] <serial-log | ->
@@ -18,7 +21,9 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -174,6 +179,69 @@ class Refused(Exception):
     """A check the log does not pass."""
 
 
+# The line each core's kernel prints once it read its processor report in its own init, with each bit the
+# report holds: design/processor-report-read-once/. Every core of the test guest prints one.
+PROCESSOR_REPORT = re.compile(r"CPU (\d+) report: invpcid ([01]), pcid ([01]), ibpb ([01]), l1d_flush ([01]), "
+                              r"specres ([01])(?:\x1b\[0m)?$")
+PROCESSOR_BITS = ("invpcid", "pcid", "ibpb", "l1d_flush", "specres")
+REPORTING_CORES = (0, 1)
+
+# The bits a report on each architecture never sets: the x86_64 read leaves specres clear and the aarch64
+# read leaves every x86_64 bit clear.
+NEVER_SET = {"x86_64": ("specres",), "aarch64": ("invpcid", "pcid", "ibpb", "l1d_flush")}
+
+
+def processor_reports(serial):
+    """Each reporting core's bits, by core; Refused when a core reports twice."""
+    reports = {}
+    for line in lines(serial):
+        match = PROCESSOR_REPORT.search(line)
+        if match is None:
+            continue
+        core = int(match.group(1))
+        if core in reports:
+            raise Refused(f"the serial log shows CPU {core} reports twice; its report is read once, at boot")
+        reports[core] = {bit: match.group(2 + at) == "1" for at, bit in enumerate(PROCESSOR_BITS)}
+    return reports
+
+
+def cpuinfo_invpcid(path):
+    """Whether the host's processor sets CPUID Fn0000_0007 EBX bit 10, which Linux names the flag invpcid
+    in its first processor's flags line of `path`."""
+    for line in path.read_text().splitlines():
+        if line.startswith("flags"):
+            return "invpcid" in line.split(":", 1)[1].split()
+    raise Refused(f"{path} has no flags line to read the host's invpcid from")
+
+
+def host_invpcid():
+    """Whether the host this check runs on, the one the gate boots under KVM on, sets INVPCID."""
+    return cpuinfo_invpcid(Path("/proc/cpuinfo"))
+
+
+def processor_reports_held(serial, arch, invpcid):
+    """What held of the cores' processor reports on `arch`, or Refused. On x86_64 each core's invpcid
+    bit is `invpcid`, the host's."""
+    reports = processor_reports(serial)
+    if sorted(reports) != list(REPORTING_CORES):
+        raise Refused("the serial log does not show one processor report for each of CPU 0 and CPU 1, "
+                      f"but for {', '.join(f'CPU {core}' for core in sorted(reports)) or 'none'}")
+    for core in REPORTING_CORES:
+        for bit in NEVER_SET[arch]:
+            if reports[core][bit]:
+                raise Refused(f"the serial log shows CPU {core} reports {bit}, which {arch} never sets")
+        if arch == "x86_64" and reports[core]["invpcid"] != invpcid:
+            raise Refused(f"the serial log shows CPU {core} reports invpcid {int(reports[core]['invpcid'])}, "
+                          f"and the host's CPUID 7 EBX bit 10 is {int(invpcid)}")
+    if arch == "x86_64":
+        return (f"processor reports of CPU 0 and CPU 1, invpcid {int(invpcid)} as the host's CPUID 7 EBX bit 10, "
+                f"pcid {' '.join(str(int(reports[core]['pcid'])) for core in REPORTING_CORES)}, "
+                f"ibpb {' '.join(str(int(reports[core]['ibpb'])) for core in REPORTING_CORES)}, "
+                f"l1d_flush {' '.join(str(int(reports[core]['l1d_flush'])) for core in REPORTING_CORES)}")
+    return (f"processor reports of CPU 0 and CPU 1, "
+            f"specres {' '.join(str(int(reports[core]['specres'])) for core in REPORTING_CORES)}")
+
+
 def lines(text):
     """The log's lines, each without its line ending, as the kernel and dom0 print them."""
     pieces = text.split("\n")
@@ -321,8 +389,9 @@ def perftest_results_accepted(serial):
     return data
 
 
-def boot_log_accepted(serial, arch, translation=False, bench=False):
-    """What held of a successful boot's log on `arch`, or Refused naming the first check that failed."""
+def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None):
+    """What held of a successful boot's log on `arch`, or Refused naming the first check that failed.
+    `invpcid` is the host's INVPCID bit, read from it when None."""
     untyped, frames = fixed_slots_printed(serial)
     base = FREE_GIGABYTE[arch]
     gigabyte = f"{base >> 30} to {(base >> 30) + 1} GiB as one 1G untyped"
@@ -391,11 +460,12 @@ def boot_log_accepted(serial, arch, translation=False, bench=False):
         raise Refused("the serial log does not show CPU 1 acknowledging a flush IPI")
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
+    reports = processor_reports_held(serial, arch, host_invpcid() if invpcid is None and arch == "x86_64" else invpcid)
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
             f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
             f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, ' if arch == 'x86_64' else ''}syscall registers line, preemption registers line, context switch registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
-            f"a flush IPI acknowledged, the lock contended")
+            f"a flush IPI acknowledged, the lock contended, {reports}")
     if translation:
         if TRANSLATION_ENABLED not in serial:
             raise Refused("the serial log does not show the IOMMU's translation enabled")
@@ -480,6 +550,8 @@ def boot_log():
             "dom0 heap allocator held\n"
             "dom0 slot checks held\n"
             "dom0 capability done\n"
+            "\x1b[34m INFO CPU 0 report: invpcid 0, pcid 0, ibpb 0, l1d_flush 0, specres 0\x1b[0m\n"
+            " INFO CPU 1 report: invpcid 0, pcid 0, ibpb 0, l1d_flush 0, specres 0\n"
             "\x1b[34m INFO CPU 0 syscall stack 0x1000\x1b[0m\n"
             " INFO CPU 1 idle, syscall stack 0x2000\n"
             "flush IPI acknowledged by CPU 1\n"
@@ -487,6 +559,12 @@ def boot_log():
 
 
 class Tests(unittest.TestCase):
+    def setUp(self):
+        # The fixture's cores report no INVPCID, so the host the tests run on is taken not to either.
+        patcher = unittest.mock.patch.object(sys.modules[__name__], "host_invpcid", lambda: False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def refused(self, serial, arch="x86_64", translation=False):
         with self.assertRaises(Refused) as caught:
             boot_log_accepted(serial, arch, translation)
@@ -566,6 +644,51 @@ class Tests(unittest.TestCase):
         self.assertIn("preemption registers line", boot_log_accepted(virt, "aarch64"))
         self.assertIn("across an invocation", self.refused(virt.replace("dom0 syscall registers held\n", ""), "aarch64"))
         self.assertIn("across a preemption", self.refused(virt.replace("dom0 preemption registers held\n", ""), "aarch64"))
+
+    def test_each_core_reports_once(self):
+        log = boot_log()
+        core_1 = " INFO CPU 1 report: invpcid 0, pcid 0, ibpb 0, l1d_flush 0, specres 0\n"
+        self.assertIn(core_1, log)
+        self.assertIn("one processor report for each of CPU 0 and CPU 1", self.refused(log.replace(core_1, "")))
+        self.assertIn("CPU 1 reports twice", self.refused(log.replace(core_1, core_1 + core_1)))
+        self.assertIn("one processor report", self.refused(log.replace(core_1, core_1.replace("CPU 1", "CPU 2"))))
+        self.assertIn("one processor report", self.refused(log.replace(core_1, core_1.replace("specres 0", "specres"))))
+        self.assertEqual(processor_reports(core_1), {1: {"invpcid": False, "pcid": False, "ibpb": False,
+                                                         "l1d_flush": False, "specres": False}})
+
+    def test_invpcid_is_the_host_s_on_x86_64(self):
+        log = boot_log()
+        self.assertIn("processor reports of CPU 0 and CPU 1, invpcid 0 as the host's CPUID 7 EBX bit 10",
+                      boot_log_accepted(log, "x86_64"))
+        with self.assertRaises(Refused) as caught:
+            boot_log_accepted(log, "x86_64", invpcid=True)
+        self.assertIn("CPU 0 reports invpcid 0, and the host's CPUID 7 EBX bit 10 is 1", str(caught.exception))
+        both = log.replace("invpcid 0", "invpcid 1")
+        self.assertIn("invpcid 1 as the host's", boot_log_accepted(both, "x86_64", invpcid=True))
+        one = log.replace("CPU 1 report: invpcid 0", "CPU 1 report: invpcid 1")
+        self.assertIn("CPU 1 reports invpcid 1, and the host's CPUID 7 EBX bit 10 is 0", self.refused(one))
+        self.assertIn("CPU 0 reports specres, which x86_64 never sets",
+                      self.refused(log.replace("CPU 0 report: invpcid 0, pcid 0, ibpb 0, l1d_flush 0, specres 0",
+                                               "CPU 0 report: invpcid 0, pcid 1, ibpb 0, l1d_flush 0, specres 1")))
+
+    def test_aarch64_reports_no_x86_64_bit(self):
+        virt = boot_log().replace("base 0x40000000 order 18", "base 0x80000000 order 18")
+        self.assertIn("processor reports of CPU 0 and CPU 1, specres 0 0", boot_log_accepted(virt, "aarch64"))
+        self.assertIn("specres 1 1", boot_log_accepted(virt.replace("specres 0", "specres 1"), "aarch64"))
+        for bit in ("invpcid", "pcid", "ibpb", "l1d_flush"):
+            self.assertIn(f"CPU 0 reports {bit}, which aarch64 never sets",
+                          self.refused(virt.replace(f" {bit} 0,", f" {bit} 1,", 1), "aarch64"))
+
+    def test_the_host_s_invpcid_is_its_cpuinfo_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cpuinfo = Path(directory) / "cpuinfo"
+            cpuinfo.write_text("processor\t: 0\nflags\t\t: fpu pcid invpcid_single\n\nprocessor\t: 1\n")
+            self.assertFalse(cpuinfo_invpcid(cpuinfo))
+            cpuinfo.write_text("flags\t\t: fpu pcid invpcid erms\n")
+            self.assertTrue(cpuinfo_invpcid(cpuinfo))
+            cpuinfo.write_text("processor\t: 0\n")
+            with self.assertRaises(Refused):
+                cpuinfo_invpcid(cpuinfo)
 
     def test_the_eager_line_names_forty_pages(self):
         self.assertIn("eager source", self.refused(boot_log().replace("backed 40\n", "backed 39\n")))
@@ -743,14 +866,16 @@ class Tests(unittest.TestCase):
                               capture_output=True)
 
     def test_the_command_reads_standard_input_and_exits_by_the_result(self):
-        passed = self.run_script(["--arch", "x86_64", "-"], boot_log())
+        host = int(cpuinfo_invpcid(Path("/proc/cpuinfo")))
+        passed = self.run_script(["--arch", "x86_64", "-"], boot_log().replace("invpcid 0", f"invpcid {host}"))
         self.assertEqual(passed.returncode, 0, passed)
         self.assertTrue(passed.stdout.decode().startswith("exit status 0, the kernel's per-slot lines"), passed)
         failed = self.run_script(["--arch", "aarch64", "-"], boot_log())
         self.assertEqual(failed.returncode, 1, failed)
         self.assertEqual(failed.stdout.decode(),
                          "the serial log does not show the root holding 2 to 3 GiB as one 1G untyped\n")
-        refused = self.run_script(["--arch", "x86_64", "--translation", "-"], boot_log())
+        refused = self.run_script(["--arch", "x86_64", "--translation", "-"],
+                                  boot_log().replace("invpcid 0", f"invpcid {host}"))
         self.assertEqual(refused.returncode, 1, refused)
         self.assertIn("translation enabled", refused.stdout.decode())
 

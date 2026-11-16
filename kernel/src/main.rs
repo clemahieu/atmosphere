@@ -50,6 +50,7 @@ extern "C" fn main(boot_info: *const BootInfo) -> isize {
 
         cpu::init_cpu(0); // Now get_current() can be used
         arch::init_boot_core();
+        cpu::read_processor();
     }
 
     boot_cpu0(boot_info)
@@ -153,6 +154,7 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     unsafe {
         cpu::init_cpu(cpu_id as usize);
         arch::init_core();
+        cpu::read_processor();
         arch::write_protect::check();
     }
 

@@ -192,6 +192,20 @@ const _: () = assert!(translation_control(u64::MAX, false) == !(1 << 22 | 1 << 3
 const _: () = assert!(translation_control(0x18280903510, true) == 0x19280903510);
 const _: () = assert!(translation_control(0x18280903510, false) == 0x1280903510);
 
+/// Logs what this core's processor reports, one line for the core with every bit of the report by its
+/// name, the line the boot checks read: design/processor-report-read-once/.
+pub fn log_processor(core: usize, report: verified::arch::Processor) {
+    log::info!(
+        "CPU {} report: invpcid {}, pcid {}, ibpb {}, l1d_flush {}, specres {}",
+        core,
+        report.invpcid() as u8,
+        report.pcid() as u8,
+        report.ibpb() as u8,
+        report.l1d_flush() as u8,
+        report.specres() as u8,
+    );
+}
+
 /// Takes the arch module's command-line keys: `access_dirty=fault`, which has the kernel's faults
 /// keep the access flag and the dirty state in place of the walker from here on. The command line is
 /// read on the boot core before any other core starts, so this core's translation control is set

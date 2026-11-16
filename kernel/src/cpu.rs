@@ -10,7 +10,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::arch;
-use verified::arch::Registers;
+use verified::arch::{Processor, Registers};
 
 const NEW_CPU: Cpu = Cpu::new();
 
@@ -62,6 +62,9 @@ pub struct Cpu {
     /// Whether this core armed its tick, so that the timer's interrupt runs the selection
     /// (`schedule::arm_tick`).
     pub ticking: bool,
+    /// What this core's processor reports, every bit clear until [`read_processor`] reads it.
+    /// design/processor-report-read-once/.
+    processor: Processor,
 }
 
 /// A stack with its guard page under it. The guard is a page of its own, which [`guard_stacks`]
@@ -114,6 +117,7 @@ impl Cpu {
             syscall_stack: Stack::new(),
             syscall_sp: 0,
             ticking: false,
+            processor: Processor::none(),
         }
     }
 }
@@ -154,6 +158,15 @@ pub unsafe fn init_cpu(cpu_id: usize) {
     cpu.syscall_sp = cpu.syscall_stack.bottom() as u64;
 
     arch::set_core_pointer(address);
+}
+
+/// Reads what this core's processor reports into its block and logs it, one line for the core. Once on
+/// each core, in its own init, after the control registers are in the state the core boots with, and
+/// before any flush that reads the report. design/processor-report-read-once/.
+pub unsafe fn read_processor() {
+    let cpu = get_current();
+    cpu.processor = verified::arch::read_processor();
+    arch::log_processor(cpu.id, cpu.processor);
 }
 
 /// Spins until `done`. Whether it spins at all depends on how far another core has got, so the loop

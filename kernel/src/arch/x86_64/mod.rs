@@ -195,6 +195,20 @@ pub fn set_option(key: &str, value: &str) -> bool {
     false
 }
 
+/// Logs what this core's processor reports, one line for the core with every bit of the report by its
+/// name, the line the boot checks read: design/processor-report-read-once/.
+pub fn log_processor(core: usize, report: verified::arch::Processor) {
+    log::info!(
+        "CPU {} report: invpcid {}, pcid {}, ibpb {}, l1d_flush {}, specres {}",
+        core,
+        report.invpcid() as u8,
+        report.pcid() as u8,
+        report.ibpb() as u8,
+        report.l1d_flush() as u8,
+        report.specres() as u8,
+    );
+}
+
 /// The cycle counter: the TSC.
 pub fn cycles() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
