@@ -2618,9 +2618,11 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     // success.
     let process_off = operation::power_off(operation::ROOT_PROCESS_SLOT, false);
     let console_off = operation::power_off(operation::ROOT_CONSOLE_SLOT, false);
-    // dom0 is not verified, so it mints the caller token its calls start from, which erases here: the
-    // kernel's proof that each of its steps keeps its state well formed is what stands behind it. It
-    // is the process's one token: astd keeps it for the heap's source and lends it to dom0's calls.
+    // dom0 is not verified, so it mints the caller token its calls start from, which erases here. It
+    // stands for the kernel's state only while the process takes no kernel step outside acall, and
+    // dom0's raw maps and unmaps of its own space are such steps, so nothing vouches for it: its line
+    // in tools/boundary-list is debt. It is the process's one token: astd keeps it for the heap's
+    // source and lends it to dom0's calls.
     astd::heap::keep_caller(Tracked::<Caller>::assume_new());
     let slots_held = process == operation::STATUS_REFUSED
         && process_off == operation::STATUS_REFUSED
