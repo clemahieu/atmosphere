@@ -1,6 +1,6 @@
 ---
 title: "Every way an operation succeeds is listed, and a witness's ensures claims it"
-date: 2026-11-14
+date: 2026-11-16
 status: active
 tags: [verified, witness, gate, tools]
 one_line: "The inventory's unit is an operation and one value of its result type that is not a refusal. Operations are found from the source, by what the entry calls and by visibility, and the verified crates from their Cargo.toml marker, not from a list. A witness is of the model's operation and claims an outcome in its ensures, over a returned value every binding of which is a call of that operation; the entry is covered by one witness and one proof per wired operation. A throwaway is a function in the tree behind a cfg, calling the witness and claiming false, one module each, and a gate step expects each to fail. What has no witness is a list in the tree that the gate holds equal to the inventory and that only the human lengthens."
@@ -33,7 +33,7 @@ The last row is for a type that cannot say a refusal, `()` above all. An operati
 
 A step of an operation that is not one itself is `pub(crate)` or private, which rustc holds: the glue is another crate and cannot call it.
 
-The verified user crates are found the same way: every workspace member whose `Cargo.toml` says `[package.metadata.atmosphere] verified = true`, other than `kernel/verified` and acall, read from the directory of its library root. Today that is adivider, aeager, afanin, aheap, amailbox, aring and pager-policy. A user crate's operations are its `pub fn` exec items, and the exec functions of a trait it implements for a type it declares, by the same rule. pager-policy holds only the specifications and proofs of the S3-FIFO policy the pager library implements, so it has no operation and yields no line. Witness and throwaway modules hold no operation.
+The verified user crates are found the same way: every workspace member whose `Cargo.toml` says `[package.metadata.atmosphere] verified = true`, other than `kernel/verified` and acall, read from the directory of its library root. Today that is adivider, aeager, afanin, aheap, amailbox, aring and pager-policy. A user crate's operations are its `pub fn` exec items, and the exec functions of a trait it implements for a type it declares, by the same rule. pager-policy holds only the specifications and proofs of the S3-FIFO policy the pager library implements, so it has no operation and yields no line. Witness and throwaway modules hold no operation. An in-image boot check, a verified script dom0 runs and judges, holds no operation. It is a file named `bootcheck.rs` or a directory named `bootcheck`.
 
 The rest of `kernel/verified`, outside `capability`:
 

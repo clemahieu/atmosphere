@@ -31,7 +31,7 @@ use crate::apart::{
     sources_apart,
 };
 use crate::eager::*;
-use crate::exercise::*;
+use crate::bootcheck::*;
 use crate::glue::{
     AcallStep, acall_ok, acall_steps, flush_room, lemma_acall_ok_append, lemma_acall_refused_after_ok,
     lemma_acall_steps_append, lemma_acall_steps_claimed, lemma_caller_alone_split, lemma_source_ready_premises,

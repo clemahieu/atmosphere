@@ -1,11 +1,11 @@
 ---
 title: "Each way an operation succeeds carries a refused claim of the form for its kind, and a way whose specification admits an unchanged component is exempt"
-date: 2026-11-15
+date: 2026-11-16
 status: active
 tags: [verified, witness, gate, tools]
 one_line: "A state change and an again are refused by an unchanged component meeting the way's postcondition, a query by a result other than the one the state gives, and a pure function by a wrong output, as the round trip does. A way whose specification admits the unchanged component is exempt, quoted from that arm. A claim names the inventory lines it covers; the ways with neither a claim nor an exemption are a list in the tree that only the human lengthens. An entry line is covered by the operations it reaches."
 revisit_if: "A claim the table calls a state change verifies, because the specification admits an unchanged component for that way; or the refused step, once the ways have claims, costs more than the verify step it runs beside; or an empty proof whose ensures the requires meet is no longer refused by Verus."
-confidence: "The placement of today's 190 lines was checked against tools/witness-inventory.py on c9fb16bad228. That a refused postcondition shows the ensures says enough is Verus's. Which form a kind takes, and which ways are exempt, is judgement, argued below. The cost is measured for the one claim the tree holds."
+confidence: "The placement of the rows was checked against tools/witness-inventory.py on c9fb16bad228. An in-image boot check is not a row. That a refused postcondition shows the ensures says enough is Verus's. Which form a kind takes, and which ways are exempt, is judgement, argued below. The cost is measured for the one claim the tree holds."
 ---
 
 # Each way an operation succeeds carries a refused claim of the form for its kind
@@ -63,7 +63,7 @@ The three fields are the inventory's, separated by tabs. A line is covered when 
 
 ## Where today's lines fall
 
-`tools/witness-inventory.py` on `c9fb16bad228` prints 190 lines. Each is one row. 19 entry, 3 exempt, 3 again, 17 query, 76 pure, 72 state change.
+The rows are 19 entry, 3 exempt, 3 again, 17 query, 76 pure and 70 state change. An in-image boot check is not a row (design/witness-per-way-an-operation-succeeds/).
 
 **Entry, 19.** The 17 acall lines, each of which names an operation. `kernel/verified/capability/operation.rs` `dispatch` `Some` and `enter` `Some`.
 
@@ -112,7 +112,7 @@ The three fields are the inventory's, separated by tabs. A line is covered when 
 
 `new_allocator`'s `Ready` ensures `Eager::new_ok` and the fields of the arguments. The claim is a `Ready` where `new_ok` is false.
 
-**State change, 72.** Every remaining line. They are the kernel operations that return a success other than the query, again and exempt rows above (`kernel_init`, `charge`, `delete`, `derive`, `destroy`, the device and retype operations, `map_nested`, `link_at`, `map_at`, `load_space`, `switch_space`, `move_cap`, `signal`, `wait`, `enter_flush`, `acknowledge`, `flush_iommu`, `probe_at`, `reclaim`'s `Freed`, `Unlinked` and `Slice`, `reclaim_frame` and `reclaim_large_frame`'s `Freed`, `retype_large_frame`'s `Done`, `revoke`'s `Done` and `Exhausted`, `tick`'s `Switched` and `Dropped`, `switch_thread`, `check_current`'s `MovedOff`, `enter_boot_thread`, `place`, `start`, `suspend`'s `Suspended`, `write_registers`, `unmap_at`), `QueueLock::acquire` and `QueueLock::release`, the ring and mailbox updates (`Producer::write`, `Producer::publish`, `Consumer::consume`, `Producer::observe`, `Consumer::observe`, and the mailbox's `write`, `publish` and `observe`), `Elements::push`, `Allocator::alloc`, `Allocator::free`, `Allocator::lend`, `Allocator::give_back`, `Heap::alloc`, `Heap::free`, and eager's `new`, `reserve`, `back`, `release`, `release_span`, `exercise` and `exercise_eager`. `probe_at`'s `Some` clears accessed and dirty bits in the table page; the view is unchanged and the words are not. `observe`'s `true` ensures the end moved.
+**State change, 70.** Every remaining line. They are the kernel operations that return a success other than the query, again and exempt rows above (`kernel_init`, `charge`, `delete`, `derive`, `destroy`, the device and retype operations, `map_nested`, `link_at`, `map_at`, `load_space`, `switch_space`, `move_cap`, `signal`, `wait`, `enter_flush`, `acknowledge`, `flush_iommu`, `probe_at`, `reclaim`'s `Freed`, `Unlinked` and `Slice`, `reclaim_frame` and `reclaim_large_frame`'s `Freed`, `retype_large_frame`'s `Done`, `revoke`'s `Done` and `Exhausted`, `tick`'s `Switched` and `Dropped`, `switch_thread`, `check_current`'s `MovedOff`, `enter_boot_thread`, `place`, `start`, `suspend`'s `Suspended`, `write_registers`, `unmap_at`), `QueueLock::acquire` and `QueueLock::release`, the ring and mailbox updates (`Producer::write`, `Producer::publish`, `Consumer::consume`, `Producer::observe`, `Consumer::observe`, and the mailbox's `write`, `publish` and `observe`), `Elements::push`, `Allocator::alloc`, `Allocator::free`, `Allocator::lend`, `Allocator::give_back`, `Heap::alloc`, `Heap::free`, and eager's `new`, `reserve`, `back`, `release` and `release_span`. `probe_at`'s `Some` clears accessed and dirty bits in the table page; the view is unchanged and the words are not. `observe`'s `true` ensures the end moved.
 
 ## Context
 

@@ -13,7 +13,8 @@
 //! so that is what the read checks. What it saw is the caller's to judge: dom0 prints it.
 //! `exercise_eager` builds the eager source and exercises it in one verified call, so that the source
 //! serving the caller and its view being well formed, which `exercise` requires, are `Eager::new`'s
-//! ensures and no glue's word.
+//! ensures and no glue's word. This module is an in-image boot check, a verified script dom0 runs
+//! and judges, and it holds no operation (design/witness-per-way-an-operation-succeeds/).
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]

@@ -3,12 +3,12 @@
 //! False claims for `aeager`. A pure function is its ensures at an output that ensures excludes.
 //! A state change is the operation's ensures at an unchanged component, with the result this way.
 //! `new_allocator`'s Ready ensures `Eager::new_ok`, so a Ready where `new_ok` is false fails it.
-//! `new`, `reserve`, `back`, `release`, `release_span` and `exercise_eager` are the success way at
-//! an unchanged component. `new`'s Some is an arbitrary source, not the empty span map and the
-//! `pages` free frames `new` ensures. `reserve`'s Some meets neither `can_reserve` nor the reserved
-//! view. `back`'s Some and `release` spend or return `pages` frames. `release_span`'s own ensures
-//! keep the configuration, and the trait ensures the span leaves the view, which a caller of the
-//! impl sees. `exercise_eager`'s Some fails the `new_ok` biconditional.
+//! `new`, `reserve`, `back`, `release` and `release_span` are the success way at an unchanged
+//! component. `new`'s Some is an arbitrary source, not the empty span map and the `pages` free
+//! frames `new` ensures. `reserve`'s Some meets neither `can_reserve` nor the reserved view.
+//! `back`'s Some and `release` spend or return `pages` frames. `release_span`'s own ensures keep
+//! the configuration, and the trait ensures the span leaves the view, which a caller of the impl
+//! sees.
 //! `invoke`'s `STATUS_OK` and `STATUS_AGAIN` are the same state-change claim: an unchanged
 //! allocator does not extend the caller token's history or meet the call's contract. The
 //! specification is the trait and the body is the module, so the refusal's body span is the
@@ -17,7 +17,6 @@
 //! count. design/refused-claim-per-way/.
 
 pub mod back_some;
-pub mod exercise_eager_some;
 pub mod invoke_again;
 pub mod invoke_ok;
 pub mod new_allocator_ready;
@@ -35,8 +34,7 @@ use aheap::source::SpanSource;
 
 use crate::allocator::AllocatorInit;
 use crate::eager::{Eager, TABLE_PAGES};
-use crate::exercise::Exercised;
-use crate::glue::{names_own_space, own_process, window_unclaimed};
+use crate::glue::{names_own_space, window_unclaimed};
 use crate::invoke::{call_contract, call_keeps_source, GuardedCall};
 
 use aheap::allocator::Allocator;
@@ -193,33 +191,6 @@ pub trait ReleaseSpanReturns {
             final_token@ == old_token@,
         ensures
             final_self@ == old_self@.released_span(span as int),
-    ;
-}
-
-/// `exercise_eager`'s Some at an unchanged caller. The requires are the operation's. Some where
-/// `new_ok` does not hold fails the biconditional.
-pub trait ExerciseEagerSome {
-    proof fn unchanged(
-        old_caller: Tracked<Caller>,
-        final_caller: Tracked<Caller>,
-        space: u64,
-        untyped: u64,
-        memory: u64,
-        pages: usize,
-        slots: u64,
-        window: *mut u8,
-        seen: Option<Exercised>,
-    )
-        requires
-            old_caller@.pages_wf(),
-            window_unclaimed(old_caller@, window@.addr),
-            old_caller@.wf(),
-            own_process(old_caller@),
-            names_own_space(old_caller@, space),
-            final_caller@ == old_caller@,
-            seen is Some,
-        ensures
-            seen is Some <==> Eager::new_ok(memory, pages, slots, window),
     ;
 }
 

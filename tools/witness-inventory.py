@@ -17,7 +17,8 @@ function of a trait the component implements for a struct or enum it declares, w
 can call as it can a `pub fn`. A `pub(crate)` or private function is a step and is not listed. The
 rest of kernel/verified outside capability holds no component, for the reasons
 design/witness-per-way-an-operation-succeeds/ point 2 gives, and is not read. A file named `witness.rs`, a `witness` or `throwaway` directory, a
-`refused` directory, whose false claims tools/check-refused.py holds to Verus's refusal, and a
+`refused` directory, whose false claims tools/check-refused.py holds to Verus's refusal, a file named
+`bootcheck.rs` or a `bootcheck` directory, an in-image boot check a boot runs and judges, and a
 function named `witness_` hold no operation.
 
 The ways, from the operation's result type:
@@ -127,6 +128,8 @@ def load(name):
 throwaways = load("check-throwaways")
 # The directory of a crate's false claims, which hold no operation.
 REFUSED = "refused"
+# An in-image boot check: a verified script a boot runs and judges. It holds no operation.
+BOOT_CHECK = "bootcheck"
 
 
 def blank(text):
@@ -628,9 +631,10 @@ def witness(fn):
 
 
 def hidden(fn):
-    """Whether the function is in what holds no operation: a witness module, or a witness itself."""
+    """Whether the function is in what holds no operation: a witness module, a boot check, or a witness itself."""
     path = Path(fn.src.path)
-    return witness(fn) or path.stem == "witness" or "witness" in path.parts[:-1]
+    return (witness(fn) or path.stem in ("witness", BOOT_CHECK)
+            or bool({"witness", BOOT_CHECK} & set(path.parts[:-1])))
 
 
 def reached(comp, roots, operations, guards):
@@ -1546,6 +1550,23 @@ class Tree(unittest.TestCase):
         }
         for directory in ("throwaway", "refused"):
             files[f"aone/src/{directory}/false_claim.rs"] = "verus! {\npub fn wrong(size: usize) -> (r: bool) { size < 5 }\n}\n"
+        files.update(kernel())
+        rows = tree_rows(self.make(files))
+        self.assertEqual([tuple(row[:3]) for row in rows if row[0].startswith("aone/")],
+                         [("aone/src/lib.rs", "fits", "true")])
+
+    def test_an_in_image_boot_check_holds_no_operation(self):
+        files = {
+            "Cargo.toml": "[workspace]\n" + self.workspace(["kernel/verified", "acall", "aone"]),
+            "kernel/verified/Cargo.toml": crate("verified", lib="lib.rs"),
+            "kernel/verified/queue_lock.rs": QUEUE,
+            "acall/Cargo.toml": crate("acall"),
+            "acall/src/lib.rs": "verus! {\n}\n",
+            "aone/Cargo.toml": crate("aone"),
+            "aone/src/lib.rs": "verus! {\npub fn fits(size: usize) -> (r: bool) { size < 10 }\n}\n",
+            "aone/src/bootcheck.rs": "verus! {\npub fn drill() -> (r: bool) { true }\n}\n",
+            "aone/src/bootcheck/nested.rs": "verus! {\npub fn nested() -> (r: bool) { true }\n}\n",
+        }
         files.update(kernel())
         rows = tree_rows(self.make(files))
         self.assertEqual([tuple(row[:3]) for row in rows if row[0].startswith("aone/")],
