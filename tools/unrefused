@@ -15,16 +15,6 @@ amailbox/src/lib.rs	Consumer::observe	true
 amailbox/src/lib.rs	held_apart	returns
 afanin/src/lib.rs	scan	Idle
 afanin/src/lib.rs	scan	Ready
-aheap/src/allocator.rs	Allocator::new	returns
-aheap/src/allocator.rs	Allocator::has_token	true
-aheap/src/allocator.rs	Allocator::alloc	Some
-aheap/src/allocator.rs	Allocator::free	returns
-aheap/src/allocator.rs	Allocator::lend	Some
-aheap/src/allocator.rs	Allocator::give_back	returns
-aheap/src/heap.rs	layout_fits	true
-aheap/src/heap.rs	Heap::new	returns
-aheap/src/heap.rs	Heap::alloc	Some
-aheap/src/heap.rs	Heap::free	returns
 aeager/src/allocator.rs	new_allocator	Ready
 aeager/src/eager.rs	Eager::new	Some
 aeager/src/eager.rs	Eager::reserve	Some
