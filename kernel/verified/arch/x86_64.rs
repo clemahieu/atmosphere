@@ -1028,7 +1028,9 @@ pub fn flush_cores<F: Fn(usize)>(
                 assert(before.contains_key(c as int));
             }
             let tracked mut req = requester.reqs.tracked_remove(c as int);
-            let Tracked(piece) = bridge.bridge.wait(c, Tracked(&mut req));
+            // The spin has no proven end, so its report counts on a counter of its own.
+            let tracked mut wait_steps = Steps::fresh();
+            let Tracked(piece) = bridge.bridge.wait(c, Tracked(&mut req), Tracked(&mut wait_steps));
             proof {
                 requester.reqs.tracked_insert(c as int, req);
                 assert forall|d: int| 0 <= d < NUM_CPUS && d != c implies #[trigger] requester.reqs.contains_key(d) && requester.reqs[d] == before[d] by {

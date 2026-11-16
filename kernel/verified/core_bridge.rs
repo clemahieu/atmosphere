@@ -9,7 +9,8 @@
 //! on that core observes the words differing, takes `T` out, passes it through a caller-supplied
 //! operation satisfying `ChannelOp<T>`, and returns the transformed value through its served word's
 //! invariant with a store of the number it read. Numbers are compared for equality only, so they
-//! may wrap across `usize::MAX`.
+//! may wrap across `usize::MAX`. `wait` prints the core it is still waiting on, through the serial
+//! port, every `REPORT_SPINS` spins, and keeps waiting.
 
 use core::marker::PhantomData;
 
@@ -23,6 +24,7 @@ use vstd::resource::set::GhostSingleton;
 use vstd::resource::Loc;
 
 use crate::arch::spin_hint;
+use crate::capability::steps::Steps;
 use crate::define::NUM_CPUS;
 
 verus! {
@@ -588,10 +590,16 @@ impl<T, Op: ChannelOp<T>> CoreBridge<T, Op> {
     }
 
     /// Spins until core `cpu`'s served word equals its request word, then takes and returns the
-    /// transformed value.
+    /// transformed value. Each time the spin count reaches [`REPORT_SPINS`], prints one line naming
+    /// `cpu` and keeps waiting. `steps` counts the bytes of those lines.
     #[verifier::exec_allows_no_decreases_clause]
     // exec_allows_no_decreases_clause(unproven): the spin waits for the server on cpu to store the request number into served, which ends only while that core keeps executing and reaches a serve
-    pub fn wait(&self, cpu: usize, Tracked(req): Tracked<&mut Req<T, Op>>) -> (res: Tracked<T>)
+    pub fn wait(
+        &self,
+        cpu: usize,
+        Tracked(req): Tracked<&mut Req<T, Op>>,
+        Tracked(steps): Tracked<&mut Steps>,
+    ) -> (res: Tracked<T>)
         requires
             self.wf(),
             cpu < NUM_CPUS,
@@ -605,6 +613,10 @@ impl<T, Op: ChannelOp<T>> CoreBridge<T, Op> {
             final(req).seq() == old(req).seq(),
             Op::post(old(req).input(), res@),
     {
+        let mut spins: u64 = 0;
+        proof {
+            lemma_report_spins();
+        }
         loop
             invariant
                 self.wf(),
@@ -614,9 +626,18 @@ impl<T, Op: ChannelOp<T>> CoreBridge<T, Op> {
                 req.cpu() == cpu,
                 req.seq() == old(req).seq(),
                 req.input() == old(req).input(),
+                spins < REPORT_SPINS,
         {
             if let Some(out) = self.try_take(cpu, Tracked(req), Tracked(None)) {
                 return out;
+            }
+            proof {
+                lemma_report_spins();
+            }
+            spins = spins + 1;
+            if spins == REPORT_SPINS {
+                report_wait(cpu, Tracked(steps));
+                spins = 0;
             }
             spin_hint();
         }
@@ -707,6 +728,244 @@ impl<T, Op: ChannelOp<T>> CoreBridge<T, Op> {
     }
 }
 
+/// Spins between reports. The line is a diagnostic, not a timeout, so the constant is not a bound
+/// on a descheduled vCPU: it only decides when the line appears.
+pub const REPORT_SPINS: u64 = 1 << 26;
+
+/// `REPORT_SPINS` as a number: above zero, and far enough below `u64::MAX` that a count under it
+/// can be stepped.
+proof fn lemma_report_spins()
+    ensures
+        REPORT_SPINS == 0x400_0000, // not a page size: 1<<26, the spin-report interval
+{
+    assert((1u64 << 26) == 0x400_0000u64) by (bit_vector); // not a page size: 1<<26, the spin-report interval
+}
+
+/// ASCII `'0'`.
+pub const ASCII_ZERO: u64 = 48;
+
+/// `"bridge w"`, little-endian, the first word of a wait report.
+pub(crate) const REPORT_PREFIX_A: u64 = 0x7720_6567_6469_7262;
+
+/// `"ait cpu "`, little-endian, the second word. The two words are `"bridge wait cpu "`.
+pub(crate) const REPORT_PREFIX_B: u64 = 0x2075_7063_2074_6961;
+
+/// The bytes of `REPORT_PREFIX_A` and `REPORT_PREFIX_B` are `"bridge wait cpu "`.
+proof fn lemma_report_prefix()
+    ensures
+        (REPORT_PREFIX_A & 0xff) == 0x62,
+        ((REPORT_PREFIX_A >> 8) & 0xff) == 0x72,
+        ((REPORT_PREFIX_A >> 16) & 0xff) == 0x69,
+        ((REPORT_PREFIX_A >> 24) & 0xff) == 0x64,
+        ((REPORT_PREFIX_A >> 32) & 0xff) == 0x67,
+        ((REPORT_PREFIX_A >> 40) & 0xff) == 0x65,
+        ((REPORT_PREFIX_A >> 48) & 0xff) == 0x20,
+        ((REPORT_PREFIX_A >> 56) & 0xff) == 0x77,
+        (REPORT_PREFIX_B & 0xff) == 0x61,
+        ((REPORT_PREFIX_B >> 8) & 0xff) == 0x69,
+        ((REPORT_PREFIX_B >> 16) & 0xff) == 0x74,
+        ((REPORT_PREFIX_B >> 24) & 0xff) == 0x20,
+        ((REPORT_PREFIX_B >> 32) & 0xff) == 0x63,
+        ((REPORT_PREFIX_B >> 40) & 0xff) == 0x70,
+        ((REPORT_PREFIX_B >> 48) & 0xff) == 0x75,
+        ((REPORT_PREFIX_B >> 56) & 0xff) == 0x20,
+{
+    assert(
+        (REPORT_PREFIX_A & 0xff) == 0x62 && ((REPORT_PREFIX_A >> 8) & 0xff) == 0x72
+            && ((REPORT_PREFIX_A >> 16) & 0xff) == 0x69 && ((REPORT_PREFIX_A >> 24) & 0xff) == 0x64
+            && ((REPORT_PREFIX_A >> 32) & 0xff) == 0x67 && ((REPORT_PREFIX_A >> 40) & 0xff) == 0x65
+            && ((REPORT_PREFIX_A >> 48) & 0xff) == 0x20 && ((REPORT_PREFIX_A >> 56) & 0xff) == 0x77
+            && (REPORT_PREFIX_B & 0xff) == 0x61 && ((REPORT_PREFIX_B >> 8) & 0xff) == 0x69
+            && ((REPORT_PREFIX_B >> 16) & 0xff) == 0x74 && ((REPORT_PREFIX_B >> 24) & 0xff) == 0x20
+            && ((REPORT_PREFIX_B >> 32) & 0xff) == 0x63 && ((REPORT_PREFIX_B >> 40) & 0xff) == 0x70
+            && ((REPORT_PREFIX_B >> 48) & 0xff) == 0x75 && ((REPORT_PREFIX_B >> 56) & 0xff) == 0x20
+    ) by (bit_vector);
+}
+
+/// A one-digit number plus `'0'` fits in the low byte.
+proof fn lemma_one_digit(n: u64) by (bit_vector)
+    requires
+        n < 10,
+        ASCII_ZERO == 48,
+    ensures
+        add(n, ASCII_ZERO) < 256,
+        add(n, ASCII_ZERO) % 256u64 == add(n, ASCII_ZERO),
+        add(n, ASCII_ZERO) / 256u64 == 0,
+{
+}
+
+/// `n` in `10..100` is two digits, each below 10, and those digits rebuild `n`.
+proof fn lemma_two_digits(n: u64, tens: u64, ones: u64) by (bit_vector)
+    requires
+        n < 100,
+        n >= 10,
+        tens == n / 10u64,
+        ones == n % 10u64,
+    ensures
+        tens < 10,
+        ones < 10,
+        n == add(mul(tens, 10u64), ones),
+{
+}
+
+/// `lo` and `hi` below 256 pack into a word whose first two bytes are those values.
+proof fn lemma_pack_byte(lo: u64, hi: u64) by (bit_vector)
+    requires
+        lo < 256,
+        hi < 256,
+    ensures
+        add(lo, mul(hi, 256u64)) % 256u64 == lo,
+        (add(lo, mul(hi, 256u64)) / 256u64) % 256u64 == hi,
+        add(lo, mul(hi, 256u64)) / 65536u64 == 0, // not a page size: 2^16, the third byte of a word
+{
+}
+
+/// A u64 divided by 256 yielding 0 is itself below 256, so its low byte is itself.
+proof fn lemma_below_256(d: u64) by (bit_vector)
+    requires
+        d / 256u64 == 0,
+    ensures
+        d < 256,
+        d % 256u64 == d,
+{
+}
+
+/// A u64 divided by 65536 yielding 0 is itself below 65536.
+proof fn lemma_below_65536(d: u64) by (bit_vector)
+    requires
+        d / 65536u64 == 0, // not a page size: 2^16, the third byte of a word
+    ensures
+        d < 65536, // not a page size: 2^16, the third byte of a word
+{
+}
+
+/// Adding a newline at byte 2 (`10 * 65536`) keeps the two low bytes of `digits`.
+proof fn lemma_newline_at_byte2(digits: u64) by (bit_vector)
+    requires
+        digits < 65536, // not a page size: 2^16, the third byte of a word
+    ensures
+        add(digits, mul(10u64, 65536u64)) % 256u64 == digits % 256u64, // not a page size: 2^16, the third byte of a word
+        (add(digits, mul(10u64, 65536u64)) / 256u64) % 256u64 == (digits / 256u64) % 256u64, // not a page size: 2^16, the third byte of a word
+        (add(digits, mul(10u64, 65536u64)) / 65536u64) % 256u64 == 10, // not a page size: 2^16, the third byte of a word
+        add(digits, mul(10u64, 65536u64)) / 16777216u64 == 0, // not a page size: 2^24, past that byte
+{
+}
+
+/// Writes the decimal digits of `n < 100` into the low bytes of a word, little-endian, most
+/// significant digit first, with no leading zero except for zero. Returns the word and how many
+/// digits were written. A digit's byte is `ASCII_ZERO` plus that digit: the low byte is `word % 256`,
+/// the next is `(word / 256) % 256`.
+pub(crate) fn write_decimal(n: u64) -> (res: (u64, u64))
+    requires
+        n < 100,
+    ensures
+        res.1 == if n < 10 { 1u64 } else { 2u64 },
+        n < 10 ==> res.0 % 256u64 == add(n, ASCII_ZERO) && res.0 / 256u64 == 0,
+        n >= 10 ==> res.0 % 256u64 == add(n / 10u64, ASCII_ZERO) && (res.0 / 256u64) % 256u64
+            == add(n % 10u64, ASCII_ZERO) && res.0 / 65536u64 == 0, // not a page size: 2^16, the third byte of a word
+{
+    proof {
+        assert(ASCII_ZERO == 48);
+    }
+    if n < 10 {
+        let word = n + ASCII_ZERO;
+        proof {
+            lemma_one_digit(n);
+            assert(word == add(n, ASCII_ZERO));
+        }
+        (word, 1)
+    } else {
+        let tens = n / 10;
+        let ones = n % 10;
+        let lo = tens + ASCII_ZERO;
+        let hi = ones + ASCII_ZERO;
+        let word = lo + hi * 256;
+        proof {
+            lemma_two_digits(n, tens, ones);
+            assert(lo == add(tens, ASCII_ZERO));
+            assert(hi == add(ones, ASCII_ZERO));
+            lemma_pack_byte(lo, hi);
+            assert(word == add(lo, mul(hi, 256u64)));
+        }
+        (word, 2)
+    }
+}
+
+/// The five words `serial_write` sends for one report: `"bridge wait cpu "` then the decimal core,
+/// then a newline. Little-endian, and the byte after the newline is zero so the write stops.
+pub(crate) fn report_line(cpu: u64) -> (words: (u64, u64, u64, u64, u64))
+    requires
+        cpu < 100,
+    ensures
+        words.0 == REPORT_PREFIX_A,
+        words.1 == REPORT_PREFIX_B,
+        words.3 == 0 && words.4 == 0,
+        cpu < 10 ==> words.2 % 256u64 == add(cpu, ASCII_ZERO) && (words.2 / 256u64) % 256u64 == 10
+            && words.2 / 65536u64 == 0, // not a page size: 2^16, the third byte of a word
+        cpu >= 10 ==> words.2 % 256u64 == add(cpu / 10u64, ASCII_ZERO) && (words.2 / 256u64)
+            % 256u64 == add(cpu % 10u64, ASCII_ZERO) && (words.2 / 65536u64) % 256u64 == 10 // not a page size: 2^16, the third byte of a word
+            && words.2 / 16777216u64 == 0, // not a page size: 2^24, past that byte
+{
+    proof {
+        lemma_report_prefix();
+        assert(ASCII_ZERO == 48);
+    }
+    let (digits, len) = write_decimal(cpu);
+    if cpu < 10 {
+        let word = digits + 10 * 256;
+        proof {
+            assert(len == 1);
+            assert(digits % 256u64 == add(cpu, ASCII_ZERO) && digits / 256u64 == 0);
+            lemma_below_256(digits);
+            assert(digits == add(cpu, ASCII_ZERO));
+            lemma_pack_byte(digits, 10u64);
+            assert(word == add(digits, mul(10u64, 256u64)));
+        }
+        (REPORT_PREFIX_A, REPORT_PREFIX_B, word, 0, 0)
+    } else {
+        let word = digits + 10 * 65536; // not a page size: 2^16, the third byte of a word
+        proof {
+            assert(len == 2);
+            assert(digits / 65536u64 == 0); // not a page size: 2^16, the third byte of a word
+            lemma_below_65536(digits);
+            lemma_newline_at_byte2(digits);
+            assert(word == add(digits, mul(10u64, 65536u64))); // not a page size: 2^16, the third byte of a word
+        }
+        (REPORT_PREFIX_A, REPORT_PREFIX_B, word, 0, 0)
+    }
+}
+
+/// Prints one wait report. The host test has no serial port, so `in` from `serial_write_byte` would
+/// fault there; that build checks the words, and the kernel image writes them.
+#[cfg(not(test))]
+fn write_report(a: u64, b: u64, c: u64, d: u64, e: u64, steps: Tracked<&mut Steps>) {
+    let Tracked(inner) = steps;
+    crate::capability::console::serial_write(a, b, c, d, e, Tracked(inner));
+}
+
+#[cfg(test)]
+fn write_report(a: u64, b: u64, c: u64, d: u64, e: u64, steps: Tracked<&mut Steps>) {
+    let _ = (a, b, c, d, e, steps);
+}
+
+fn report_wait(cpu: usize, Tracked(steps): Tracked<&mut Steps>)
+    requires
+        cpu < NUM_CPUS,
+{
+    let cpu64: u64 = cpu as u64;
+    proof {
+        assert(NUM_CPUS == 32);
+        assert(cpu64 < 100) by (bit_vector)
+            requires
+                cpu < NUM_CPUS,
+                NUM_CPUS == 32,
+                cpu64 == cpu as u64,
+        ;
+    }
+    let (a, b, c, d, e) = report_line(cpu64);
+    write_report(a, b, c, d, e, Tracked(steps));
+}
+
 /// A tracked value for `witness_bridge`, carrying a `nat` that the witness's operation steps.
 pub tracked struct WitnessToken {
     pub ghost n: nat,
@@ -778,7 +1037,8 @@ pub fn witness_bridge(cpu: usize) -> (ret: (bool, Option<Tracked<WitnessToken>>)
         Tracked(&mut srv),
         Tracked(Some(&req)),
     );
-    let Tracked(out2) = bridge.wait(cpu, Tracked(&mut req));
+    let tracked mut steps = Steps::fresh();
+    let Tracked(out2) = bridge.wait(cpu, Tracked(&mut req), Tracked(&mut steps));
     proof {
         assert(out2.n == 11);
     }
@@ -863,12 +1123,13 @@ mod tests {
                 });
 
                 let req_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let tracked mut steps = Steps::fresh();
                     let mut r: usize = 0;
                     while r < rounds {
                         let expected_in = r.wrapping_add(100);
                         input_word.store(expected_in, Ordering::Relaxed);
                         bridge.send(cpu, Tracked(&mut req), Tracked(r));
-                        let _ = bridge.wait(cpu, Tracked(&mut req));
+                        let _ = bridge.wait(cpu, Tracked(&mut req), Tracked(&mut steps));
                         let got = output_word.load(Ordering::Relaxed);
                         assert_eq!(got, expected_in.wrapping_mul(3).wrapping_add(7));
                         assert_eq!(served_count.load(Ordering::Relaxed), r + 1);
@@ -954,6 +1215,37 @@ mod tests {
                 }
             });
         }
+
+        fn line_of(words: (u64, u64, u64, u64, u64)) -> std::vec::Vec<u8> {
+            let packed = [words.0, words.1, words.2, words.3, words.4];
+            let mut out: std::vec::Vec<u8> = std::vec::Vec::new();
+            let mut w: usize = 0;
+            while w < 5 {
+                let mut i: usize = 0;
+                while i < 8 {
+                    let b = ((packed[w] >> (8 * i)) & 0xff) as u8;
+                    if b == 0 {
+                        return out;
+                    }
+                    out.push(b);
+                    i = i + 1;
+                }
+                w = w + 1;
+            }
+            out
+        }
+
+        fn test_report_line_names_the_core() {
+            assert_eq!(line_of(report_line(0)), b"bridge wait cpu 0\n".to_vec());
+            assert_eq!(line_of(report_line(7)), b"bridge wait cpu 7\n".to_vec());
+            assert_eq!(line_of(report_line(10)), b"bridge wait cpu 10\n".to_vec());
+            assert_eq!(line_of(report_line(31)), b"bridge wait cpu 31\n".to_vec());
+        }
+    }
+
+    #[test]
+    fn host_report_line_names_the_core() {
+        test_report_line_names_the_core();
     }
 
     #[test]

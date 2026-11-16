@@ -14,6 +14,7 @@ use vstd::resource::set::GhostSetAuth;
 use vstd::resource::set::GhostSingleton;
 use vstd::resource::Loc;
 use crate::arch::spin_hint;
+use crate::capability::steps::Steps;
 use crate::define::NUM_CPUS;
 
 verus! {
