@@ -22,9 +22,9 @@ use asys::operation;
 use vstd::prelude::Tracked;
 
 use crate::{
-    entry_address, first_slot, image_page, inspect, set_frame_word, untyped_of_pages, ConsoleWriter, ARGUMENT_WORDS,
-    CHILD_CODE_ADDRESS, CHILD_DATA_ADDRESS, CHILD_OWN_ENTRY, FIRST_EMPTY_ENTRY, RIGHT_CONTROL, SECOND_CORE,
-    SHARED_ENTRY, SWITCH_READS, TABLE_PAGE_BYTES,
+    entry_address, first_slot, image_page, inspect, names_other_space, set_frame_word, untyped_of_pages,
+    ConsoleWriter, ARGUMENT_WORDS, CHILD_CODE_ADDRESS, CHILD_DATA_ADDRESS, CHILD_OWN_ENTRY, FIRST_EMPTY_ENTRY,
+    RIGHT_CONTROL, SECOND_CORE, SHARED_ENTRY, SWITCH_READS, TABLE_PAGE_BYTES,
 };
 
 /// The kernel's test operation that times one flush IPI to CPU 1: kernel/src/flush.rs
@@ -282,10 +282,18 @@ fn walk_mapped(caller: &mut Tracked<Caller>, empty: u64, process: u64, slot: u64
         && table_at(caller, WALK_ADDRESS, 2)
         && (0..=WALK_TABLES).all(|k| table_at(caller, WALK_ADDRESS + k * 512 * 4096, 1));
     let frame = low + (WALK_TABLES + 3) * TABLE_PAGE_BYTES;
-    tables
-        && retype(caller, untyped, operation::RETYPE_FRAME, frame, slot, 0).status == operation::STATUS_OK
-        && (0..=WALK_PAGES).all(|k| map(caller, process, WALK_ADDRESS + k * 4096, 1, slot, 0).status == operation::STATUS_OK)
-        && map(caller, process, WALK_CODE_ADDRESS, 1, image, page).status == operation::STATUS_OK
+    if !tables
+        || retype(caller, untyped, operation::RETYPE_FRAME, frame, slot, 0).status != operation::STATUS_OK
+        || !names_other_space(caller, process)
+    {
+        return false;
+    }
+    for k in 0..=WALK_PAGES {
+        if map(caller, process, WALK_ADDRESS + k * 4096, 1, slot, 0).status != operation::STATUS_OK {
+            return false;
+        }
+    }
+    map(caller, process, WALK_CODE_ADDRESS, 1, image, page).status == operation::STATUS_OK
 }
 
 /// Whether the walking thread runs on core 1: it gets a capability to itself with control in the child's
@@ -379,5 +387,13 @@ pub(crate) fn held(caller: &mut Tracked<Caller>, empty: u64, process: u64, slot:
     }
     // The thread reads GO until it changes and suspends itself at STOP.
     unsafe { control(GO).write_volatile(STOP) };
-    (0..=WALK_PAGES).all(|k| unmap(caller, process, WALK_ADDRESS + k * 4096, 1).status == operation::STATUS_OK)
+    if !names_other_space(caller, process) {
+        return false;
+    }
+    for k in 0..=WALK_PAGES {
+        if unmap(caller, process, WALK_ADDRESS + k * 4096, 1).status != operation::STATUS_OK {
+            return false;
+        }
+    }
+    true
 }

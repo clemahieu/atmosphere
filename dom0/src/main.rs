@@ -181,6 +181,17 @@ fn inspect(caller: &mut Tracked<Caller>, slot: u64) -> Result<operation::Capabil
     }
 }
 
+/// Whether the capability at position `slot` names a space other than dom0's own, as acall's map and
+/// unmap require of the slot whose space they write (slot_names_other_space): inspect finds one there
+/// whose base is not the base of dom0's own process, whose capability boot leaves at ROOT_PROCESS_SLOT.
+/// A capability that writes a space names it by the base of the process that owns it.
+fn names_other_space(caller: &mut Tracked<Caller>, slot: u64) -> bool {
+    matches!(
+        (inspect(caller, slot), inspect(caller, operation::ROOT_PROCESS_SLOT)),
+        (Ok(held), Ok(own)) if held.base != own.base
+    )
+}
+
 /// A number past every operation's.
 const NO_OPERATION: u64 = 0xffff;
 
@@ -1431,6 +1442,9 @@ fn switched_thread_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, 
     let Ok(held) = inspect(caller, thread) else {
         return false;
     };
+    if !names_other_space(caller, process) {
+        return false;
+    }
     let linked = (0..3).all(|k| {
         let table = low + k * TABLE_PAGE_BYTES;
         retype(caller, untyped, operation::RETYPE_TABLE_PAGE, table, 0, 3 - k).status == operation::STATUS_OK
@@ -1745,6 +1759,9 @@ fn core_1_unmap_held(caller: &mut Tracked<Caller>, empty: u64, process: u64, slo
     let Ok(held) = inspect(caller, thread) else {
         return false;
     };
+    if !names_other_space(caller, process) {
+        return false;
+    }
     let retype_frame = |caller: &mut Tracked<Caller>| retype(caller, untyped, operation::RETYPE_FRAME, base, slot, 0).status;
     let free = |caller: &mut Tracked<Caller>| retype(caller, untyped, operation::RETYPE_FREE, base, 0, 0).status;
     let arguments = [CHILD_HELD_ADDRESS, CHILD_HOLD_ADDRESS, own];
