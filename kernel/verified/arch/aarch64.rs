@@ -1460,6 +1460,13 @@ pub proof fn lemma_partial_frame_idempotent(f: Registers)
 pub proof fn lemma_partial_outcome_written(r: Registers, out: Outcome)
     ensures
         partial_frame(outcome_written(r, out)) == outcome_written(partial_frame(r), out),
+        partial_frame(r) == r ==> partial_frame(outcome_written(r, out)) == outcome_written(r, out),
+        outcome_written(r, out).spec_status_word() == out.status,
+        outcome_written(r, out).spec_result(1) == out.result_1,
+        outcome_written(r, out).spec_result(2) == out.result_2,
+        outcome_written(r, out).spec_result(3) == out.result_3,
+        outcome_written(r, out).spec_result(4) == out.result_4,
+        outcome_written(r, out).spec_result(5) == out.result_5,
 {
 }
 

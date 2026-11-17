@@ -4144,6 +4144,29 @@ pub proof fn lemma_blocks_waiting_discharges(a: State, b: State, p: ObjectId, e:
     }
 }
 
+/// Removing thread `t` from waiting on `block` and changing only `t`'s saved contents is a step
+/// of tearing down `block`.
+pub proof fn lemma_unblocked_waiter_tears_down(
+    pre: State,
+    post: State,
+    block: ObjectId,
+    object: ObjectId,
+    t: ObjectId,
+)
+    requires
+        post == (State { contents: post.contents, waiting: post.waiting, ..pre }),
+        forall|o: ObjectId| #[trigger] State::changed(pre, post, o) ==> o == t && pre.waiting.contains((block, t)),
+        forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) ==> pre.waiting.contains(w),
+    ensures
+        tears_down(pre, post, block, object),
+{
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_same_authority_same_reach(post, pre, r, o);
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
+        implies post.process_behind(w.1) == pre.process_behind(w.1) by {}
+}
+
 /// a and b differ only in what a process sees of thread t: the step saved the frame t entered the
 /// kernel with, which t's own user-mode execution wrote, as an access writes a frame. It moves no
 /// authority, and no capability names it. See design/theorem-over-reach/.

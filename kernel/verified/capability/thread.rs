@@ -4967,6 +4967,35 @@ impl CapKernel {
         }
     }
 
+    /// Whether priority `prio` on `core` outranks `core`'s current thread (or `core` runs
+    /// nothing), matching `self.outranks_current(core as int, prio)`.
+    pub(crate) fn core_outranks(&self, core: usize, prio: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            core < NUM_CPUS,
+            prio <= MAX_PRIORITY,
+        ensures
+            ret == self.outranks_current(core as int, prio),
+    {
+        match self.cores.get(core).current_thread {
+            None => true,
+            Some(cur) => {
+                proof {
+                    reveal(current_wf);
+                    assert(runs(self.cores@, core as int, cur));
+                    assert(self.threads.records@.contains_key(cur));
+                }
+                let cur_ptr = PPtr::<ThreadRecord>::from_usize(cur + THREAD_RECORD_PAGE * PAGE_SZ);
+                let cur_record = *cur_ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(cur)));
+                let current_priority = match cur_record.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                current_priority < prio
+            },
+        }
+    }
+
     /// From pre to post, core c moved its current thread off with `saved_frame(frame, saved)` and
     /// marker `saved`, as check_current does for a thread that must leave: the thread's record is
     /// written Inactive, or Dead when it was marked to die, with no stop pending and the full or

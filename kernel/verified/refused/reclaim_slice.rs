@@ -5,7 +5,7 @@
 //!
 //! covers: kernel/verified/capability/reclaim.rs	reclaim	Slice
 //! refused: unchanged: pre.can_slice_leaf(root, from, base) ==> ret is Slice && pre.leaf_sliced(post, root, from, base)
-//! refused: unchanged: ret is Slice ==> pre.leaf_sliced(post, root, from, base) || pre.table_sliced(post, root, from, base) || pre.space_children_cut(post, root, from, base) || pre.thread_unbound(post, root, from, base) || pre.process_retired(post, base) || pre.process_space_cut(post, root, from, base)
+//! refused: unchanged: ret is Slice ==> pre.leaf_sliced(post, root, from, base) || pre.table_sliced(post, root, from, base) || pre.space_children_cut(post, root, from, base) || pre.thread_unbound(post, root, from, base) || pre.process_retired(post, base) || pre.process_space_cut(post, root, from, base) || pre.queue_sliced(post, root, from, base)
 
 use vstd::prelude::*;
 

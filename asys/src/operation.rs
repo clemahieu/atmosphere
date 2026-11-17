@@ -20,6 +20,9 @@ pub const STATUS_UNKNOWN: u64 = 2;
 /// it stopped.
 pub const STATUS_AGAIN: u64 = 3;
 
+/// The operation failed after waiting or starting because its target was torn down or cancelled.
+pub const STATUS_ERROR: u64 = 4;
+
 pub const RETYPE: u64 = 1;
 /// Derives from the capability at the position the slot's word names, in the caller's own table, a child
 /// into the empty position the word in argument 1 names, with the rights in argument 2 and the block of

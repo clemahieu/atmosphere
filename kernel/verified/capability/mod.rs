@@ -59,4 +59,6 @@ pub mod unmap;
 pub mod view;
 #[cfg(verus_keep_ghost)]
 pub mod witness;
+#[cfg(verus_keep_ghost)]
+pub mod witness_dead_notification;
 pub mod zero;

@@ -29,6 +29,7 @@ const _: () = {
     assert!(user::STATUS_REFUSED == operation::STATUS_REFUSED);
     assert!(user::STATUS_UNKNOWN == operation::STATUS_UNKNOWN);
     assert!(user::STATUS_AGAIN == operation::STATUS_AGAIN);
+    assert!(user::STATUS_ERROR == operation::STATUS_ERROR);
     assert!(user::RETYPE == operation::OPERATION_RETYPE);
     assert!(user::DERIVE == operation::OPERATION_DERIVE);
     assert!(user::MOVE == operation::OPERATION_MOVE);

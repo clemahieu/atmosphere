@@ -811,8 +811,11 @@ impl CapKernel {
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))
                 || old(self).can_reclaim_large(root, from, base, 9)
                 || old(self).can_reclaim_large(root, from, base, 18)
+                || old(self).can_slice_queue(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 0) && old(self).queue_is_dead(base / PAGE_SZ))
                 || (old(self).can_retype_under(root, from, base, 0) && old(self).reply_is_dead(base / PAGE_SZ))) ==> ret is Refused,
+            old(self).can_slice_queue(root, from, base)
+                ==> ret is Slice && old(self).queue_sliced(*final(self), root, from, base),
             old(self).can_retype_under(root, from, base, 0) && old(self).queue_is_dead(base / PAGE_SZ)
                 ==> ret is Freed && old(self).queue_freed(*final(self), c, root, from, base),
             old(self).can_retype_under(root, from, base, 0) && old(self).reply_is_dead(base / PAGE_SZ)
@@ -921,7 +924,8 @@ impl CapKernel {
                 || old(self).space_children_cut(*final(self), root, from, base)
                 || old(self).thread_unbound(*final(self), root, from, base)
                 || old(self).process_retired(*final(self), base)
-                || old(self).process_space_cut(*final(self), root, from, base),
+                || old(self).process_space_cut(*final(self), root, from, base)
+                || old(self).queue_sliced(*final(self), root, from, base),
             ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base)
                 || old(self).table_page_unlinked(*final(self), root, from, base),
     {

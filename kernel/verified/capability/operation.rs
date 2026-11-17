@@ -68,6 +68,9 @@ pub const STATUS_UNKNOWN: u64 = 2;
 /// it stopped. See design/one-lock-bounded-steps/.
 pub const STATUS_AGAIN: u64 = 3;
 
+/// The operation failed after waiting or starting because its target was torn down or cancelled.
+pub const STATUS_ERROR: u64 = 4;
+
 /// invoke_retype's bound in the step counter: a table page's retype, the largest of the seven kinds.
 /// See design/one-lock-bounded-steps/.
 pub const INVOKE_RETYPE_STEPS: usize = crate::capability::space::RETYPE_TABLE_PAGE_STEPS;

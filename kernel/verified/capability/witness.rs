@@ -32,6 +32,8 @@
 //! And an IOMMU's flush leaves the frames, the threads and the view as they were.
 //! And the root can make an endpoint: it gives itself a leaf and retypes an endpoint into it.
 //! And a notification and a reply the same way.
+//! A dead notification's teardown waking its waiter, then freeing the block, is
+//! `witness_dead_notification`: this file is at the size the gate allows.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
 use vstd::arithmetic::div_mod::*;
@@ -1009,7 +1011,7 @@ proof fn lemma_depth_one_kept(pre: Tree, post: Tree, a: usize, x: usize)
 /// Across a step that adds n, dead before, under p and changes no other node's liveness or parent,
 /// n has no child after it, and every other child after it was the same child before: a live node
 /// past the first has a parent, so it was not the first before either.
-proof fn lemma_added_children(pre: Tree, post: Tree, n: usize, p: usize)
+pub(crate) proof fn lemma_added_children(pre: Tree, post: Tree, n: usize, p: usize)
     requires
         pre.wf(),
         post.wf(),
@@ -1256,7 +1258,7 @@ proof fn lemma_live_slots_none(k: CapKernel, b: usize, j: int)
 /// A slot stays a slot of the same node across a step that kept the tables and the liveness of every
 /// node but n, when n cannot be the slot's leaf: n is not live, not a page's first node, or not a leaf
 /// of that table.
-proof fn lemma_slot_kept_but(pre: CapKernel, post: CapKernel, root: usize, i: usize, n: usize)
+pub(crate) proof fn lemma_slot_kept_but(pre: CapKernel, post: CapKernel, root: usize, i: usize, n: usize)
     requires
         pre.wf(),
         pre.tables.has_slot(&pre.list, root, i),
@@ -1284,7 +1286,7 @@ proof fn lemma_slot_kept_but(pre: CapKernel, post: CapKernel, root: usize, i: us
 
 /// A slot stays a slot of the same node across a step that kept the tables' roots and the liveness of
 /// every node but a and b, neither of which is a page's first node, so neither is the slot's leaf.
-proof fn lemma_slot_kept_two(pre: CapKernel, post: CapKernel, root: usize, i: usize, a: usize, b: usize)
+pub(crate) proof fn lemma_slot_kept_two(pre: CapKernel, post: CapKernel, root: usize, i: usize, a: usize, b: usize)
     requires
         pre.wf(),
         pre.tables.has_slot(&pre.list, root, i),
@@ -18689,6 +18691,7 @@ impl CapKernel {
         }
         (r0, r1, r2, r3, ok1, ok2, ok3, Ghost((s4, su, sc, sa, s5)))
     }
+
 }
 
 } // verus!

@@ -16,7 +16,7 @@ use vstd::prelude::*;
 verus! {
 
 #[cfg(verus_keep_ghost)]
-use crate::arch::{lemma_partial_frame_idempotent, partial_frame};
+use crate::arch::{lemma_partial_frame_idempotent, lemma_partial_outcome_written, outcome_written, partial_frame};
 use crate::arch::{partial_frame_of, FrameKind, Registers};
 use crate::capability::block::*;
 #[cfg(verus_keep_ghost)]
@@ -27,6 +27,7 @@ use crate::capability::link::*;
 use crate::capability::list::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+use crate::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
 #[cfg(verus_keep_ghost)]
@@ -1720,6 +1721,576 @@ impl CapKernel {
         self.retype_queue(root, from, to, base, CapKind::Endpoint, Tracked(steps))
     }
 
+    /// Fields of `CapKernel` outside `endpoints`, `threads.queues`, `threads.records`, and
+    /// `resched_ipis` kept unchanged when popping/waking queue waiters.
+    pub open spec fn queue_slice_keeps(pre: Self, post: Self) -> bool {
+        &&& post.blocks == pre.blocks
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.holders == pre.holders
+        &&& post.cores == pre.cores
+        &&& post.processes == pre.processes
+        &&& post.replies == pre.replies
+        &&& post.spaces == pre.spaces
+        &&& post.mappings == pre.mappings
+        &&& post.frames == pre.frames
+        &&& post.zeroing == pre.zeroing
+        &&& post.devices == pre.devices
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.targeted == pre.targeted
+        &&& post.core_tags == pre.core_tags
+        &&& post.tlb_dirty == pre.tlb_dirty
+        &&& post.tlb == pre.tlb
+        &&& post.iommus == pre.iommus
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.table_pages == pre.table_pages
+        &&& post.stop_ipis == pre.stop_ipis
+        &&& post.flush_ipis == pre.flush_ipis
+        &&& post.mapped == pre.mapped
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
+    }
+
+    /// Enqueueing thread `h` as `Runnable` on `pl` after its wait links are cleared keeps `wf`.
+    /// Cores stay as they were, so the current-thread relation the caller established carries over,
+    /// and `h` was not `Runnable`, so the switch lemma's placement check is the post record's.
+    #[verifier::spinoff_prover]
+    proof fn lemma_woken_waiter_wf(mid: Self, enqueued: Self, post: Self, h: usize, pl: Placement)
+        requires
+            mid.wf(),
+            mid.blocks.pages@.len() == enqueued.blocks.pages@.len(),
+            mid.threads.records@.contains_key(h),
+            queues_wf(&enqueued.threads.queues, enqueued.threads.records@),
+            enqueued.threads.records@.dom() == mid.threads.records@.dom(),
+            forall|x: usize| x != h && #[trigger] enqueued.threads.records@.contains_key(x)
+                ==> same_record_perm_but_links(mid.threads.records@[x], enqueued.threads.records@[x]),
+            enqueued.threads.records@[h].addr() == mid.threads.records@[h].addr(),
+            enqueued.threads.records@[h].is_init(),
+            same_thread_but_links(enqueued.threads.records@[h].value(), ThreadRecord {
+                state: ThreadState::Runnable { core: pl.core },
+                ..mid.threads.records@[h].value()
+            }),
+            enqueued.threads.holders == mid.threads.holders,
+            enqueued.threads.boot_thread == mid.threads.boot_thread,
+            enqueued.list == mid.list,
+            enqueued.tables == mid.tables,
+            enqueued.blocks == mid.blocks,
+            enqueued.holders == mid.holders,
+            enqueued.mappings == mid.mappings,
+            enqueued.table_pages == mid.table_pages,
+            enqueued.zeroing == mid.zeroing,
+            enqueued.frames == mid.frames,
+            enqueued.spaces == mid.spaces,
+            enqueued.processes == mid.processes,
+            enqueued.endpoints == mid.endpoints,
+            enqueued.replies == mid.replies,
+            enqueued.mapped == mid.mapped,
+            enqueued.stale_epoch == mid.stale_epoch,
+            enqueued.flush_epoch == mid.flush_epoch,
+            enqueued.targeted == mid.targeted,
+            enqueued.core_tags == mid.core_tags,
+            enqueued.tlb_dirty == mid.tlb_dirty,
+            enqueued.iommus == mid.iommus,
+            enqueued.devices == mid.devices,
+            enqueued.tlb == mid.tlb,
+            enqueued.cores == mid.cores,
+            post == (CapKernel { resched_ipis: post.resched_ipis, ..enqueued }),
+            frame_save_wf(mid.threads.records@[h].value()),
+            pl.core < NUM_CPUS,
+            mid.threads.records@[h].value().placement == Some(pl),
+            current_wf(post.cores@, post.threads.records@),
+        ensures
+            post.wf(),
+    {
+        assert(post.blocks.pages@.len() == mid.blocks.pages@.len());
+        assert(post.cores == mid.cores);
+        assert(post.list == mid.list);
+        assert(post.endpoints == mid.endpoints);
+        assert(post.threads.records == enqueued.threads.records);
+        assert(post.threads.holders == mid.threads.holders);
+        assert(post.threads.boot_thread == mid.threads.boot_thread);
+        assert(queues_wf(&post.threads.queues, post.threads.records@));
+        assert(same_thread_but_links(post.threads.records@[h].value(), ThreadRecord {
+            state: ThreadState::Runnable { core: pl.core },
+            ..mid.threads.records@[h].value()
+        }));
+        assert(keeps_wait(mid.threads.records@[h].value(), post.threads.records@[h].value()));
+        assert(post.threads.records@[h].value().frame == mid.threads.records@[h].value().frame);
+        assert(post.threads.records@[h].value().saved == mid.threads.records@[h].value().saved);
+        assert(post.threads.records@[h].value().save == mid.threads.records@[h].value().save);
+        assert(frame_save_wf(post.threads.records@[h].value()));
+        assert(post.threads.records@[h].value().placement == Some(pl));
+        assert(post.threads.records@[h].value().state == (ThreadState::Runnable { core: pl.core }));
+        assert(thread_placed_running(post.threads.records@[h].value()));
+        assert(post.cores.wf()) by {
+            reveal(CapKernel::wf);
+        };
+        assert(0 < NUM_CPUS);
+        assert forall|x: usize| x != h && #[trigger] post.threads.records@.contains_key(x)
+            implies same_record_perm_but_links(mid.threads.records@[x], post.threads.records@[x]) by {
+            assert(enqueued.threads.records@.contains_key(x));
+        };
+        assert(Self::switch_frame(mid, post, 0, h));
+        Self::lemma_switch_wf(mid, post, 0, h);
+    }
+
+    /// Pops the head waiter `h` from queue `e`. If `h` is still `Blocked` on `e`, writes `out`
+    /// over its saved frame (keeping `h.saved` and updating `h.save`), clears its wait links,
+    /// enqueues it `Runnable` on its placement's core and priority, and records a reschedule IPI
+    /// when that priority outranks that core's current thread; otherwise unlinks the stale waiter.
+    #[verifier::spinoff_prover]
+    pub(crate) fn pop_and_wake_waiter(&mut self, e: usize, out: Outcome) -> (ret: usize)
+        requires
+            old(self).wf(),
+            old(self).endpoints.records@.contains_key(e),
+            old(self).endpoints.records@[e].value().head != NONE,
+            old(self).endpoints.records@[e].value().waiters@.len() > 0,
+        ensures
+            final(self).wf(),
+            ret == old(self).endpoints.records@[e].value().head,
+            ret == old(self).endpoints.records@[e].value().waiters@[0],
+            final(self).endpoints.records@.dom() == old(self).endpoints.records@.dom(),
+            final(self).endpoints.holders == old(self).endpoints.holders,
+            final(self).endpoints.records@[e].addr() == old(self).endpoints.records@[e].addr(),
+            final(self).endpoints.records@[e].is_init(),
+            ({
+                let r0 = old(self).endpoints.records@[e].value();
+                let rem = r0.waiters@.drop_first();
+                &&& final(self).endpoints.records@[e].value() == (QueueRecord {
+                    head: if rem.len() == 0 { NONE } else { rem[0] },
+                    tail: if rem.len() == 0 { NONE } else { r0.tail },
+                    waiters: Ghost(rem),
+                    word: if rem.len() == 0 { r0.word & !WAITER_BIT } else { r0.word },
+                    ..r0
+                })
+            }),
+            forall|x: usize| x != e && #[trigger] final(self).endpoints.records@.contains_key(x)
+                ==> final(self).endpoints.records@[x] == old(self).endpoints.records@[x],
+            final(self).threads.records@.dom() == old(self).threads.records@.dom(),
+            forall|x: usize| #[trigger] final(self).threads.records@.contains_key(x) ==> ({
+                let r = old(self).threads.records@[x].value();
+                let v = final(self).threads.records@[x].value();
+                let rem = old(self).endpoints.records@[e].value().waiters@.drop_first();
+                &&& final(self).threads.records@[x].addr() == old(self).threads.records@[x].addr()
+                &&& final(self).threads.records@[x].is_init()
+                &&& if x == ret {
+                    if r.state is Blocked {
+                        let pl = r.placement->Some_0;
+                        let new_frame = outcome_written(r.frame, out);
+                        same_thread_but_links(v, ThreadRecord {
+                            state: ThreadState::Runnable { core: pl.core },
+                            frame: new_frame,
+                            save: Ghost(entry_frame_save(new_frame, r.saved)),
+                            queued: NONE,
+                            wait_prev: NONE,
+                            wait_next: NONE,
+                            ..r
+                        })
+                    } else {
+                        same_thread_but_links(v, ThreadRecord {
+                            queued: NONE,
+                            wait_prev: NONE,
+                            wait_next: NONE,
+                            ..r
+                        })
+                    }
+                } else if rem.len() > 0 && x == rem[0] {
+                    same_thread_but_links(v, ThreadRecord { wait_prev: NONE, ..r })
+                } else {
+                    same_thread_but_links(v, r)
+                }
+            }),
+            final(self).resched_ipis@ == if old(self).threads.records@[ret].value().state is Blocked {
+                let pl = old(self).threads.records@[ret].value().placement->Some_0;
+                if old(self).outranks_current(pl.core as int, pl.priority) {
+                    old(self).resched_ipis@.push(pl.core)
+                } else {
+                    old(self).resched_ipis@
+                }
+            } else {
+                old(self).resched_ipis@
+            },
+            tears_down(old(self).view(), final(self).view(), e, e),
+            Self::queue_slice_keeps(*old(self), *final(self)),
+    {
+        let ghost pre = *self;
+        let r_e = *PPtr::<QueueRecord>::from_usize(e).borrow(
+            Tracked(self.endpoints.records.borrow().tracked_borrow(e)),
+        );
+        let h = r_e.head;
+        proof {
+            pre.lemma_page_span();
+            reveal(CapKernel::wf);
+            reveal(waits_wf);
+            lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
+            assert(wait_queue_wf(r_e, pre.threads.records@, e));
+            assert(waiter_linked(r_e.waiters@, pre.threads.records@, e, 0));
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, h));
+            if r_e.waiters@.len() > 1 {
+                assert(waiter_linked(r_e.waiters@, pre.threads.records@, e, 1));
+                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, r_e.waiters@[1]));
+                assert(r_e.waiters@[1] != NONE);
+                assert(pre.threads.records@[h].value().wait_next == r_e.waiters@[1]);
+            } else {
+                assert(pre.threads.records@[h].value().wait_next == NONE);
+            }
+            assert(pre.threads.records@[h].value().wait_prev == NONE);
+            assert(pre.threads.records@[h].value().queued == e);
+        }
+        let ptr_h = PPtr::<ThreadRecord>::from_usize(h + THREAD_RECORD_PAGE * PAGE_SZ);
+        let rec = *ptr_h.borrow(Tracked(self.threads.records.borrow().tracked_borrow(h)));
+        match rec.state {
+            ThreadState::Blocked { .. } => {
+                let mut new_frame = rec.frame;
+                new_frame.write_outcome(out);
+                let tracked mut perm_h = self.threads.records.borrow_mut().tracked_remove(h);
+                let _ = ptr_h.take(Tracked(&mut perm_h));
+                ptr_h.put(Tracked(&mut perm_h), ThreadRecord {
+                    state: ThreadState::Inactive,
+                    frame: new_frame,
+                    save: Ghost(entry_frame_save(new_frame, rec.saved)),
+                    ..rec
+                });
+                proof {
+                    self.threads.records.borrow_mut().tracked_insert(h, perm_h);
+                }
+                let ghost mid1 = *self;
+                proof {
+                    assert(mid1.threads.records@.dom() =~= pre.threads.records@.dom());
+                    lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
+                    assert forall|x: usize| x != h && #[trigger] mid1.threads.records@.contains_key(x)
+                        implies same_record_perm_but_links(pre.threads.records@[x], mid1.threads.records@[x]) by {
+                        assert(mid1.threads.records@[x] == pre.threads.records@[x]);
+                    }
+                    pre.lemma_thread_saved_frame(h);
+                    if let FrameKind::Partial = rec.saved {
+                        lemma_partial_outcome_written(rec.frame, out);
+                    }
+                    reveal(frame_save_matches);
+                    assert(frame_save_wf(mid1.threads.records@[h].value()));
+                    lemma_threads_record_written(&mid1.list, &mid1.tables, &pre.threads, &mid1.threads, &mid1.blocks, h);
+                    lemma_queues_same_wait(&pre.threads.queues, pre.threads.records@, mid1.threads.records@);
+                    assert forall|u: usize| #[trigger] mid1.threads.records@.contains_key(u)
+                        && mid1.threads.records@[u].value().state is Blocked
+                        implies mid1.threads.records@[u].value().state == pre.threads.records@[u].value().state by {
+                        assert(u != h);
+                    }
+                    lemma_waits_framed(pre.endpoints.records@, mid1.endpoints.records@, pre.threads.records@, mid1.threads.records@);
+                    lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &mid1.list, &mid1.tables, &mid1.threads);
+                    reveal(current_wf);
+                    assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(mid1.cores@, d, x) implies {
+                        &&& mid1.threads.records@.contains_key(x)
+                        &&& mid1.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                        &&& !mid1.threads.records@[x].value().pending_stop ==> runs_in_space(mid1.cores@, mid1.threads.records@, d, x)
+                    } by {
+                        assert(runs(pre.cores@, d, x));
+                        assert(pre.threads.records@[x].value().state is Running);
+                        assert(x != h);
+                    }
+                    assert forall|x: usize| #[trigger] mid1.threads.records@.contains_key(x)
+                        && mid1.threads.records@[x].value().state is Running implies {
+                        let d = mid1.threads.records@[x].value().state->Running_core;
+                        &&& d < NUM_CPUS
+                        &&& mid1.cores@[d as int].current_thread == Some(x)
+                    } by {
+                        assert(x != h);
+                        assert(pre.threads.records@.contains_key(x));
+                        assert(pre.threads.records@[x].value().state is Running);
+                    }
+                    assert forall|x: usize| #[trigger] mid1.threads.records@.contains_key(x)
+                        && mid1.threads.records@[x].value().pending_stop
+                        implies mid1.threads.records@[x].value().state is Running by {
+                        assert(x != h);
+                        assert(pre.threads.records@.contains_key(x));
+                    }
+                    reveal(placed_running_wf);
+                    assert(placed_running_wf(mid1.threads.records@));
+                    assert(current_wf(mid1.cores@, mid1.threads.records@));
+                    lemma_bindings_kept(&pre.list, &mid1.list, &pre.threads, &mid1.threads, &pre.processes, &mid1.processes);
+                    Self::lemma_binding_parents_same_caps(pre, mid1);
+                    assert(forall|x: usize| #[trigger] mid1.threads.records@.contains_key(x)
+                        ==> thread_wf(&mid1.list, &mid1.threads, &mid1.blocks, x));
+                    assert(mid1 == (CapKernel { endpoints: mid1.endpoints, threads: mid1.threads, cores: mid1.cores, ..pre }));
+                    assert(mid1.threads == (Threads { records: mid1.threads.records, ..pre.threads }));
+                    Self::lemma_queue_edit_wf(pre, mid1, 0);
+                }
+                self.unlink_waiter(h);
+                let ghost mid2 = *self;
+                let pl = match rec.placement {
+                    Some(pl) => pl,
+                    None => {
+                        proof {
+                            reveal(CapKernel::wf);
+                            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, h));
+                            assert(false);
+                        }
+                        Placement { core: 0, priority: 0 }
+                    },
+                };
+                proof {
+                    reveal(CapKernel::wf);
+                    reveal(CapKernel::unlinked_waiter);
+                    reveal(placements_wf);
+                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, h));
+                    assert(pl.core < NUM_CPUS);
+                    assert(pl.priority <= MAX_PRIORITY);
+                    assert(rec.process is Some);
+                    assert(mid1.threads.records@[h].value().wait_next == rec.wait_next);
+                    assert(mid1.threads.records@[h].value().wait_prev == NONE);
+                    assert(mid2.threads.records@[h].value().wait_next == NONE);
+                    assert(mid2.threads.records@[h].value().wait_prev == NONE);
+                    assert(mid2.endpoints.records@[e].value().waiters@ =~= r_e.waiters@.drop_first());
+                    let rem = r_e.waiters@.drop_first();
+                    if rem.len() == 0 {
+                        assert(r_e.waiters@.len() == 1);
+                        assert(rec.wait_next == NONE);
+                        assert(mid2.endpoints.records@[e].value().head == NONE);
+                        assert(mid2.endpoints.records@[e].value().tail == NONE);
+                        assert(mid2.endpoints.records@[e].value().word == (r_e.word & !WAITER_BIT));
+                    } else {
+                        assert(r_e.waiters@.len() > 1);
+                        assert(rec.wait_next == r_e.waiters@[1]);
+                        assert(rec.wait_next != NONE);
+                        assert(rec.wait_next == rem[0]);
+                        assert(mid2.endpoints.records@[e].value().head == rem[0]);
+                        assert(mid2.endpoints.records@[e].value().tail == r_e.tail);
+                        assert(mid2.endpoints.records@[e].value().word == r_e.word);
+                    }
+                }
+                let outranks = self.core_outranks(pl.core, pl.priority);
+                let rec_mid2 = *ptr_h.borrow(Tracked(self.threads.records.borrow().tracked_borrow(h)));
+                proof {
+                    assert(rec_mid2 == mid2.threads.records@[h].value());
+                }
+                self.enqueue_and_write(
+                    pl.core,
+                    pl.priority,
+                    h,
+                    ThreadRecord {
+                        state: ThreadState::Runnable { core: pl.core },
+                        ..rec_mid2
+                    },
+                );
+                let ghost mid3 = *self;
+                self.resched_ipis = Ghost(if outranks {
+                    mid2.resched_ipis@.push(pl.core)
+                } else {
+                    mid2.resched_ipis@
+                });
+                proof {
+                    let post = *self;
+                    assert(mid3.threads.records@.dom() =~= mid2.threads.records@.dom());
+                    assert forall|x: usize| x != h && #[trigger] post.threads.records@.contains_key(x)
+                        implies same_record_perm_but_links(mid2.threads.records@[x], post.threads.records@[x]) by {
+                    }
+                    assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
+                        && post.threads.records@[u].value().state is Blocked
+                        implies post.threads.records@[u].value().state == mid2.threads.records@[u].value().state by {
+                        assert(u != h);
+                    }
+                    lemma_waits_framed(mid2.endpoints.records@, post.endpoints.records@, mid2.threads.records@, post.threads.records@);
+                    lemma_placements_kept(&mid2.list, &mid2.tables, &mid2.threads, &post.list, &post.tables, &post.threads);
+                    reveal(current_wf);
+                    assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                        &&& post.threads.records@.contains_key(x)
+                        &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                        &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
+                    } by {
+                        assert(runs(mid2.cores@, d, x));
+                        assert(mid2.threads.records@[x].value().state is Running);
+                        assert(x != h);
+                    }
+                    assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
+                        && post.threads.records@[x].value().state is Running implies {
+                        let d = post.threads.records@[x].value().state->Running_core;
+                        &&& d < NUM_CPUS
+                        &&& post.cores@[d as int].current_thread == Some(x)
+                    } by {
+                        assert(x != h);
+                        assert(mid2.threads.records@.contains_key(x));
+                        assert(mid2.threads.records@[x].value().state is Running);
+                    }
+                    assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
+                        && post.threads.records@[x].value().pending_stop
+                        implies post.threads.records@[x].value().state is Running by {
+                        assert(x != h);
+                        assert(mid2.threads.records@.contains_key(x));
+                    }
+                    assert(current_wf(post.cores@, post.threads.records@));
+                    assert(post == (CapKernel { resched_ipis: post.resched_ipis, ..mid3 }));
+                    assert(same_thread_but_links(mid3.threads.records@[h].value(), ThreadRecord {
+                        state: ThreadState::Runnable { core: pl.core },
+                        ..mid2.threads.records@[h].value()
+                    }));
+                    reveal(CapKernel::unlinked_waiter);
+                    assert(mid2.wf());
+                    assert(mid2.threads.records@[h].value().frame == mid1.threads.records@[h].value().frame);
+                    assert(mid2.threads.records@[h].value().saved == mid1.threads.records@[h].value().saved);
+                    assert(mid2.threads.records@[h].value().save == mid1.threads.records@[h].value().save);
+                    assert(frame_save_wf(mid2.threads.records@[h].value()));
+                    assert(mid2.threads.records@[h].value().placement == Some(pl));
+                    Self::lemma_woken_waiter_wf(mid2, mid3, post, h, pl);
+                    let rem = r_e.waiters@.drop_first();
+                    assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) implies ({
+                        let r = pre.threads.records@[x].value();
+                        let v = post.threads.records@[x].value();
+                        let new_frame = outcome_written(r.frame, out);
+                        if x == h {
+                            same_thread_but_links(v, ThreadRecord {
+                                state: ThreadState::Runnable { core: pl.core },
+                                frame: new_frame,
+                                save: Ghost(entry_frame_save(new_frame, r.saved)),
+                                queued: NONE,
+                                wait_prev: NONE,
+                                wait_next: NONE,
+                                ..r
+                            })
+                        } else if rem.len() > 0 && x == rem[0] {
+                            same_thread_but_links(v, ThreadRecord { wait_prev: NONE, ..r })
+                        } else {
+                            same_thread_but_links(v, r)
+                        }
+                    }) by {
+                        assert(mid2.threads.records@.contains_key(x));
+                        if x == h {
+                            assert(post.threads.records@[h].value().frame == new_frame);
+                            assert(post.threads.records@[h].value().queued == NONE);
+                            assert(post.threads.records@[h].value().wait_prev == NONE);
+                            assert(post.threads.records@[h].value().wait_next == NONE);
+                        } else if rem.len() > 0 && x == rem[0] {
+                            assert(x == rec.wait_next);
+                            assert(mid1.threads.records@[x].value() == pre.threads.records@[x].value());
+                            assert(mid2.threads.records@[x].value()
+                                == (ThreadRecord { wait_prev: NONE, ..mid1.threads.records@[x].value() }));
+                            assert(same_thread_but_links(post.threads.records@[x].value(), mid2.threads.records@[x].value()));
+                        } else {
+                            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, x));
+                            assert(x != NONE);
+                            assert(x != rec.wait_prev && x != rec.wait_next);
+                            assert(mid2.threads.records@[x] == mid1.threads.records@[x]);
+                            assert(mid1.threads.records@[x].value() == pre.threads.records@[x].value());
+                            assert(same_thread_but_links(post.threads.records@[x].value(), mid2.threads.records@[x].value()));
+                        }
+                    }
+                    assert(mid1.cores == pre.cores);
+                    assert(mid2.cores == mid1.cores);
+                    assert(mid2.threads.records@.dom() =~= pre.threads.records@.dom());
+                    assert forall|x: usize| #[trigger] pre.threads.records@.contains_key(x)
+                        implies mid2.threads.records@[x].value().placement == pre.threads.records@[x].value().placement by {
+                        reveal(CapKernel::unlinked_waiter);
+                        if x == h {
+                            assert(mid1.threads.records@[h].value().placement == rec.placement);
+                            assert(rec.placement == pre.threads.records@[h].value().placement);
+                            assert(mid2.threads.records@[h].value() == (ThreadRecord {
+                                queued: NONE,
+                                wait_prev: NONE,
+                                wait_next: NONE,
+                                ..mid1.threads.records@[h].value()
+                            }));
+                        } else {
+                            assert(mid1.threads.records@[x] == pre.threads.records@[x]);
+                            let ur = mid1.threads.records@[x].value();
+                            let vr = mid2.threads.records@[x].value();
+                            assert(vr == (ThreadRecord { wait_prev: vr.wait_prev, wait_next: vr.wait_next, ..ur }));
+                        }
+                    }
+                    Self::lemma_queue_slice_outranks(pre, mid2, h);
+                    assert(waits_on(&pre.threads, h) == Some(e)) by {
+                        reveal(waits_wf);
+                        assert(pre.threads.records@[h].value().queued == e);
+                    }
+                    assert(pre.view().waiting.contains((e, h)));
+                    assert forall|u: usize| #[trigger] waits_on(&post.threads, u) is Some
+                        implies waits_on(&post.threads, u) == waits_on(&pre.threads, u) by {
+                        if u == h {
+                            assert(waits_on(&post.threads, h) is None);
+                        }
+                    }
+                    lemma_blocked_on_shrinks(&pre.threads, &post.threads);
+                    assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o)
+                        implies o == h && pre.view().waiting.contains((e, h)) by {
+                        assert((pre.view().contents)(o) != (post.view().contents)(o));
+                        if o != h {
+                            assert(!pre.threads.records@.contains_key(o) || post.threads.records@[o].value().frame == pre.threads.records@[o].value().frame);
+                            assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
+                            assert(false);
+                        }
+                    }
+                    lemma_unblocked_waiter_tears_down(pre.view(), post.view(), e, e, h);
+                }
+                h
+            },
+            _ => {
+                self.unlink_waiter(h);
+                proof {
+                    let post = *self;
+                    reveal(CapKernel::wf);
+                    reveal(CapKernel::unlinked_waiter);
+                    assert(post.endpoints.records@[e].value().waiters@ =~= r_e.waiters@.drop_first());
+                    let rem = r_e.waiters@.drop_first();
+                    if rem.len() == 0 {
+                        assert(r_e.waiters@.len() == 1);
+                        assert(rec.wait_next == NONE);
+                        assert(post.endpoints.records@[e].value().head == NONE);
+                        assert(post.endpoints.records@[e].value().tail == NONE);
+                        assert(post.endpoints.records@[e].value().word == (r_e.word & !WAITER_BIT));
+                    } else {
+                        assert(r_e.waiters@.len() > 1);
+                        assert(rec.wait_next == r_e.waiters@[1]);
+                        assert(rec.wait_next != NONE);
+                        assert(rec.wait_next == rem[0]);
+                        assert(post.endpoints.records@[e].value().head == rem[0]);
+                        assert(post.endpoints.records@[e].value().tail == r_e.tail);
+                        assert(post.endpoints.records@[e].value().word == r_e.word);
+                    }
+                    assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) implies ({
+                        let r = pre.threads.records@[x].value();
+                        let v = post.threads.records@[x].value();
+                        if x == h {
+                            same_thread_but_links(v, ThreadRecord {
+                                queued: NONE,
+                                wait_prev: NONE,
+                                wait_next: NONE,
+                                ..r
+                            })
+                        } else if rem.len() > 0 && x == rem[0] {
+                            same_thread_but_links(v, ThreadRecord { wait_prev: NONE, ..r })
+                        } else {
+                            same_thread_but_links(v, r)
+                        }
+                    }) by {
+                        assert(pre.threads.records@.contains_key(x));
+                        if rem.len() > 0 && x == rem[0] {
+                            assert(x == rec.wait_next);
+                            assert(post.threads.records@[x].value()
+                                == (ThreadRecord { wait_prev: NONE, ..pre.threads.records@[x].value() }));
+                        } else if x != h {
+                            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, x));
+                            assert(x != NONE);
+                            assert(x != rec.wait_prev && x != rec.wait_next);
+                            assert(post.threads.records@[x] == pre.threads.records@[x]);
+                        }
+                    }
+                    assert forall|t: usize| #[trigger] waits_on(&post.threads, t) == waits_on(&pre.threads, t) by {
+                        if t != h {
+                            assert(!pre.threads.records@.contains_key(t)
+                                || post.threads.records@[t].value().state == pre.threads.records@[t].value().state);
+                        } else {
+                            assert(post.threads.records@[h].value().state == pre.threads.records@[h].value().state);
+                        }
+                    }
+                    lemma_blocked_on_same(&pre.threads, &post.threads);
+                    assert forall|t: usize| #[trigger] post.threads.records@.contains_key(t)
+                        implies post.threads.records@[t].value().frame == pre.threads.records@[t].value().frame by {}
+                    assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+                    assert(post.view() == pre.view());
+                    lemma_unblocked_waiter_tears_down(pre.view(), post.view(), e, e, h);
+                }
+                h
+            },
+        }
+    }
+
     /// Retypes the free page at `base` as a notification, under the untyped at index `from` of the table
     /// at `root`, with its capability at the empty index `to`, carrying badge 0: a record that says it
     /// is live, with no thread waiting and a word of 0. All of these come from user space, and a
@@ -2207,6 +2778,20 @@ impl CapKernel {
                 &&& post.threads.records@[u].is_init()
                 &&& vr == (ThreadRecord { wait_prev: vr.wait_prev, wait_next: vr.wait_next, ..ur })
             })
+            &&& forall|u: usize| u != t && u != prev && u != next && #[trigger] post.threads.records@.contains_key(u)
+                ==> post.threads.records@[u] == pre.threads.records@[u]
+            &&& (prev != NONE ==> {
+                &&& pre.threads.records@.contains_key(prev)
+                &&& post.threads.records@[prev].addr() == pre.threads.records@[prev].addr()
+                &&& post.threads.records@[prev].is_init()
+                &&& post.threads.records@[prev].value() == (ThreadRecord { wait_next: next, ..pre.threads.records@[prev].value() })
+            })
+            &&& (next != NONE ==> {
+                &&& pre.threads.records@.contains_key(next)
+                &&& post.threads.records@[next].addr() == pre.threads.records@[next].addr()
+                &&& post.threads.records@[next].is_init()
+                &&& post.threads.records@[next].value() == (ThreadRecord { wait_prev: prev, ..pre.threads.records@[next].value() })
+            })
             &&& post.endpoints.holders == pre.endpoints.holders
             &&& post.endpoints.records@.dom() == pre.endpoints.records@.dom()
             &&& forall|x: usize| x != q && #[trigger] post.endpoints.records@.contains_key(x)
@@ -2405,6 +2990,12 @@ impl CapKernel {
             !(old(self).threads.records@[t].value().state is Blocked),
         ensures
             Self::unlinked_waiter(*old(self), *final(self), t),
+            ({
+                let q = old(self).threads.records@[t].value().queued;
+                q != NONE && old(self).endpoints.records@[q].value().head == t
+                    ==> final(self).endpoints.records@[q].value().waiters@
+                        == old(self).endpoints.records@[q].value().waiters@.drop_first()
+            }),
     {
         hide(CapKernel::wf);
         let ghost pre = *self;
@@ -2524,6 +3115,18 @@ impl CapKernel {
             assert(0 <= idx < pre.endpoints.records@[q].value().waiters@.len());
             assert(pre.endpoints.records@[q].value().waiters@[idx] == t);
             assert(post.endpoints.records@[q].value().waiters@ == pre.endpoints.records@[q].value().waiters@.remove(idx));
+            if pre.endpoints.records@[q].value().head == t {
+                assert(wait_queue_wf(r0, pre.threads.records@, q)) by {
+                    reveal(waits_wf);
+                }
+                assert(r0.waiters@[0] == r0.head);
+                assert(r0.waiters@.no_duplicates());
+                if idx != 0 {
+                    assert(r0.waiters@[idx] == r0.waiters@[0]);
+                }
+                assert(idx == 0);
+                assert(post.endpoints.records@[q].value().waiters@ =~= r0.waiters@.drop_first());
+            }
             assert forall|u: usize| u != t && #[trigger] post.threads.records@.contains_key(u) implies ({
                 let ur = pre.threads.records@[u].value();
                 let vr = post.threads.records@[u].value();
