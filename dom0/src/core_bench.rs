@@ -227,6 +227,21 @@ fn cas_increment() {
     }
 }
 
+/// Runs `body` on core 0 while core 1's CAS helper continuously contends on [`COUNTER`],
+/// starting the helper before `body` and suspending it afterwards.
+pub(crate) fn with_diff_core_cas(body: impl FnOnce(&AtomicU64) -> bool) -> bool {
+    if core_count() < 2 {
+        return false;
+    }
+    let helper = slot(HELPER_FIRST);
+    let seen = COUNTS[1].0.load(Ordering::Acquire);
+    let started = invoked(operation::START, helper, [0; 5]) == operation::STATUS_OK
+        && moved(&COUNTS[1], seen);
+    let ok = started && body(&COUNTER.0);
+    let suspended = stopped(helper);
+    ok && suspended
+}
+
 /// Registers, for each count of cores from 2 to CORES, Atomic/ContendedCasScaling/<n>Cores: dom0
 /// on core 0 increments COUNTER by CAS, one increment an iteration, while the helpers of cores 1 to n - 1
 /// do the same for good, each started and seen counting before the first iteration and suspended after

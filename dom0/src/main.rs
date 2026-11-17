@@ -137,10 +137,10 @@
 //! held.
 //! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`), memory pointer-chase,
 //! core-scaling/placement (`core_bench`), scaled/contended capability (`cap_bench`), heap
-//! allocator / working-set churn (`heap_bench`), shared-frame ring/mailbox (`ring_bench`), and
-//! cold-cache/pipelined/fan-in/bulk ring (`ump_bench`) microbenchmarks
-//! (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under the `bench`
-//! feature prints the full results summary and `fuchsiaperf.json` block; `core_bench` and
+//! allocator / working-set churn (`heap_bench`), shared-frame ring/mailbox (`ring_bench`),
+//! cold-cache/pipelined/fan-in/bulk ring (`ump_bench`), and user-space primitive (`prim_bench`)
+//! microbenchmarks (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under
+//! the `bench` feature prints the full results summary and `fuchsiaperf.json` block; `core_bench` and
 //! `ump_bench` bind dom0-process bench threads before the heap claims the caller token, probing the
 //! online core count with CAS helpers.
 //! dom0 prints those results through the console, then an exit marker,
@@ -165,6 +165,7 @@ mod core_bench;
 mod flush_cost;
 mod heap_bench;
 mod mmu_bench;
+mod prim_bench;
 mod registers;
 mod ring_bench;
 mod ump_bench;
@@ -712,6 +713,9 @@ fn benchmarks_held() -> bool {
         return false;
     }
     if !ump_bench::register(&mut registry) {
+        return false;
+    }
+    if !prim_bench::register(&mut registry) {
         return false;
     }
     let mut console = ConsoleWriter::new();
