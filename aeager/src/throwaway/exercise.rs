@@ -47,6 +47,7 @@ use crate::witness::*;
 pub fn throwaway_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>)
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),

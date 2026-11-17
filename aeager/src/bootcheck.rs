@@ -545,6 +545,7 @@ fn make_bench_in(
         final(caller)@.kernel() == old(caller)@.kernel(),
         final(caller)@.entry() == old(caller)@.entry(),
         final(caller)@.root() == old(caller)@.root(),
+        final(caller)@.history() == old(caller)@.history(),
         final(caller)@.pages_id() == old(caller)@.pages_id(),
         final(caller)@.wf(),
         own_process(final(caller)@),

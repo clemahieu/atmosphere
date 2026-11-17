@@ -48,6 +48,7 @@ pub fn throwaway_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracke
     requires
         space < TABLE_INDICES,
         token@.pages_wf(),
+        token@.history().len() > 0,
         token@.kernel() == token@.start(),
         window_tokens_clear(token@, window@.addr),
         source_ready(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr),

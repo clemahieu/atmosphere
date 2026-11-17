@@ -11,9 +11,12 @@
 //! threads did not take it, and that the rely composes. So the step says only that the entry state is
 //! well formed and one the rely relates to the state the caller token last held, and the token carries
 //! that entry state so the wrappers can state their contracts from it. What stays unproven is that the
-//! token was the kernel's state and the caller's root when the process was handed it, and that the
-//! process's threads make every call through it. The step is the kernel-vouched form of
-//! design/who-vouches-for-an-unproven-claim/.
+//! token was the kernel's state and the caller's root when the process was handed it, that the
+//! process's Rust memory (its image, stack and statics) is mapped when its first call through acall
+//! enters, and that the process's threads make every call through the token. The first step through
+//! the token sets `Caller::start` to that call's entry state, and later steps keep it, so no page
+//! token rests on the conjured start (design/region-map-reads-presence-at-the-first-call/). The step
+//! is the kernel-vouched form of design/who-vouches-for-an-unproven-claim/.
 use vstd::prelude::*;
 
 use asys::operation;
@@ -55,7 +58,9 @@ verus! {
 
 /// What a process knows of the kernel as it calls: the kernel's state its last call returned, the state
 /// that call entered from, the root of its own table, which names the process to the kernel and
-/// never changes, the kernel's state the process was handed, and the authority over its page tokens.
+/// never changes, the kernel's state when its first call through acall entered (pinned by the first
+/// step; before any step, whatever state was conjured, on the vouched claim that the process's Rust
+/// memory is mapped when that first call enters), and the authority over its page tokens.
 /// A token: its fields are private and it has
 /// no constructor and no copy, so verified code holds only the one it was handed at the process's
 /// start and cannot keep an old one to call with again. Only specifications read its fields, so only
@@ -317,7 +322,8 @@ impl Caller {
         self.history
     }
 
-    /// The kernel's state the process was handed, before any of its calls.
+    /// The kernel's state when the process's first call through acall entered, pinned by that first
+    /// step; before any step, the conjured start, which no page token may rest on.
     pub closed spec fn start(self) -> CapKernel {
         self.start
     }
@@ -338,10 +344,12 @@ impl Caller {
     }
 
     /// The caller's process is sealed and a process, so other callers only remove entries of its
-    /// space (CapKernel::rely), and its space agrees with every page token.
+    /// space (CapKernel::rely), no page token is held before the first step pins `start`, and its
+    /// space agrees with every page token.
     pub open spec fn pages_wf(&self) -> bool {
         &&& self.kernel().sealed(self.root())
         &&& self.kernel().processes.records@.contains_key(self.root())
+        &&& self.history().len() == 0 ==> self.pages().dom().is_empty()
         &&& pages_agree(self.kernel(), self.root(), self.pages())
     }
 
@@ -358,7 +366,7 @@ impl Caller {
         self.pages.take()
     }
 
-    /// Puts back what the call left aside: the authority and the state the process was handed, which a
+    /// Puts back what the call left aside: the authority and the pinned start state, which a
     /// system call does not touch, since neither exists at run time.
     proof fn restore(tracked &mut self, tracked pages: GhostMapAuth<SpacePath, Option<usize>>, start: CapKernel)
         ensures
@@ -374,10 +382,13 @@ impl Caller {
     }
 }
 
-/// From `pre` to `post`, a call kept the page tokens: the state the process was handed, the authority
-/// and what every token says are as they were.
+/// From `pre` to `post`, a call kept the page tokens: `history` only grows, `start` stays what it
+/// was once a step is in `history` and is pinned to the first step's entry when `history` was empty,
+/// and the authority and what every token says are as they were.
 pub open spec fn pages_kept(pre: Caller, post: Caller) -> bool {
-    &&& post.start() == pre.start()
+    &&& pre.history().len() <= post.history().len()
+    &&& pre.history().len() > 0 ==> post.start() == pre.start()
+    &&& pre.history().len() == 0 && post.history().len() > 0 ==> post.start() == post.history()[0].0
     &&& post.pages() == pre.pages()
     &&& post.pages_id() == pre.pages_id()
 }
@@ -430,6 +441,7 @@ pub proof fn lemma_returned_agrees(post: Caller, mid: CapKernel, c: int)
         CapKernel::flushed_step(mid, post.kernel(), c),
         post.kernel().sealed(post.root()),
         post.kernel().processes.records@.contains_key(post.root()),
+        post.history().len() == 0 ==> post.pages().dom().is_empty(),
     ensures
         post.pages_wf(),
 {
@@ -554,12 +566,15 @@ pub(crate) proof fn lemma_derived_keeps_slot_names_own_space(v: SlotView, rights
 }
 
 /// Claims the token for the page at `p` of the caller's own space, saying no frame is mapped there. The
-/// page had no entry, nor a large one over it, in the state the process was handed, so none of the
-/// process's Rust memory lies there, its stack, statics and image being mapped or it would not run;
-/// it has none now; and no token for it was claimed before, so the token is the only one.
+/// page had no entry, nor a large one over it, at the entry of the process's first call through
+/// acall, so none of the process's Rust memory lies there, its stack, statics and image being mapped
+/// when that first call enters; it has none now; a step is in the history, so `start()` is pinned
+/// to that entry state and no token rests on the conjured start; and no token for it was claimed
+/// before, so the token is the only one.
 pub proof fn claim(tracked caller: &mut Caller, p: SpacePath) -> (tracked token: PageToken)
     requires
         old(caller).pages_wf(),
+        old(caller).history().len() > 0,
         !old(caller).pages().contains_key(p),
         page_agrees(space_mapping(tree_of(&old(caller).start().table_pages, &old(caller).start().spaces), old(caller).root()), p, None),
         page_agrees(space_mapping(tree_of(&old(caller).kernel().table_pages, &old(caller).kernel().spaces), old(caller).root()), p, None),
@@ -588,10 +603,12 @@ pub proof fn claim(tracked caller: &mut Caller, p: SpacePath) -> (tracked token:
 
 /// Claims the tokens of the pages at the paths in `s` of the caller's own space as one set, each saying
 /// no frame is mapped there, on claim's premises for every page of the set: no entry, nor a large one
-/// over it, in the state the process was handed and now, and no token claimed for it before.
+/// over it, at the entry of the process's first call through acall and now, a step in the history so
+/// `start()` is that entry state, and no token claimed for any page of `s` before.
 pub proof fn claim_set(tracked caller: &mut Caller, s: Set<SpacePath>) -> (tracked set: PageSet)
     requires
         old(caller).pages_wf(),
+        old(caller).history().len() > 0,
         s.disjoint(old(caller).pages().dom()),
         forall|p: SpacePath| #[trigger] s.contains(p) ==> {
             &&& page_agrees(space_mapping(tree_of(&old(caller).start().table_pages, &old(caller).start().spaces), old(caller).root()), p, None)
@@ -701,8 +718,9 @@ pub proof fn lemma_entered(pre: CapKernel, post: CapKernel, root: usize, frame: 
 
 /// Invokes the operation `number` on the capability at `slot` with arguments 1 to 5, and returns what
 /// the kernel put in the status and result registers. The call enters from a well-formed state the rely
-/// relates to the one the token last held, which the token now carries as its entry. The state the
-/// process was handed and the page tokens' authority exist only in the proof, so the call keeps them.
+/// relates to the one the token last held, which the token now carries as its entry. When the token's
+/// history was empty, this first step pins `start` to that entry state; later steps keep `start`.
+/// The page tokens' authority exists only in the proof, so the call keeps it.
 pub(crate) fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
@@ -718,11 +736,13 @@ pub(crate) fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64
         pages_kept(old(caller)@, final(caller)@),
     no_unwind
 {
-    let ghost start = caller@.start;
+    let ghost old_start = caller@.start;
+    let ghost empty_history = caller@.history.len() == 0;
     let tracked pages = caller.borrow_mut().take_pages();
     let out = system_call(caller, number, slot, a1, a2, a3, a4, a5);
     let ghost called = caller@;
     proof {
+        let ghost start = if empty_history { called.entry } else { old_start };
         caller.borrow_mut().restore(pages, start);
         assert(caller@.kernel() == called.kernel());
         assert(caller@.entry() == called.entry());

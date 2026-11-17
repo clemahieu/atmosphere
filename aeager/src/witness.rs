@@ -44,6 +44,7 @@ verus! {
 pub fn witness_new(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: Option<Eager>)
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
@@ -66,6 +67,7 @@ pub fn witness_new(space: u64, untyped: u64, window: *mut u8, token: &mut Tracke
 pub fn witness_new_allocator(space: u64, untyped: u64, window: *mut u8, token: Tracked<Caller>) -> (r: AllocatorInit)
     requires
         token@.pages_wf(),
+        token@.history().len() > 0,
         token@.kernel() == token@.start(),
         window_tokens_clear(token@, window@.addr),
         source_ready(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
@@ -89,6 +91,7 @@ pub fn witness_new_allocator(space: u64, untyped: u64, window: *mut u8, token: T
 pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (seen: Exercised)
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
@@ -116,6 +119,7 @@ pub fn witness_exercise(space: u64, untyped: u64, window: *mut u8, token: &mut T
 pub fn witness_exercise_eager(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (seen: Option<Exercised>)
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
@@ -143,6 +147,7 @@ pub fn witness_exercise_eager(space: u64, untyped: u64, window: *mut u8, token: 
 pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: Option<*mut u8>)
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
@@ -170,6 +175,7 @@ pub fn witness_reserve(space: u64, untyped: u64, window: *mut u8, token: &mut Tr
 pub fn witness_release_span(space: u64, untyped: u64, window: *mut u8, token: &mut Tracked<Caller>) -> (r: (*mut u8, Option<*mut u8>))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
@@ -217,6 +223,7 @@ pub fn witness_back(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
@@ -295,6 +302,7 @@ pub fn witness_release(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as usize, slots, window@.addr),
@@ -369,6 +377,7 @@ pub fn witness_back_reuses_released(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),
@@ -575,6 +584,7 @@ pub fn witness_back_after_release_span(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),
@@ -781,6 +791,7 @@ pub fn witness_back_second_block(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (5 * TABLE_PAGES) as usize, slots, window@.addr),
@@ -972,6 +983,7 @@ fn two_sources_reserved(
 ) -> (r: (Eager, Eager))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         window_tokens_clear(old(token)@, second_window@.addr),
@@ -1098,6 +1110,7 @@ pub fn witness_two_sources(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         window_tokens_clear(old(token)@, second_window@.addr),
@@ -1206,6 +1219,7 @@ pub fn witness_second_after_back(
 ) -> (r: (Option<Tracked<PointsToRaw>>, Option<Tracked<PointsToRaw>>, Ghost<Seq<AcallStep>>, Ghost<Seq<AcallStep>>))
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         window_tokens_clear(old(token)@, second_window@.addr),
@@ -1351,6 +1365,7 @@ pub fn witness_invoke(space: u64, untyped: u64, window: *mut u8, token: Tracked<
     requires
         space < TABLE_INDICES,
         token@.pages_wf(),
+        token@.history().len() > 0,
         token@.kernel() == token@.start(),
         window_tokens_clear(token@, window@.addr),
         source_ready(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
@@ -1507,6 +1522,7 @@ pub fn witness_invoke_ways(
     requires
         space < TABLE_INDICES,
         token@.pages_wf(),
+        token@.history().len() > 0,
         token@.kernel() == token@.start(),
         window_tokens_clear(token@, window@.addr),
         source_ready(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr),
@@ -1609,6 +1625,7 @@ pub fn witness_invoke_other_serves(
         forall|i: int| 0 <= i < ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as int
             ==> #[trigger] frame_slot(slots as int, i) != second_space as int,
         token@.pages_wf(),
+        token@.history().len() > 0,
         token@.kernel() == token@.start(),
         window_tokens_clear(token@, window@.addr),
         window_tokens_clear(token@, second_window@.addr),

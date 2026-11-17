@@ -68,6 +68,7 @@ pub fn throwaway_invoke_other_serves(
         forall|i: int| 0 <= i < ((2 + WINDOW_BLOCKS) * TABLE_PAGES + 1) as int
             ==> #[trigger] frame_slot(slots as int, i) != second_space as int,
         token@.pages_wf(),
+        token@.history().len() > 0,
         token@.kernel() == token@.start(),
         window_tokens_clear(token@, window@.addr),
         window_tokens_clear(token@, second_window@.addr),

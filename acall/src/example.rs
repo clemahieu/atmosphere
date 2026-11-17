@@ -6,7 +6,8 @@
 //! stays says what it said while the caller is sealed, so when the kernel accepted all three calls the
 //! inspect says a frame of the page with the read right and no other.
 //! A proof of the page tokens beside it: a set of empty pages claimed as one token, one page's token
-//! taken out of it and put back.
+//! taken out of it and put back, and one call from an empty history pinning `start` to its entry
+//! state so a page empty there may be claimed with no fact of the conjured start.
 use vstd::prelude::*;
 
 #[cfg(verus_keep_ghost)]
@@ -17,6 +18,8 @@ use verified::capability::inspect::CAP_KIND_FRAME;
 use verified::capability::kernel::CapKernel;
 #[cfg(verus_keep_ghost)]
 use verified::capability::link::tree_of;
+#[cfg(verus_keep_ghost)]
+use verified::capability::map::address_path;
 #[cfg(verus_keep_ghost)]
 use verified::capability::mapping::{space_mapping, SpacePath};
 #[cfg(verus_keep_ghost)]
@@ -281,12 +284,13 @@ pub fn derive_other_frame_keeps_frame(
     out
 }
 
-/// Claims a set of the caller's pages, each empty in the state the process was handed and now, as one
+/// Claims a set of the caller's pages, each empty at the first call's entry and now, as one
 /// token, takes the token of one page out of it and puts it back: the set says again that no frame is
 /// mapped at any of its pages, and the caller's tokens still agree with its space.
 pub proof fn page_set_round_trip(tracked caller: &mut Caller, s: Set<SpacePath>, p: SpacePath) -> (tracked set: PageSet)
     requires
         old(caller).pages_wf(),
+        old(caller).history().len() > 0,
         s.disjoint(old(caller).pages().dom()),
         s.contains(p),
         forall|q: SpacePath| #[trigger] s.contains(q) ==> {
@@ -304,6 +308,49 @@ pub proof fn page_set_round_trip(tracked caller: &mut Caller, s: Set<SpacePath>,
     set.put(token);
     assert(set.pages() =~= none_at(s));
     set
+}
+
+/// After one call through `acall` from a caller whose history is empty, `Caller::start` equals
+/// that call's entry state regardless of the conjured `start`, and a page empty there (kept empty
+/// from `old(caller)@.kernel()` across the rely and `inspect`) may be claimed with no fact about
+/// `old(caller)@.start()`.
+pub fn first_call_pins_start(caller: &mut Tracked<Caller>, at: u64, va: u64) -> (ret: (Outcome, Tracked<PageToken>))
+    requires
+        old(caller)@.wf(),
+        old(caller)@.pages_wf(),
+        old(caller)@.history().len() == 0,
+        page_agrees(space_mapping(tree_of(&old(caller)@.kernel().table_pages, &old(caller)@.kernel().spaces), old(caller)@.root()), address_path(va), None),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.pages_wf(),
+        final(caller)@.history().len() == 1,
+        final(caller)@.start() == final(caller)@.entry(),
+        final(caller)@.pages() == old(caller)@.pages().insert(address_path(va), None),
+        ret.1@.id() == final(caller)@.pages_id(),
+        ret.1@.path() == address_path(va),
+        ret.1@.frame() is None,
+{
+    let ghost pre = caller@;
+    let ghost p = address_path(va);
+    let out = inspect(caller, at);
+    proof {
+        let root = caller@.root();
+        assert(caller@.start() == caller@.entry());
+        let m_pre = space_mapping(tree_of(&pre.kernel().table_pages, &pre.kernel().spaces), root);
+        let m_entry = space_mapping(tree_of(&caller@.entry().table_pages, &caller@.entry().spaces), root);
+        let m_post = space_mapping(tree_of(&caller@.kernel().table_pages, &caller@.kernel().spaces), root);
+        let one = Map::<SpacePath, Option<usize>>::empty().insert(p, None);
+        assert forall|q: SpacePath| #[trigger] one.contains_key(q) implies page_agrees(m_pre, q, one[q]) by {
+            assert(q == p);
+        };
+        lemma_shrunk_keeps_agree(m_pre, m_entry, one);
+        lemma_shrunk_keeps_agree(m_entry, m_post, one);
+        assert(one.contains_key(p));
+        assert(page_agrees(m_entry, p, None));
+        assert(page_agrees(m_post, p, None));
+    }
+    let tracked token = claim(caller.borrow_mut(), address_path(va));
+    (out, Tracked(token))
 }
 
 } // verus!

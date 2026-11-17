@@ -54,6 +54,7 @@ pub fn throwaway_back_after_release_span(
 )
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (3 * TABLE_PAGES + 1) as usize, slots, window@.addr),

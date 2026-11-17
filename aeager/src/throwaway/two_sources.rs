@@ -58,6 +58,7 @@ pub fn throwaway_two_sources(
 )
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         window_tokens_clear(old(token)@, second_window@.addr),

@@ -58,6 +58,7 @@ pub fn throwaway_invoke_ways(
     requires
         space < TABLE_INDICES,
         token@.pages_wf(),
+        token@.history().len() > 0,
         token@.kernel() == token@.start(),
         window_tokens_clear(token@, window@.addr),
         source_ready(token@, space, untyped, 0, MAX_PAGES, 1, window@.addr),

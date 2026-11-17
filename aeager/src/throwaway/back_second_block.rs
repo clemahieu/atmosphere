@@ -54,6 +54,7 @@ pub fn throwaway_back_second_block(
 )
     requires
         old(token)@.pages_wf(),
+        old(token)@.history().len() > 0,
         old(token)@.kernel() == old(token)@.start(),
         window_tokens_clear(old(token)@, window@.addr),
         source_ready(old(token)@, space, untyped, memory, (5 * TABLE_PAGES) as usize, slots, window@.addr),

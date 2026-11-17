@@ -4,8 +4,9 @@
 //! operation's contract over the caller's view, proven in kernel/verified, which this crate imports.
 //!
 //! `step` is the system call, the one trusted item: its ensures is what the kernel proves of its own
-//! step, from an entry state the kernel's rely relates to the caller token's last state, on the premise
-//! `step` states that the token was the kernel's state when the process was handed it. Every wrapper in
+//! step, from an entry state the kernel's rely relates to the caller token's last state, on the premises
+//! `step` states: the token held the process's state and root when handed it, and the process's Rust
+//! memory is mapped when its first call through acall enters. Every wrapper in
 //! `capability` and `memory` is verified over it by the operation's kernel-side lemma and states the
 //! operation's contract from that entry state, so a contract here is a proven one, not an assumed one. `step`
 //! is private to this crate, so verified code calls the kernel only through the wrappers, and changes

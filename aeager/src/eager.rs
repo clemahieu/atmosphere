@@ -1916,6 +1916,7 @@ impl Record {
     /// caller's authority and agree with the frames it holds.
     spec fn serves(&self, caller: Caller) -> bool {
         &&& caller.wf()
+        &&& caller.history().len() > 0
         &&& own_process(caller)
         &&& names_own_space(caller, self.space)
         &&& frames_held(caller.kernel(), caller.root(), self.frames())
@@ -5618,6 +5619,7 @@ impl Eager {
     /// source maps it at, in the space of the token's process.
     pub closed spec fn holds(&self, token: Caller) -> bool {
         &&& frames_held(token.kernel(), token.root(), self.record.frames())
+        &&& token.history().len() > 0
         &&& token.pages_wf()
         &&& token.pages_id() == self.record.pages_id@
         &&& tokens_agree(
@@ -5629,14 +5631,15 @@ impl Eager {
         )
     }
 
-    /// Holding asks of the token its kernel state, its root, the authority and that its space agrees with
-    /// every page token, so a token that has only claimed page tokens since, as another source's `new`
-    /// does, holds the source still.
+    /// Holding asks of the token its kernel state, its root, a non-empty history, the authority and
+    /// that its space agrees with every page token, so a token that has only claimed page tokens since,
+    /// as another source's `new` does, holds the source still.
     pub proof fn lemma_holds_claimed(&self, a: Caller, b: Caller)
         requires
             self.holds(a),
             b.kernel() == a.kernel(),
             b.root() == a.root(),
+            b.history().len() > 0,
             b.pages_id() == a.pages_id(),
             b.pages_wf(),
         ensures
@@ -6111,6 +6114,7 @@ impl Eager {
         requires
             self.serves(pre),
             post.wf(),
+            post.history().len() > 0,
             own_process(post),
             names_own_space(post, self.record.space),
             frames_held(post.kernel(), post.root(), self.record.frames()),

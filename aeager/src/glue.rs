@@ -645,20 +645,25 @@ pub open spec fn keeps_own_space(pre: Caller, post: Caller) -> bool {
     forall|space: u64| #[trigger] names_own_space(pre, space) ==> names_own_space(post, space)
 }
 
-/// The page tokens' authority, the pages they are for, and the state the process was handed, are as
-/// they were from `pre` to `post`, and the caller's space agrees with every page token in `post` whenever
-/// it did in `pre`: what a token says may change, but no page gains or loses one.
+/// The page tokens' authority, the pages they are for, and the pinned start state (once a step is
+/// in `history`, and pinned to the first step's entry when `history` was empty), are as they were
+/// from `pre` to `post`, and the caller's space agrees with every page token in `post` whenever it
+/// did in `pre`: what a token says may change, but no page gains or loses one.
 pub open spec fn keeps_pages(pre: Caller, post: Caller) -> bool {
-    &&& post.start() == pre.start()
+    &&& pre.history().len() <= post.history().len()
+    &&& pre.history().len() > 0 ==> post.start() == pre.start()
+    &&& pre.history().len() == 0 && post.history().len() > 0 ==> post.start() == post.history()[0].0
     &&& post.pages_id() == pre.pages_id()
     &&& post.pages().dom() == pre.pages().dom()
     &&& pre.pages_wf() ==> post.pages_wf()
 }
 
-/// No page of the window at `window` has a token yet, nor an entry, or a large one over it, in the
-/// caller's space as the process was handed it or as it is now: what `claim` asks of each.
+/// At least one step is in the caller's history so its `start()` state is pinned, and no page of the
+/// window at `window` has a token yet, nor an entry, or a large one over it, in the caller's space at
+/// its pinned start state or as it is now: what `claim` asks of each.
 pub open spec fn window_unclaimed(caller: Caller, window: usize) -> bool {
-    forall|a: int| #[trigger] window_page(window, a) ==> {
+    &&& caller.history().len() > 0
+    &&& forall|a: int| #[trigger] window_page(window, a) ==> {
         &&& !caller.pages().contains_key(address_path(a as u64))
         &&& page_agrees(
             space_mapping(tree_of(&caller.start().table_pages, &caller.start().spaces), caller.root()),
@@ -710,9 +715,9 @@ pub(crate) proof fn lemma_l4_empty_page_agrees(tree: TableTree, root: usize, p: 
     };
 }
 
-/// `source_ready` on a caller that still holds the kernel state it was handed, and that holds no
-/// page token for the window, is `window_unclaimed`: the window's level-4 entry is empty, so no
-/// page of it is mapped now or in the state the process was handed.
+/// `source_ready` on a caller that has taken at least one step, still holds its pinned start state,
+/// and holds no page token for the window, is `window_unclaimed`: the window's level-4 entry is empty,
+/// so no page of it is mapped now or at the pinned start state.
 pub proof fn lemma_window_unclaimed(
     caller: Caller,
     space: u64,
@@ -724,6 +729,7 @@ pub proof fn lemma_window_unclaimed(
 )
     requires
         source_ready(caller, space, untyped, memory, pages, slots, window),
+        caller.history().len() > 0,
         caller.kernel() == caller.start(),
         window_tokens_clear(caller, window),
     ensures
@@ -789,13 +795,14 @@ pub proof fn lemma_window_level4(window: usize, a: int)
 }
 
 /// A caller that only claimed page tokens for paths of the window at `window` since `pre`, keeping its
-/// kernel state, its root and the state it was handed, leaves a window at another level-4 entry as
-/// unclaimed as it was: none of that window's paths is one of `window`'s.
+/// kernel state, its root, its history and its pinned start state, leaves a window at another level-4
+/// entry as unclaimed as it was: none of that window's paths is one of `window`'s.
 pub proof fn lemma_window_still_unclaimed(pre: Caller, post: Caller, window: usize, other: usize)
     requires
         window_unclaimed(pre, other),
         post.kernel() == pre.kernel(),
         post.root() == pre.root(),
+        post.history() == pre.history(),
         post.start() == pre.start(),
         forall|p: SpacePath| #[trigger]
             post.pages().contains_key(p) ==> pre.pages().contains_key(p) || window_path_below(
@@ -2450,6 +2457,8 @@ pub(crate) fn map_page(
         assert(frame_held(mid.kernel(), root, frames@[key@]));
         // The token's page is one the authority already has, so the map changes what it says alone.
         token.borrow().agree(caller.borrow());
+        assert(!first.pages().dom().is_empty());
+        assert(first.history().len() > 0);
     }
     let out = memory::map_own(caller, token, space, address as u64, frame, 0);
     proof {
@@ -2666,6 +2675,8 @@ pub(crate) fn unmap_page(
     proof {
         // The token's page is one the authority already has, so the unmap changes what it says alone.
         token.borrow().agree(caller.borrow());
+        assert(!pre.pages().dom().is_empty());
+        assert(pre.history().len() > 0);
     }
     // The caller gave up the permission to every byte of the page, so nothing it uses is there.
     let out = memory::unmap_own(caller, token, space, address as u64);
