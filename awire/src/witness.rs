@@ -545,4 +545,21 @@ pub fn witness_elements() -> (r: (usize, u8, u8))
     (n, a, b)
 }
 
+/// Adds two 16-bit ones'-complement sums with end-around carry.
+pub fn witness_fold_add(a: u16, b: u16) -> (r: u16)
+    ensures
+        r == spec_fold_add(a, b),
+{
+    fold_add(a, b)
+}
+
+/// Computes the 16-bit ones'-complement sum of `data`.
+pub fn witness_checksum(data: &[u8]) -> (r: u16)
+    ensures
+        r == spec_checksum(data@),
+{
+    let tracked mut steps = Steps::fresh();
+    checksum(data, Tracked(&mut steps))
+}
+
 } // verus!

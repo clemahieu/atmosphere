@@ -5,10 +5,12 @@
 //! compiled only under cfg(throwaway). design/witness-per-way-an-operation-succeeds/.
 pub mod bounded;
 pub mod bytes;
+pub mod checksum;
 pub mod choice_first;
 pub mod choice_second;
 pub mod count;
 pub mod elements;
+pub mod fold_add;
 pub mod length_prefixed;
 pub mod length_u16_be;
 pub mod length_u16_le;

@@ -10,6 +10,7 @@ pub mod bounded_length;
 pub mod bounded_round;
 pub mod bytes_length;
 pub mod bytes_round;
+pub mod checksum;
 pub mod choice_length;
 pub mod choice_round;
 pub mod choice_steps;
@@ -19,6 +20,7 @@ pub mod elements_get;
 pub mod elements_len;
 pub mod elements_new;
 pub mod elements_push;
+pub mod fold_add;
 pub mod length_prefixed_length;
 pub mod length_prefixed_new;
 pub mod length_prefixed_round;
@@ -389,6 +391,22 @@ pub trait IntegerCombinator<'a, C: Combinator<'a>> {
             c.wf(),
         ensures
             n != c.spec_serialize(v).len(),
+    ;
+}
+
+/// `checksum` at a sum that is not `spec_checksum`.
+pub trait ChecksumReturns {
+    proof fn wrong(s: Seq<u8>, r: u16)
+        ensures
+            r != spec_checksum(s),
+    ;
+}
+
+/// `fold_add` at a sum that is not `spec_fold_add`.
+pub trait FoldAddReturns {
+    proof fn wrong(a: u16, b: u16, r: u16)
+        ensures
+            r != spec_fold_add(a, b),
     ;
 }
 

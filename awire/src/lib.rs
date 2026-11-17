@@ -25,12 +25,14 @@
 //! bytes a `Length` counts, their value `Elements`, an array of a fixed capacity holding them in
 //! place; and `Mapped`, another combinator with its value through a proven bijection, which gives a
 //! format's value named fields. `Pair`, `Choice`, `LengthPrefixed`, `Count`, `Bounded` and `Mapped`
-//! are proven from their parts' properties for any parts. Nothing allocates.
+//! are proven from their parts' properties for any parts. `checksum` computes the RFC 1071 16-bit
+//! ones'-complement sum of a byte string. Nothing allocates.
 #![cfg_attr(not(test), no_std)]
 
 use vstd::prelude::*;
 
 mod bytes;
+mod checksum;
 mod choice;
 mod integer;
 mod length;
@@ -39,6 +41,7 @@ mod pair;
 mod repeat;
 mod tag;
 pub use bytes::*;
+pub use checksum::*;
 pub use choice::*;
 pub use integer::*;
 pub use length::*;
