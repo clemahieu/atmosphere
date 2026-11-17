@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 
-"""Boot dom0 under KVM with its two vCPUs pinned, and print the kernel's own timing lines.
+"""Boot dom0 under KVM with its two vCPUs pinned, and print the kernel's and dom0's timing lines.
 
 usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--counters] [--force]
                                [--kernel-feature FEATURE ...]
@@ -73,7 +73,8 @@ import run as guest
 
 # What tools/isolate-pinned.sh apply changed, for its undo; its fixed lines name the IRQs it could not move.
 ISOLATION_STATE = "/run/atmo-isolate-pinned"
-LINES = re.compile(r"lock (?:alone|contended) on CPU \d+|flush IPI|flush cost: CPU \d+ [^:]*|kernel lock:|contention test lock:")
+LINES = re.compile(r"lock (?:alone|contended) on CPU \d+|flush IPI|flush cost: CPU \d+ [^:]*|kernel lock:"
+                   r"|contention test lock:|dom0 inspect (?:alone|contended):")
 
 
 def read(path):
@@ -526,6 +527,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(kernel_features(["--kernel-feature", "flush_cost", "5", "--kernel-feature", "x"], True),
                          ["lock_stats", "flush_cost", "x"])
 
+    def test_timing_lines_keeps_dom0s_batched_inspect_lines(self):
+        log = ("dom0 inspect alone: min 600, median 610, mean 620 TSC cycles per call over 100 batches of 256 calls\n"
+               "dom0 invoked 65536 times on core 0\n"
+               "dom0 inspect contended: min 1400, median 1430, mean 1436 TSC cycles per call"
+               " over 100 batches of 256 calls\n")
+        self.assertEqual(timing_lines(log), [
+            "dom0 inspect alone: min 600, median 610, mean 620 TSC cycles per call over 100 batches of 256 calls",
+            "dom0 inspect contended: min 1400, median 1430, mean 1436 TSC cycles per call over 100 batches of 256 calls",
+        ])
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--test"]:
