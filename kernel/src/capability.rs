@@ -71,6 +71,7 @@ pub fn dispatch(frame: Registers) -> Option<Outcome> {
     };
     crate::flush::send(flushes);
     crate::schedule::send(reschedules);
+    crate::flush::log_marker(&frame, returned);
     returned
 }
 

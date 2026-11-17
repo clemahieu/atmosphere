@@ -11,8 +11,11 @@
 //! the core that made the call. FlushState is the boot test's
 //! own, which runs before CapKernel is built.
 
-use verified::arch::flush_every_context;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use verified::arch::{flush_every_context, Registers};
 use verified::capability::kernel::CapKernel;
+use verified::capability::operation::{Outcome, OPERATION_PRINT, STATUS_OK};
 use verified::define::NUM_CPUS;
 use vstd::prelude::Tracked;
 
@@ -21,6 +24,53 @@ use crate::capability::CAP_KERNEL;
 use crate::cpu;
 use crate::machine::{self, FLUSH_VECTOR};
 use crate::lock::Locked;
+
+/// Flush IPIs acknowledged under CapKernel by each core.
+static ACK_COUNTS: [AtomicUsize; NUM_CPUS] = [const { AtomicUsize::new(0) }; NUM_CPUS];
+
+/// How many flush IPIs `core` has acknowledged under CapKernel.
+pub fn acknowledged_count(core: usize) -> usize {
+    ACK_COUNTS.get(core).map_or(0, |count| count.load(Ordering::Acquire))
+}
+
+const fn print_words(text: &[u8]) -> [u64; 5] {
+    assert!(text.len() < 40);
+    let mut words = [0u64; 5];
+    let mut k = 0;
+    while k < text.len() {
+        words[k / 8] |= (text[k] as u64) << (8 * (k % 8));
+        k += 1;
+    }
+    words
+}
+
+const UNLOADED_UNMAP_WORDS: [u64; 5] = print_words(b"dom0 unmaps unloaded space\n");
+const UNLOADED_FREED_WORDS: [u64; 5] = print_words(b"dom0 freed unloaded space\n");
+const LOADED_UNMAP_WORDS: [u64; 5] = print_words(b"dom0 unmaps loaded space\n");
+const LOADED_FREED_WORDS: [u64; 5] = print_words(b"dom0 freed loaded space\n");
+
+/// Logs CPU 1's acknowledged flush count around dom0's unloaded-space and loaded-space unmap
+/// checks when dom0 prints their markers through the console, keeping the syscall ABI unchanged.
+pub fn log_marker(frame: &Registers, returned: Option<Outcome>) {
+    if frame.operation_number() != OPERATION_PRINT
+        || !returned.is_some_and(|out| out.status == STATUS_OK)
+    {
+        return;
+    }
+    let mut words = [0u64; 5];
+    for (i, slot) in words.iter_mut().enumerate() {
+        let k = i + 1;
+        assert!(1 <= k && k <= 5);
+        *slot = frame.argument(k);
+    }
+    if words == UNLOADED_UNMAP_WORDS
+        || words == UNLOADED_FREED_WORDS
+        || words == LOADED_UNMAP_WORDS
+        || words == LOADED_FREED_WORDS
+    {
+        log::info!("CPU 1 acknowledged flush count {}", acknowledged_count(1));
+    }
+}
 
 struct FlushState {
     epoch: usize,
@@ -65,8 +115,14 @@ pub fn handle_ipi() {
         // design/cpu-time-as-capability/. The entry makes its own step counter in the one passed here.
         kernel.charge(core, arch::cycles());
         let state = kernel.cores.get(core);
-        let logged = state.acked_epoch < kernel.flush_epoch && state.current_thread.is_some();
+        let acked = state.acked_epoch < kernel.flush_epoch;
+        let logged = acked && state.current_thread.is_some();
         kernel.enter_flush(core, crate::cpu::processor(), Tracked::assume_new());
+        if acked {
+            if let Some(count) = ACK_COUNTS.get(core) {
+                count.fetch_add(1, Ordering::Release);
+            }
+        }
         if logged {
             log::info!("CPU {} acknowledged flush epoch {}", core, kernel.flush_epoch);
         }
@@ -86,19 +142,17 @@ fn flush_this_core(core: usize) {
 
 /// The flush an operation owes, given CapKernel's epoch before it ran, as the mask of cores to send the
 /// flush IPI. Called under the kernel's lock by the core that ran the operation, after the verified
-/// entry, which has that core acknowledge whenever it is behind the epoch. An unmap bumps the epoch and
-/// records an IPI to each core that loaded the space, in ghost state only; when the epoch moved, every
-/// other core that has loaded a space and has not reached it is owed the IPI, a superset of the cores
-/// the unmaps listed and of the cores a free waits for, CapKernel::all_acknowledged: those that loaded a
-/// space and owe a flush, each behind the epoch.
+/// entry, which has that core acknowledge whenever it is behind the epoch. When the epoch moved,
+/// `CapKernel::targeted_since` names each core the operation's unmaps, cuts and retires named that has
+/// not yet acknowledged, and `owed` builds its mask from that verified function alone, so a core that
+/// loaded only other spaces takes no flush IPI. See design/flush-without-waiting/.
 pub fn owed(kernel: &CapKernel, epoch: usize) -> u64 {
     if kernel.flush_epoch == epoch {
         return 0;
     }
     let mut targets = 0;
     for d in 0..NUM_CPUS {
-        let state = kernel.cores.get(d);
-        if state.loaded_a_space() && state.acked_epoch < kernel.flush_epoch {
+        if kernel.targeted_since(d, epoch) {
             targets |= 1 << d;
         }
     }

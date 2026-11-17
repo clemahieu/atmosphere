@@ -2066,6 +2066,230 @@ fn own_core_1_nx_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     }
 }
 
+/// What dom0 prints around its two unmaps of a fresh child space: first when that space was loaded
+/// only on CPU 0 (while CPU 1 has already loaded another space), and second after a thread of that
+/// space ran on CPU 1. The kernel logs CPU 1's acknowledged flush count on each marker so the check
+/// keeps the syscall ABI unchanged. design/flush-without-waiting/.
+const UNLOADED_UNMAP: [u64; 5] = operation::print_words(b"dom0 unmaps unloaded space\n");
+const UNLOADED_FREED: [u64; 5] = operation::print_words(b"dom0 freed unloaded space\n");
+const LOADED_UNMAP: [u64; 5] = operation::print_words(b"dom0 unmaps loaded space\n");
+const LOADED_FREED: [u64; 5] = operation::print_words(b"dom0 freed loaded space\n");
+
+/// The entry in PATH_ADDRESS's level 1 table where dom0 maps the shared frame for the
+/// unloaded-then-loaded unmap check, past SCAN_ENTRY.
+const UNLOADED_SHARED_ENTRY: u64 = SCAN_ENTRY + 1;
+
+/// How far below the top of the gigabyte untyped the unloaded-then-loaded unmap check's blocks
+/// start: between the eager source's leaf and the heap's untyped, where nothing else retypes.
+const UNLOADED_SPACE_BELOW_TOP: u64 = 512 * 4096;
+
+/// How many inspects dom0 runs after freeing the unloaded-space frame so any stray flush IPI to CPU 1
+/// would arrive before the after-unmap count is logged.
+const UNLOADED_SETTLE_INSPECTS: u64 = 256;
+
+const _: () = assert!((1 << PROCESS_ORDER) * 4096 == TABLE_PAGE_BYTES);
+const _: () = assert!(UNLOADED_SPACE_BELOW_TOP <= HEAP_BELOW_TOP - (HEAP_PAGES as u64) * 4096);
+const _: () = assert!(UNLOADED_SPACE_BELOW_TOP - 40 * 4096 >= EAGER_BELOW_TOP + LEAF_BYTES);
+
+/// Unmaps CHILD_HELD_ADDRESS in `process`, deletes `held_slot`, frees `held_phys` within
+/// `max_again` again returns, retypes it back into `held_slot`, and checks inspect finds the frame.
+fn unmap_and_retype_held(
+    caller: &mut Tracked<Caller>,
+    untyped: u64,
+    process: u64,
+    held_phys: u64,
+    held_slot: u64,
+    max_again: u64,
+) -> bool {
+    if !names_other_space(caller, process)
+        || unmap(caller, process, CHILD_HELD_ADDRESS, 1).status != operation::STATUS_OK
+        || delete(caller, held_slot).status != operation::STATUS_OK
+    {
+        return false;
+    }
+    let mut again = 0;
+    let freed = loop {
+        let status = retype(caller, untyped, operation::RETYPE_FREE, held_phys, 0, 0).status;
+        if status != operation::STATUS_AGAIN || again >= max_again {
+            break status;
+        }
+        again += 1;
+    };
+    freed == operation::STATUS_OK
+        && retype(caller, untyped, operation::RETYPE_FRAME, held_phys, held_slot, 0).status
+            == operation::STATUS_OK
+        && matches!(
+            inspect(caller, held_slot),
+            Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == held_phys && frame.order == 0
+        )
+}
+
+/// Whether CPU 1 receives a flush IPI only for unmaps of spaces it has loaded: after CPU 1 has already
+/// loaded another space, dom0 creates a second child process, runs one thread on CPU 0 so the child's
+/// space is loaded only on CPU 0, maps and unmaps a frame there (expecting no IPI to CPU 1), then runs
+/// a second thread of that child on CPU 1 and unmaps again (expecting CPU 1 to acknowledge the IPI).
+fn core_1_flush_targets_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
+    let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
+        return false;
+    };
+    let entry = dom0_child_entry as *const () as u64;
+    let hold = dom0_child_hold as *const () as u64;
+    if hold & !0xfff != entry & !0xfff {
+        return false;
+    }
+    let Some((image, page)) = image_page(caller, entry & !0xfff) else {
+        return false;
+    };
+
+    let low = block.base + (4096 << block.order) - UNLOADED_SPACE_BELOW_TOP;
+    let proc_phys = low;
+    let tables_phys = [1, 2, 3].map(|k| low + k * TABLE_PAGE_BYTES);
+    let leaf_phys = low + 4 * TABLE_PAGE_BYTES;
+    let thread0_phys = leaf_phys + LEAF_BYTES;
+    let thread1_phys = thread0_phys + THREAD_BYTES;
+    let shared_phys = thread1_phys + THREAD_BYTES;
+    let held_phys = shared_phys + 4096;
+
+    let base_slot = first_slot(FIRST_EMPTY_ENTRY + 1) + 2;
+    let process = base_slot;
+    let thread0 = base_slot + 1;
+    let thread1 = base_slot + 2;
+    let shared = base_slot + 3;
+    let held_slot = base_slot + 4;
+    let own0 = first_slot(CHILD_OWN_ENTRY);
+    let own1 = own0 + 1;
+    let shared_dom0 = entry_address(UNLOADED_SHARED_ENTRY);
+    let word0 = shared_dom0 as *const u64;
+    let word1 = (shared_dom0 + (CHILD_HOLD_ADDRESS - CHILD_DATA_ADDRESS)) as *mut u64;
+
+    if retype(caller, untyped, operation::RETYPE_PROCESS, proc_phys, process, 0).status
+        != operation::STATUS_OK
+        || !names_other_space(caller, process)
+    {
+        return false;
+    }
+    let linked = (0..3).all(|k| {
+        let level = (3 - k) as u64;
+        retype(caller, untyped, operation::RETYPE_TABLE_PAGE, tables_phys[k], 0, level).status
+            == operation::STATUS_OK
+            && link(caller, process, CHILD_CODE_ADDRESS, level + 1, untyped, tables_phys[k]).status
+                == operation::STATUS_OK
+    });
+    if !linked
+        || retype(
+            caller,
+            untyped,
+            operation::RETYPE_LEAF,
+            leaf_phys,
+            operation::through(process, CHILD_OWN_ENTRY),
+            0,
+        )
+        .status
+            != operation::STATUS_OK
+        || retype(caller, untyped, operation::RETYPE_FRAME, shared_phys, shared, 0).status
+            != operation::STATUS_OK
+        || operation::map(operation::ROOT_PROCESS_SLOT, shared_dom0, 1, shared, 0)
+            != operation::STATUS_OK
+        || map(caller, process, CHILD_DATA_ADDRESS, 1, shared, 0).status != operation::STATUS_OK
+        || map(caller, process, CHILD_CODE_ADDRESS, 1, image, page).status != operation::STATUS_OK
+        || retype(caller, untyped, operation::RETYPE_THREAD, thread0_phys, thread0, process).status
+            != operation::STATUS_OK
+        || retype(caller, untyped, operation::RETYPE_THREAD, thread1_phys, thread1, process).status
+            != operation::STATUS_OK
+        || retype(caller, untyped, operation::RETYPE_FRAME, held_phys, held_slot, 0).status
+            != operation::STATUS_OK
+        || map(caller, process, CHILD_HELD_ADDRESS, 1, held_slot, 0).status != operation::STATUS_OK
+    {
+        return false;
+    }
+
+    // Run thread0 on CPU 0 so the child's space is loaded on CPU 0 alone.
+    let Ok(t0_cap) = inspect(caller, thread0) else {
+        return false;
+    };
+    let args0 = [CHILD_DATA_ADDRESS, SWITCHED_WORD, own0];
+    let loaded_cpu0 = derive(
+        caller,
+        thread0,
+        operation::through(process, own0),
+        RIGHT_CONTROL,
+        t0_cap.base,
+        t0_cap.order,
+    )
+    .status
+        == operation::STATUS_OK
+        && set_frame_word(caller, thread0, operation::PC_WORD, CHILD_CODE_ADDRESS + (entry & 0xfff))
+            == operation::STATUS_OK
+        && (0..3).all(|k| {
+            set_frame_word(caller, thread0, ARGUMENT_WORDS[k], args0[k]) == operation::STATUS_OK
+        })
+        && place(caller, thread0, operation::ROOT_CORE_SLOT, 1).status == operation::STATUS_OK
+        // The shared frame was zeroed by retype and mapped above; thread0 is its only writer here.
+        && unsafe { word0.read_volatile() } == 0
+        && start(caller, thread0).status == operation::STATUS_OK
+        && (0..SWITCH_READS).any(|_| unsafe { word0.read_volatile() } == SWITCHED_WORD)
+        && (0..SWITCH_READS).any(|_| suspend(caller, thread0).status == operation::STATUS_OK);
+    if !loaded_cpu0 {
+        return false;
+    }
+
+    // Unmap 1: the child's space is loaded only on CPU 0, while CPU 1 already loaded other spaces.
+    if unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, UNLOADED_UNMAP) } != operation::STATUS_OK
+        || !unmap_and_retype_held(caller, untyped, process, held_phys, held_slot, 0)
+        || !(0..UNLOADED_SETTLE_INSPECTS).all(|_| inspect(caller, held_slot).is_ok())
+        || unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, UNLOADED_FREED) } != operation::STATUS_OK
+    {
+        return false;
+    }
+
+    // Now run thread1 of this child on CPU 1 so CPU 1 loads the child's space, then unmap again.
+    let Ok(t1_cap) = inspect(caller, thread1) else {
+        return false;
+    };
+    let args1 = [CHILD_HELD_ADDRESS, CHILD_HOLD_ADDRESS, own1];
+    let running_cpu1 = names_other_space(caller, process)
+        && map(caller, process, CHILD_HELD_ADDRESS, 1, held_slot, 0).status == operation::STATUS_OK
+        && derive(
+            caller,
+            thread1,
+            operation::through(process, own1),
+            RIGHT_CONTROL,
+            t1_cap.base,
+            t1_cap.order,
+        )
+        .status
+            == operation::STATUS_OK
+        && set_frame_word(caller, thread1, operation::PC_WORD, CHILD_CODE_ADDRESS + (hold & 0xfff))
+            == operation::STATUS_OK
+        && (0..3).all(|k| {
+            set_frame_word(caller, thread1, ARGUMENT_WORDS[k], args1[k]) == operation::STATUS_OK
+        })
+        && place(caller, thread1, operation::ROOT_CORE_SLOT + SECOND_CORE, 1).status
+            == operation::STATUS_OK
+        // thread1 is the only other writer of this word in the zeroed shared frame.
+        && unsafe { word1.read_volatile() } == 0
+        && start(caller, thread1).status == operation::STATUS_OK
+        && (0..SWITCH_READS).any(|_| unsafe { word1.read_volatile() } == CHILD_HELD_ADDRESS);
+    if !running_cpu1
+        || unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, LOADED_UNMAP) } != operation::STATUS_OK
+        || !unmap_and_retype_held(
+            caller,
+            untyped,
+            process,
+            held_phys,
+            held_slot,
+            CORE_1_FREE_AGAIN_MAX,
+        )
+        || unsafe { word1.read_volatile() } != CHILD_HELD_ADDRESS
+        || unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, LOADED_FREED) } != operation::STATUS_OK
+    {
+        return false;
+    }
+    // Let thread1 suspend itself so CPU 1 returns to idle cleanly.
+    unsafe { word1.write_volatile(0) };
+    (0..SWITCH_READS).any(|_| suspend(caller, thread1).status == operation::STATUS_OK)
+}
+
 /// What dom0 prints once it destroyed its child process and claimed a capability from the dead child's
 /// table, which the gate looks for.
 const DESTROYED_HELD: [u64; 5] = operation::print_words(b"dom0 process destroyed\n");
@@ -2679,6 +2903,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && core_1_restarted_held(caller)
                                 && destroyed_process_held(caller, empty, empty + 4, empty + 5)
                                 && own_core_1_nx_held(caller, empty)
+                                && core_1_flush_targets_held(caller, empty)
                                 && eager_source_held(caller, empty)
                                 && core_bench::threads_held(caller, empty)
                                 && ump_bench::threads_held(caller, empty)

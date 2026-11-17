@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
-line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, core 1 unloaded-then-loaded unmap flush counts, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 Each of CPU 0 and CPU 1 prints its processor report once; on x86_64 its invpcid bit is the host's, CPUID
 Fn0000_0007 EBX bit 10 as /proc/cpuinfo's invpcid flag gives it, which the output records, and its specres bit
 is clear; on aarch64 its x86_64 bits are clear.
@@ -92,6 +92,16 @@ INVOKED_COUNTS = re.compile(r"^dom0 invoked [1-9][0-9]* times on core 0\r?\nthre
 CORE_1_UNMAP_LINE = "dom0 unmaps a page core 1 wrote"
 CORE_1_FREED_LINE = "dom0 freed the page core 1 wrote"
 CORE_1_ACKNOWLEDGED = "CPU 1 acknowledged flush epoch "
+
+# The lines dom0 prints around its two unmaps of a fresh child space — first when that space was
+# loaded only on CPU 0 (while CPU 1 has already loaded another space), and second after a thread of
+# that space ran on CPU 1 — between which the kernel logs CPU 1's acknowledged flush count.
+# design/flush-without-waiting/.
+UNLOADED_UNMAP_LINE = "dom0 unmaps unloaded space"
+UNLOADED_FREED_LINE = "dom0 freed unloaded space"
+LOADED_UNMAP_LINE = "dom0 unmaps loaded space"
+LOADED_FREED_LINE = "dom0 freed loaded space"
+CPU_1_FLUSH_COUNT = re.compile(r"CPU 1 acknowledged flush count ([0-9]+)(?:\x1b\[0m)?$")
 
 # The lines dom0 prints once it and the thread it started, both at priority 0 on core 0, each counted while
 # the timer handed the core between them, until dom0 saw the thread's count change three times: dom0's count,
@@ -357,6 +367,43 @@ def core_1_unmap_acknowledged(serial):
             and any(CORE_1_ACKNOWLEDGED in line for line in printed[unmapped + 1:freed]))
 
 
+def flush_count_in(span):
+    """The first CPU 1 acknowledged flush count in `span`, or None if none appears."""
+    for line in span:
+        match = CPU_1_FLUSH_COUNT.search(line)
+        if match is not None:
+            return int(match.group(1))
+    return None
+
+
+def core_1_flush_targets_held(serial):
+    """Whether the log shows CPU 1's acknowledged flush count unchanged across an unmap in a space CPU 1
+    never loaded (after CPU 1 already loaded another space) and grown across an unmap after a thread
+    of that space ran on CPU 1."""
+    printed = lines(serial)
+    indices = []
+    start = 0
+    for marker in (UNLOADED_UNMAP_LINE, UNLOADED_FREED_LINE, LOADED_UNMAP_LINE, LOADED_FREED_LINE):
+        found = next((k for k in range(start, len(printed)) if printed[k] == marker), None)
+        if found is None:
+            return False
+        indices.append(found)
+        start = found + 1
+    u_unmap, u_freed, l_unmap, l_freed = indices
+    next_dom0 = next((k for k in range(l_freed + 1, len(printed)) if printed[k].startswith("dom0 ")), len(printed))
+    before_unloaded = flush_count_in(printed[u_unmap + 1:u_freed])
+    after_unloaded = flush_count_in(printed[u_freed + 1:l_unmap])
+    before_loaded = flush_count_in(printed[l_unmap + 1:l_freed])
+    after_loaded = flush_count_in(printed[l_freed + 1:next_dom0])
+    if None in (before_unloaded, after_unloaded, before_loaded, after_loaded):
+        return False
+    if any(CORE_1_ACKNOWLEDGED in line for line in printed[u_unmap + 1:u_freed]):
+        return False
+    if not any(CORE_1_ACKNOWLEDGED in line for line in printed[l_unmap + 1:l_freed]):
+        return False
+    return after_unloaded == before_unloaded and after_loaded > before_loaded
+
+
 JSON_BEGIN_MARKER = "--- FUCHSIAPERF JSON BEGIN ---"
 JSON_END_MARKER = "--- FUCHSIAPERF JSON END ---"
 EXPECTED_TEST_SUITE = "atmosphere.microbenchmarks"
@@ -468,6 +515,9 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
         raise Refused(f'the serial log does not show a thread finding null segments after dom0 loaded them: "{SEGMENTS_LINE}"')
     if arch == "x86_64" and not line_printed(serial, OWN_CORE_1_NX_LINE):
         raise Refused(f'the serial log does not show a thread of dom0 on core 1 writing a no-execute page: "{OWN_CORE_1_NX_LINE}"')
+    if not core_1_flush_targets_held(serial):
+        raise Refused("the serial log does not show CPU 1's acknowledged flush count unchanged across an "
+                      "unloaded-space unmap and grown across a loaded-space unmap")
     if not line_printed(serial, SYSCALL_REGISTERS_LINE):
         raise Refused(f'the serial log does not show dom0 keeping preserved registers across an invocation: "{SYSCALL_REGISTERS_LINE}"')
     if not line_printed(serial, PREEMPTION_REGISTERS_LINE):
@@ -493,7 +543,7 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
     reports = processor_reports_held(serial, arch, host_invpcid() if invpcid is None and arch == "x86_64" else invpcid)
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
             f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
-            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, own nx page line, ' if arch == 'x86_64' else ''}syscall registers line, preemption registers line, context switch registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
+            f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, own nx page line, ' if arch == 'x86_64' else ''}core 1 unloaded-then-loaded unmap flush counts, syscall registers line, preemption registers line, context switch registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended, {reports}")
     if translation:
@@ -575,6 +625,15 @@ def boot_log():
             "core 1 lag 2000 counts\n"
             "dom0 process destroyed\n"
             "dom0 own thread wrote nx page\n"
+            "dom0 unmaps unloaded space\n"
+            "\x1b[34m INFO CPU 1 acknowledged flush count 1\x1b[0m\n"
+            "dom0 freed unloaded space\n"
+            "\x1b[34m INFO CPU 1 acknowledged flush count 1\x1b[0m\n"
+            "dom0 unmaps loaded space\n"
+            "\x1b[34m INFO CPU 1 acknowledged flush count 1\x1b[0m\n"
+            "\x1b[34m INFO CPU 1 acknowledged flush epoch 815\x1b[0m\n"
+            "dom0 freed loaded space\n"
+            "\x1b[34m INFO CPU 1 acknowledged flush count 2\x1b[0m\n"
             "dom0 eager backed 40\n"
             "dom0 heap allocator held\n"
             "dom0 slot checks held\n"
@@ -833,6 +892,53 @@ class Tests(unittest.TestCase):
         self.assertIn("CPU 1 acknowledging the flush", self.refused(after))
         other = log.replace("INFO CPU 1 acknowledged", "INFO CPU 0 acknowledged")
         self.assertIn("CPU 1 acknowledging the flush", self.refused(other))
+
+    def test_core_1_flush_targets_checks_counts_and_order(self):
+        log = boot_log()
+        count_1 = "\x1b[34m INFO CPU 1 acknowledged flush count 1\x1b[0m\n"
+        for line in (
+            "dom0 unmaps unloaded space\n",
+            "dom0 freed unloaded space\n",
+            "dom0 unmaps loaded space\n",
+            "dom0 freed loaded space\n",
+            "\x1b[34m INFO CPU 1 acknowledged flush epoch 815\x1b[0m\n",
+            "\x1b[34m INFO CPU 1 acknowledged flush count 2\x1b[0m\n",
+        ):
+            self.assertIn(line, log)
+            self.assertIn("acknowledged flush count unchanged", self.refused(log.replace(line, "", 1)), line)
+        for prefix in ("dom0 unmaps unloaded space\n", "dom0 freed unloaded space\n", "dom0 unmaps loaded space\n"):
+            self.assertIn(prefix + count_1, log)
+            self.assertIn("acknowledged flush count unchanged", self.refused(log.replace(prefix + count_1, prefix, 1)), prefix)
+        late_count = log.replace(
+            "dom0 freed loaded space\n\x1b[34m INFO CPU 1 acknowledged flush count 2\x1b[0m\n",
+            "dom0 freed loaded space\n",
+        ).replace(
+            "dom0 eager backed 40\n",
+            "dom0 eager backed 40\n\x1b[34m INFO CPU 1 acknowledged flush count 2\x1b[0m\n",
+        )
+        self.assertIn("acknowledged flush count unchanged", self.refused(late_count))
+        unloaded_grew = log.replace(
+            "dom0 freed unloaded space\n\x1b[34m INFO CPU 1 acknowledged flush count 1\x1b[0m\n",
+            "dom0 freed unloaded space\n\x1b[34m INFO CPU 1 acknowledged flush count 2\x1b[0m\n",
+        )
+        self.assertIn("acknowledged flush count unchanged", self.refused(unloaded_grew))
+        loaded_unchanged = log.replace(
+            "dom0 freed loaded space\n\x1b[34m INFO CPU 1 acknowledged flush count 2\x1b[0m\n",
+            "dom0 freed loaded space\n\x1b[34m INFO CPU 1 acknowledged flush count 1\x1b[0m\n",
+        )
+        self.assertIn("acknowledged flush count unchanged", self.refused(loaded_unchanged))
+        unexpected_epoch = log.replace(
+            "dom0 unmaps unloaded space\n",
+            "dom0 unmaps unloaded space\n\x1b[34m INFO CPU 1 acknowledged flush epoch 814\x1b[0m\n",
+        )
+        self.assertIn("acknowledged flush count unchanged", self.refused(unexpected_epoch))
+        wrong_cpu = log.replace(
+            " INFO CPU 1 acknowledged flush count 2",
+            " INFO CPU 0 acknowledged flush count 2",
+        )
+        self.assertIn("acknowledged flush count unchanged", self.refused(wrong_cpu))
+        plain = log.replace("\x1b[34m ", " ").replace("\x1b[0m", "")
+        self.assertIn("core 1 unloaded-then-loaded unmap flush counts", boot_log_accepted(plain, "x86_64"))
 
     def test_a_boot_without_ad_hoc_thread_times_passes(self):
         log = boot_log()
