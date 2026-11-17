@@ -5,6 +5,8 @@
 //! another caller's step may take the frame or the child, as an ancestor's revoke does, but a slot that
 //! stays says what it said while the caller is sealed, so when the kernel accepted all three calls the
 //! inspect says a frame of the page with the read right and no other.
+//! A proof of the page tokens beside it: a set of empty pages claimed as one token, one page's token
+//! taken out of it and put back.
 use vstd::prelude::*;
 
 #[cfg(verus_keep_ghost)]
@@ -13,6 +15,10 @@ use verified::capability::caller::view_frame;
 use verified::capability::inspect::CAP_KIND_FRAME;
 #[cfg(verus_keep_ghost)]
 use verified::capability::kernel::CapKernel;
+#[cfg(verus_keep_ghost)]
+use verified::capability::link::tree_of;
+#[cfg(verus_keep_ghost)]
+use verified::capability::mapping::{space_mapping, SpacePath};
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::*;
 #[cfg(verus_keep_ghost)]
@@ -273,6 +279,31 @@ pub fn derive_other_frame_keeps_frame(
         }
     }
     out
+}
+
+/// Claims a set of the caller's pages, each empty in the state the process was handed and now, as one
+/// token, takes the token of one page out of it and puts it back: the set says again that no frame is
+/// mapped at any of its pages, and the caller's tokens still agree with its space.
+pub proof fn page_set_round_trip(tracked caller: &mut Caller, s: Set<SpacePath>, p: SpacePath) -> (tracked set: PageSet)
+    requires
+        old(caller).pages_wf(),
+        s.disjoint(old(caller).pages().dom()),
+        s.contains(p),
+        forall|q: SpacePath| #[trigger] s.contains(q) ==> {
+            &&& page_agrees(space_mapping(tree_of(&old(caller).start().table_pages, &old(caller).start().spaces), old(caller).root()), q, None)
+            &&& page_agrees(space_mapping(tree_of(&old(caller).kernel().table_pages, &old(caller).kernel().spaces), old(caller).root()), q, None)
+        },
+    ensures
+        final(caller).pages_wf(),
+        set.pages() == none_at(s),
+        set.id() == final(caller).pages_id(),
+{
+    let tracked mut set = claim_set(caller, s);
+    let tracked token = set.take(p);
+    assert(token.path() == p && token.frame() is None);
+    set.put(token);
+    assert(set.pages() =~= none_at(s));
+    set
 }
 
 } // verus!

@@ -47,7 +47,7 @@ use verified::define::PAGE_SZ;
 #[cfg(verus_keep_ghost)]
 use verified::pagetable::entry::PageEntry;
 #[cfg(verus_keep_ghost)]
-use vstd::resource::map::{GhostMapAuth, GhostPointsTo};
+use vstd::resource::map::{GhostMapAuth, GhostPointsTo, GhostSubmap};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::Loc;
 
@@ -78,8 +78,9 @@ pub tracked struct Caller {
 /// The token for one page of the caller's own space, at a path of the space keyed at the caller's
 /// root: it says which frame is mapped there, by page number, or that none is
 /// (design/region-map-owns-the-address-space/). Its field is private and it has no constructor and no
-/// copy: verified code outside this crate gets one only from claim, once per page, and the caller
-/// token's authority holds what every token says, so Caller::pages_wf ties each to the kernel's entry.
+/// copy: verified code outside this crate gets one only from claim, once per page, or out of a PageSet,
+/// and the caller token's authority holds what every token says, so Caller::pages_wf ties each to the
+/// kernel's entry.
 pub tracked struct PageToken {
     #[cfg(verus_keep_ghost)]
     tracked token: GhostPointsTo<SpacePath, Option<usize>>,
@@ -111,6 +112,101 @@ impl PageToken {
     {
         self.token.agree(&caller.pages);
     }
+}
+
+/// The tokens of a set of pages of the caller's own space, held as one: for each page's path, which
+/// frame is mapped there, or that none is. One empty level 4 entry covers 2^27 pages, too many to claim
+/// one at a time, so claim_set issues a set at once, and a client takes one page's PageToken out of it to
+/// map the page through map_own and puts it back
+/// (design/region-map-reads-presence-at-the-first-call/). Like a PageToken its field is private and it
+/// has no constructor and no copy, and the caller token's authority holds what it says, so no page is
+/// in two sets, or in a set and a PageToken, of one caller.
+pub tracked struct PageSet {
+    #[cfg(verus_keep_ghost)]
+    tracked tokens: GhostSubmap<SpacePath, Option<usize>>,
+}
+
+impl PageSet {
+    /// What the token of each page of the set says, by the page's path.
+    pub closed spec fn pages(self) -> Map<SpacePath, Option<usize>> {
+        self.tokens@
+    }
+
+    /// The authority this set belongs to.
+    pub closed spec fn id(self) -> Loc {
+        self.tokens.id()
+    }
+
+    /// The authority holds what the set says.
+    pub proof fn agree(tracked &self, tracked caller: &Caller)
+        requires
+            self.id() == caller.pages_id(),
+        ensures
+            self.pages() <= caller.pages(),
+    {
+        self.tokens.agree(&caller.pages);
+    }
+
+    /// Takes the token of the page at `p` out of the set.
+    pub proof fn take(tracked &mut self, p: SpacePath) -> (tracked token: PageToken)
+        requires
+            old(self).pages().contains_key(p),
+        ensures
+            final(self).id() == old(self).id(),
+            final(self).pages() == old(self).pages().remove(p),
+            token.path() == p,
+            token.frame() == old(self).pages()[p],
+            token.id() == old(self).id(),
+    {
+        let tracked token = self.tokens.split_points_to(p);
+        assert(old(self).pages()[p] == token.value());
+        PageToken { token }
+    }
+
+    /// Puts a page's token back into the set, which held no token for that page.
+    pub proof fn put(tracked &mut self, tracked token: PageToken)
+        requires
+            token.id() == old(self).id(),
+        ensures
+            final(self).id() == old(self).id(),
+            final(self).pages() == old(self).pages().insert(token.path(), token.frame()),
+            !old(self).pages().contains_key(token.path()),
+    {
+        self.tokens.combine_points_to(token.token);
+    }
+
+    /// Splits the tokens of the pages in `s` out of the set into a set of their own.
+    pub proof fn split(tracked &mut self, s: Set<SpacePath>) -> (tracked part: PageSet)
+        requires
+            s <= old(self).pages().dom(),
+        ensures
+            final(self).id() == old(self).id(),
+            part.id() == old(self).id(),
+            final(self).pages() == old(self).pages().remove_keys(s),
+            part.pages() == old(self).pages().restrict(s),
+    {
+        let tracked tokens = self.tokens.split(s);
+        assert(self.tokens@ =~= old(self).pages().remove_keys(s));
+        assert(tokens@ =~= old(self).pages().restrict(s));
+        PageSet { tokens }
+    }
+
+    /// Joins another set of the same authority into this one; the two held no page in common.
+    pub proof fn join(tracked &mut self, tracked other: PageSet)
+        requires
+            other.id() == old(self).id(),
+        ensures
+            final(self).id() == old(self).id(),
+            final(self).pages() == old(self).pages().union_prefer_right(other.pages()),
+            old(self).pages().dom().disjoint(other.pages().dom()),
+    {
+        self.tokens.combine(other.tokens);
+    }
+}
+
+/// Every page of `s`, its token saying no frame is mapped there.
+pub open spec fn none_at(s: Set<SpacePath>) -> Map<SpacePath, Option<usize>> {
+    Map::new(s, |p: SpacePath| None::<usize>)
 }
 
 /// Sets what the token says, and the authority with it: the own-space calls, once a step has changed
@@ -488,6 +584,44 @@ pub proof fn claim(tracked caller: &mut Caller, p: SpacePath) -> (tracked token:
         }
     }
     PageToken { token }
+}
+
+/// Claims the tokens of the pages at the paths in `s` of the caller's own space as one set, each saying
+/// no frame is mapped there, on claim's premises for every page of the set: no entry, nor a large one
+/// over it, in the state the process was handed and now, and no token claimed for it before.
+pub proof fn claim_set(tracked caller: &mut Caller, s: Set<SpacePath>) -> (tracked set: PageSet)
+    requires
+        old(caller).pages_wf(),
+        s.disjoint(old(caller).pages().dom()),
+        forall|p: SpacePath| #[trigger] s.contains(p) ==> {
+            &&& page_agrees(space_mapping(tree_of(&old(caller).start().table_pages, &old(caller).start().spaces), old(caller).root()), p, None)
+            &&& page_agrees(space_mapping(tree_of(&old(caller).kernel().table_pages, &old(caller).kernel().spaces), old(caller).root()), p, None)
+        },
+    ensures
+        final(caller).kernel() == old(caller).kernel(),
+        final(caller).entry() == old(caller).entry(),
+        final(caller).root() == old(caller).root(),
+        final(caller).history() == old(caller).history(),
+        final(caller).start() == old(caller).start(),
+        final(caller).pages_id() == old(caller).pages_id(),
+        final(caller).pages() == old(caller).pages().union_prefer_right(none_at(s)),
+        final(caller).pages_wf(),
+        set.pages() == none_at(s),
+        set.id() == final(caller).pages_id(),
+{
+    assert(none_at(s).dom() == s);
+    assert(old(caller).pages().dom().disjoint(s));
+    let tracked tokens = caller.pages.insert_map(none_at(s));
+    let ghost m = space_mapping(tree_of(&caller.kernel.table_pages, &caller.kernel.spaces), caller.root);
+    assert forall|q: SpacePath| #[trigger] caller.pages@.contains_key(q) implies page_agrees(m, q, caller.pages@[q]) by {
+        if s.contains(q) {
+            assert(caller.pages@[q] == none_at(s)[q]);
+        } else {
+            assert(old(caller).pages().contains_key(q));
+            assert(caller.pages@[q] == old(caller).pages()[q]);
+        }
+    }
+    PageSet { tokens }
 }
 
 /// No other caller stepped on the token between `pre` and `post`: `post`'s step history extends `pre`'s,
