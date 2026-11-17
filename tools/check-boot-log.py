@@ -6,7 +6,7 @@
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
 design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
-line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 Each of CPU 0 and CPU 1 prints its processor report once; on x86_64 its invpcid bit is the host's, CPUID
 Fn0000_0007 EBX bit 10 as /proc/cpuinfo's invpcid flag gives it, which the output records, and its specres bit
 is clear; on aarch64 its x86_64 bits are clear.
@@ -145,10 +145,6 @@ KILL_LAG = re.compile(r"^core 1 lag [0-9]+ counts\r?$", re.M)
 # The line dom0 prints once it wrote an entry and a stack into its child's first thread and read them back,
 # after the reads and writes the frame must refuse were refused.
 REGISTERS_LINE = "dom0 thread registers set"
-
-# The lines dom0 prints before THREADS_LINE: the best and the mean cycles of a thread's retype, each beside
-# new_thread's before number.
-THREAD_TIMES = re.compile(r"thread best \d+ before 57405\r?\nthread mean \d+ before 59384\r?$", re.M)
 
 # What the kernel logs of the root's untyped and frame capabilities, before it prints each slot.
 ROOT_HOLDS = "root holds "
@@ -488,8 +484,6 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
         raise Refused(f'the serial log does not show a thread of dom0\'s child on core 1 stopped by the destroy: "{KILLED_LINE}"')
     if not KILL_LAG.search(serial):
         raise Refused("the serial log does not show how far the count on core 1 went past the destroy")
-    if not THREAD_TIMES.search(serial):
-        raise Refused("the serial log does not show a thread retype's best and mean cycles beside the before numbers")
     if not second_core_idle(serial):
         raise Refused("the serial log does not show CPU 1 idle on a syscall stack of its own")
     if FLUSH_ACKNOWLEDGED not in serial:
@@ -498,7 +492,7 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     reports = processor_reports_held(serial, arch, host_invpcid() if invpcid is None and arch == "x86_64" else invpcid)
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line and thread times, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
+            f"{gigabyte}, dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, core 1 unmap acknowledged, started thread line, preempted counts, "
             f"{'thread pointer line, ' if arch == 'aarch64' else ''}{'GS line, segments line, own nx page line, ' if arch == 'x86_64' else ''}syscall registers line, preemption registers line, context switch registers line, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, "
             f"CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended, {reports}")
@@ -555,8 +549,6 @@ def boot_log():
             + "dom0 own thread consumed cycles\n"
             "dom0 freed frame retyped\n"
             "dom0 process retyped\n"
-            "thread best 31000 before 57405\n"
-            "thread mean 33000 before 59384\n"
             "dom0 threads retyped\n"
             "dom0 thread registers set\n"
             "dom0 thread placed\n"
@@ -649,7 +641,6 @@ class Tests(unittest.TestCase):
             ("dom0 thread killed on core 1\n", "stopped by the destroy"),
             ("core 1 lag 2000 counts\n", "past the destroy"),
             ("dom0 process destroyed\n", "destroying its child"),
-            ("thread mean 33000 before 59384\n", "mean cycles"),
             ("dom0 capability done\n", "exit marker"),
             ("CPU 1 idle, syscall stack 0x2000\n", "CPU 1 idle"),
             ("flush IPI acknowledged by CPU 1\n", "flush IPI"),
@@ -843,8 +834,11 @@ class Tests(unittest.TestCase):
         other = log.replace("INFO CPU 1 acknowledged", "INFO CPU 0 acknowledged")
         self.assertIn("CPU 1 acknowledging the flush", self.refused(other))
 
-    def test_the_thread_times_stand_beside_the_before_numbers(self):
-        self.assertIn("mean cycles", self.refused(boot_log().replace("before 57405", "before 1")))
+    def test_a_boot_without_ad_hoc_thread_times_passes(self):
+        log = boot_log()
+        self.assertNotIn("thread best", log)
+        self.assertNotIn("thread mean", log)
+        self.assertIn("thread line", boot_log_accepted(log, "x86_64"))
 
     def test_a_slot_of_another_kind_is_named(self):
         self.assertIn("not power", self.refused(boot_log().replace("root slot 4: power", "root slot 4: console")))

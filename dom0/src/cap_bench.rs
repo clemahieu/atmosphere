@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: MIT
 
-//! Scaled capability revocation (`> REVOKE_BUDGET`), sibling/foreign delete, populated child
-//! process teardown, sibling-descendant retype, and multi-core `QueueLock` capability contention
-//! benchmarks mapped from Barrelfish `usr/bench` (`distops`, `xcorecap`, MIT) onto Atmosphere's
-//! capability operations.
+//! Capability table inspect, capability lifecycle, thread consumed-time inspect, scaled revocation
+//! (`> REVOKE_BUDGET`), sibling/foreign delete, populated child process teardown, sibling-descendant
+//! retype, and multi-core `QueueLock` capability contention benchmarks mapped from Fuchsia
+//! `src/tests/microbenchmarks` (`handle.cc`, `handle_creation.cc`, `events.cc`, `syscalls.cc`,
+//! `get_info.cc`; BSD-2-Clause) and Barrelfish `usr/bench` (`distops`, `xcorecap`; MIT) onto
+//! Atmosphere's capability operations (`design/synthetic-benchmark-suite/`).
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec;
+use core::hint::black_box;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use abench::runner::{Registry, RepeatState};
 use asys::operation;
 
+use crate::mmu_bench::retype_large_frame_until_done;
 use crate::{
     core_bench, first_slot, ARGUMENT_WORDS, FIRST_LEAF_END, LEAF_BYTES, LEAF_INDICES, MAX_ORDER,
     PROCESS_ORDER, RIGHT_READ, ROOT_ENTRIES, THREAD_BYTES,
@@ -63,6 +67,12 @@ const WORKER_STACK_U128S: usize = 512; // 8 KiB, 16-byte aligned
 const MODE_RETYPE: u64 = 1;
 const MODE_MOVE: u64 = 2;
 const MODE_REVOKE: u64 = 3;
+const MODE_INSPECT: u64 = 4;
+const MODE_CONC_SWITCH: u64 = 5;
+
+const EMPTY_REFUSED_META_IDX: usize = 9 + 6 * MAX_CORES;
+const CONC_HIGH_META_IDX: usize = EMPTY_REFUSED_META_IDX + 1;
+const _: () = assert!(CONC_HIGH_META_IDX < 2 * (LEAF_SLOTS as usize));
 
 struct WorkerConfig {
     contend_4k_untyped: AtomicU64,
@@ -97,6 +107,9 @@ static WORKER_GO: [AtomicU64; MAX_CORES] = [const { AtomicU64::new(0) }; MAX_COR
 static WORKER_DONE: [AtomicU64; MAX_CORES] = [const { AtomicU64::new(0) }; MAX_CORES];
 static WORKER_ITERS: [AtomicU64; MAX_CORES] = [const { AtomicU64::new(0) }; MAX_CORES];
 static WORKER_ERR: [AtomicU64; MAX_CORES] = [const { AtomicU64::new(0) }; MAX_CORES];
+static INSPECT_FRAME_SLOT: AtomicU64 = AtomicU64::new(0);
+static CONC_HIGH_SLOT: AtomicU64 = AtomicU64::new(0);
+static CONC_HIGH_ITERS: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 fn dom0_slot(index: usize) -> u64 {
@@ -308,6 +321,58 @@ fn worker_revoke_step(core_idx: usize) -> bool {
     revoke_until_done(frame).is_some()
 }
 
+fn worker_inspect_step() -> bool {
+    black_box(operation::inspect(INSPECT_FRAME_SLOT.load(Ordering::Relaxed))).is_ok()
+}
+
+fn worker_conc_switch_step() -> bool {
+    let conc_slot = CONC_HIGH_SLOT.load(Ordering::Relaxed);
+    let before = CONC_HIGH_ITERS.load(Ordering::Acquire);
+    if start_thread(conc_slot) != operation::STATUS_OK {
+        return false;
+    }
+    // Wait past the self-IPI delivery window until the higher-priority worker ran and self-suspended.
+    (0..WAIT_SPINS).any(|_| CONC_HIGH_ITERS.load(Ordering::Acquire) != before)
+}
+
+extern "C" fn conc_high_worker(self_slot: u64) -> ! {
+    loop {
+        CONC_HIGH_ITERS.fetch_add(1, Ordering::Release);
+        // Self-suspending hands core 1 straight back to the priority-0 partner thread.
+        let _ = operation::status(unsafe {
+            operation::invoke(operation::SUSPEND, self_slot, [0; 5])
+        });
+    }
+}
+
+fn init_worker_thread(
+    untyped_slot: u64,
+    thread_phys: u64,
+    thread_slot: u64,
+    entry: u64,
+    arg0: u64,
+    core_slot: u64,
+    priority: u64,
+) -> bool {
+    let stack = Box::leak(vec![0u128; WORKER_STACK_U128S].into_boxed_slice());
+    let top = stack.as_ptr() as u64 + (stack.len() * 16) as u64;
+    #[cfg(target_arch = "x86_64")]
+    let sp = top - 8;
+    #[cfg(target_arch = "aarch64")]
+    let sp = top;
+
+    retype_thread(
+        untyped_slot,
+        thread_phys,
+        thread_slot,
+        operation::ROOT_PROCESS_SLOT,
+    ) == operation::STATUS_OK
+        && set_frame_word(thread_slot, operation::PC_WORD, entry) == operation::STATUS_OK
+        && set_frame_word(thread_slot, operation::SP_WORD, sp) == operation::STATUS_OK
+        && set_frame_word(thread_slot, ARGUMENT_WORDS[0], arg0) == operation::STATUS_OK
+        && place_thread(thread_slot, core_slot, priority) == operation::STATUS_OK
+}
+
 extern "C" fn cap_bench_worker(core_idx: u64) -> ! {
     let idx = core_idx as usize;
     loop {
@@ -320,6 +385,8 @@ extern "C" fn cap_bench_worker(core_idx: u64) -> ! {
                 MODE_RETYPE => worker_retype_step(idx),
                 MODE_MOVE => worker_move_step(idx),
                 MODE_REVOKE => worker_revoke_step(idx),
+                MODE_INSPECT => worker_inspect_step(),
+                MODE_CONC_SWITCH => worker_conc_switch_step(),
                 _ => false,
             };
             if !ok {
@@ -340,6 +407,12 @@ struct CapBenchFixture {
     frame_phys: u64,
     claim_frame_cap: u64,
     claim_frame_phys: u64,
+    empty_refused_slot: u64,
+    conc_high_slot: u64,
+    retype_4k_phys: u64,
+    large_2m_phys: u64,
+    retype_proc_base: u64,
+    retype_thread_base: u64,
     retype_2m_untyped: u64,
     retype_2m_phys: u64,
     pop_proc_slot: u64,
@@ -427,11 +500,26 @@ impl CapBenchFixture {
         let retype_2m_untyped = meta_slot(2);
         let pop_proc_slot = meta_slot(3);
         let pop_claim_slot = meta_slot(4);
+        let empty_refused_slot = meta_slot(EMPTY_REFUSED_META_IDX);
+        let conc_high_slot = meta_slot(CONC_HIGH_META_IDX);
 
         let frame_phys = cursor;
         cursor += PAGE_BYTES;
         let claim_frame_phys = cursor;
         cursor += PAGE_BYTES;
+        let retype_4k_phys = cursor;
+        cursor += PAGE_BYTES;
+
+        cursor = align_up(cursor, LARGE_FRAME_BYTES);
+        let large_2m_phys = cursor;
+        cursor += LARGE_FRAME_BYTES;
+
+        cursor = align_up(cursor, PROCESS_BYTES);
+        let retype_proc_base = cursor;
+        cursor += pool * PROCESS_BYTES;
+        cursor = align_up(cursor, THREAD_BYTES);
+        let retype_thread_base = cursor;
+        cursor += pool * THREAD_BYTES;
 
         if operation::retype_frame(untyped_slot, frame_phys, frame_cap) != operation::STATUS_OK
             || operation::retype_frame(untyped_slot, claim_frame_phys, claim_frame_cap)
@@ -502,30 +590,45 @@ impl CapBenchFixture {
             let thread_slot = meta_slot(9 + 5 * MAX_CORES + c);
             let thread_phys = cursor;
             cursor += THREAD_BYTES;
-            let stack = Box::leak(vec![0u128; WORKER_STACK_U128S].into_boxed_slice());
-            let top = stack.as_ptr() as u64 + (stack.len() * 16) as u64;
-            #[cfg(target_arch = "x86_64")]
-            let sp = top - 8;
-            #[cfg(target_arch = "aarch64")]
-            let sp = top;
-
-            if retype_thread(untyped_slot, thread_phys, thread_slot, operation::ROOT_PROCESS_SLOT)
-                != operation::STATUS_OK
-                || set_frame_word(thread_slot, operation::PC_WORD, cap_bench_worker as *const () as u64)
-                    != operation::STATUS_OK
-                || set_frame_word(thread_slot, operation::SP_WORD, sp) != operation::STATUS_OK
-                || set_frame_word(thread_slot, ARGUMENT_WORDS[0], c as u64) != operation::STATUS_OK
-                || place_thread(thread_slot, operation::ROOT_CORE_SLOT + (c as u64), 0)
-                    != operation::STATUS_OK
-            {
+            if !init_worker_thread(
+                untyped_slot,
+                thread_phys,
+                thread_slot,
+                cap_bench_worker as *const () as u64,
+                c as u64,
+                operation::ROOT_CORE_SLOT + (c as u64),
+                0,
+            ) {
                 return None;
             }
             *thread_slot_out = thread_slot;
         }
 
+        let conc_high_phys = cursor;
+        cursor += THREAD_BYTES;
+        let conc_core = if cores >= 2 {
+            operation::ROOT_CORE_SLOT + 1
+        } else {
+            operation::ROOT_CORE_SLOT
+        };
+        if !init_worker_thread(
+            untyped_slot,
+            conc_high_phys,
+            conc_high_slot,
+            conc_high_worker as *const () as u64,
+            conc_high_slot,
+            conc_core,
+            1,
+        ) {
+            return None;
+        }
+
         if cursor > block.base + MIN_REGION_BYTES {
             return None;
         }
+
+        INSPECT_FRAME_SLOT.store(frame_cap, Ordering::Release);
+        CONC_HIGH_SLOT.store(conc_high_slot, Ordering::Release);
 
         Some(Self {
             cores,
@@ -534,6 +637,12 @@ impl CapBenchFixture {
             frame_phys,
             claim_frame_cap,
             claim_frame_phys,
+            empty_refused_slot,
+            conc_high_slot,
+            retype_4k_phys,
+            large_2m_phys,
+            retype_proc_base,
+            retype_thread_base,
             retype_2m_untyped,
             retype_2m_phys,
             pop_proc_slot,
@@ -549,7 +658,7 @@ impl CapBenchFixture {
 }
 
 fn register_revoke_sweeps(registry: &mut Registry, fixture: &Rc<CapBenchFixture>) -> bool {
-    for count in [256usize, 1024, 4096, 16384] {
+    for count in [1usize, 64, 256, 1024, 4096, 16384] {
         let f_local = Rc::clone(fixture);
         if registry
             .register(alloc::format!("Capability/Revoke/{count}"), move |state| {
@@ -575,7 +684,7 @@ fn register_revoke_sweeps(registry: &mut Registry, fixture: &Rc<CapBenchFixture>
                     };
                     #[cfg(not(feature = "bench"))]
                     {
-                        let expected_again = ((count / REVOKE_BUDGET) - 1) as u64;
+                        let expected_again = (count.div_ceil(REVOKE_BUDGET) - 1) as u64;
                         if again != expected_again
                             || operation::inspect(dom0_slot(0)).is_ok()
                             || operation::inspect(dom0_slot(count - 1)).is_ok()
@@ -592,6 +701,10 @@ fn register_revoke_sweeps(registry: &mut Registry, fixture: &Rc<CapBenchFixture>
             .is_err()
         {
             return false;
+        }
+
+        if count < 256 {
+            continue;
         }
 
         let f_dist = Rc::clone(fixture);
@@ -1116,14 +1229,354 @@ fn register_contended(registry: &mut Registry, fixture: &Rc<CapBenchFixture>) ->
     true
 }
 
-/// Sets up the scaled/contended capability benchmark fixture and registers all benchmarks with `registry`.
+fn register_inspect_and_syscall(registry: &mut Registry, fixture: &Rc<CapBenchFixture>) -> bool {
+    let inspect_cap = fixture.frame_cap;
+    let inspect_phys = fixture.frame_phys;
+    let empty_slot = fixture.empty_refused_slot;
+    if registry
+        .register_simple("Syscall/Inspect", move || {
+            matches!(
+                black_box(operation::inspect(inspect_cap)),
+                Ok(cap) if cap.kind == operation::KIND_FRAME && cap.base == inspect_phys
+            )
+        })
+        .is_err()
+        || registry
+            .register_simple("Syscall/Refused", move || {
+                black_box(operation::inspect(empty_slot)) == Err(operation::STATUS_REFUSED)
+            })
+            .is_err()
+        || registry
+            .register_simple("Capability/Inspect/1Threads", move || {
+                matches!(
+                    black_box(operation::inspect(inspect_cap)),
+                    Ok(cap) if cap.kind == operation::KIND_FRAME && cap.base == inspect_phys
+                )
+            })
+            .is_err()
+    {
+        return false;
+    }
+
+    let f_cpu = Rc::clone(fixture);
+    if registry
+        .register("Capability/Inspect/CpuCountThreads", move |state| {
+            run_contended(state, &f_cpu, f_cpu.cores, MODE_INSPECT, |state| {
+                while state.keep_running() {
+                    if !matches!(
+                        black_box(operation::inspect(f_cpu.frame_cap)),
+                        Ok(cap) if cap.kind == operation::KIND_FRAME && cap.base == f_cpu.frame_phys
+                    ) {
+                        return false;
+                    }
+                }
+                true
+            })
+        })
+        .is_err()
+    {
+        return false;
+    }
+
+    if registry
+        .register("Thread/InspectConsumed/ThreadOnly", |state| {
+            let mut prev = 0u64;
+            while state.keep_running() {
+                let Ok(cap) = operation::inspect(operation::ROOT_THREAD_SLOT) else {
+                    return false;
+                };
+                let consumed = black_box(cap.consumed);
+                if cap.kind != operation::KIND_THREAD || consumed == 0 || consumed < prev {
+                    return false;
+                }
+                prev = consumed;
+            }
+            true
+        })
+        .is_err()
+    {
+        return false;
+    }
+
+    let f_conc = Rc::clone(fixture);
+    registry
+        .register("Thread/InspectConsumed/ConcurrentThreads", move |state| {
+            let conc_slot = f_conc.conc_high_slot;
+            let inspect_loop = |state: &mut RepeatState<'_>| -> bool {
+                let Ok(first_cap) = operation::inspect(conc_slot) else {
+                    return false;
+                };
+                let mut prev = first_cap.consumed;
+                while state.keep_running() {
+                    let Ok(cap) = operation::inspect(conc_slot) else {
+                        return false;
+                    };
+                    let consumed = black_box(cap.consumed);
+                    if cap.kind != operation::KIND_THREAD || consumed < prev {
+                        return false;
+                    }
+                    prev = consumed;
+                }
+                CONC_HIGH_ITERS.load(Ordering::Acquire) > 0 && prev >= first_cap.consumed
+            };
+            if f_conc.cores >= 2 {
+                let ok = run_contended(state, &f_conc, 2, MODE_CONC_SWITCH, inspect_loop);
+                stopped(conc_slot) && ok
+            } else {
+                let before_iters = CONC_HIGH_ITERS.load(Ordering::Acquire);
+                if start_thread(conc_slot) != operation::STATUS_OK
+                    || !(0..WAIT_SPINS).any(|_| CONC_HIGH_ITERS.load(Ordering::Acquire) != before_iters)
+                {
+                    return false;
+                }
+                let ok = inspect_loop(state);
+                stopped(conc_slot) && ok
+            }
+        })
+        .is_ok()
+}
+
+fn register_derive_and_move(registry: &mut Registry, fixture: &Rc<CapBenchFixture>) -> bool {
+    let f_derive = Rc::clone(fixture);
+    if registry
+        .register("Capability/DeriveDelete", move |state| {
+            state.declare_step("derive");
+            state.declare_step("delete");
+            let target = dom0_slot(0);
+            let mut ok = true;
+            while state.keep_running() {
+                if operation::derive(
+                    f_derive.frame_cap,
+                    target,
+                    RIGHT_READ,
+                    f_derive.frame_phys,
+                    0,
+                ) != operation::STATUS_OK
+                {
+                    ok = false;
+                    break;
+                }
+                #[cfg(not(feature = "bench"))]
+                if operation::inspect(target).is_err() {
+                    ok = false;
+                    break;
+                }
+                state.next_step();
+                if operation::delete(target) != operation::STATUS_OK {
+                    ok = false;
+                    break;
+                }
+                #[cfg(not(feature = "bench"))]
+                if operation::inspect(target) != Err(operation::STATUS_REFUSED) {
+                    ok = false;
+                    break;
+                }
+            }
+            revoke_until_done(f_derive.frame_cap).is_some() && ok
+        })
+        .is_err()
+    {
+        return false;
+    }
+
+    let f_move = Rc::clone(fixture);
+    registry
+        .register("Capability/Move", move |state| {
+            state.declare_primary_step();
+            state.declare_step("reset_ignore");
+            let slot_a = dom0_slot(0);
+            let slot_b = dom0_slot(1);
+            if operation::derive(f_move.frame_cap, slot_a, RIGHT_READ, f_move.frame_phys, 0)
+                != operation::STATUS_OK
+            {
+                return false;
+            }
+            let mut ok = true;
+            while state.keep_running() {
+                if operation::move_capability(slot_a, slot_b) != operation::STATUS_OK {
+                    ok = false;
+                    break;
+                }
+                #[cfg(not(feature = "bench"))]
+                if operation::inspect(slot_a).is_ok() || operation::inspect(slot_b).is_err() {
+                    ok = false;
+                    break;
+                }
+                state.next_step();
+                if operation::move_capability(slot_b, slot_a) != operation::STATUS_OK {
+                    ok = false;
+                    break;
+                }
+                #[cfg(not(feature = "bench"))]
+                if operation::inspect(slot_b).is_ok() || operation::inspect(slot_a).is_err() {
+                    ok = false;
+                    break;
+                }
+            }
+            revoke_until_done(f_move.frame_cap).is_some() && ok
+        })
+        .is_ok()
+}
+
+fn register_retype_free_case<F>(
+    registry: &mut Registry,
+    name: &str,
+    untyped_slot: u64,
+    phys: u64,
+    order: u64,
+    retype_op: F,
+) -> bool
+where
+    F: Fn(u64, u64, u64) -> bool + 'static,
+{
+    registry
+        .register(name, move |state| {
+            state.declare_step("retype");
+            state.declare_step("delete");
+            state.declare_step("retype_free");
+            let target = dom0_slot(0);
+            while state.keep_running() {
+                if !retype_op(untyped_slot, phys, target) {
+                    return false;
+                }
+                #[cfg(not(feature = "bench"))]
+                if !matches!(
+                    operation::inspect(target),
+                    Ok(cap)
+                        if cap.kind == operation::KIND_FRAME
+                            && cap.base == phys
+                            && cap.order == order
+                ) {
+                    return false;
+                }
+                state.next_step();
+                if operation::delete(target) != operation::STATUS_OK {
+                    return false;
+                }
+                state.next_step();
+                if !retype_free_until_done(untyped_slot, phys, order) {
+                    return false;
+                }
+                #[cfg(not(feature = "bench"))]
+                if operation::inspect(target) != Err(operation::STATUS_REFUSED) {
+                    return false;
+                }
+            }
+            true
+        })
+        .is_ok()
+}
+
+fn register_retype_free(registry: &mut Registry, fixture: &CapBenchFixture) -> bool {
+    register_retype_free_case(
+        registry,
+        "Capability/RetypeFree/Frame4K",
+        fixture.untyped_slot,
+        fixture.retype_4k_phys,
+        0,
+        |untyped, phys, target| operation::retype_frame(untyped, phys, target) == operation::STATUS_OK,
+    ) && register_retype_free_case(
+        registry,
+        "Capability/RetypeFree/LargeFrame2M",
+        fixture.untyped_slot,
+        fixture.large_2m_phys,
+        9,
+        retype_large_frame_until_done,
+    )
+}
+
+fn register_retype_destroy_case<F>(
+    registry: &mut Registry,
+    name: &str,
+    untyped_slot: u64,
+    pool_base: u64,
+    stride: u64,
+    expected_kind: u64,
+    retype_op: F,
+) -> bool
+where
+    F: Fn(u64, u64, u64) -> u64 + 'static,
+{
+    registry
+        .register(name, move |state| {
+            state.declare_step("retype");
+            state.declare_step("destroy");
+            state.declare_step("delete");
+            let target = dom0_slot(0);
+            let mut iter = 0u64;
+            while state.keep_running() {
+                if iter >= core_bench::POOL {
+                    return false;
+                }
+                let phys = pool_base + iter * stride;
+                iter += 1;
+                if retype_op(untyped_slot, phys, target) != operation::STATUS_OK {
+                    return false;
+                }
+                #[cfg(not(feature = "bench"))]
+                if !matches!(
+                    operation::inspect(target),
+                    Ok(cap) if cap.kind == expected_kind && cap.base == phys
+                ) {
+                    return false;
+                }
+                state.next_step();
+                if destroy_cap(target) != operation::STATUS_OK {
+                    return false;
+                }
+                #[cfg(not(feature = "bench"))]
+                if destroy_cap(target) != operation::STATUS_REFUSED {
+                    return false;
+                }
+                state.next_step();
+                if operation::delete(target) != operation::STATUS_OK {
+                    return false;
+                }
+                #[cfg(not(feature = "bench"))]
+                if operation::inspect(target) != Err(operation::STATUS_REFUSED) {
+                    return false;
+                }
+            }
+            #[cfg(feature = "bench")]
+            let _ = expected_kind;
+            true
+        })
+        .is_ok()
+}
+
+fn register_retype_destroy(registry: &mut Registry, fixture: &CapBenchFixture) -> bool {
+    let bound_proc = fixture.dist_procs[0];
+    register_retype_destroy_case(
+        registry,
+        "Capability/RetypeDestroy/Process",
+        fixture.untyped_slot,
+        fixture.retype_proc_base,
+        PROCESS_BYTES,
+        operation::KIND_PROCESS,
+        retype_process,
+    ) && register_retype_destroy_case(
+        registry,
+        "Capability/RetypeDestroy/Thread",
+        fixture.untyped_slot,
+        fixture.retype_thread_base,
+        THREAD_BYTES,
+        operation::KIND_THREAD,
+        move |untyped, phys, target| retype_thread(untyped, phys, target, bound_proc),
+    )
+}
+
+/// Sets up capability lifecycle, inspect, scaled, and contended fixtures and registers all benchmarks.
 pub(crate) fn register(registry: &mut Registry) -> bool {
     let Some(fixture) = CapBenchFixture::init() else {
         return false;
     };
     let fixture = Rc::new(fixture);
-    register_revoke_sweeps(registry, &fixture)
+    register_inspect_and_syscall(registry, &fixture)
+        && register_derive_and_move(registry, &fixture)
+        && register_revoke_sweeps(registry, &fixture)
         && register_delete_benchmarks(registry, &fixture)
+        && register_retype_free(registry, &fixture)
+        && register_retype_destroy(registry, &fixture)
         && register_populated_process_destroy(registry, &fixture)
         && register_retype_with_siblings(registry, &fixture)
         && register_contended(registry, &fixture)

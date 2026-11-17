@@ -64,8 +64,7 @@
 //! It retypes 32 threads bound to the child process into the slots of root entry 2 after the first,
 //! after a retype bound to the console slot or to an empty slot, neither holding a process, and one at a
 //! base not aligned to the block are refused; inspect finds a thread with control in the first slot, a
-//! second retype of its block is refused, and dom0 prints the best and the mean cycles of a thread's
-//! retype beside new_thread's before numbers.
+//! second retype of its block is refused, and dom0 prints that it held.
 //! It reads and writes the saved frame of the first of those threads, before anything starts it: a read or a
 //! write at an index not a multiple of four or past the frame, a write of a program counter above every
 //! user address, and a read or a write through a copy of the thread's capability without control are
@@ -136,7 +135,7 @@
 //! objects until the allocator refuses one, frees them, allocates one again, and prints that the heap
 //! held.
 //! With `abench`, it registers calibration, syscall, MMU (`mmu_bench`), memory pointer-chase,
-//! core-scaling/placement (`core_bench`), scaled/contended capability (`cap_bench`), heap
+//! core-scaling/placement (`core_bench`), capability lifecycle/inspect/scaling (`cap_bench`), heap
 //! allocator / working-set churn (`heap_bench`), shared-frame ring/mailbox (`ring_bench`),
 //! cold-cache/pipelined/fan-in/bulk ring (`ump_bench`), and user-space primitive (`prim_bench`)
 //! microbenchmarks (`design/synthetic-benchmark-suite/`) and runs them in unit-test mode, or under
@@ -510,36 +509,6 @@ fn print_count(head: &[u8], count: u64, tail: &[u8]) -> u64 {
         length += 1;
     }
     unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, operation::print_words(&text[..length])) }
-}
-
-/// The cycle counter: the TSC on x86_64, the virtual counter on aarch64.
-fn rdtsc() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let lo: u32;
-        let hi: u32;
-        unsafe {
-            core::arch::asm!(
-                "rdtsc",
-                out("eax") lo,
-                out("edx") hi,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-        ((hi as u64) << 32) | lo as u64
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let ticks: u64;
-        unsafe {
-            core::arch::asm!(
-                "mrs {ticks}, cntvct_el0",
-                ticks = out(reg) ticks,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-        ticks
-    }
 }
 
 /// Chunked console writer flushing 39-byte slices over `ROOT_CONSOLE_SLOT`.
@@ -954,7 +923,7 @@ fn retyped_process_held(caller: &mut Tracked<Caller>, untyped: u64, table: u64, 
 /// How far below the top of the gigabyte untyped the thread check's blocks start: the 32 order-1 blocks
 /// from there end at PROCESS_BELOW_TOP, below every page the checks before it may take from that top and
 /// above the eager source's leaf and block, where nothing else retypes.
-const THREADS_BELOW_TOP: u64 = PROCESS_BELOW_TOP + TIMED_THREADS * THREAD_BYTES;
+const THREADS_BELOW_TOP: u64 = PROCESS_BELOW_TOP + CHECKED_THREADS * THREAD_BYTES;
 
 /// The bytes of a thread's block, order 1.
 pub(crate) const THREAD_BYTES: u64 = 2 * 4096;
@@ -962,25 +931,19 @@ pub(crate) const THREAD_BYTES: u64 = 2 * 4096;
 /// The order of a thread's block.
 const THREAD_ORDER: u64 = 1;
 
-/// How many threads dom0 retypes into its child and times, as many as the before number's run made.
-const TIMED_THREADS: u64 = 32;
-
-/// The before numbers for a thread's creation, logs/cutover-before.log: new_thread took 57405 TSC cycles
-/// at best and 59384 on average over 32 threads.
-const THREAD_BEST_TAIL: &[u8] = b" before 57405\n";
-const THREAD_MEAN_TAIL: &[u8] = b" before 59384\n";
+/// How many threads dom0 retypes into its child.
+const CHECKED_THREADS: u64 = 32;
 
 /// What dom0 prints once the thread check held, which the gate looks for.
 const THREADS_HELD: [u64; 5] = operation::print_words(b"dom0 threads retyped\n");
 
-/// Whether dom0 retypes TIMED_THREADS threads under the gigabyte untyped, the last from `empty` down,
+/// Whether dom0 retypes CHECKED_THREADS threads under the gigabyte untyped, the last from `empty` down,
 /// into the child process whose capability is in `process`, from the order-1 blocks from
 /// THREADS_BELOW_TOP below the untyped's top, into the slots of
 /// root entry FIRST_EMPTY_ENTRY after the first, which the leaf check filled: a retype bound to the
 /// console slot or to an empty slot, neither holding a process, and one at a base not aligned to the
-/// block, are refused; each of the threads is accepted, timed, and inspect finds the first a thread with
-/// control at its block; and a second retype of the first block is refused. dom0 prints the best and the
-/// mean cycles of a retype beside the before numbers.
+/// block, are refused; each of the threads is accepted, and inspect finds the first a thread with
+/// control at its block; and a second retype of the first block is refused. dom0 prints that it held.
 fn retyped_threads_held(caller: &mut Tracked<Caller>, empty: u64, process: u64) -> bool {
     let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
         return false;
@@ -996,17 +959,11 @@ fn retyped_threads_held(caller: &mut Tracked<Caller>, empty: u64, process: u64) 
     {
         return false;
     }
-    let mut best = u64::MAX;
-    let mut total = 0;
-    for k in 0..TIMED_THREADS {
-        let start = rdtsc();
+    for k in 0..CHECKED_THREADS {
         let status = retype_thread(caller, base + k * THREAD_BYTES, first + k, process);
-        let cycles = rdtsc().wrapping_sub(start);
         if status != operation::STATUS_OK {
             return false;
         }
-        best = best.min(cycles);
-        total += cycles;
     }
     matches!(
         inspect(caller, first),
@@ -1014,9 +971,7 @@ fn retyped_threads_held(caller: &mut Tracked<Caller>, empty: u64, process: u64) 
             && thread.base == base
             && thread.order == THREAD_ORDER
             && thread.rights == RIGHT_CONTROL
-    ) && retype_thread(caller, base, first + TIMED_THREADS, process) == operation::STATUS_REFUSED
-        && print_count(b"thread best ", best, THREAD_BEST_TAIL) == operation::STATUS_OK
-        && print_count(b"thread mean ", total / TIMED_THREADS, THREAD_MEAN_TAIL) == operation::STATUS_OK
+    ) && retype_thread(caller, base, first + CHECKED_THREADS, process) == operation::STATUS_REFUSED
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, THREADS_HELD) } == operation::STATUS_OK
 }
 
