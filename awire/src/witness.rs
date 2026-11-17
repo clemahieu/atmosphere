@@ -438,6 +438,75 @@ pub fn witness_count(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Elemen
     (parsed, wrote, room)
 }
 
+/// A field as a format names it: a kind and a value, where the combinators give the pair of them.
+#[derive(Clone, Copy)]
+pub struct Field {
+    pub kind: u8,
+    pub value: u16,
+}
+
+impl View for Field {
+    type V = Field;
+
+    open spec fn view(&self) -> Field {
+        *self
+    }
+}
+
+/// A `Field` from the pair of its kind and value, and back.
+pub struct FieldMapping;
+
+impl Mapping<(u8, u16)> for FieldMapping {
+    type T = Field;
+
+    open spec fn spec_into(&self, s: (u8, u16)) -> Field {
+        Field { kind: s.0, value: s.1 }
+    }
+
+    open spec fn spec_from(&self, t: Field) -> (u8, u16) {
+        (t.kind, t.value)
+    }
+
+    open spec fn c(&self) -> nat {
+        0
+    }
+
+    proof fn lemma_from_into(&self, s: (u8, u16)) {
+    }
+
+    proof fn lemma_into_from(&self, t: Field) {
+    }
+
+    fn map_into(&self, s: (u8, u16), Tracked(steps): Tracked<&mut Steps>) -> (t: Field) {
+        Field { kind: s.0, value: s.1 }
+    }
+
+    fn map_from(&self, t: &Field, Tracked(steps): Tracked<&mut Steps>) -> (s: (u8, u16)) {
+        (t.kind, t.value)
+    }
+}
+
+/// Reads a byte and a big-endian `u16` as a `Field` with named members, and writes it back.
+pub fn witness_mapped(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Field)>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 3,
+        old(out).len() >= 3,
+    ensures
+        r.0 is Some,
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(3) == input@.take(3),
+{
+    let c: Mapped<Pair<U8, U16Be>, FieldMapping> = Mapped { inner: Pair { first: U8, second: U16Be }, mapping: FieldMapping };
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let (_, v) = parsed.unwrap();
+    let room = c.length(&v, out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(&v, out, 0, Tracked(&mut steps));
+    assert(out@.take(3) =~= input@.take(3));
+    (parsed, wrote, room)
+}
+
 /// Reads a length of 2 and the two `u8`s it counts, at most three of them, and writes them back.
 pub fn witness_bounded(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Elements<u8, 4>)>, Option<usize>, Option<usize>))
     requires

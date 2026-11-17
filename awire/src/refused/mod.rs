@@ -22,6 +22,8 @@ pub mod elements_push;
 pub mod length_prefixed_length;
 pub mod length_prefixed_new;
 pub mod length_prefixed_round;
+pub mod mapped_length;
+pub mod mapped_round;
 pub mod pair_length;
 pub mod pair_round;
 pub mod tag_length;
@@ -234,6 +236,34 @@ pub trait LengthPrefixedRound<'a, L: Length<'a>, I: Combinator<'a>> {
 /// `LengthPrefixed::length`'s Some at a length that is not the serialisation's.
 pub trait LengthPrefixedLength<'a, L: Length<'a>, I: Combinator<'a>> {
     proof fn wrong(c: &LengthPrefixed<L, I>, v: I::V, n: nat)
+        requires
+            c.wf(),
+        ensures
+            n != c.spec_serialize(v).len(),
+    ;
+}
+
+/// `Mapped`'s parse and serialize at the round trip they exclude.
+pub trait MappedRound<'a, I: Combinator<'a>, M: Mapping<I::T>> {
+    proof fn parse_trip(c: &Mapped<I, M>, s: Seq<u8>)
+        requires
+            c.wf(),
+        ensures
+            c.spec_parse(s) matches Some((n, v)) ==> c.spec_serialize(v) != s.take(n as int),
+    ;
+
+    proof fn serialize_trip(c: &Mapped<I, M>, v: <M::T as View>::V, rest: Seq<u8>)
+        requires
+            c.wf(),
+            c.valid(v),
+        ensures
+            c.spec_parse(c.spec_serialize(v) + rest) != Some((c.spec_serialize(v).len(), v)),
+    ;
+}
+
+/// `Mapped::length`'s Some at a length that is not the serialisation's.
+pub trait MappedLength<'a, I: Combinator<'a>, M: Mapping<I::T>> {
+    proof fn wrong(c: &Mapped<I, M>, v: <M::T as View>::V, n: nat)
         requires
             c.wf(),
         ensures

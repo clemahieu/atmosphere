@@ -23,8 +23,9 @@
 //! those integers, then another combinator over exactly the bytes it counts; `Count`, a combinator
 //! exactly a count of times, and `Bounded`, a combinator at most a bound of times over exactly the
 //! bytes a `Length` counts, their value `Elements`, an array of a fixed capacity holding them in
-//! place. `Pair`, `Choice`, `LengthPrefixed`, `Count` and `Bounded` are proven from their parts'
-//! properties for any parts. Nothing allocates.
+//! place; and `Mapped`, another combinator with its value through a proven bijection, which gives a
+//! format's value named fields. `Pair`, `Choice`, `LengthPrefixed`, `Count`, `Bounded` and `Mapped`
+//! are proven from their parts' properties for any parts. Nothing allocates.
 #![cfg_attr(not(test), no_std)]
 
 use vstd::prelude::*;
@@ -33,6 +34,7 @@ mod bytes;
 mod choice;
 mod integer;
 mod length;
+mod mapped;
 mod pair;
 mod repeat;
 mod tag;
@@ -40,6 +42,7 @@ pub use bytes::*;
 pub use choice::*;
 pub use integer::*;
 pub use length::*;
+pub use mapped::*;
 pub use pair::*;
 pub use repeat::*;
 pub use tag::*;
