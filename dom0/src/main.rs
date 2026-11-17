@@ -4,7 +4,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, destroy, read registers, write registers, place, start, suspend and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page, of a table leaf, of a process and of a thread and its free of a dead frame, derive, move, delete, revoke, link, map, unmap, probe, presence, destroy, read registers, write registers, place, start, suspend and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -46,7 +46,11 @@
 //! those, reads the page and probes the 64 entries from there, writes it and probes them, and probes them
 //! again, printing the mapped entry's accessed and dirty bits each time: accessed without dirty, then
 //! dirty, then dirty clear; the other 63 entries, none of them present, have no bit set, and both bits
-//! are maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
+//! are maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused.
+//! Presence then reads its own space along that path: at level 4 the image's entry and the path's are
+//! present and name tables, at levels 3 and 2 the path's entry does, and of the 64 level 1 entries the
+//! probe read only the mapped one is present, a leaf; a read of 65, at an address naming no entry at its
+//! level, across tables and under an absent top entry is refused. It maps
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
 //! set, both maintained, which it prints. It retypes another 4K frame, maps it beside that page, writes a
 //! word through it, maps it at the unmapped page and reads that word there, not the old frame's. It
@@ -738,6 +742,73 @@ fn probed_bits_held(frame: u64) -> bool {
         && probe_refused(PROBE_FIRST, 0, b"of 0")
         && probe_refused(PROBE_FIRST, operation::PROBE_MAX + 1, b"of 65")
         && probe_refused(512 - operation::PROBE_MAX / 2, operation::PROBE_MAX, b"across tables")
+}
+
+/// What a presence read of `count` entries at `level` from `address` in dom0's own space returns, or
+/// None when it is refused.
+fn presence_of(address: u64, level: u64, count: u64) -> Option<operation::Present> {
+    operation::presence(operation::ROOT_PROCESS_SLOT, address, level, count).ok()
+}
+
+/// Whether a presence read of `count` entries at `level` from `address` is refused; it prints `what`
+/// once it is.
+fn presence_refused(address: u64, level: u64, count: u64, what: &[u8]) -> bool {
+    matches!(
+        operation::presence(operation::ROOT_PROCESS_SLOT, address, level, count),
+        Err(operation::STATUS_REFUSED)
+    ) && print_parts(&[b"dom0 presence ", what, b" refused\n"]) == operation::STATUS_OK
+}
+
+/// Whether presence reads dom0's own space as the checks before it left it, along the path of tables at
+/// PATH_ADDRESS: at level 4 from address 0, the entries of the image (USERSPACE_BASE) and of the path are
+/// present and name a table, no leaf; at levels 3 and 2 the path's first entry is present and names a
+/// table; at level 1, of the operation::PRESENCE_MAX entries from PROBE_FIRST only PROBED_ENTRY is
+/// present, a leaf, as probe found. A read of 65, an address that names no entry at its level, a range
+/// leaving its table, and a level 3 read under an absent top entry, the first absent among the 64 the top
+/// read covers, are refused. It prints that it held, or each mask of a read that did not.
+fn presence_held() -> bool {
+    let image = 1u64 << (USERSPACE_BASE >> 39);
+    let path = 1u64 << (PATH_ADDRESS >> 39);
+    let (top, upper, middle, lowest) = match (
+        presence_of(0, 4, operation::PRESENCE_MAX),
+        presence_of(PATH_ADDRESS, 3, 1),
+        presence_of(PATH_ADDRESS, 2, 1),
+        presence_of(entry_address(PROBE_FIRST), 1, operation::PRESENCE_MAX),
+    ) {
+        (Some(top), Some(upper), Some(middle), Some(lowest)) => (top, upper, middle, lowest),
+        _ => {
+            print_parts(&[b"dom0 presence read refused\n"]);
+            return false;
+        }
+    };
+    let held = top.present & (image | path) == image | path
+        && top.leaves & (image | path) == 0
+        && upper.present == 1
+        && upper.leaves == 0
+        && middle.present == 1
+        && middle.leaves == 0
+        && lowest.present == PROBED_BIT
+        && lowest.leaves == PROBED_BIT;
+    if !held {
+        let reads: [(&[u8], &[u8], operation::Present); 4] = [
+            (b"dom0 presence l4 p ", b"dom0 presence l4 l ", top),
+            (b"dom0 presence l3 p ", b"dom0 presence l3 l ", upper),
+            (b"dom0 presence l2 p ", b"dom0 presence l2 l ", middle),
+            (b"dom0 presence l1 p ", b"dom0 presence l1 l ", lowest),
+        ];
+        for (present, leaves, read) in reads {
+            print_count(present, read.present, b"\n");
+            print_count(leaves, read.leaves, b"\n");
+        }
+        return false;
+    }
+    let absent = (!top.present).trailing_zeros() as u64;
+    absent < operation::PRESENCE_MAX
+        && presence_refused(PATH_ADDRESS, 1, operation::PRESENCE_MAX + 1, b"of 65")
+        && presence_refused(PATH_ADDRESS + 4096, 2, 1, b"unaligned")
+        && presence_refused(entry_address(512 - operation::PRESENCE_MAX / 2), 1, operation::PRESENCE_MAX, b"across tables")
+        && presence_refused(absent << 39, 3, 1, b"under absent")
+        && print_parts(&[b"dom0 presence read held\n"]) == operation::STATUS_OK
 }
 
 /// The entry of the level 1 table at PATH_ADDRESS that the unmap check maps, the one after PROBED_ENTRY.
@@ -2975,6 +3046,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && deleted_frames_held(caller, empty + 2, empty + 3)
                                 && derived_power_held(caller, empty + 2)
                                 && probed_bits_held(empty + 1)
+                                && presence_held()
                                 && unmapped_bits_held(empty + 1)
                                 && remapped_other_frame_held(caller, untyped, empty + 2)
                                 && freed_frame_retyped(caller, untyped, empty + 3)

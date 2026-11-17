@@ -5,8 +5,8 @@
 
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
-design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, freed frame
-line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, a thread's consumed cycles growing, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, core 1 unloaded-then-loaded unmap flush counts, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
+design/test-guest-memory/), dom0's check line, exit marker, own thread's consumed cycles line, eager source line, heap line, presence
+line, freed frame line, process line, thread line, registers line, placed thread line, switched thread line, core 1 thread line, both cores' invocation counts, a thread's consumed cycles growing, core 1 unmap acknowledged, started thread line, preempted counts, on aarch64 the thread pointer line, on x86_64 the GS line, the segments line and the own-process no-execute page line, core 1 unloaded-then-loaded unmap flush counts, suspended thread line, core 1 stop and restart, killed thread line and its lag, destroyed process line, CPU 1 idle on a syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 Each of CPU 0 and CPU 1 prints its processor report once; on x86_64 its invpcid bit is the host's, CPUID
 Fn0000_0007 EBX bit 10 as /proc/cpuinfo's invpcid flag gives it, which the output records, and its specres bit
 is clear; on aarch64 its x86_64 bits are clear.
@@ -49,6 +49,11 @@ EAGER_LINE = "dom0 eager backed 40"
 # back and freed, refused a run-sized object once its source was exhausted, and gave one again after
 # every one of them was freed.
 HEAP_LINE = "dom0 heap allocator held"
+
+# The line dom0 prints once presence read its own space along the path of tables it linked, at every
+# level, as the checks before left it, and refused the reads it must refuse.
+# design/region-map-reads-presence-at-the-first-call/.
+PRESENCE_LINE = "dom0 presence read held"
 
 # The line dom0 prints once it retyped a 4K frame, deleted its last capability, freed the dead frame
 # through retype's free kind and retyped the page again.
@@ -498,6 +503,8 @@ def boot_log_accepted(serial, arch, translation=False, bench=False, invpcid=None
         raise Refused(f'the serial log does not show dom0\'s eager source backing 40 pages: "{EAGER_LINE}"')
     if not line_printed(serial, HEAP_LINE):
         raise Refused(f'the serial log does not show dom0\'s heap allocator check: "{HEAP_LINE}"')
+    if not line_printed(serial, PRESENCE_LINE):
+        raise Refused(f'the serial log does not show dom0 reading presence in its own space: "{PRESENCE_LINE}"')
     if not line_printed(serial, FREED_LINE):
         raise Refused(f'the serial log does not show dom0 retyping a freed frame: "{FREED_LINE}"')
     if not line_printed(serial, PROCESS_LINE):
@@ -613,6 +620,7 @@ def boot_log():
     """A boot log with the lines the checks keep, and no capability-entry line."""
     return (slot_lines("frame")
             + "dom0 own thread consumed cycles\n"
+            "dom0 presence read held\n"
             "dom0 freed frame retyped\n"
             "dom0 process retyped\n"
             "dom0 threads retyped\n"
@@ -692,6 +700,7 @@ class Tests(unittest.TestCase):
             ("dom0 eager backed 40\n", "eager source"),
             ("dom0 heap allocator held\n", "heap allocator"),
             ("dom0 own thread consumed cycles\n", "own thread's consumed cycles"),
+            ("dom0 presence read held\n", "presence"),
             ("dom0 freed frame retyped\n", "freed frame"),
             ("dom0 process retyped\n", "child process"),
             ("dom0 threads retyped\n", "threads"),
