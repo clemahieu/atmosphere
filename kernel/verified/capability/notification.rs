@@ -32,6 +32,7 @@ use crate::capability::reach::*;
 use crate::capability::schedule::{
     at_back_of_priority, queued_at_back, queues_wf, thread_priority,
 };
+use crate::capability::steps::Steps;
 use crate::capability::table::*;
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
@@ -41,6 +42,10 @@ use crate::pptr::*;
 
 /// The bits of a notification's word a badge may set: every bit but the waiter bit.
 pub const SIGNAL_BITS: u64 = 0x7fff_ffff_ffff_ffff; // not a page size: bits 0 to 62 of the word
+
+/// The most stale waiters `signal` removes from a notification's queue in one entry.
+/// See design/one-lock-bounded-steps/ and design/ipc-with-reply-object/.
+pub const SIGNAL_STALE_BUDGET: usize = STALE_WAITER_BUDGET;
 
 /// The rights bits signal and wait each ask of the capability: send and receive.
 pub const SEND_RIGHT: u32 = 16;
@@ -150,26 +155,27 @@ impl CapKernel {
     }
 
     /// What a signal through index `i` of the table at `root` did when notification `e` had a live
-    /// waiter `head` at the head of its queue: ORed the capability's badge into the word, wrote the
-    /// word with bit 63 clear into `head`'s saved frame as its wait's result, removed `head` from
-    /// the queue, cleared the word (keeping `WAITER_BIT` set only while another thread remains
-    /// listed), made `head` `Runnable` on its placement's core at the back of its placement's
-    /// priority with the reschedule IPI rule of design/cpu-time-as-capability/, and discharged
+    /// waiter `head = waiters[k]` after `k` stale heads: removed the `k` stale heads (clearing
+    /// their wait links), ORed the capability's badge into the word, wrote the word with bit 63 clear
+    /// into `head`'s saved frame as its wait's result, removed `head` from the queue, cleared the
+    /// word (keeping `WAITER_BIT` set only while another thread remains listed), made `head`
+    /// `Runnable` on its placement's core at the back of its placement's priority with the
+    /// reschedule IPI rule of design/cpu-time-as-capability/, and discharged
     /// `Effect::Signal { cap: n, waiter: Some(head) }`.
-    pub open spec fn signal_woke(pre: Self, post: Self, root: usize, i: usize) -> bool {
+    pub open spec fn signal_woke_at(pre: Self, post: Self, root: usize, i: usize, k: int) -> bool {
         let n = pre.tables.node_of(root, i);
         let e = pre.notification_at(root, i);
         let pre_e = pre.endpoints.records@[e].value();
         let post_e = post.endpoints.records@[e].value();
         let badge = pre.payload_of(n).badge as u64;
-        let head = pre_e.head;
+        let head = pre_e.waiters@[k];
         let hr = pre.threads.records@[head].value();
         let pl = hr.placement->Some_0;
         let core = pl.core;
         let delivered = (pre_e.word | badge) & SIGNAL_BITS;
         let new_frame = outcome_written(hr.frame, wait_outcome(delivered));
-        let new_word = if pre_e.waiters@.len() > 1 { WAITER_BIT } else { 0 };
-        &&& pre_e.waiters@.len() > 0
+        let new_word = if pre_e.waiters@.len() > k + 1 { WAITER_BIT } else { 0 };
+        &&& 0 <= k < pre_e.waiters@.len()
         &&& pre.threads.records@.contains_key(head)
         &&& hr.placement is Some
         &&& post == (CapKernel {
@@ -202,10 +208,22 @@ impl CapKernel {
             &&& post.threads.records@[u].addr() == pre.threads.records@[u].addr()
             &&& post.threads.records@[u].is_init()
             &&& same_thread_but_links(vr, ThreadRecord {
-                wait_prev: if pre_e.waiters@.len() > 1 && u == pre_e.waiters@[1] {
+                queued: if exists|j: int| 0 <= j < k && pre_e.waiters@[j] == u {
+                    NONE
+                } else {
+                    ur.queued
+                },
+                wait_prev: if (exists|j: int| 0 <= j < k && pre_e.waiters@[j] == u)
+                    || (pre_e.waiters@.len() > k + 1 && u == pre_e.waiters@[k + 1])
+                {
                     NONE
                 } else {
                     ur.wait_prev
+                },
+                wait_next: if exists|j: int| 0 <= j < k && pre_e.waiters@[j] == u {
+                    NONE
+                } else {
+                    ur.wait_next
                 },
                 ..ur
             })
@@ -217,9 +235,9 @@ impl CapKernel {
         &&& post.endpoints.records@[e].addr() == pre.endpoints.records@[e].addr()
         &&& post.endpoints.records@[e].is_init()
         &&& post_e == (QueueRecord {
-            head: if pre_e.waiters@.len() > 1 { pre_e.waiters@[1] } else { NONE },
-            tail: if pre_e.waiters@.len() > 1 { pre_e.tail } else { NONE },
-            waiters: Ghost(pre_e.waiters@.skip(1)),
+            head: if pre_e.waiters@.len() > k + 1 { pre_e.waiters@[k + 1] } else { NONE },
+            tail: if pre_e.waiters@.len() > k + 1 { pre_e.tail } else { NONE },
+            waiters: Ghost(pre_e.waiters@.skip(k + 1)),
             word: new_word,
             ..pre_e
         })
@@ -232,17 +250,29 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Signal { cap: n, waiter: Some(head) })
     }
 
-    /// What a signal through index i of the table at root did: when the notification's queue has a
-    /// live waiter at its head, woke that waiter with the word (including the badge) in its saved
-    /// frame and cleared the word; otherwise (no waiter or stale head), ORed the capability's badge
-    /// into the notification's word, waking none and discharging `Effect::Signal { cap: n, waiter: None }`.
+    /// `signal_woke_at` when the queue's head was already live (`k == 0`).
+    pub open spec fn signal_woke(pre: Self, post: Self, root: usize, i: usize) -> bool {
+        Self::signal_woke_at(pre, post, root, i, 0)
+    }
+
+    /// What a signal through index i of the table at root did: removes up to `SIGNAL_STALE_BUDGET`
+    /// stale heads from the notification's queue; when a live waiter follows them (`waiters[k]` is
+    /// `Blocked` on `e`), wakes that waiter with the word (including the badge) in its saved frame
+    /// and clears the word; otherwise, clears bit 63 if the queue is now empty, ORs the
+    /// capability's badge into the word, wakes none, and discharges
+    /// `Effect::Signal { cap: n, waiter: None }`.
     pub open spec fn signalled(pre: Self, post: Self, root: usize, i: usize) -> bool {
         let n = pre.tables.node_of(root, i);
         let e = pre.notification_at(root, i);
-        if pre.signal_has_live_waiter(e) {
-            Self::signal_woke(pre, post, root, i)
+        let k = pre.stale_prefix(e, 0, SIGNAL_STALE_BUDGET as nat);
+        let pre_e = pre.endpoints.records@[e].value();
+        let w = pre_e.waiters@;
+        let badge = pre.payload_of(n).badge as u64;
+        if k < w.len() && pre.threads.records@[w[k]].value().state == (ThreadState::Blocked { object: e }) {
+            Self::signal_woke_at(pre, post, root, i, k)
         } else {
-            &&& Self::word_written(pre, post, e, pre.notification_record(root, i).word | pre.payload_of(n).badge as u64)
+            let new_word = (if k == w.len() { pre_e.word & !WAITER_BIT } else { pre_e.word }) | badge;
+            &&& Self::queue_trimmed(pre, post, e, k, new_word)
             &&& discharges(pre.view(), post.view(), root, Effect::Signal { cap: n, waiter: None })
         }
     }
@@ -465,23 +495,25 @@ impl CapKernel {
         }
     }
 
-    /// Signals the notification the capability at index i of the table at root names: ORs the
-    /// capability's badge into its word, and when the queue's head is a live waiter, writes the word
-    /// (bit 63 clear) into its saved frame as its wait's result, unlinks it, clears the word
-    /// (keeping bit 63 set only while another thread remains listed), and makes it Runnable on its
-    /// placement's core with the reschedule IPI rule. Never blocks; returns only whether it signalled.
-    /// design/notification-word-reserves-the-waiter-bit/.
+    /// Signals the notification the capability at index i of the table at root names: removes up to
+    /// `SIGNAL_STALE_BUDGET` stale waiters from the queue's head, ORs the capability's badge into its
+    /// word, and when the queue's head is a live waiter, writes the word (bit 63 clear) into its
+    /// saved frame as its wait's result, unlinks it, clears the word (keeping bit 63 set only while
+    /// another thread remains listed), and makes it Runnable on its placement's core with the
+    /// reschedule IPI rule. Never blocks; returns only whether it signalled.
+    /// design/notification-word-reserves-the-waiter-bit/, design/one-lock-bounded-steps/.
     #[verifier::spinoff_prover]
-    pub fn signal(&mut self, root: usize, i: usize) -> (ret: bool)
+    pub fn signal(&mut self, root: usize, i: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(steps).count <= old(steps).count + SIGNAL_STALE_BUDGET,
             final(self).wf(),
             ret == old(self).can_signal(root, i),
-            !ret ==> *final(self) == *old(self),
+            !ret ==> *final(self) == *old(self) && final(steps).count == old(steps).count,
             ret ==> Self::signalled(*old(self), *final(self), root, i),
     {
         let ghost pre = *self;
@@ -490,21 +522,43 @@ impl CapKernel {
             None => { return false; },
         };
         let e = payload.base;
+        let badge = payload.badge as u64;
         proof {
             pre.lemma_notification_record(root, i, SEND_RIGHT);
         }
+        self.skip_stale_heads(e, SIGNAL_STALE_BUDGET, true, Tracked(steps));
+        let ghost mid = *self;
+        let ghost k = pre.stale_prefix(e, 0, SIGNAL_STALE_BUDGET as nat);
+        let ghost pre_e = pre.endpoints.records@[e].value();
+        let ghost mid_word = if k == pre_e.waiters@.len() {
+            pre_e.word & !WAITER_BIT
+        } else {
+            pre_e.word
+        };
         let r = *PPtr::<QueueRecord>::from_usize(e).borrow(Tracked(self.endpoints.records.borrow().tracked_borrow(e)));
-        let badge = payload.badge as u64;
         let w = r.word;
         let head = r.head;
-        let live_head = if head != NONE {
-            proof {
-                assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies u != NONE by {
-                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
+        proof {
+            let mid_e = mid.endpoints.records@[e].value();
+            assert(mid_e.waiters@ =~= pre_e.waiters@.skip(k));
+            assert((head != NONE) == (k < pre_e.waiters@.len())) by {
+                assert forall|u: usize| #[trigger] mid.threads.records@.contains_key(u) implies u != NONE by {
+                    assert(thread_wf(&mid.list, &mid.threads, &mid.blocks, u));
                 }
-                lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
-                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, head));
+                lemma_waits_head(mid.endpoints.records@, mid.threads.records@, e);
             }
+            if k < pre_e.waiters@.len() {
+                assert(pre.threads.records@.contains_key(pre_e.waiters@[k])) by {
+                    reveal(waits_wf);
+                    assert(wait_queue_wf(pre_e, pre.threads.records@, e));
+                    assert(waiter_linked(pre_e.waiters@, pre.threads.records@, e, k));
+                }
+                assert(head == pre_e.waiters@[k]);
+                assert(thread_wf(&mid.list, &mid.threads, &mid.blocks, head));
+                assert(mid.threads.records@[head].value().state == pre.threads.records@[head].value().state);
+            }
+        }
+        let live_head = if head != NONE {
             let hr = *PPtr::<ThreadRecord>::from_usize(head + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
                 Tracked(self.threads.records.borrow().tracked_borrow(head)),
             );
@@ -516,18 +570,31 @@ impl CapKernel {
             None
         };
         if let Some(hr) = live_head {
+            proof {
+                assert(k < pre_e.waiters@.len());
+                assert(mid_word == pre_e.word);
+                assert(mid.tables == pre.tables);
+                assert(mid.root_live(root));
+                assert(mid.holds_notification(root, i, SEND_RIGHT));
+                assert(mid.signal_has_live_waiter(e));
+                assert(pre.threads.records@[pre_e.waiters@[k]].value().state == (ThreadState::Blocked { object: e }));
+            }
             self.signal_wake_head(root, i, n, e, badge, w, head, hr);
+            proof {
+                Self::lemma_signal_woke_compose(pre, mid, *self, root, i, k);
+                assert(Self::signalled(pre, *self, root, i));
+            }
             return true;
         }
         proof {
             assert(badge < 0x8000_0000_0000_0000u64); // not a page size: NOTIFICATION_BADGE_LIMIT
-            assert(word_wf(r, pre.blocks.pages@[(e / PAGE_SZ) as int].object));
-            if r.head != NONE {
-                assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies u != NONE by {
-                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
-                }
-                lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
+            assert(word_wf(r, mid.blocks.pages@[(e / PAGE_SZ) as int].object));
+            if k < pre_e.waiters@.len() {
+                assert(head != NONE);
+                assert(pre.threads.records@[pre_e.waiters@[k]].value().state != (ThreadState::Blocked { object: e }));
             }
+            assert(!(k < pre_e.waiters@.len()
+                && pre.threads.records@[pre_e.waiters@[k]].value().state == (ThreadState::Blocked { object: e })));
             assert((w | badge) & WAITER_BIT == w & WAITER_BIT) by (bit_vector)
                 requires
                     badge < 0x8000_0000_0000_0000u64, // not a page size: NOTIFICATION_BADGE_LIMIT
@@ -540,8 +607,112 @@ impl CapKernel {
             assert(SEND_RIGHT == right_bit(Right::Send));
             assert(pre.view().holds_right(root, n, Right::Send));
             assert(discharges(pre.view(), post.view(), root, Effect::Signal { cap: n, waiter: None }));
+            assert(Self::queue_trimmed(pre, post, e, k, mid_word | badge)) by {
+                assert(post.threads == mid.threads);
+                assert(post.endpoints.holders == mid.endpoints.holders);
+                assert(post.endpoints.records@.dom() =~= pre.endpoints.records@.dom());
+                assert forall|x: usize| x != e && #[trigger] post.endpoints.records@.contains_key(x)
+                    implies post.endpoints.records@[x] == pre.endpoints.records@[x] by {
+                    assert(post.endpoints.records@[x] == mid.endpoints.records@[x]);
+                }
+                assert(post.endpoints.records@[e].value() == (QueueRecord {
+                    head: if k < pre_e.waiters@.len() { pre_e.waiters@[k] } else { NONE },
+                    tail: if k < pre_e.waiters@.len() { pre_e.tail } else { NONE },
+                    waiters: Ghost(pre_e.waiters@.skip(k)),
+                    word: mid_word | badge,
+                    ..pre_e
+                }));
+            }
+            assert(Self::signalled(pre, post, root, i));
         }
         true
+    }
+
+    /// Composes `queue_trimmed(pre, mid, e, k, pre_e.word)` with `signal_woke(mid, post, root, i)`
+    /// into `signal_woke_at(pre, post, root, i, k)`.
+    proof fn lemma_signal_woke_compose(pre: Self, mid: Self, post: Self, root: usize, i: usize, k: int)
+        requires
+            pre.wf(),
+            mid.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.holds_notification(root, i, SEND_RIGHT),
+            pre.view() == mid.view(),
+            ({
+                let e = pre.notification_at(root, i);
+                let pre_e = pre.endpoints.records@[e].value();
+                &&& 0 <= k < pre_e.waiters@.len()
+                &&& Self::queue_trimmed(pre, mid, e, k, pre_e.word)
+                &&& Self::signal_woke(mid, post, root, i)
+            }),
+        ensures
+            Self::signal_woke_at(pre, post, root, i, k),
+    {
+        let n = pre.tables.node_of(root, i);
+        let e = pre.notification_at(root, i);
+        let pre_e = pre.endpoints.records@[e].value();
+        let mid_e = mid.endpoints.records@[e].value();
+        let post_e = post.endpoints.records@[e].value();
+        let w = pre_e.waiters@;
+        let head = w[k];
+        assert(mid_e.waiters@ =~= w.skip(k));
+        assert(mid_e.head == head);
+        assert(w.skip(k).skip(1) =~= w.skip(k + 1));
+        if w.len() > k + 1 {
+            assert(mid_e.waiters@.len() > 1);
+            assert(mid_e.waiters@[1] == w[k + 1]);
+        }
+        reveal(waits_wf);
+        assert(wait_queue_wf(pre_e, pre.threads.records@, e));
+        if k > 0 {
+            assert(mid.threads.records@[head].value() == (ThreadRecord {
+                wait_prev: NONE,
+                ..pre.threads.records@[head].value()
+            }));
+        } else {
+            assert(mid.threads.records@[head] == pre.threads.records@[head]);
+        }
+        let hr = pre.threads.records@[head].value();
+        let pl = hr.placement->Some_0;
+        let core = pl.core;
+        assert forall|u: usize| u != head && #[trigger] post.threads.records@.contains_key(u) implies ({
+            let ur = pre.threads.records@[u].value();
+            let vr = post.threads.records@[u].value();
+            &&& post.threads.records@[u].addr() == pre.threads.records@[u].addr()
+            &&& post.threads.records@[u].is_init()
+            &&& same_thread_but_links(vr, ThreadRecord {
+                queued: if exists|j: int| 0 <= j < k && w[j] == u { NONE } else { ur.queued },
+                wait_prev: if (exists|j: int| 0 <= j < k && w[j] == u)
+                    || (w.len() > k + 1 && u == w[k + 1])
+                {
+                    NONE
+                } else {
+                    ur.wait_prev
+                },
+                wait_next: if exists|j: int| 0 <= j < k && w[j] == u { NONE } else { ur.wait_next },
+                ..ur
+            })
+        }) by {
+            if exists|j: int| 0 <= j < k && w[j] == u {
+                let j = choose|j: int| 0 <= j < k && w[j] == u;
+                if w.len() > k + 1 {
+                    assert(w[j] != w[k + 1]);
+                }
+            } else if w.len() > k + 1 && u == w[k + 1] {
+                assert(mid.threads.records@[u] == pre.threads.records@[u]);
+            } else {
+                assert(mid.threads.records@[u] == pre.threads.records@[u]);
+            }
+        }
+        assert(mid.outranks_current(core as int, pl.priority) == pre.outranks_current(core as int, pl.priority)) by {
+            reveal(placements_wf);
+            reveal(current_wf);
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, head));
+            if let Some(o) = pre.cores@[core as int].current_thread {
+                assert(runs(pre.cores@, core as int, o));
+                assert(mid.threads.records@[o].value().placement == pre.threads.records@[o].value().placement);
+            }
+        }
     }
 
     /// Wakes the live waiter `hr` at the head of notification `e`: delivers `(w | badge) & SIGNAL_BITS`

@@ -109,12 +109,11 @@ impl CapKernel {
         &&& self.threads.records@[base].value().process is Some
     }
 
-    /// The dead thread at `base` is bound to nothing, no wait queue lists it and no node in its node page
-    /// is live, so nothing is left of it but its two pages.
+    /// The dead thread at `base` is bound to nothing and no node in its node page is live, so
+    /// nothing is left of it but its two pages (and any stale wait-queue listing, which reclaim unlinks).
     pub open spec fn thread_is_spent(&self, base: usize) -> bool {
         &&& self.thread_is_dead(base)
         &&& self.threads.records@[base].value().process is None
-        &&& self.threads.records@[base].value().queued == NONE
         &&& forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] self.list.nodes@[base + k]).live
     }
 
@@ -148,6 +147,7 @@ impl CapKernel {
         &&& post.targeted == self.targeted
         &&& post.core_tags == self.core_tags
         &&& post.tlb_dirty == self.tlb_dirty
+        &&& post.endpoints == self.endpoints
         &&& post.thread_is_dead(base)
         &&& post.thread_work(base) < self.thread_work(base)
         &&& post.view() == (State { waiting: post.view().waiting, process_of: self.view().process_of.remove(base), ..self.view() })
@@ -177,6 +177,8 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
         &&& unwaits(self.view(), post.view())
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
+        &&& exists|mid: Self| #![trigger Self::unlinked_waiter(*self, mid, base)]
+            Self::unlinked_waiter(*self, mid, base) && post.endpoints == mid.endpoints
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, block: base, pages: pow2(THREAD_ORDER as nat), object: base })
     }
 
@@ -328,6 +330,7 @@ impl CapKernel {
             final(self).targeted == old(self).targeted,
             final(self).core_tags == old(self).core_tags,
             final(self).tlb_dirty == old(self).tlb_dirty,
+            final(self).endpoints == old(self).endpoints,
             final(self).view() == (State {
                 waiting: final(self).view().waiting,
                 process_of: old(self).view().process_of.remove(t),
@@ -769,6 +772,7 @@ impl CapKernel {
             post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             pre.thread_is_spent(base),
+            pre.threads.records@[base].value().queued == NONE,
             post.blocks.wf(),
             forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block((base / PAGE_SZ) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
@@ -934,6 +938,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).thread_is_spent(base),
+            old(self).threads.records@[base].value().queued == NONE,
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
@@ -946,6 +951,7 @@ impl CapKernel {
             final(self).threads.records@ == old(self).threads.records@.remove(base),
             !final(self).list.pages@.dom().contains(base),
             final(self).cores == old(self).cores,
+            final(self).endpoints == old(self).endpoints,
             unwaits(old(self).view(), final(self).view()),
             forall|o: ObjectId| #[trigger] State::changed(old(self).view(), final(self).view(), o) ==> o == base,
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
@@ -1003,10 +1009,10 @@ impl CapKernel {
 
     /// A retype naming the block of the thread at `base`, under the untyped at index `from` of the table
     /// at `root`: once its references are gone and no core depends on it, one retype unlinks its binding
-    /// to its process and the next frees its block. A thread Running on a core, which is also the only
-    /// kind with a stop pending, is refused until that core moves it off, and a thread a wait queue
-    /// lists until it is taken off the queue (design/ipc-with-reply-object/). All of these come from
-    /// user space, and anything but an unlink or a free changes nothing.
+    /// to its process and the next unlinks any stale wait-queue listing and frees its block. A thread
+    /// Running on a core, which is also the only kind with a stop pending, is refused until that core
+    /// moves it off. All of these come from user space, and anything but an unlink or a free changes
+    /// nothing.
     pub(crate) fn reclaim_thread(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
@@ -1116,9 +1122,6 @@ impl CapKernel {
             }
             return ReclaimStep::Slice;
         }
-        if record.queued != NONE {
-            return ReclaimStep::Refused;
-        }
         if !self.thread_nodes_dead(base, Tracked(&mut *steps)) {
             return ReclaimStep::Refused;
         }
@@ -1139,6 +1142,26 @@ impl CapKernel {
             pre.lemma_thread_unmapped(page, (page + 1) as usize);
             pre.lemma_acknowledged_is_clean(page);
             pre.lemma_acknowledged_is_clean((page + 1) as usize);
+            reveal(placed_running_wf);
+            assert(thread_placed_running(pre.threads.records@[base].value()));
+            assert(!(pre.threads.records@[base].value().state is Blocked));
+        }
+        if record.queued != NONE {
+            self.reclaim_unlink_waiter(base);
+        } else {
+            proof {
+                reveal(CapKernel::unlinked_waiter);
+                assert(Self::unlinked_waiter(pre, *self, base));
+            }
+        }
+        let ghost mid = *self;
+        proof {
+            assert(mid.threads.records@.dom() == pre.threads.records@.dom());
+            assert(mid.acknowledged(page) && mid.acknowledged((page + 1) as usize));
+            mid.lemma_thread_unmapped(page, page);
+            mid.lemma_thread_unmapped(page, (page + 1) as usize);
+            mid.lemma_acknowledged_is_clean(page);
+            mid.lemma_acknowledged_is_clean((page + 1) as usize);
         }
         self.free_spent_thread(base, Tracked(steps));
         proof {
@@ -1151,9 +1174,79 @@ impl CapKernel {
                 assert(o == base);
             }
             lemma_unwaits_discharges(pre.view(), post.view(), root, e);
+            assert forall|x: usize| x != base && #[trigger] post.threads.records@.contains_key(x) implies {
+                &&& post.threads.records@[x].value().state == pre.threads.records@[x].value().state
+                &&& post.threads.records@[x].value().pending_stop == pre.threads.records@[x].value().pending_stop
+                &&& post.threads.records@[x].value().consumed == pre.threads.records@[x].value().consumed
+            } by {
+                assert(post.threads.records@[x] == mid.threads.records@[x]);
+                assert(mid.threads.records@[x].value().state == pre.threads.records@[x].value().state);
+                assert(mid.threads.records@[x].value().pending_stop == pre.threads.records@[x].value().pending_stop);
+                assert(mid.threads.records@[x].value().consumed == pre.threads.records@[x].value().consumed);
+            }
+            assert(Self::unlinked_waiter(pre, mid, base));
+            assert(Self::step_ok(pre, post, c as int));
             assert(pre.thread_freed(post, c, root, from, base));
         }
         ReclaimStep::Freed
+    }
+
+    /// Unlinks dead thread `base` from any notification or endpoint queue before freeing its block,
+    /// isolating `unlinked_waiter` framing from `reclaim_thread`'s proof context.
+    #[verifier::spinoff_prover]
+    fn reclaim_unlink_waiter(&mut self, base: usize)
+        requires
+            old(self).wf(),
+            old(self).threads.records@.contains_key(base),
+            !(old(self).threads.records@[base].value().state is Blocked),
+            old(self).thread_is_spent(base),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).wf(),
+            final(self).view() == old(self).view(),
+            Self::unlinked_waiter(*old(self), *final(self), base),
+            final(self).thread_is_spent(base),
+            final(self).threads.records@.dom() == old(self).threads.records@.dom(),
+            final(self).threads.records@[base].value().queued == NONE,
+            *final(self) == (CapKernel {
+                endpoints: final(self).endpoints,
+                threads: final(self).threads,
+                ..*old(self)
+            }),
+            forall|f: usize| old(self).acknowledged(f) ==> #[trigger] final(self).acknowledged(f),
+            forall|x: usize| x != base && #[trigger] final(self).threads.records@.contains_key(x) ==> {
+                &&& final(self).threads.records@[x].value().state == old(self).threads.records@[x].value().state
+                &&& final(self).threads.records@[x].value().pending_stop == old(self).threads.records@[x].value().pending_stop
+                &&& final(self).threads.records@[x].value().consumed == old(self).threads.records@[x].value().consumed
+            },
+    {
+        let ghost pre = *self;
+        self.unlink_waiter(base);
+        proof {
+            let mid = *self;
+            reveal(CapKernel::unlinked_waiter);
+            assert forall|f: usize| pre.acknowledged(f) implies #[trigger] mid.acknowledged(f) by {
+                let epoch = pre.stale_epoch.pages@[f as int] as int;
+                assert forall|core_i: int| 0 <= core_i < NUM_CPUS && has_loaded(mid.cores@[core_i]) && mid.owes(core_i)
+                    implies epoch <= #[trigger] mid.acked(core_i) by {
+                    assert(pre.acked(core_i) == mid.acked(core_i));
+                    assert(pre.owes(core_i) == mid.owes(core_i));
+                }
+                assert forall|iommu_i: int| 0 <= iommu_i < NUM_IOMMUS && #[trigger] mid.iommu_present(iommu_i)
+                    implies epoch <= mid.iommu_acked(iommu_i) by {
+                    assert(pre.iommu_present(iommu_i));
+                    assert(pre.iommu_acked(iommu_i) == mid.iommu_acked(iommu_i));
+                }
+            }
+            assert(mid.threads.records@.dom() == pre.threads.records@.dom());
+            assert forall|x: usize| x != base && #[trigger] mid.threads.records@.contains_key(x) implies {
+                &&& mid.threads.records@[x].value().state == pre.threads.records@[x].value().state
+                &&& mid.threads.records@[x].value().pending_stop == pre.threads.records@[x].value().pending_stop
+                &&& mid.threads.records@[x].value().consumed == pre.threads.records@[x].value().consumed
+            } by {
+                assert(pre.threads.records@.contains_key(x));
+            }
+        }
     }
 
     /// A retype's parent carries the right: the capability it names holds Retype.

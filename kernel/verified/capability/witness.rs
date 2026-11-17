@@ -87,6 +87,7 @@ use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::define::*;
+use crate::util::page_ptr_util_u::mem_valid;
 
 /// The index of the root's table the new process's capability goes in: slot 1 of root entry 2, the
 /// leaf the witness gives the root first.
@@ -142,6 +143,14 @@ pub const WITNESS_LARGE_FRAME_SLOT: usize = 257;
 
 /// The index of the root's table a badged endpoint capability is derived into: slot 2 of root entry 2.
 pub const WITNESS_BADGED_SLOT: usize = 258;
+
+/// The index of the root's table holding a secondary thread that is destroyed while waiting: slot 4
+/// of root entry 2.
+pub const WITNESS_STALE_THREAD_SLOT: usize = 260;
+
+/// The index of the root's table holding a secondary live waiter behind a stale head: slot 5 of
+/// root entry 2.
+pub const WITNESS_LIVE_THREAD_SLOT: usize = 261;
 
 /// What a 2M retype naming the block at page has left to zero: the pages past the cursor while its
 /// region is being zeroed, and the whole region otherwise. A step that says Again lowers it.
@@ -429,7 +438,7 @@ proof fn lemma_top_entry_next_address(l4: usize)
 }
 
 /// The j-th order-3 block from b is j blocks on, aligned, and starts 8j pages on.
-proof fn lemma_cursor_block(b: usize, j: int)
+pub(crate) proof fn lemma_cursor_block(b: usize, j: int)
     requires
         b % PROCESS_BYTES == 0,
         0 <= j,
@@ -948,7 +957,7 @@ proof fn lemma_new_root_steps_kept(a: TableTree, b: TableTree, q: usize)
 /// Across a step that keeps the first node, the liveness of every node but a and b, and the parent of
 /// every other node that had one, a child of c after the step that is neither a nor b was one before:
 /// it is live, so it was live and listed before, and not first, so it had its parent then.
-proof fn lemma_children_kept(pre: Tree, post: Tree, a: usize, b: usize, c: usize)
+pub(crate) proof fn lemma_children_kept(pre: Tree, post: Tree, a: usize, b: usize, c: usize)
     requires
         pre.wf(),
         post.wf(),
@@ -973,7 +982,7 @@ proof fn lemma_children_kept(pre: Tree, post: Tree, a: usize, b: usize, c: usize
 /// Across a step that keeps the first node and the parent of every node that had one but a, a live
 /// node at depth one before and after, other than a, is at depth one still: its parent is the first
 /// node, the only node at depth zero, and the order puts it one deeper than its parent on both sides.
-proof fn lemma_depth_one_kept(pre: Tree, post: Tree, a: usize, x: usize)
+pub(crate) proof fn lemma_depth_one_kept(pre: Tree, post: Tree, a: usize, x: usize)
     requires
         pre.wf(),
         post.wf(),
@@ -1087,7 +1096,7 @@ proof fn lemma_parent_shallow(t: Tree, c: usize, x: usize)
 }
 
 /// A child is one deeper than its parent.
-proof fn lemma_child_depth(t: Tree, c: usize, x: usize)
+pub(crate) proof fn lemma_child_depth(t: Tree, c: usize, x: usize)
     requires
         t.wf(),
         t.is_child(c, x),
@@ -1203,7 +1212,7 @@ proof fn lemma_owned_listed(k: CapKernel, x: usize)
 }
 
 /// A slot of a leaf that holds no capability is not live: a live node in a leaf's slot is a capability.
-proof fn lemma_deleted_dead(k: CapKernel, n: usize)
+pub(crate) proof fn lemma_deleted_dead(k: CapKernel, n: usize)
     requires
         k.wf(),
         k.tables.owner@.contains_key(page_of(n)),
@@ -7618,7 +7627,7 @@ impl CapKernel {
 
     /// Exposes the untyped capability and free block at `base` from `booted` so callers can keep
     /// `CapKernel::booted` hidden across notification witness proofs.
-    proof fn lemma_booted_notification_setup(
+    pub(crate) proof fn lemma_booted_notification_setup(
         &self,
         root: usize,
         process: usize,
@@ -7656,6 +7665,7 @@ impl CapKernel {
     /// fresh notification at `base` in `WITNESS_FRAME_SLOT`, keeping `cores`, `threads`, and
     /// `processes.records` as they were. Named `witness_` so a root witness that returns its
     /// pair still reaches `retype_leaf` and `retype_notification`.
+    #[verifier::spinoff_prover]
     #[verifier::spinoff_prover]
     fn witness_retype_notification(
         &mut self,
@@ -7711,9 +7721,46 @@ impl CapKernel {
                 &&& witness_retyped_kept(*final(self), process, base, ne)
                 &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].object is Notification
                 &&& base + PROCESS_BYTES <= NODE_SPACE
+                &&& final(self).tables.leaf(process, 0) == old(self).tables.leaf(process, 0)
+                &&& (base + 2 * PAGE_SZ) as usize != old(self).tables.leaf(process, 0)
+                &&& final(self).tables.leaf(process, 2) == (base + 2 * PAGE_SZ) as usize
+                &&& final(self).flush_epoch == old(self).flush_epoch
+                &&& final(self).list.nodes@[(base + 2 * PAGE_SZ + 3) as int].depth == 2
+                &&& final(self).list.parent@[(base + 2 * PAGE_SZ + 3) as usize] == (leaf@ + ROOT_UNTYPED_SLOT) as usize
+                &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
+                &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
+                &&& old(self).tables.has_slot(&old(self).list, process, ROOT_UNTYPED_SLOT) ==> {
+                    &&& final(self).tables.has_slot(&final(self).list, process, ROOT_UNTYPED_SLOT)
+                    &&& final(self).tables.node_of(process, ROOT_UNTYPED_SLOT) == old(self).tables.node_of(process, ROOT_UNTYPED_SLOT)
+                }
+                &&& old(self).is_cap((leaf@ + ROOT_UNTYPED_SLOT) as usize) ==> {
+                    let cu = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+                    &&& final(self).is_cap(cu)
+                    &&& final(self).payload_of(cu) == old(self).payload_of(cu)
+                    &&& final(self).list.nodes@[cu as int].depth == old(self).list.nodes@[cu as int].depth
+                }
+                &&& old(self).tables.has_slot(&old(self).list, process, ROOT_CORE_SLOT) ==> {
+                    &&& final(self).tables.has_slot(&final(self).list, process, ROOT_CORE_SLOT)
+                    &&& final(self).tables.node_of(process, ROOT_CORE_SLOT) == old(self).tables.node_of(process, ROOT_CORE_SLOT)
+                }
+                &&& old(self).is_cap((leaf@ + ROOT_CORE_SLOT) as usize) ==> {
+                    let c0 = (leaf@ + ROOT_CORE_SLOT) as usize;
+                    &&& final(self).is_cap(c0)
+                    &&& final(self).payload_of(c0) == old(self).payload_of(c0)
+                    &&& final(self).list.nodes@[c0 as int].depth == old(self).list.nodes@[c0 as int].depth
+                }
+                &&& witness_empty(*final(self), process, WITNESS_PROCESS_SLOT, (base + 2 * PAGE_SZ + 1) as usize)
+                &&& witness_empty(*final(self), process, WITNESS_STALE_THREAD_SLOT, (base + 2 * PAGE_SZ + 4) as usize)
+                &&& witness_empty(*final(self), process, WITNESS_LIVE_THREAD_SLOT, (base + 2 * PAGE_SZ + 5) as usize)
+                &&& final(self).stale_epoch == old(self).stale_epoch
+                &&& forall|k: int| leaf@ <= k < leaf@ + NODES_PER_PAGE
+                    ==> #[trigger] final(self).list.nodes@[k].live == old(self).list.nodes@[k].live
+                &&& forall|j: int| base / PAGE_SZ + 8 <= j < old(self).blocks.pages@.len()
+                    ==> #[trigger] final(self).blocks.pages@[j] == old(self).blocks.pages@[j]
             }),
     {
         hide(CapKernel::wf);
+        hide(BlockTable::counts_wf);
         let ghost s0 = *self;
         let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
         let ghost first = page_block_payload(bs[0]);
@@ -7879,6 +7926,66 @@ impl CapKernel {
             assert(s2.blocks.pages@[ep].kind is Base);
             assert(!s2.blocks.pages@[ep].dead);
             assert(witness_retyped_kept(s2, process, base, ne));
+            assert(s2.tables.leaf(process, 0) == s0.tables.leaf(process, 0));
+            assert(s2.blocks.regions_2m@ == s0.blocks.regions_2m@);
+            assert(s2.blocks.regions_1g@ == s0.blocks.regions_1g@);
+            if s0.tables.has_slot(&s0.list, process, ROOT_UNTYPED_SLOT) {
+                assert(s1.tables.has_slot(&s1.list, process, ROOT_UNTYPED_SLOT));
+                assert(s2.tables.has_slot(&s2.list, process, ROOT_UNTYPED_SLOT));
+                assert(s2.tables.node_of(process, ROOT_UNTYPED_SLOT) == s0.tables.node_of(process, ROOT_UNTYPED_SLOT));
+            }
+            if s0.is_cap(u) {
+                assert(s1.is_cap(u));
+                assert(s2.is_cap(u));
+            }
+            if s0.tables.has_slot(&s0.list, process, ROOT_CORE_SLOT) {
+                assert(s1.tables.has_slot(&s1.list, process, ROOT_CORE_SLOT));
+                assert(s2.tables.has_slot(&s2.list, process, ROOT_CORE_SLOT));
+                assert(s2.tables.node_of(process, ROOT_CORE_SLOT) == s0.tables.node_of(process, ROOT_CORE_SLOT));
+            }
+            let ghost c0 = (leaf@ + ROOT_CORE_SLOT) as usize;
+            if s0.is_cap(c0) {
+                assert(s1.is_cap(c0));
+                assert(s2.is_cap(c0));
+            }
+            assert(s2.stale_epoch == s0.stale_epoch);
+            assert(index_ok(WITNESS_PROCESS_SLOT) && index_entry(WITNESS_PROCESS_SLOT) == 2
+                && index_slot(WITNESS_PROCESS_SLOT) == 1) by (compute_only);
+            assert(index_ok(WITNESS_STALE_THREAD_SLOT) && index_entry(WITNESS_STALE_THREAD_SLOT) == 2
+                && index_slot(WITNESS_STALE_THREAD_SLOT) == 4) by (compute_only);
+            assert(index_ok(WITNESS_LIVE_THREAD_SLOT) && index_entry(WITNESS_LIVE_THREAD_SLOT) == 2
+                && index_slot(WITNESS_LIVE_THREAD_SLOT) == 5) by (compute_only);
+            assert(witness_empty(s2, process, WITNESS_PROCESS_SLOT, (lb + 1) as usize));
+            assert(witness_empty(s2, process, WITNESS_STALE_THREAD_SLOT, (lb + 4) as usize));
+            assert(witness_empty(s2, process, WITNESS_LIVE_THREAD_SLOT, (lb + 5) as usize));
+            assert(!(s0.blocks.pages@[(leaf@ / PAGE_SZ) as int].kind is Free)) by {
+                reveal(CapKernel::wf);
+                reveal(Tables::leaves_wf);
+                s0.lemma_slot(process, ROOT_UNTYPED_SLOT);
+                assert(s0.tables.owner@.contains_key(leaf@));
+                assert(s0.list.pages@.dom().contains(leaf@));
+                assert(s0.blocks.tracks_addr(leaf@));
+            }
+            assert(lb / PAGE_SZ != leaf@ / PAGE_SZ);
+            s0.lemma_slot(process, ROOT_UNTYPED_SLOT);
+            assert(leaf@ % PAGE_SZ == 0) by {
+                reveal(CapKernel::wf);
+                reveal(Tables::leaves_wf);
+                assert(s0.tables.owner@.contains_key(leaf@));
+                assert(leaf@ % LEAF_BYTES == 0);
+            }
+            assert(ne / PAGE_SZ == lb / PAGE_SZ);
+            assert forall|k: int| leaf@ <= k < leaf@ + NODES_PER_PAGE
+                implies #[trigger] s2.list.nodes@[k].live == s0.list.nodes@[k].live by {
+                assert(k / (PAGE_SZ as int) == (leaf@ / PAGE_SZ) as int);
+                assert(s1.list.nodes@[k].live == s0.list.nodes@[k].live);
+                assert(k != ne);
+            }
+            assert forall|j: int| base / PAGE_SZ + 8 <= j < s0.blocks.pages@.len()
+                implies #[trigger] s2.blocks.pages@[j] == s0.blocks.pages@[j] by {
+                assert(s1.blocks.pages@[j] == s0.blocks.pages@[j]);
+                assert(j != ep);
+            }
         }
         (ok1, ok2)
     }
@@ -7911,6 +8018,29 @@ impl CapKernel {
             final(self).threads.queues == old(self).threads.queues,
             final(self).processes.records == old(self).processes.records,
             final(self).endpoints.records == old(self).endpoints.records,
+            final(self).tables.roots == old(self).tables.roots,
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).blocks.pages@[(base / PAGE_SZ) as int].object == old(self).blocks.pages@[(base / PAGE_SZ) as int].object,
+            final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 2,
+            forall|j: int| base / PAGE_SZ + 8 <= j < old(self).blocks.pages@.len() ==> {
+                &&& (#[trigger] final(self).blocks.pages@[j]).kind == old(self).blocks.pages@[j].kind
+                &&& final(self).blocks.pages@[j].object == old(self).blocks.pages@[j].object
+                &&& final(self).blocks.pages@[j].order == old(self).blocks.pages@[j].order
+            },
+            forall|x: int| 0 <= x < final(self).blocks.num_2m()
+                ==> (#[trigger] final(self).blocks.regions_2m@[x]).typed == old(self).blocks.regions_2m@[x].typed,
+            forall|x: int| 0 <= x < final(self).blocks.num_1g()
+                ==> (#[trigger] final(self).blocks.regions_1g@[x]).typed == old(self).blocks.regions_1g@[x].typed,
+            Self::derive_kept(*old(self), *final(self)),
+            Self::derive_step(*old(self), *final(self), (base + 2 * PAGE_SZ + 2) as usize),
+            final(self).list.seq@[0] == old(self).list.seq@[0],
+            forall|x: int| 0 <= x < NODE_SPACE && x != (base + 2 * PAGE_SZ + 2)
+                ==> (#[trigger] final(self).list.nodes@[x]).live == old(self).list.nodes@[x].live,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).list.parent@ == old(self).list.parent@.insert(
+                (base + 2 * PAGE_SZ + 2) as usize,
+                (base + 2 * PAGE_SZ + 3) as usize,
+            ),
             ({
                 let ne = (base + 2 * PAGE_SZ + 3) as usize;
                 let n = (base + 2 * PAGE_SZ + 2) as usize;
@@ -7981,8 +8111,56 @@ impl CapKernel {
             Self::lemma_slot_stays(s1, s2, process, WITNESS_FRAME_SLOT);
             Self::lemma_caps_frame(s1, s2, n, n, ne);
             assert(s2.slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base)));
+            assert(s2.tables.roots == s1.tables.roots);
+            assert(Self::derive_counted(s1, s2, ne));
+            let br = BlockRef::Small(base / PAGE_SZ);
+            assert(block_ref(&s1.blocks, (base / PAGE_SZ) as usize) == br) by {
+                reveal(CapKernel::wf);
+            }
+            assert(blocks_refs_changed(&s1.blocks, &s2.blocks, br, (block_refs(&s1.blocks, br) + 1) as usize, block_dead(&s1.blocks, br)));
+            assert(s2.blocks.pages@[(base / PAGE_SZ) as int].refs == 2) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s2.blocks.pages@[(base / PAGE_SZ) as int].object == s1.blocks.pages@[(base / PAGE_SZ) as int].object);
+            assert forall|j: int| base / PAGE_SZ + 8 <= j < s1.blocks.pages@.len() implies {
+                &&& (#[trigger] s2.blocks.pages@[j]).kind == s1.blocks.pages@[j].kind
+                &&& s2.blocks.pages@[j].object == s1.blocks.pages@[j].object
+                &&& s2.blocks.pages@[j].order == s1.blocks.pages@[j].order
+            } by {
+                assert(s1.blocks.tracks(j));
+            }
+            assert(s2.list.parent@ == s1.list.parent@.insert(n, ne));
         }
         ok
+    }
+
+    /// A depth-1 live node keeps depth 1 across a step that keeps it live, keeps the root, and keeps
+    /// its parent.
+    pub(crate) proof fn lemma_depth_1_kept(pre: crate::capability::list::Tree, post: crate::capability::list::Tree, x: usize)
+        requires
+            pre.wf(),
+            post.wf(),
+            x < NODE_SPACE,
+            pre.nodes@[x as int].live,
+            post.nodes@[x as int].live,
+            pre.d(x) == 1,
+            post.seq@[0] == pre.seq@[0],
+            post.parent@[x] == pre.parent@[x],
+        ensures
+            post.d(x) == 1,
+    {
+        pre.lemma_anc_depth(x, 1);
+        assert(pre.anc(x, 1) == pre.anc(pre.parent@[x], 0));
+        assert(pre.anc(x, 1) == pre.seq@[0]);
+        assert(pre.parent@[x] == pre.seq@[0]);
+        crate::capability::list::lemma_has(post.seq@, x);
+        let j = choose|j: int| 0 <= j < post.seq@.len() && post.seq@[j] == x;
+        post.lemma_link(j);
+        post.lemma_link(0);
+        if j == 0 {
+            assert(pre.seq@[0] == x);
+            pre.lemma_link(0);
+        }
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -8282,7 +8460,8 @@ impl CapKernel {
             assert(s1.notification_record(process, WITNESS_BADGED_SLOT) == fresh_record());
             assert(s1.can_signal(process, WITNESS_BADGED_SLOT));
         }
-        let ok = self.signal(process, WITNESS_BADGED_SLOT);
+        let tracked mut steps = Steps::fresh();
+        let ok = self.signal(process, WITNESS_BADGED_SLOT, Tracked(&mut steps));
         let ghost s2 = *self;
         proof {
             assert(ok);
@@ -8290,9 +8469,16 @@ impl CapKernel {
             assert(0u64 | 0x4000_0000_0000_0000u64 == 0x4000_0000_0000_0000u64) by (compute_only); // not a page size: the badge
             assert(0x4000_0000_0000_0000u64 & SIGNAL_BITS == 0x4000_0000_0000_0000u64) by (compute_only); // not a page size: the badge
             assert(0x4000_0000_0000_0000u64 & !SIGNAL_BITS == 0) by (compute_only); // not a page size: the badge
+            assert((0u64 & !WAITER_BIT) | w == w) by (bit_vector)
+                requires
+                    w == 0x4000_0000_0000_0000u64, // not a page size: bit 62 of the word
+                    WAITER_BIT == 0x8000_0000_0000_0000u64; // not a page size: WAITER_BIT
+            assert(s1.stale_prefix(base, 0, SIGNAL_STALE_BUDGET as nat) == 0);
             assert(s2.endpoints.records@[base].value().word == w);
             assert(s2.tables == s1.tables && s2.list == s1.list && s2.processes == s1.processes);
-            assert(s2.threads == s1.threads && s2.cores == s1.cores);
+            assert(s2.cores == s1.cores);
+            assert(s2.threads.records@.dom() == s1.threads.records@.dom());
+            assert(s2.threads.records@[t] == s1.threads.records@[t]);
             assert(s2.caller_live(0, process));
             assert(s2.slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base)));
             assert(s2.holds_notification(process, WITNESS_FRAME_SLOT, RECEIVE_RIGHT));
@@ -8511,7 +8697,7 @@ impl CapKernel {
     /// `WITNESS_FRAME_SLOT`, and derives a send capability with badge `2^62` into
     /// `WITNESS_BADGED_SLOT`.
     #[verifier::spinoff_prover]
-    fn witness_setup_badged_notification(
+    pub(crate) fn witness_setup_badged_notification(
         &mut self,
         root: Ghost<usize>,
         process: usize,
@@ -8538,6 +8724,7 @@ impl CapKernel {
             final(self).tables.roots@.contains_key(process),
             final(self).root_live(process),
             final(self).caller_live(0, process),
+            final(self).flush_epoch == 0,
             final(self).cores@[0].current_thread == Some(t),
             final(self).cores@[0].generation == 1,
             final(self).holds_notification(process, WITNESS_FRAME_SLOT, RECEIVE_RIGHT),
@@ -8555,11 +8742,45 @@ impl CapKernel {
             !final(self).threads.records@[t].value().pending_stop,
             final(self).endpoints.records@.contains_key(base),
             final(self).endpoints.records@[base].value() == fresh_record(),
+            final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 2,
             final(self).processes.records@.contains_key(process),
             !final(self).processes.records@[process].value().dead,
             final(self).loaded(0, process),
             final(self).spaces.kernel_root@ == kernel_root,
+            kernel_root % PAGE_SZ == 0,
+            crate::util::page_ptr_util_u::mem_valid(kernel_root),
             final(self).threads.queues.all_empty(),
+            final(self).tables.leaf(process, 0) == leaf@,
+            leaf@ + LEAF_BYTES <= NODE_SPACE,
+            (base + 2 * PAGE_SZ) as usize != leaf@,
+            final(self).tables.leaf(process, 2) == (base + 2 * PAGE_SZ) as usize,
+            final(self).list.nodes@[(base + 2 * PAGE_SZ + 3) as int].depth == 2,
+            final(self).slot_holds(process, WITNESS_FRAME_SLOT, (base + 2 * PAGE_SZ + 3) as usize, notification_of(base)),
+            base + PROCESS_BYTES <= NODE_SPACE,
+            final(self).root_untyped(process) == (leaf@ + ROOT_UNTYPED_SLOT) as usize,
+            final(self).slot_holds(
+                process,
+                ROOT_UNTYPED_SLOT,
+                (leaf@ + ROOT_UNTYPED_SLOT) as usize,
+                page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]),
+            ),
+            final(self).list.nodes@[(leaf@ + ROOT_UNTYPED_SLOT) as int].live,
+            final(self).list.nodes@[(leaf@ + ROOT_UNTYPED_SLOT) as int].depth == 1,
+            final(self).slot_holds(process, ROOT_CORE_SLOT, (leaf@ + ROOT_CORE_SLOT) as usize, core_payload(0, MAX_PRIORITY)),
+            final(self).list.nodes@[(leaf@ + ROOT_CORE_SLOT) as int].depth == 1,
+            witness_empty(*final(self), process, WITNESS_PROCESS_SLOT, (base + 2 * PAGE_SZ + 1) as usize),
+            witness_empty(*final(self), process, WITNESS_STALE_THREAD_SLOT, (base + 2 * PAGE_SZ + 4) as usize),
+            witness_empty(*final(self), process, WITNESS_LIVE_THREAD_SLOT, (base + 2 * PAGE_SZ + 5) as usize),
+            final(self).stale_epoch == old(self).stale_epoch,
+            forall|j: int| base / PAGE_SZ + 8 <= j < old(self).blocks.pages@.len() ==> {
+                &&& (#[trigger] final(self).blocks.pages@[j]).kind == old(self).blocks.pages@[j].kind
+                &&& final(self).blocks.pages@[j].object == old(self).blocks.pages@[j].object
+                &&& final(self).blocks.pages@[j].order == old(self).blocks.pages@[j].order
+            },
+            forall|x: int| 0 <= x < final(self).blocks.num_2m()
+                ==> (#[trigger] final(self).blocks.regions_2m@[x]).typed == old(self).blocks.regions_2m@[x].typed,
+            forall|x: int| 0 <= x < final(self).blocks.num_1g()
+                ==> (#[trigger] final(self).blocks.regions_1g@[x]).typed == old(self).blocks.regions_1g@[x].typed,
     {
         hide(CapKernel::wf);
         hide(CapKernel::booted);
@@ -8576,6 +8797,9 @@ impl CapKernel {
             assert(s0.cores@[0].generation == 1) by {
                 reveal(CapKernel::booted);
             }
+            assert(s0.list.nodes@[(leaf@ + ROOT_CORE_SLOT) as int].depth == 1) by {
+                reveal(CapKernel::booted);
+            }
         }
         self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, Ghost(kernel_root), report);
         let ghost s_ent = *self;
@@ -8583,8 +8807,11 @@ impl CapKernel {
             assert(s_ent.tables == s0.tables);
             assert(s_ent.blocks == s0.blocks);
             assert(s_ent.processes == s0.processes);
+            assert(s_ent.stale_epoch == s0.stale_epoch);
             assert(s_ent.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
             assert(s_ent.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            assert(s_ent.slot_holds(process, ROOT_CORE_SLOT, (leaf@ + ROOT_CORE_SLOT) as usize, core_payload(0, MAX_PRIORITY)));
+            assert(s_ent.list.nodes@[(leaf@ + ROOT_CORE_SLOT) as int].depth == 1);
             assert(s_ent.list.nodes@[u as int].live);
             assert(s_ent.list.nodes@[u as int].depth == 1);
             assert(s_ent.root_table_block(process, base));
@@ -8601,10 +8828,70 @@ impl CapKernel {
             assert(s_ret.blocks.tracks((base / PAGE_SZ) as int)) by {
                 reveal(CapKernel::wf);
             }
+            assert(s_ret.tables.leaf(process, 0) == leaf@);
+            assert(s_ent.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s_ent.slot_holds(process, ROOT_CORE_SLOT, (leaf@ + ROOT_CORE_SLOT) as usize, core_payload(0, MAX_PRIORITY)));
+            s_ret.lemma_slot_bound(u);
+            s_ret.lemma_slot_bound((leaf@ + ROOT_CORE_SLOT) as usize);
+            assert(s_ret.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s_ret.slot_holds(process, ROOT_CORE_SLOT, (leaf@ + ROOT_CORE_SLOT) as usize, core_payload(0, MAX_PRIORITY)));
+            assert(s_ret.list.nodes@[(leaf@ + ROOT_CORE_SLOT) as int].depth == 1);
+            assert(s_ret.list.nodes@[u as int].depth == 1);
+            assert(s_ret.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            s_ret.lemma_slot(process, ROOT_UNTYPED_SLOT);
+            s_ret.lemma_slot(process, WITNESS_FRAME_SLOT);
+            assert(s_ret.tables.node_of(process, WITNESS_FRAME_SLOT) == (base + 2 * PAGE_SZ + 3) as usize);
+            assert(s_ret.tables.owner@.contains_key(leaf@));
+            assert((base + 2 * PAGE_SZ) as usize != leaf@);
         }
         let _ = self.derive_witness_badged_notification(process, base);
         proof {
             let s1 = *self;
+            let ghost nb = (base + 2 * PAGE_SZ + 2) as usize;
+            Self::lemma_slot_stays(s_ret, s1, process, ROOT_UNTYPED_SLOT);
+            Self::lemma_slot_stays(s_ret, s1, process, ROOT_CORE_SLOT);
+            Self::lemma_slot_stays(s_ret, s1, process, WITNESS_PROCESS_SLOT);
+            Self::lemma_slot_stays(s_ret, s1, process, WITNESS_STALE_THREAD_SLOT);
+            Self::lemma_slot_stays(s_ret, s1, process, WITNESS_LIVE_THREAD_SLOT);
+            Self::lemma_slot_stays(s_ret, s1, process, WITNESS_FRAME_SLOT);
+            Self::lemma_caps_frame(s_ret, s1, nb, nb, u);
+            Self::lemma_caps_frame(s_ret, s1, nb, nb, (leaf@ + ROOT_CORE_SLOT) as usize);
+            Self::lemma_caps_frame(s_ret, s1, nb, nb, (base + 2 * PAGE_SZ + 3) as usize);
+            assert(Self::caps_frame(s_ret, s1, nb, nb));
+            assert(s1.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(nb != u && nb != (leaf@ + ROOT_CORE_SLOT) as usize && nb != (base + 2 * PAGE_SZ + 3) as usize) by {
+                assert(nb / PAGE_SZ == base / PAGE_SZ + 2);
+                assert(u / PAGE_SZ == leaf@ / PAGE_SZ);
+                assert(((leaf@ + ROOT_CORE_SLOT) as usize) / PAGE_SZ == leaf@ / PAGE_SZ);
+                assert(nb / PAGE_SZ != leaf@ / PAGE_SZ);
+            }
+            Self::lemma_depth_1_kept(s_ret.list, s1.list, (leaf@ + ROOT_CORE_SLOT) as usize);
+            Self::lemma_depth_1_kept(s_ret.list, s1.list, u);
+            assert(s1.list.nodes@[((base + 2 * PAGE_SZ + 3) as usize) as int].depth == 2) by {
+                let ghost ne_node = (base + 2 * PAGE_SZ + 3) as usize;
+                assert(nb != ne_node);
+                assert(s1.list.parent@[ne_node] == u);
+                assert(s1.list.nodes@[ne_node as int].live);
+                assert(s_ret.list.nodes@[ne_node as int].depth == 2);
+                s_ret.list.lemma_link(0);
+                assert(s1.list.seq@[0] == s_ret.list.seq@[0]);
+                crate::capability::list::lemma_has(s1.list.seq@, ne_node);
+                let j = choose|j: int| 0 <= j < s1.list.seq@.len() && s1.list.seq@[j] == ne_node;
+                s1.list.lemma_link(j);
+                assert(j != 0);
+            }
+            assert(s1.root_untyped(process) == u);
+            assert(s1.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s1.slot_holds(process, ROOT_CORE_SLOT, (leaf@ + ROOT_CORE_SLOT) as usize, core_payload(0, MAX_PRIORITY)));
+            assert(s1.list.nodes@[(leaf@ + ROOT_CORE_SLOT) as int].depth == 1);
+            assert(s1.list.nodes@[u as int].depth == 1);
+            assert(witness_empty(s1, process, WITNESS_PROCESS_SLOT, (base + 2 * PAGE_SZ + 1) as usize));
+            assert(witness_empty(s1, process, WITNESS_STALE_THREAD_SLOT, (base + 2 * PAGE_SZ + 4) as usize));
+            assert(witness_empty(s1, process, WITNESS_LIVE_THREAD_SLOT, (base + 2 * PAGE_SZ + 5) as usize));
             assert(s1.cores@[0].current_thread == Some(t));
             assert(s1.caller_live(0, process));
             assert(s1.threads.records@.contains_key(t));
@@ -8806,7 +9093,8 @@ impl CapKernel {
             assert(s2.tables.roots@.contains_key(process));
             assert(s2.root_live(process));
         }
-        let signalled = self.signal(process, WITNESS_BADGED_SLOT);
+        let tracked mut steps = Steps::fresh();
+        let signalled = self.signal(process, WITNESS_BADGED_SLOT, Tracked(&mut steps));
         let ghost s3 = *self;
         proof {
             Self::lemma_signal_wakes_ready_to_tick(s2, s3, t, base, process, kernel_root, registers);
@@ -8815,7 +9103,6 @@ impl CapKernel {
             Tracked(self.threads.records.borrow().tracked_borrow(t)),
         );
         let resumed = record.resume_frame();
-        let tracked mut steps = Steps::fresh();
         let tick_step = self.tick(0, registers, kernel_root, report, Tracked(&mut steps));
         proof {
             Self::lemma_signal_wakes_ticked(s3, *self, t, base, registers, resumed);
@@ -12013,7 +12300,7 @@ impl CapKernel {
 
     /// Every core acknowledges the flush epoch and every present IOMMU flushes, so every acknowledgement
     /// reaches the epoch; nothing else that a retype reads changes.
-    fn witness_acknowledge_all(&mut self)
+    pub(crate) fn witness_acknowledge_all(&mut self)
         requires
             old(self).wf(),
         ensures
@@ -12032,6 +12319,8 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).table_pages == old(self).table_pages,
             final(self).mappings == old(self).mappings,
+            final(self).threads == old(self).threads,
+            final(self).endpoints == old(self).endpoints,
             final(self).iommus.present == old(self).iommus.present,
     {
         let ghost pre = *old(self);
@@ -12067,6 +12356,8 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).table_pages == old(self).table_pages,
             final(self).mappings == old(self).mappings,
+            final(self).threads == old(self).threads,
+            final(self).endpoints == old(self).endpoints,
             final(self).iommus.present == old(self).iommus.present,
             final(self).iommus == old(self).iommus,
     {
@@ -12089,6 +12380,8 @@ impl CapKernel {
                 self.processes == pre.processes,
                 self.table_pages == pre.table_pages,
                 self.mappings == pre.mappings,
+                self.threads == pre.threads,
+                self.endpoints == pre.endpoints,
                 self.iommus == pre.iommus,
                 forall|d: int| 0 <= d < c ==> #[trigger] self.acked(d) == pre.flush_epoch,
             decreases NUM_CPUS - c,
@@ -12131,6 +12424,8 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).table_pages == old(self).table_pages,
             final(self).mappings == old(self).mappings,
+            final(self).threads == old(self).threads,
+            final(self).endpoints == old(self).endpoints,
             final(self).iommus.present == old(self).iommus.present,
             final(self).cores == old(self).cores,
             final(self).targeted == old(self).targeted,
@@ -12155,6 +12450,8 @@ impl CapKernel {
                 self.processes == pre.processes,
                 self.table_pages == pre.table_pages,
                 self.mappings == pre.mappings,
+                self.threads == pre.threads,
+                self.endpoints == pre.endpoints,
                 self.iommus.present == pre.iommus.present,
                 self.cores == pre.cores,
                 self.targeted == pre.targeted,

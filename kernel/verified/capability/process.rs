@@ -1281,6 +1281,7 @@ impl CapKernel {
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
+        &&& post.endpoints == pre.endpoints
     }
 
     /// What a retype of the order-3 block at base as a process did when it answered ok, under the

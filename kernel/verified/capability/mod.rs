@@ -58,6 +58,8 @@ pub mod throwaway;
 pub mod unmap;
 pub mod view;
 #[cfg(verus_keep_ghost)]
+pub mod waiter_witness;
+#[cfg(verus_keep_ghost)]
 pub mod witness;
 #[cfg(verus_keep_ghost)]
 pub mod witness_dead_notification;

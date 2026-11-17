@@ -420,6 +420,9 @@ impl CapKernel {
             &&& now.consumed == before.consumed
             &&& now.process == if bind_gone { None } else { before.process }
             &&& now.placement == if place_gone { None } else { before.placement }
+            &&& now.queued == before.queued
+            &&& now.wait_prev == before.wait_prev
+            &&& now.wait_next == before.wait_next
             &&& (now.state, now.pending_stop) == if bind_gone || place_gone {
                 Self::stopped_state(before)
             } else {
@@ -1797,6 +1800,9 @@ impl CapKernel {
             &&& now.consumed == before.consumed
             &&& now.process == if bind_gone { None } else { before.process }
             &&& now.placement == if place_gone { None } else { before.placement }
+            &&& now.queued == before.queued
+            &&& now.wait_prev == before.wait_prev
+            &&& now.wait_next == before.wait_next
             &&& (now.state, now.pending_stop) == if bind_gone || place_gone {
                 Self::stopped_state(before)
             } else {

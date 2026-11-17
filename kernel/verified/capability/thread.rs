@@ -2388,6 +2388,7 @@ impl CapKernel {
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             final(self).frames == old(self).frames,
+            final(self).endpoints == old(self).endpoints,
             final(steps).count <= old(steps).count + TYPE_THREAD_STEPS,
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
@@ -2938,6 +2939,7 @@ impl CapKernel {
     /// quantifier.
     #[verifier::opaque]
     pub open spec fn thread_retyped_records(pre: Self, post: Self, base: usize, p: usize) -> bool {
+        &&& post.threads.records@.dom() == pre.threads.records@.dom().insert(base)
         &&& post.threads.records@.contains_key(base)
         &&& post.threads.records@[base].value() == ThreadRecord { process: Some(p), ..fresh_thread() }
         &&& forall|x: usize| #[trigger] pre.threads.records@.contains_key(x) ==> {
@@ -2970,6 +2972,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.iommus == pre.iommus
         &&& post.spaces == pre.spaces
+        &&& post.endpoints == pre.endpoints
         &&& post.threads.boot_thread == pre.threads.boot_thread
         &&& post.threads.queues == pre.threads.queues
     }

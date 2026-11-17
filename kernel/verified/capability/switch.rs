@@ -581,6 +581,7 @@ impl CapKernel {
                     &&& final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame
                     &&& final(self).threads.records@[t].value().saved == old(self).threads.records@[t].value().saved
                     &&& final(self).threads.records@[t].value().save == old(self).threads.records@[t].value().save
+                    &&& keeps_wait(old(self).threads.records@[t].value(), final(self).threads.records@[t].value())
                     &&& old(self).cores@[c as int].next_pcid != PCID_MAX
                         ==> final(self).cores@[c as int].next_pcid <= old(self).cores@[c as int].next_pcid + 1
                     &&& final(self).cores@[c as int].space == Some(p)
@@ -706,6 +707,13 @@ impl CapKernel {
                     let s5 = *self;
                     assert(Self::consumed_kept(s4, s5));
                     assert(Self::consumed_kept(s1, s5));
+                    assert(keeps_wait(s4.threads.records@[t].value(), s5.threads.records@[t].value()));
+                    if let Some(o) = leaving {
+                        assert(same_record_perm_but_links(s0.threads.records@[t], s1.threads.records@[t]));
+                    } else {
+                        assert(s1.threads == s0.threads);
+                    }
+                    assert(keeps_wait(s0.threads.records@[t].value(), s5.threads.records@[t].value()));
                     assert(s5.processes == s0.processes);
                     assert(s5.current_live(c as int));
                     assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == p)

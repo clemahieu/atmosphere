@@ -57,6 +57,10 @@ use crate::pptr::*;
 pub const RETYPE_ENDPOINT_STEPS: usize = 2 * SMALL_PAGES_MAX;
 pub const RETYPE_NOTIFICATION_STEPS: usize = 2 * SMALL_PAGES_MAX;
 
+/// The most stale waiters removed from the front of an endpoint or notification queue in one entry.
+/// See design/one-lock-bounded-steps/ and design/ipc-with-reply-object/.
+pub const STALE_WAITER_BUDGET: usize = 64;
+
 /// An endpoint capability carries send, receive and grant.
 pub const ENDPOINT_RIGHTS: u32 = 112;
 
@@ -3399,6 +3403,574 @@ impl CapKernel {
                 #[trigger] post.threads.records@.contains_key(u) && post.threads.records@[u].value().placement is Some
                 implies pre.threads.records@.contains_key(u) by {}
             Self::lemma_queue_edit_wf(pre, post, c as int);
+        }
+    }
+
+    /// How many waiters at the front of queue `e` from `from` onward, up to `limit`, are stale
+    /// (no longer `Blocked` on `e`). Stops at the first live waiter or at the queue's end.
+    pub open spec fn stale_prefix(&self, e: usize, from: int, limit: nat) -> int
+        decreases limit,
+    {
+        let w = self.endpoints.records@[e].value().waiters@;
+        if limit == 0 || from >= w.len()
+            || self.threads.records@[w[from]].value().state == (ThreadState::Blocked { object: e })
+        {
+            0
+        } else {
+            1 + self.stale_prefix(e, from + 1, (limit - 1) as nat)
+        }
+    }
+
+    /// What trimming `k` stale heads from the front of queue `e`'s wait list leaves, with `e`'s
+    /// word set to `word`: the first `k` threads have `queued`, `wait_prev` and `wait_next` cleared,
+    /// the new head (when `0 < k < waiters.len()`) has `wait_prev` cleared, every other thread and
+    /// queue is untouched, and `e`'s queue holds `waiters.skip(k)`.
+    pub open spec fn queue_trimmed(pre: Self, post: Self, e: usize, k: int, word: u64) -> bool {
+        let pre_e = pre.endpoints.records@[e].value();
+        let post_e = post.endpoints.records@[e].value();
+        let w = pre_e.waiters@;
+        &&& 0 <= k <= w.len()
+        &&& post == (CapKernel { endpoints: post.endpoints, threads: post.threads, ..pre })
+        &&& post.threads == (Threads { records: post.threads.records, ..pre.threads })
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& forall|u: usize| #[trigger] post.threads.records@.contains_key(u) ==> {
+            let ur = pre.threads.records@[u].value();
+            let vr = post.threads.records@[u].value();
+            &&& post.threads.records@[u].addr() == pre.threads.records@[u].addr()
+            &&& post.threads.records@[u].is_init()
+            &&& if exists|j: int| 0 <= j < k && w[j] == u {
+                vr == (ThreadRecord { queued: NONE, wait_prev: NONE, wait_next: NONE, ..ur })
+            } else if k > 0 && k < w.len() && u == w[k] {
+                vr == (ThreadRecord { wait_prev: NONE, ..ur })
+            } else {
+                post.threads.records@[u] == pre.threads.records@[u]
+            }
+        }
+        &&& post.endpoints.holders == pre.endpoints.holders
+        &&& post.endpoints.records@.dom() == pre.endpoints.records@.dom()
+        &&& forall|x: usize| x != e && #[trigger] post.endpoints.records@.contains_key(x)
+            ==> post.endpoints.records@[x] == pre.endpoints.records@[x]
+        &&& post.endpoints.records@[e].addr() == pre.endpoints.records@[e].addr()
+        &&& post.endpoints.records@[e].is_init()
+        &&& post_e == (QueueRecord {
+            head: if k < w.len() { w[k] } else { NONE },
+            tail: if k < w.len() { pre_e.tail } else { NONE },
+            waiters: Ghost(w.skip(k)),
+            word,
+            ..pre_e
+        })
+    }
+
+    /// Bounds and stopping property of `stale_prefix`.
+    proof fn lemma_stale_prefix_bounds(&self, e: usize, from: int, limit: nat)
+        requires
+            self.endpoints.records@.contains_key(e),
+            0 <= from <= self.endpoints.records@[e].value().waiters@.len(),
+        ensures
+            0 <= self.stale_prefix(e, from, limit) <= limit,
+            from + self.stale_prefix(e, from, limit) <= self.endpoints.records@[e].value().waiters@.len(),
+            forall|j: int| from <= j < from + self.stale_prefix(e, from, limit)
+                ==> #[trigger] self.threads.records@[self.endpoints.records@[e].value().waiters@[j]].value().state
+                    != (ThreadState::Blocked { object: e }),
+            self.stale_prefix(e, from, limit) < limit
+                && from + self.stale_prefix(e, from, limit) < self.endpoints.records@[e].value().waiters@.len()
+                ==> self.threads.records@[self.endpoints.records@[e].value().waiters@[from + self.stale_prefix(e, from, limit)]].value().state
+                    == (ThreadState::Blocked { object: e }),
+        decreases limit,
+    {
+        let w = self.endpoints.records@[e].value().waiters@;
+        if limit > 0 && from < w.len()
+            && self.threads.records@[w[from]].value().state != (ThreadState::Blocked { object: e })
+        {
+            self.lemma_stale_prefix_bounds(e, from + 1, (limit - 1) as nat);
+        }
+    }
+
+    /// Splitting `stale_prefix` past `k` stale entries from `from`.
+    proof fn lemma_stale_prefix_add(&self, e: usize, from: int, k: int, limit: nat)
+        requires
+            self.endpoints.records@.contains_key(e),
+            0 <= from <= from + k <= self.endpoints.records@[e].value().waiters@.len(),
+            0 <= k <= limit,
+            forall|j: int| from <= j < from + k
+                ==> #[trigger] self.threads.records@[self.endpoints.records@[e].value().waiters@[j]].value().state
+                    != (ThreadState::Blocked { object: e }),
+        ensures
+            self.stale_prefix(e, from, limit) == k + self.stale_prefix(e, from + k, (limit - k) as nat),
+        decreases k,
+    {
+        if k > 0 {
+            self.lemma_stale_prefix_add(e, from + 1, k - 1, (limit - 1) as nat);
+        }
+    }
+
+    /// Zero removals leaves the kernel unchanged and satisfies `queue_trimmed`.
+    proof fn lemma_queue_trimmed_zero(k: &Self, e: usize)
+        requires
+            k.wf(),
+            k.endpoints.records@.contains_key(e),
+        ensures
+            Self::queue_trimmed(*k, *k, e, 0, k.endpoints.records@[e].value().word),
+    {
+        let r = k.endpoints.records@[e].value();
+        assert forall|u: usize| #[trigger] k.threads.records@.contains_key(u) implies u != NONE by {
+            assert(thread_wf(&k.list, &k.threads, &k.blocks, u));
+        }
+        lemma_waits_head(k.endpoints.records@, k.threads.records@, e);
+        assert(r.waiters@.skip(0) =~= r.waiters@);
+        reveal(waits_wf);
+        assert(wait_queue_wf(r, k.threads.records@, e));
+        if r.waiters@.len() > 0 {
+            assert(r.waiters@.last() == r.tail);
+        }
+    }
+
+    /// Composes `queue_trimmed(pre, mid, e, k, mid_word)` with one further stale head pop
+    /// `queue_trimmed(mid, post, e, 1, post_word)`.
+    proof fn lemma_queue_trimmed_step(
+        pre: Self,
+        mid: Self,
+        post: Self,
+        e: usize,
+        k: int,
+        mid_word: u64,
+        post_word: u64,
+    )
+        requires
+            pre.wf(),
+            pre.endpoints.records@.contains_key(e),
+            0 <= k < pre.endpoints.records@[e].value().waiters@.len(),
+            Self::queue_trimmed(pre, mid, e, k, mid_word),
+            Self::queue_trimmed(mid, post, e, 1, post_word),
+        ensures
+            Self::queue_trimmed(pre, post, e, k + 1, post_word),
+    {
+        let pre_e = pre.endpoints.records@[e].value();
+        let mid_e = mid.endpoints.records@[e].value();
+        let post_e = post.endpoints.records@[e].value();
+        let w = pre_e.waiters@;
+        let wm = mid_e.waiters@;
+        assert(wm =~= w.skip(k));
+        assert(wm.len() == w.len() - k);
+        assert(wm[0] == w[k]);
+        assert(wm.skip(1) =~= w.skip(k + 1));
+        reveal(waits_wf);
+        assert(wait_queue_wf(pre_e, pre.threads.records@, e));
+        if k + 1 < w.len() {
+            assert(wm.len() > 1);
+            assert(wm[1] == w[k + 1]);
+        }
+        assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) implies {
+            let ur = pre.threads.records@[u].value();
+            let vr = post.threads.records@[u].value();
+            &&& post.threads.records@[u].addr() == pre.threads.records@[u].addr()
+            &&& post.threads.records@[u].is_init()
+            &&& if exists|j: int| 0 <= j < k + 1 && w[j] == u {
+                vr == (ThreadRecord { queued: NONE, wait_prev: NONE, wait_next: NONE, ..ur })
+            } else if k + 1 < w.len() && u == w[k + 1] {
+                vr == (ThreadRecord { wait_prev: NONE, ..ur })
+            } else {
+                post.threads.records@[u] == pre.threads.records@[u]
+            }
+        } by {
+            if exists|j: int| 0 <= j < k + 1 && w[j] == u {
+                let j = choose|j: int| 0 <= j < k + 1 && w[j] == u;
+                if j < k {
+                    assert(w[j] != w[k]);
+                    if k + 1 < w.len() {
+                        assert(w[j] != w[k + 1]);
+                    }
+                    assert(post.threads.records@[u] == mid.threads.records@[u]);
+                } else {
+                    assert(j == k && u == wm[0]);
+                    if k > 0 {
+                        assert(mid.threads.records@[u].value() == (ThreadRecord {
+                            wait_prev: NONE,
+                            ..pre.threads.records@[u].value()
+                        }));
+                    } else {
+                        assert(mid.threads.records@[u] == pre.threads.records@[u]);
+                    }
+                }
+            } else if k + 1 < w.len() && u == w[k + 1] {
+                assert(u == wm[1]);
+                assert(u != wm[0]);
+                assert(mid.threads.records@[u] == pre.threads.records@[u]);
+            } else {
+                assert(u != wm[0]);
+                if wm.len() > 1 {
+                    assert(u != wm[1]);
+                }
+                assert(mid.threads.records@[u] == pre.threads.records@[u]);
+                assert(post.threads.records@[u] == mid.threads.records@[u]);
+            }
+        }
+    }
+
+    /// Removes the stale head waiter from queue `e`, clearing its wait links and, when `notify`
+    /// and the queue becomes empty, clearing `WAITER_BIT` in `e`'s word.
+    #[verifier::spinoff_prover]
+    fn pop_stale_head(&mut self, e: usize, notify: bool)
+        requires
+            old(self).wf(),
+            old(self).endpoints.records@.contains_key(e),
+            notify == (old(self).blocks.pages@[(e / PAGE_SZ) as int].object is Notification),
+            old(self).endpoints.records@[e].value().head != NONE,
+            old(self).threads.records@[old(self).endpoints.records@[e].value().head].value().state
+                != (ThreadState::Blocked { object: e }),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).wf(),
+            final(self).view() == old(self).view(),
+            Self::queue_trimmed(
+                *old(self),
+                *final(self),
+                e,
+                1,
+                if notify && old(self).endpoints.records@[e].value().waiters@.len() == 1 {
+                    old(self).endpoints.records@[e].value().word & !WAITER_BIT
+                } else {
+                    old(self).endpoints.records@[e].value().word
+                },
+            ),
+    {
+        let ghost pre = *self;
+        let r0 = *PPtr::<QueueRecord>::from_usize(e).borrow(Tracked(self.endpoints.records.borrow().tracked_borrow(e)));
+        let h = r0.head;
+        proof {
+            assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies u != NONE by {
+                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
+            }
+            lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, h));
+            reveal(waits_wf);
+            assert(wait_queue_wf(r0, pre.threads.records@, e));
+            assert(waiter_linked(r0.waiters@, pre.threads.records@, e, 0));
+            let hr_g = pre.threads.records@[h].value();
+            if hr_g.state is Blocked {
+                assert(hr_g.state->Blocked_object == hr_g.queued);
+                assert(hr_g.state == (ThreadState::Blocked { object: e }));
+            }
+            assert(!(hr_g.state is Blocked));
+            if hr_g.wait_next != NONE {
+                assert(r0.waiters@.len() > 1);
+                assert(hr_g.wait_next == r0.waiters@[1]);
+                assert(hr_g.wait_next != h);
+                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, hr_g.wait_next));
+            }
+        }
+        let ptr_h = PPtr::<ThreadRecord>::from_usize(h + THREAD_RECORD_PAGE * PAGE_SZ);
+        let tracked mut perm_h = self.threads.records.borrow_mut().tracked_remove(h);
+        let mut r_h = ptr_h.take(Tracked(&mut perm_h));
+        let next = r_h.wait_next;
+        r_h.queued = NONE;
+        r_h.wait_prev = NONE;
+        r_h.wait_next = NONE;
+        ptr_h.put(Tracked(&mut perm_h), r_h);
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(h, perm_h);
+        }
+        if next != NONE {
+            let ptr_next = PPtr::<ThreadRecord>::from_usize(next + THREAD_RECORD_PAGE * PAGE_SZ);
+            let tracked mut perm_next = self.threads.records.borrow_mut().tracked_remove(next);
+            let mut r_next = ptr_next.take(Tracked(&mut perm_next));
+            r_next.wait_prev = NONE;
+            ptr_next.put(Tracked(&mut perm_next), r_next);
+            proof {
+                self.threads.records.borrow_mut().tracked_insert(next, perm_next);
+            }
+        }
+        let ptr_e = PPtr::<QueueRecord>::from_usize(e);
+        let tracked mut perm_e = self.endpoints.records.borrow_mut().tracked_remove(e);
+        let r_e = ptr_e.take(Tracked(&mut perm_e));
+        let new_tail = if next == NONE { NONE } else { r_e.tail };
+        let new_word = if notify && next == NONE { r_e.word & !WAITER_BIT } else { r_e.word };
+        let ghost new_waiters = r_e.waiters@.skip(1);
+        ptr_e.put(Tracked(&mut perm_e), QueueRecord {
+            head: next,
+            tail: new_tail,
+            waiters: Ghost(new_waiters),
+            word: new_word,
+            ..r_e
+        });
+        proof {
+            self.endpoints.records.borrow_mut().tracked_insert(e, perm_e);
+            reveal(CapKernel::wf);
+            let post = *self;
+            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert(post.endpoints.records@.dom() =~= pre.endpoints.records@.dom());
+            assert(post.cores == pre.cores);
+            assert(post.threads == (Threads { records: post.threads.records, ..pre.threads }));
+            assert(post.endpoints == (Endpoints { records: post.endpoints.records, ..pre.endpoints }));
+            assert(post == (CapKernel { endpoints: post.endpoints, threads: post.threads, ..pre }));
+            lemma_waits_head_removed(pre.endpoints.records@, post.endpoints.records@, pre.threads.records@, post.threads.records@, e);
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) implies {
+                &&& post.threads.records@[u].is_init()
+                &&& !(pre.threads.records@[u].value().state is Runnable) ==> !(post.threads.records@[u].value().state is Runnable)
+                &&& pre.threads.records@[u].value().state is Runnable ==> {
+                    &&& post.threads.records@[u].value().state == pre.threads.records@[u].value().state
+                    &&& post.threads.records@[u].value().placement == pre.threads.records@[u].value().placement
+                    &&& post.threads.records@[u].value().process == pre.threads.records@[u].value().process
+                    &&& post.threads.records@[u].value().run_prev == pre.threads.records@[u].value().run_prev
+                    &&& post.threads.records@[u].value().run_next == pre.threads.records@[u].value().run_next
+                }
+            } by {
+                if u != h && u != next {
+                    assert(post.threads.records@[u] == pre.threads.records@[u]);
+                }
+            }
+            lemma_queues_same_wait(&pre.threads.queues, pre.threads.records@, post.threads.records@);
+            assert forall|x: usize| #[trigger] post.endpoints.records@.contains_key(x)
+                implies endpoint_wf(&post.endpoints, &post.blocks, x) by {
+                assert(endpoint_wf(&pre.endpoints, &pre.blocks, x));
+                if x == e {
+                    let obj = pre.blocks.pages@[(e / PAGE_SZ) as int].object;
+                    if notify {
+                        if next == NONE {
+                            let ghost word0 = r0.word;
+                            assert((word0 & !WAITER_BIT) & WAITER_BIT == 0u64) by (bit_vector)
+                                requires WAITER_BIT == 0x8000_0000_0000_0000u64; // not a page size: WAITER_BIT
+                            assert(post.endpoints.records@[e].value().waiters@.len() == 0);
+                        } else {
+                            assert(r0.waiters@.len() > 1);
+                            assert(r0.word & WAITER_BIT != 0);
+                            assert(post.endpoints.records@[e].value().waiters@.len() > 0);
+                        }
+                    } else {
+                        assert(word_wf(r0, obj));
+                    }
+                }
+            }
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
+                implies thread_wf(&post.list, &post.threads, &post.blocks, u) by {
+                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
+                if u != h && u != next {
+                    assert(post.threads.records@[u] == pre.threads.records@[u]);
+                }
+            }
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) implies {
+                &&& post.threads.records@[u].value().state == pre.threads.records@[u].value().state
+                &&& post.threads.records@[u].value().pending_stop == pre.threads.records@[u].value().pending_stop
+                &&& post.threads.records@[u].value().process == pre.threads.records@[u].value().process
+                &&& post.threads.records@[u].value().placement == pre.threads.records@[u].value().placement
+            } by {
+                if u != h && u != next {
+                    assert(post.threads.records@[u] == pre.threads.records@[u]);
+                }
+            }
+            lemma_placed_running_same(pre.threads.records@, post.threads.records@);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies {
+                &&& #[trigger] post.cores@[d].current_thread == pre.cores@[d].current_thread
+                &&& post.cores@[d].space == pre.cores@[d].space
+            } by {
+                assert(post.cores@[d] == pre.cores@[d]);
+            }
+            lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
+            lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+            lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+            assert forall|u: usize|
+                #[trigger] post.threads.records@.contains_key(u) && post.threads.records@[u].value().process is Some
+                implies pre.threads.records@.contains_key(u) by {}
+            assert forall|u: usize|
+                #[trigger] post.threads.records@.contains_key(u) && post.threads.records@[u].value().placement is Some
+                implies pre.threads.records@.contains_key(u) by {}
+            Self::lemma_queue_edit_wf(pre, post, 0);
+            assert forall|o: ObjectId| #[trigger] saved_registers(&post.threads).contains_key(o)
+                implies saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o] by {
+                assert(post.threads.records@.contains_key(o));
+            }
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
+            assert forall|o: usize| #[trigger] waits_on(&post.threads, o) == waits_on(&pre.threads, o) by {
+                if post.threads.records@.contains_key(o) {
+                    assert(post.threads.records@[o].value().state == pre.threads.records@[o].value().state);
+                }
+            }
+            lemma_blocked_on_same(&pre.threads, &post.threads);
+            assert(post.view() =~= pre.view());
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) implies {
+                let ur = pre.threads.records@[u].value();
+                let vr = post.threads.records@[u].value();
+                &&& post.threads.records@[u].addr() == pre.threads.records@[u].addr()
+                &&& post.threads.records@[u].is_init()
+                &&& if exists|j: int| 0 <= j < 1int && r0.waiters@[j] == u {
+                    vr == (ThreadRecord { queued: NONE, wait_prev: NONE, wait_next: NONE, ..ur })
+                } else if 1int < r0.waiters@.len() && u == r0.waiters@[1] {
+                    vr == (ThreadRecord { wait_prev: NONE, ..ur })
+                } else {
+                    post.threads.records@[u] == pre.threads.records@[u]
+                }
+            } by {
+                if exists|j: int| 0 <= j < 1int && r0.waiters@[j] == u {
+                    let j = choose|j: int| 0 <= j < 1int && r0.waiters@[j] == u;
+                    assert(j == 0);
+                    assert(u == h);
+                } else {
+                    assert(u != h);
+                    if 1int < r0.waiters@.len() && u == r0.waiters@[1] {
+                        assert(u == next);
+                    } else {
+                        assert(u != next);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Removes up to `limit` stale waiters from the front of queue `e`, stopping at the first
+    /// live waiter (`Blocked` on `e`) or when the queue empties. Counts one step per removal.
+    #[verifier::spinoff_prover]
+    pub(crate) fn skip_stale_heads(
+        &mut self,
+        e: usize,
+        limit: usize,
+        notify: bool,
+        Tracked(steps): Tracked<&mut Steps>,
+    )
+        requires
+            old(self).wf(),
+            old(self).endpoints.records@.contains_key(e),
+            notify == (old(self).blocks.pages@[(e / PAGE_SZ) as int].object is Notification),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(steps).count <= old(steps).count + limit,
+            final(self).wf(),
+            final(self).view() == old(self).view(),
+            ({
+                let k = old(self).stale_prefix(e, 0, limit as nat);
+                let pre_e = old(self).endpoints.records@[e].value();
+                let new_word = if notify && k == pre_e.waiters@.len() {
+                    pre_e.word & !WAITER_BIT
+                } else {
+                    pre_e.word
+                };
+                Self::queue_trimmed(*old(self), *final(self), e, k, new_word)
+            }),
+    {
+        let ghost pre = *self;
+        let ghost pre_e = pre.endpoints.records@[e].value();
+        let ghost w0 = pre_e.waiters@;
+        let ghost steps0 = steps.count;
+        proof {
+            Self::lemma_queue_trimmed_zero(&pre, e);
+            assert(endpoint_wf(&pre.endpoints, &pre.blocks, e));
+            if notify && w0.len() == 0 {
+                assert(word_wf(pre_e, pre.blocks.pages@[(e / PAGE_SZ) as int].object));
+                let ghost ew = pre_e.word;
+                assert((ew & !WAITER_BIT) == ew) by (bit_vector)
+                    requires
+                        ew & WAITER_BIT == 0u64,
+                        WAITER_BIT == 0x8000_0000_0000_0000u64; // not a page size: WAITER_BIT
+            }
+            assert forall|j: int| 0 <= j < w0.len() implies
+                pre.threads.records@.contains_key(#[trigger] w0[j]) && pre.threads.records@[w0[j]].is_init()
+            by {
+                reveal(waits_wf);
+                assert(wait_queue_wf(pre_e, pre.threads.records@, e));
+                assert(waiter_linked(w0, pre.threads.records@, e, j));
+            }
+        }
+        let mut skipped: usize = 0;
+        let mut done = false;
+        while !done && skipped < limit
+            invariant
+                0 <= skipped <= limit,
+                steps0 == old(steps).count,
+                steps.count == steps0 + skipped,
+                pre == *old(self),
+                pre.wf(),
+                pre.endpoints.records@.contains_key(e),
+                pre_e == pre.endpoints.records@[e].value(),
+                w0 == pre_e.waiters@,
+                notify == (pre.blocks.pages@[(e / PAGE_SZ) as int].object is Notification),
+                self.wf(),
+                self.view() == pre.view(),
+                self.blocks == pre.blocks,
+                self.blocks.pages@.len() == old(self).blocks.pages@.len(),
+                skipped <= w0.len(),
+                forall|j: int| 0 <= j < w0.len()
+                    ==> pre.threads.records@.contains_key(#[trigger] w0[j]) && pre.threads.records@[w0[j]].is_init(),
+                forall|j: int| 0 <= j < skipped
+                    ==> #[trigger] pre.threads.records@[w0[j]].value().state != (ThreadState::Blocked { object: e }),
+                Self::queue_trimmed(
+                    pre,
+                    *self,
+                    e,
+                    skipped as int,
+                    if notify && skipped as int == w0.len() { pre_e.word & !WAITER_BIT } else { pre_e.word },
+                ),
+                done ==> pre.stale_prefix(e, 0, limit as nat) == skipped as int,
+            decreases (if done { 0int } else { 1int }), limit - skipped,
+        {
+            let ghost mid = *self;
+            proof {
+                assert(endpoint_wf(&mid.endpoints, &mid.blocks, e));
+                assert forall|u: usize| #[trigger] mid.threads.records@.contains_key(u) implies u != NONE by {
+                    assert(thread_wf(&mid.list, &mid.threads, &mid.blocks, u));
+                }
+                lemma_waits_head(mid.endpoints.records@, mid.threads.records@, e);
+            }
+            let r = *PPtr::<QueueRecord>::from_usize(e).borrow(
+                Tracked(self.endpoints.records.borrow().tracked_borrow(e)),
+            );
+            if r.head == NONE {
+                proof {
+                    pre.lemma_stale_prefix_add(e, 0, skipped as int, limit as nat);
+                    assert(mid.endpoints.records@[e].value().waiters@ =~= w0.skip(skipped as int));
+                    assert(skipped as int == w0.len());
+                    assert(pre.stale_prefix(e, skipped as int, (limit - skipped) as nat) == 0);
+                }
+                done = true;
+            } else {
+                proof {
+                    assert(thread_wf(&mid.list, &mid.threads, &mid.blocks, r.head));
+                    reveal(waits_wf);
+                    assert(wait_queue_wf(pre_e, pre.threads.records@, e));
+                    assert(r.head == w0[skipped as int]);
+                    assert(mid.threads.records@[r.head].value().state == pre.threads.records@[w0[skipped as int]].value().state);
+                }
+                let hr = *PPtr::<ThreadRecord>::from_usize(r.head + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+                    Tracked(self.threads.records.borrow().tracked_borrow(r.head)),
+                );
+                let live = match hr.state {
+                    ThreadState::Blocked { object } => object == e,
+                    _ => false,
+                };
+                if live {
+                    proof {
+                        pre.lemma_stale_prefix_add(e, 0, skipped as int, limit as nat);
+                        assert(pre.threads.records@[w0[skipped as int]].value().state == (ThreadState::Blocked { object: e }));
+                        assert(pre.stale_prefix(e, skipped as int, (limit - skipped) as nat) == 0);
+                    }
+                    done = true;
+                } else {
+                    let ghost mid_word = if notify && skipped as int == w0.len() {
+                        pre_e.word & !WAITER_BIT
+                    } else {
+                        pre_e.word
+                    };
+                    self.pop_stale_head(e, notify);
+                    let ghost post = *self;
+                    let ghost post_word = if notify && (skipped + 1) as int == w0.len() {
+                        pre_e.word & !WAITER_BIT
+                    } else {
+                        pre_e.word
+                    };
+                    proof {
+                        assert(mid.endpoints.records@[e].value().waiters@ =~= w0.skip(skipped as int));
+                        assert((mid.endpoints.records@[e].value().waiters@.len() == 1) == ((skipped + 1) as int == w0.len()));
+                        Self::lemma_queue_trimmed_step(pre, mid, post, e, skipped as int, mid_word, post_word);
+                        steps.step();
+                    }
+                    skipped = skipped + 1;
+                }
+            }
+        }
+        proof {
+            if !done {
+                pre.lemma_stale_prefix_add(e, 0, skipped as int, limit as nat);
+                assert(skipped == limit);
+                assert(pre.stale_prefix(e, skipped as int, 0) == 0);
+            }
         }
     }
 }

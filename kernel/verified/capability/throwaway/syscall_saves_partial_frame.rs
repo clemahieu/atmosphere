@@ -56,6 +56,7 @@ use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::define::*;
+use crate::util::page_ptr_util_u::mem_valid;
 use crate::capability::witness::*;
 
 impl CapKernel {
