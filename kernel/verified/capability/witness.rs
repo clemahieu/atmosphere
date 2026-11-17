@@ -65,7 +65,7 @@ use crate::capability::list::*;
 use crate::capability::map::*;
 use crate::capability::mapping::*;
 use crate::capability::notification::*;
-use crate::capability::operation::Outcome;
+use crate::capability::operation::{Outcome, STATUS_OK};
 use crate::capability::position::*;
 use crate::capability::process::*;
 use crate::capability::reach::*;
@@ -80,7 +80,7 @@ use crate::capability::schedule::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::{partial_frame, report_tags_tlb, saved_frame, user_frame, user_rip, FrameKind, Processor, Registers};
+use crate::arch::{outcome_written, partial_frame, report_tags_tlb, saved_frame, user_frame, user_rip, FrameKind, Processor, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -7691,6 +7691,7 @@ impl CapKernel {
             ret.0,
             ret.1,
             final(self).cores == old(self).cores,
+            final(self).spaces == old(self).spaces,
             final(self).threads == old(self).threads,
             final(self).processes.records == old(self).processes.records,
             ({
@@ -7902,7 +7903,10 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret,
             final(self).cores == old(self).cores,
+            final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).threads.records == old(self).threads.records,
+            final(self).threads.queues == old(self).threads.queues,
             final(self).processes.records == old(self).processes.records,
             final(self).endpoints.records == old(self).endpoints.records,
             ({
@@ -8360,11 +8364,14 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret is Blocked,
             final(self).wf(),
+            Self::wait_blocked(*old(self), *final(self), 0, process, WITNESS_FRAME_SLOT, registers),
+            final(self).threads.queues == old(self).threads.queues,
             final(self).cores@[0].current_thread is None,
             final(self).threads.records@[t].value().state == (ThreadState::Blocked { object: base }),
             final(self).threads.records@[t].value().frame == partial_frame(registers),
             final(self).threads.records@[t].value().saved is Partial,
             final(self).threads.records@[t].value().save@ == (FrameSave::Syscall { frame: registers }),
+            final(self).endpoints.records@[base].value().head == t,
             final(self).endpoints.records@[base].value().waiters@ == seq![t],
             final(self).endpoints.records@[base].value().word == WAITER_BIT,
     {
@@ -8437,11 +8444,13 @@ impl CapKernel {
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret is Blocked,
             final(self).wf(),
+            final(self).threads.queues == old(self).threads.queues,
             final(self).cores@[0].current_thread is None,
             final(self).threads.records@[t].value().state == (ThreadState::Blocked { object: base }),
             final(self).threads.records@[t].value().frame == partial_frame(registers),
             final(self).threads.records@[t].value().saved is Partial,
             final(self).threads.records@[t].value().save@ == (FrameSave::Syscall { frame: registers }),
+            final(self).endpoints.records@[base].value().head == t,
             final(self).endpoints.records@[base].value().waiters@ == seq![t],
             final(self).endpoints.records@[base].value().word == WAITER_BIT,
     {
@@ -8494,6 +8503,322 @@ impl CapKernel {
             assert(self.blocks.pages@.len() == s0.blocks.pages@.len());
         }
         step
+    }
+
+    /// Enters core 0 into boot thread `t` of root `process`, retypes a notification at `base` into
+    /// `WITNESS_FRAME_SLOT`, and derives a send capability with badge `2^62` into
+    /// `WITNESS_BADGED_SLOT`.
+    #[verifier::spinoff_prover]
+    fn witness_setup_badged_notification(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: usize,
+        base: usize,
+        report: Processor,
+    )
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            report_tags_tlb(0, report),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).wf(),
+            final(self).tables.roots@.contains_key(process),
+            final(self).root_live(process),
+            final(self).caller_live(0, process),
+            final(self).cores@[0].current_thread == Some(t),
+            final(self).cores@[0].generation == 1,
+            final(self).holds_notification(process, WITNESS_FRAME_SLOT, RECEIVE_RIGHT),
+            final(self).notification_at(process, WITNESS_FRAME_SLOT) == base,
+            final(self).notification_record(process, WITNESS_FRAME_SLOT) == fresh_record(),
+            final(self).holds_notification(process, WITNESS_BADGED_SLOT, SEND_RIGHT),
+            final(self).notification_at(process, WITNESS_BADGED_SLOT) == base,
+            final(self).payload_of(final(self).tables.node_of(process, WITNESS_BADGED_SLOT)).badge
+                == 0x4000_0000_0000_0000, // not a page size: bit 62 of the word
+            final(self).threads.records@.contains_key(t),
+            final(self).threads.records@[t].value().queued != base,
+            final(self).threads.records@[t].value().placement == Some(Placement { core: 0, priority: 0 }),
+            final(self).threads.records@[t].value().process == Some(process),
+            !final(self).threads.records@[t].value().dying,
+            !final(self).threads.records@[t].value().pending_stop,
+            final(self).endpoints.records@.contains_key(base),
+            final(self).endpoints.records@[base].value() == fresh_record(),
+            final(self).processes.records@.contains_key(process),
+            !final(self).processes.records@[process].value().dead,
+            final(self).loaded(0, process),
+            final(self).spaces.kernel_root@ == kernel_root,
+            final(self).threads.queues.all_empty(),
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root);
+            s0.lemma_booted_notification_setup(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root, base);
+            assert(s0.threads.queues.all_empty()) by {
+                reveal(CapKernel::booted);
+            }
+            assert(s0.cores@[0].generation == 1) by {
+                reveal(CapKernel::booted);
+            }
+        }
+        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, Ghost(kernel_root), report);
+        let ghost s_ent = *self;
+        proof {
+            assert(s_ent.tables == s0.tables);
+            assert(s_ent.blocks == s0.blocks);
+            assert(s_ent.processes == s0.processes);
+            assert(s_ent.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s_ent.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            assert(s_ent.list.nodes@[u as int].live);
+            assert(s_ent.list.nodes@[u as int].depth == 1);
+            assert(s_ent.root_table_block(process, base));
+            assert(s_ent.caller_live(0, process));
+            assert(s_ent.threads.records@.contains_key(t));
+            s_ent.lemma_blocks_on_a_notification_unqueued(process, base, t);
+        }
+        let _ = self.witness_retype_notification(process, leaf, free, image, untyped, base);
+        let ghost s_ret = *self;
+        proof {
+            assert(base % PAGE_SZ == 0) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s_ret.blocks.tracks((base / PAGE_SZ) as int)) by {
+                reveal(CapKernel::wf);
+            }
+        }
+        let _ = self.derive_witness_badged_notification(process, base);
+        proof {
+            let s1 = *self;
+            assert(s1.cores@[0].current_thread == Some(t));
+            assert(s1.caller_live(0, process));
+            assert(s1.threads.records@.contains_key(t));
+            assert(s1.threads.records@[t].value().queued != base);
+            assert(NOTIFICATION_RIGHTS & RECEIVE_RIGHT != 0) by (compute_only);
+            assert(s1.holds_notification(process, WITNESS_FRAME_SLOT, RECEIVE_RIGHT));
+            assert(s1.notification_at(process, WITNESS_FRAME_SLOT) == base);
+            assert(s1.notification_record(process, WITNESS_FRAME_SLOT) == fresh_record());
+            assert(s1.endpoints.records@.contains_key(base));
+            assert(s1.endpoints.records@[base].value() == fresh_record());
+            assert(right_bit(Right::Send) == 16) by (compute_only);
+            assert(16u32 & SEND_RIGHT != 0) by (compute_only);
+            assert(s1.holds_notification(process, WITNESS_BADGED_SLOT, SEND_RIGHT));
+            assert(s1.notification_at(process, WITNESS_BADGED_SLOT) == base);
+        }
+    }
+
+    /// Proves that after `signal` wakes `t` on `base`, `s3` is ready for `tick` on core 0 and selects `t`.
+    #[verifier::spinoff_prover]
+    proof fn lemma_signal_wakes_ready_to_tick(
+        s2: Self,
+        s3: Self,
+        t: usize,
+        base: usize,
+        process: usize,
+        kernel_root: usize,
+        registers: Registers,
+    )
+        requires
+            s2.wf(),
+            s3.wf(),
+            s2.tables.roots@.contains_key(process),
+            s2.root_live(process),
+            s2.holds_notification(process, WITNESS_BADGED_SLOT, SEND_RIGHT),
+            s2.notification_at(process, WITNESS_BADGED_SLOT) == base,
+            s2.payload_of(s2.tables.node_of(process, WITNESS_BADGED_SLOT)).badge
+                == 0x4000_0000_0000_0000, // not a page size: bit 62 of the word
+            s2.cores@[0].current_thread is None,
+            s2.cores@[0].generation == 1,
+            s2.loaded(0, process),
+            s2.spaces.kernel_root@ == kernel_root,
+            s2.threads.queues.all_empty(),
+            s2.threads.records@.contains_key(t),
+            s2.threads.records@[t].value().state == (ThreadState::Blocked { object: base }),
+            s2.threads.records@[t].value().frame == partial_frame(registers),
+            s2.threads.records@[t].value().saved is Partial,
+            s2.threads.records@[t].value().placement == Some(Placement { core: 0, priority: 0 }),
+            s2.threads.records@[t].value().process == Some(process),
+            !s2.threads.records@[t].value().dying,
+            !s2.threads.records@[t].value().pending_stop,
+            s2.processes.records@.contains_key(process),
+            !s2.processes.records@[process].value().dead,
+            s2.endpoints.records@.contains_key(base),
+            s2.endpoints.records@[base].value().head == t,
+            s2.endpoints.records@[base].value().waiters@ == seq![t],
+            s2.endpoints.records@[base].value().word == WAITER_BIT,
+            Self::signalled(s2, s3, process, WITNESS_BADGED_SLOT),
+        ensures
+            s3.selected(0, t),
+            s3.preempts(0, t),
+            s3.can_run(t),
+            !s3.must_leave(0),
+            s3.threads.records@[t].is_init(),
+            thread_wf(&s3.list, &s3.threads, &s3.blocks, t),
+            s3.threads.records@[t].value().frame
+                == outcome_written(partial_frame(registers), wait_outcome(0x4000_0000_0000_0000u64)), // not a page size: bit 62 of the word
+            s3.threads.records@[t].value().saved is Partial,
+            s3.threads.records@[t].value().queued == NONE,
+            s3.endpoints.records@[base].value().waiters@ == Seq::<usize>::empty(),
+            s3.endpoints.records@[base].value().word == 0,
+            s3.cores@[0].current_thread is None,
+            s3.cores@[0].generation == 1,
+            s3.spaces.kernel_root@ == kernel_root,
+    {
+        assert(s2.can_signal(process, WITNESS_BADGED_SLOT));
+        assert(s2.signal_has_live_waiter(base));
+        assert(Self::signal_woke(s2, s3, process, WITNESS_BADGED_SLOT));
+        let badge: u64 = 0x4000_0000_0000_0000u64; // not a page size: bit 62 of the word
+        assert(((WAITER_BIT | badge) & SIGNAL_BITS) == badge) by (bit_vector)
+            requires
+                badge == 0x4000_0000_0000_0000u64, // not a page size: bit 62 of the word
+                WAITER_BIT == 0x8000_0000_0000_0000u64, // not a page size: WAITER_BIT
+                SIGNAL_BITS == 0x7fff_ffff_ffff_ffffu64; // not a page size: SIGNAL_BITS
+        assert(s3.endpoints.records@[base].value().waiters@ =~= Seq::<usize>::empty());
+        assert(s3.threads.queues.queue(0, 0) == seq![t]);
+        assert forall|p: int| 0 <= p < NUM_PRIORITIES && p != 0
+            implies #[trigger] s3.threads.queues.queue(0, p) == Seq::<usize>::empty() by {
+            assert(s2.threads.queues.queue(0, p) == Seq::<usize>::empty());
+        }
+        s3.lemma_selected_alone(0, t);
+        assert(1usize < ID_GENERATION_MAX) by (compute_only);
+        reveal(CapKernel::wf);
+    }
+
+    /// Proves the post-tick invariants for `witness_signal_wakes_notification_waiter`.
+    #[verifier::spinoff_prover]
+    proof fn lemma_signal_wakes_ticked(
+        s3: Self,
+        s4: Self,
+        t: usize,
+        base: usize,
+        registers: Registers,
+        resumed: (FrameKind, Registers),
+    )
+        requires
+            s3.wf(),
+            s4.wf(),
+            Self::switched(s3, s4, 0, registers, t),
+            s3.threads.records@.contains_key(t),
+            s3.threads.records@[t].value().frame
+                == outcome_written(partial_frame(registers), wait_outcome(0x4000_0000_0000_0000u64)), // not a page size: bit 62 of the word
+            s3.threads.records@[t].value().saved is Partial,
+            s3.endpoints.records@.contains_key(base),
+            s3.endpoints.records@[base].value().waiters@ == Seq::<usize>::empty(),
+            s3.endpoints.records@[base].value().word == 0,
+            resumed.0 == s3.threads.records@[t].value().saved,
+            resumed.1 == s3.threads.records@[t].value().frame,
+        ensures
+            s4.cores@[0].current_thread == Some(t),
+            s4.threads.records@[t].value().state == (ThreadState::Running { core: 0 }),
+            s4.endpoints.records@[base].value().waiters@ == Seq::<usize>::empty(),
+            s4.endpoints.records@[base].value().word == 0,
+            resumed.0 is Partial,
+            resumed.1.spec_status_word() == STATUS_OK,
+            resumed.1.spec_result(1) == 0x4000_0000_0000_0000u64, // not a page size: bit 62 of the word
+    {
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: enter the root's thread `t` on
+    /// core 0 with `report`, retype a notification at `base` into `WITNESS_FRAME_SLOT`, derive a send
+    /// capability with badge 2^62 into `WITNESS_BADGED_SLOT`, wait from core 0 with frame `registers`
+    /// while the word is 0 (blocking `t` on `base` with `WAITER_BIT` set and leaving core 0 idle),
+    /// then signal through the badged capability, read `t`'s resumed frame, and tick core 0. Signal
+    /// removes `t` from the queue, clears the word to 0, writes `STATUS_OK` and `2^62` into `t`'s
+    /// saved partial frame as its wait's result, makes `t` `Runnable` on core 0 at priority 0 and
+    /// records a reschedule IPI for core 0, and `tick` switches `t` back in on core 0. The use is
+    /// a source signalling and waking a thread waiting on a notification, whose wait returns the badge.
+    /// design/witness-per-way-an-operation-succeeds/,
+    /// design/notification-word-reserves-the-waiter-bit/.
+    #[verifier::spinoff_prover]
+    pub fn witness_signal_wakes_notification_waiter(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: usize,
+        base: usize,
+        registers: Registers,
+        report: Processor,
+    ) -> (ret: (WaitStep, bool, TickStep, (FrameKind, Registers)))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            report_tags_tlb(0, report),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            ret.0 is Blocked,
+            ret.1,
+            ret.2 is Switched,
+            ret.3.0 is Partial,
+            ret.3.1.spec_status_word() == STATUS_OK,
+            ret.3.1.spec_result(1) == 0x4000_0000_0000_0000u64, // not a page size: bit 62 of the word
+            final(self).wf(),
+            final(self).cores@[0].current_thread == Some(t),
+            final(self).threads.records@[t].value().state == (ThreadState::Running { core: 0 }),
+            final(self).endpoints.records@[base].value().waiters@ == Seq::<usize>::empty(),
+            final(self).endpoints.records@[base].value().word == 0,
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root);
+        }
+        self.witness_setup_badged_notification(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, report);
+        let ghost s1 = *self;
+        let step = self.witness_root_blocks_on_a_notification_wait(process, t, base, registers);
+        let ghost s2 = *self;
+        proof {
+            assert(Self::wait_blocked(s1, s2, 0, process, WITNESS_FRAME_SLOT, registers));
+            assert(s2.tables == s1.tables);
+            assert(s2.list == s1.list);
+            assert(s2.processes == s1.processes);
+            assert(s2.spaces == s1.spaces);
+            assert(s2.cores@[0].generation == 1);
+            assert(s2.holds_notification(process, WITNESS_BADGED_SLOT, SEND_RIGHT));
+            assert(s2.notification_at(process, WITNESS_BADGED_SLOT) == base);
+            assert(s2.can_signal(process, WITNESS_BADGED_SLOT));
+            assert(s2.signal_has_live_waiter(base));
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.root_live(process));
+        }
+        let signalled = self.signal(process, WITNESS_BADGED_SLOT);
+        let ghost s3 = *self;
+        proof {
+            Self::lemma_signal_wakes_ready_to_tick(s2, s3, t, base, process, kernel_root, registers);
+        }
+        let record = crate::pptr::PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+            Tracked(self.threads.records.borrow().tracked_borrow(t)),
+        );
+        let resumed = record.resume_frame();
+        let tracked mut steps = Steps::fresh();
+        let tick_step = self.tick(0, registers, kernel_root, report, Tracked(&mut steps));
+        proof {
+            Self::lemma_signal_wakes_ticked(s3, *self, t, base, registers, resumed);
+        }
+        (step, signalled, tick_step, resumed)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

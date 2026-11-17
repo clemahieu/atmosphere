@@ -61,6 +61,7 @@ pub mod root_stops_a_thread_on_another_core;
 pub mod root_suspends_a_runnable_thread;
 pub mod root_suspends_itself;
 pub mod root_thread_enters;
+pub mod signal_wakes_notification_waiter;
 pub mod switch_between_processes;
 pub mod switch_thread_between_processes;
 pub mod syscall_saves_partial_frame;

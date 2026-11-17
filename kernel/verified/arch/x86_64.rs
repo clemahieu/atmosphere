@@ -1598,6 +1598,7 @@ impl Registers {
     /// frame held.
     pub fn write_outcome(&mut self, out: Outcome)
         ensures
+            *final(self) == outcome_written(*old(self), out),
             final(self).spec_status_word() == out.status,
             final(self).spec_result(1) == out.result_1,
             final(self).spec_result(2) == out.result_2,
@@ -1612,6 +1613,20 @@ impl Registers {
         self.rdx = out.result_3;
         self.r8 = out.result_4;
         self.r9 = out.result_5;
+    }
+}
+
+/// `r` with `out`'s status word and result words 1 to 5 written at their invocation positions,
+/// keeping argument 5 and every other register as it was.
+pub open spec fn outcome_written(r: Registers, out: Outcome) -> Registers {
+    Registers {
+        rax: out.status,
+        rdi: out.result_1,
+        rsi: out.result_2,
+        rdx: out.result_3,
+        r8: out.result_4,
+        r9: out.result_5,
+        ..r
     }
 }
 
@@ -1885,6 +1900,14 @@ pub fn partial_frame_of(f: Registers) -> (ret: Registers)
 pub proof fn lemma_partial_frame_idempotent(f: Registers)
     ensures
         partial_frame(partial_frame(f)) == partial_frame(f),
+{
+}
+
+/// Writing an invocation outcome commutes with saving a partial frame: every outcome register
+/// survives `partial_frame`, and every clobbered slot stays as it was.
+pub proof fn lemma_partial_outcome_written(r: Registers, out: Outcome)
+    ensures
+        partial_frame(outcome_written(r, out)) == outcome_written(partial_frame(r), out),
 {
 }
 

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT
 
 //! Signal and wait on a notification, through a capability the caller holds. Signal ORs the
-//! capability's badge into the notification's word and returns ok or refused, never blocking; wait
-//! returns the word's signalled bits and clears them when any is set, and blocks core c's current
-//! thread on the notification's queue with its partial frame saved when none is set. The word's
-//! bit 63 is the kernel's waiter bit, which signal does not set and wait preserves when returning
-//! or sets while a thread queues. Nothing wakes a waiter yet, so signal refuses while its queue
-//! lists a thread. See design/notification-word-reserves-the-waiter-bit/.
+//! capability's badge into the notification's word and returns ok or refused, never blocking; when
+//! the notification's queue has a live waiter at its head, signal removes it, writes the word (bit
+//! 63 clear) into its saved frame as its wait's result, clears the word (keeping bit 63 set only
+//! while another thread remains listed), and makes the head Runnable on its placement's core with
+//! the reschedule IPI rule. Wait returns the word's signalled bits and clears them when any is set,
+//! and blocks core c's current thread on the notification's queue with its partial frame saved when
+//! none is set. The word's bit 63 is the kernel's waiter bit, which signal does not set and wait
+//! preserves when returning or sets while a thread queues. See
+//! design/notification-word-reserves-the-waiter-bit/.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::{lemma_pow2_pos, pow2};
 use vstd::prelude::*;
@@ -14,21 +17,25 @@ use vstd::prelude::*;
 verus! {
 
 #[cfg(verus_keep_ghost)]
-use crate::arch::partial_frame;
+use crate::arch::{
+    lemma_partial_frame_idempotent, lemma_partial_outcome_written, outcome_written, partial_frame,
+    FrameKind,
+};
 use crate::arch::Registers;
-#[cfg(verus_keep_ghost)]
-use crate::arch::FrameKind;
 use crate::capability::endpoint::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::operation::{Outcome, STATUS_OK};
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
-use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::schedule::{
+    at_back_of_priority, queued_at_back, queues_wf, thread_priority,
+};
+use crate::capability::table::*;
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
-#[cfg(verus_keep_ghost)]
 use crate::define::*;
 use crate::pptr::*;
 
@@ -45,6 +52,34 @@ pub enum WaitStep {
     Refused,
     Returned(u64),
     Blocked,
+}
+
+/// The outcome a `wait` returns when it delivers `word` (bit 63 clear): `STATUS_OK` in the
+/// status word and `word` in result 1.
+pub open spec fn wait_outcome(word: u64) -> Outcome {
+    Outcome {
+        status: STATUS_OK,
+        result_1: word,
+        result_2: 0,
+        result_3: 0,
+        result_4: 0,
+        result_5: 0,
+    }
+}
+
+/// The outcome a `wait` returns when it delivers `word`.
+pub fn wait_outcome_of(word: u64) -> (ret: Outcome)
+    ensures
+        ret == wait_outcome(word),
+{
+    Outcome {
+        status: STATUS_OK,
+        result_1: word,
+        result_2: 0,
+        result_3: 0,
+        result_4: 0,
+        result_5: 0,
+    }
 }
 
 impl CapKernel {
@@ -68,10 +103,17 @@ impl CapKernel {
     }
 
     /// Signal through index i of the table at root succeeds: it holds a notification capability with
-    /// the send right, and no thread waits on the notification.
+    /// the send right.
     pub open spec fn can_signal(&self, root: usize, i: usize) -> bool {
-        &&& self.holds_notification(root, i, SEND_RIGHT)
-        &&& self.notification_record(root, i).waiters@.len() == 0
+        self.holds_notification(root, i, SEND_RIGHT)
+    }
+
+    /// Notification `e` has a live waiter at the head of its queue: its queue lists at least one
+    /// thread and its head is `Blocked` on `e`.
+    pub open spec fn signal_has_live_waiter(&self, e: usize) -> bool {
+        let r = self.endpoints.records@[e].value();
+        &&& r.waiters@.len() > 0
+        &&& self.threads.records@[r.head].value().state == (ThreadState::Blocked { object: e })
     }
 
     /// Core `c` has a live current thread that belongs to the process rooted at `root`.
@@ -107,14 +149,102 @@ impl CapKernel {
         &&& post.endpoints.records@[e].value() == QueueRecord { word, ..r }
     }
 
-    /// What a signal through index i of the table at root did: ORed the capability's badge into the
-    /// notification's word, changing nothing a process sees, as the reach lemma's signal that wakes no
-    /// thread.
+    /// What a signal through index `i` of the table at `root` did when notification `e` had a live
+    /// waiter `head` at the head of its queue: ORed the capability's badge into the word, wrote the
+    /// word with bit 63 clear into `head`'s saved frame as its wait's result, removed `head` from
+    /// the queue, cleared the word (keeping `WAITER_BIT` set only while another thread remains
+    /// listed), made `head` `Runnable` on its placement's core at the back of its placement's
+    /// priority with the reschedule IPI rule of design/cpu-time-as-capability/, and discharged
+    /// `Effect::Signal { cap: n, waiter: Some(head) }`.
+    pub open spec fn signal_woke(pre: Self, post: Self, root: usize, i: usize) -> bool {
+        let n = pre.tables.node_of(root, i);
+        let e = pre.notification_at(root, i);
+        let pre_e = pre.endpoints.records@[e].value();
+        let post_e = post.endpoints.records@[e].value();
+        let badge = pre.payload_of(n).badge as u64;
+        let head = pre_e.head;
+        let hr = pre.threads.records@[head].value();
+        let pl = hr.placement->Some_0;
+        let core = pl.core;
+        let delivered = (pre_e.word | badge) & SIGNAL_BITS;
+        let new_frame = outcome_written(hr.frame, wait_outcome(delivered));
+        let new_word = if pre_e.waiters@.len() > 1 { WAITER_BIT } else { 0 };
+        &&& pre_e.waiters@.len() > 0
+        &&& pre.threads.records@.contains_key(head)
+        &&& hr.placement is Some
+        &&& post == (CapKernel {
+            endpoints: post.endpoints,
+            threads: post.threads,
+            resched_ipis: post.resched_ipis,
+            ..pre
+        })
+        &&& Self::consumed_kept(pre, post)
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.boot_thread == pre.threads.boot_thread
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& post.threads.records@[head].addr() == pre.threads.records@[head].addr()
+        &&& post.threads.records@[head].is_init()
+        &&& same_thread_but_links(post.threads.records@[head].value(), ThreadRecord {
+            state: ThreadState::Runnable { core },
+            frame: new_frame,
+            saved: hr.saved,
+            save: Ghost(entry_frame_save(new_frame, hr.saved)),
+            queued: NONE,
+            wait_prev: NONE,
+            wait_next: NONE,
+            ..hr
+        })
+        &&& queued_at_back(&pre.threads.queues, &post.threads.queues, core as int, pl.priority as int, head)
+        &&& at_back_of_priority(&post.threads.queues, post.threads.records@, core as int, pl.priority, head)
+        &&& forall|u: usize| u != head && #[trigger] post.threads.records@.contains_key(u) ==> ({
+            let ur = pre.threads.records@[u].value();
+            let vr = post.threads.records@[u].value();
+            &&& post.threads.records@[u].addr() == pre.threads.records@[u].addr()
+            &&& post.threads.records@[u].is_init()
+            &&& same_thread_but_links(vr, ThreadRecord {
+                wait_prev: if pre_e.waiters@.len() > 1 && u == pre_e.waiters@[1] {
+                    NONE
+                } else {
+                    ur.wait_prev
+                },
+                ..ur
+            })
+        })
+        &&& post.endpoints.holders == pre.endpoints.holders
+        &&& post.endpoints.records@.dom() == pre.endpoints.records@.dom()
+        &&& forall|x: usize| x != e && #[trigger] post.endpoints.records@.contains_key(x)
+            ==> post.endpoints.records@[x] == pre.endpoints.records@[x]
+        &&& post.endpoints.records@[e].addr() == pre.endpoints.records@[e].addr()
+        &&& post.endpoints.records@[e].is_init()
+        &&& post_e == (QueueRecord {
+            head: if pre_e.waiters@.len() > 1 { pre_e.waiters@[1] } else { NONE },
+            tail: if pre_e.waiters@.len() > 1 { pre_e.tail } else { NONE },
+            waiters: Ghost(pre_e.waiters@.skip(1)),
+            word: new_word,
+            ..pre_e
+        })
+        &&& !post_e.waiters@.contains(head)
+        &&& post.resched_ipis@ == if pre.outranks_current(core as int, pl.priority) {
+            pre.resched_ipis@.push(core)
+        } else {
+            pre.resched_ipis@
+        }
+        &&& discharges(pre.view(), post.view(), root, Effect::Signal { cap: n, waiter: Some(head) })
+    }
+
+    /// What a signal through index i of the table at root did: when the notification's queue has a
+    /// live waiter at its head, woke that waiter with the word (including the badge) in its saved
+    /// frame and cleared the word; otherwise (no waiter or stale head), ORed the capability's badge
+    /// into the notification's word, waking none and discharging `Effect::Signal { cap: n, waiter: None }`.
     pub open spec fn signalled(pre: Self, post: Self, root: usize, i: usize) -> bool {
         let n = pre.tables.node_of(root, i);
         let e = pre.notification_at(root, i);
-        &&& Self::word_written(pre, post, e, pre.notification_record(root, i).word | pre.payload_of(n).badge as u64)
-        &&& discharges(pre.view(), post.view(), root, Effect::Signal { cap: n, waiter: None })
+        if pre.signal_has_live_waiter(e) {
+            Self::signal_woke(pre, post, root, i)
+        } else {
+            &&& Self::word_written(pre, post, e, pre.notification_record(root, i).word | pre.payload_of(n).badge as u64)
+            &&& discharges(pre.view(), post.view(), root, Effect::Signal { cap: n, waiter: None })
+        }
     }
 
     /// What a wait through index i of the table at root that returned `word` did: the word is the
@@ -336,11 +466,12 @@ impl CapKernel {
     }
 
     /// Signals the notification the capability at index i of the table at root names: ORs the
-    /// capability's badge into its word, which sets no waiter bit, a badge being below it. It never
-    /// blocks and returns only whether it signalled. The index comes from user space, so it can name
-    /// no notification capability or one without the send right, and a thread may wait on the
-    /// notification, which this signal does not yet wake: each is refused, changing nothing.
+    /// capability's badge into its word, and when the queue's head is a live waiter, writes the word
+    /// (bit 63 clear) into its saved frame as its wait's result, unlinks it, clears the word
+    /// (keeping bit 63 set only while another thread remains listed), and makes it Runnable on its
+    /// placement's core with the reschedule IPI rule. Never blocks; returns only whether it signalled.
     /// design/notification-word-reserves-the-waiter-bit/.
+    #[verifier::spinoff_prover]
     pub fn signal(&mut self, root: usize, i: usize) -> (ret: bool)
         requires
             old(self).wf(),
@@ -363,15 +494,39 @@ impl CapKernel {
             pre.lemma_notification_record(root, i, SEND_RIGHT);
         }
         let r = *PPtr::<QueueRecord>::from_usize(e).borrow(Tracked(self.endpoints.records.borrow().tracked_borrow(e)));
-        if r.head != NONE {
-            return false;
-        }
         let badge = payload.badge as u64;
         let w = r.word;
+        let head = r.head;
+        let live_head = if head != NONE {
+            proof {
+                assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies u != NONE by {
+                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
+                }
+                lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
+                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, head));
+            }
+            let hr = *PPtr::<ThreadRecord>::from_usize(head + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+                Tracked(self.threads.records.borrow().tracked_borrow(head)),
+            );
+            match hr.state {
+                ThreadState::Blocked { object } => if object == e { Some(hr) } else { None },
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(hr) = live_head {
+            self.signal_wake_head(root, i, n, e, badge, w, head, hr);
+            return true;
+        }
         proof {
             assert(badge < 0x8000_0000_0000_0000u64); // not a page size: NOTIFICATION_BADGE_LIMIT
-            assert(r.word & WAITER_BIT == 0) by {
-                assert(word_wf(r, pre.blocks.pages@[(e / PAGE_SZ) as int].object));
+            assert(word_wf(r, pre.blocks.pages@[(e / PAGE_SZ) as int].object));
+            if r.head != NONE {
+                assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies u != NONE by {
+                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
+                }
+                lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
             }
             assert((w | badge) & WAITER_BIT == w & WAITER_BIT) by (bit_vector)
                 requires
@@ -387,6 +542,457 @@ impl CapKernel {
             assert(discharges(pre.view(), post.view(), root, Effect::Signal { cap: n, waiter: None }));
         }
         true
+    }
+
+    /// Wakes the live waiter `hr` at the head of notification `e`: delivers `(w | badge) & SIGNAL_BITS`
+    /// into `hr.frame`, unlinks `head` from `e`'s queue, updates `e`'s word, and enqueues `head`
+    /// on its placement's core with a reschedule IPI if it outranks the current thread.
+    #[verifier::spinoff_prover]
+    fn signal_wake_head(
+        &mut self,
+        root: usize,
+        i: usize,
+        n: usize,
+        e: usize,
+        badge: u64,
+        w: u64,
+        head: usize,
+        hr: ThreadRecord,
+    )
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+            old(self).holds_notification(root, i, SEND_RIGHT),
+            n == old(self).tables.node_of(root, i),
+            e == old(self).notification_at(root, i),
+            badge == old(self).payload_of(n).badge as u64,
+            w == old(self).endpoints.records@[e].value().word,
+            head == old(self).endpoints.records@[e].value().head,
+            old(self).signal_has_live_waiter(e),
+            old(self).threads.records@.contains_key(head),
+            hr == old(self).threads.records@[head].value(),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            final(self).wf(),
+            Self::signal_woke(*old(self), *final(self), root, i),
+    {
+        let ghost pre = *self;
+        proof {
+            assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies u != NONE by {
+                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
+            }
+            lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
+            reveal(placed_running_wf);
+            reveal(placements_wf);
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, head));
+            assert(thread_placed_running(hr));
+        }
+        let (core, prio) = match hr.placement {
+            Some(pl) => (pl.core, pl.priority),
+            None => {
+                proof {
+                    assert(false);
+                }
+                (0, 0)
+            },
+        };
+        let outranks = match self.cores.get(core).current_thread {
+            None => true,
+            Some(o) => {
+                proof {
+                    reveal(current_wf);
+                    assert(runs(pre.cores@, core as int, o));
+                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, o));
+                }
+                let running = *PPtr::<ThreadRecord>::from_usize(o + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+                    Tracked(self.threads.records.borrow().tracked_borrow(o)),
+                );
+                let current_priority = match running.placement {
+                    Some(pl) => pl.priority,
+                    None => 0,
+                };
+                current_priority < prio
+            },
+        };
+        let delivered = (w | badge) & SIGNAL_BITS;
+        let out = wait_outcome_of(delivered);
+        let mut new_frame = hr.frame;
+        new_frame.write_outcome(out);
+        let new_head_record = ThreadRecord {
+            state: ThreadState::Runnable { core },
+            frame: new_frame,
+            saved: hr.saved,
+            save: Ghost(entry_frame_save(new_frame, hr.saved)),
+            queued: NONE,
+            wait_prev: NONE,
+            wait_next: NONE,
+            ..hr
+        };
+        proof {
+            assert(frame_save_wf(hr));
+            reveal(frame_save_matches);
+            if let FrameKind::Partial = hr.saved {
+                lemma_partial_frame_idempotent(hr.save@->Syscall_frame);
+                lemma_partial_outcome_written(hr.frame, out);
+            }
+            assert(frame_save_wf(new_head_record));
+        }
+        let next = hr.wait_next;
+        self.enqueue_and_write(core, prio, head, new_head_record);
+        let ghost mid1 = *self;
+        if next != NONE {
+            proof {
+                assert(thread_wf(&mid1.list, &mid1.threads, &mid1.blocks, next));
+            }
+            let ptr_next = PPtr::<ThreadRecord>::from_usize(next + THREAD_RECORD_PAGE * PAGE_SZ);
+            let tracked mut perm_next = self.threads.records.borrow_mut().tracked_remove(next);
+            let mut r_next = ptr_next.take(Tracked(&mut perm_next));
+            r_next.wait_prev = NONE;
+            ptr_next.put(Tracked(&mut perm_next), r_next);
+            proof {
+                self.threads.records.borrow_mut().tracked_insert(next, perm_next);
+            }
+        }
+        let ptr_e = PPtr::<QueueRecord>::from_usize(e);
+        let tracked mut perm_e = self.endpoints.records.borrow_mut().tracked_remove(e);
+        let r0 = ptr_e.take(Tracked(&mut perm_e));
+        let new_tail = if next == NONE { NONE } else { r0.tail };
+        let new_word = if next == NONE { 0 } else { WAITER_BIT };
+        let ghost new_waiters = r0.waiters@.skip(1);
+        ptr_e.put(Tracked(&mut perm_e), QueueRecord {
+            head: next,
+            tail: new_tail,
+            waiters: Ghost(new_waiters),
+            word: new_word,
+            ..r0
+        });
+        proof {
+            self.endpoints.records.borrow_mut().tracked_insert(e, perm_e);
+        }
+        self.resched_ipis = Ghost(if outranks { pre.resched_ipis@.push(core) } else { pre.resched_ipis@ });
+        proof {
+            let post = *self;
+            let r_pre = pre.endpoints.records@[e].value();
+            assert(r0 == r_pre);
+            assert(r_pre.waiters@.len() > 0);
+            assert((next == NONE) == (r_pre.waiters@.len() == 1));
+            assert(new_word == if r_pre.waiters@.len() > 1 { WAITER_BIT } else { 0u64 });
+            assert(post.threads.records@.dom() =~= mid1.threads.records@.dom());
+            assert(post.endpoints.records@.dom() =~= pre.endpoints.records@.dom());
+            assert(thread_wf(&mid1.list, &mid1.threads, &mid1.blocks, head));
+            assert(endpoint_wf(&pre.endpoints, &pre.blocks, e));
+            if next != NONE {
+                assert(thread_wf(&mid1.list, &mid1.threads, &mid1.blocks, next));
+            }
+            if let Some(o) = pre.cores@[core as int].current_thread {
+                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, o));
+            }
+            assert(outranks == pre.outranks_current(core as int, prio));
+            Self::lemma_signal_woke(pre, mid1, post, root, i);
+        }
+    }
+
+    /// Proves well-formedness, `signal_woke`, and reach discharge after `signal` wakes `e`'s head.
+    #[verifier::spinoff_prover]
+    proof fn lemma_signal_woke(pre: Self, mid1: Self, post: Self, root: usize, i: usize)
+        requires
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.holds_notification(root, i, SEND_RIGHT),
+            ({
+                let e = pre.notification_at(root, i);
+                let r0 = pre.endpoints.records@[e].value();
+                let head = r0.head;
+                let hr = pre.threads.records@[head].value();
+                let pl = hr.placement->Some_0;
+                let core = pl.core;
+                let prio = pl.priority;
+                let next = hr.wait_next;
+                let badge = pre.payload_of(pre.tables.node_of(root, i)).badge as u64;
+                let delivered = (r0.word | badge) & SIGNAL_BITS;
+                let new_frame = outcome_written(hr.frame, wait_outcome(delivered));
+                let new_word = if r0.waiters@.len() > 1 { WAITER_BIT } else { 0 };
+                &&& pre.signal_has_live_waiter(e)
+                &&& pre.threads.records@.contains_key(head)
+                &&& hr.placement is Some
+                &&& queues_wf(&mid1.threads.queues, mid1.threads.records@)
+                &&& threads_wf(&mid1.list, &mid1.tables, &mid1.threads, &mid1.blocks)
+                &&& queued_at_back(&pre.threads.queues, &mid1.threads.queues, core as int, prio as int, head)
+                &&& at_back_of_priority(&mid1.threads.queues, mid1.threads.records@, core as int, prio, head)
+                &&& mid1 == (CapKernel { threads: mid1.threads, resched_ipis: mid1.resched_ipis, ..pre })
+                &&& mid1.threads == (Threads { records: mid1.threads.records, queues: mid1.threads.queues, ..pre.threads })
+                &&& mid1.threads.records@.dom() == pre.threads.records@.dom()
+                &&& mid1.threads.records@[head].addr() == pre.threads.records@[head].addr()
+                &&& mid1.threads.records@[head].is_init()
+                &&& same_thread_but_links(mid1.threads.records@[head].value(), ThreadRecord {
+                    state: ThreadState::Runnable { core },
+                    frame: new_frame,
+                    saved: hr.saved,
+                    save: Ghost(entry_frame_save(new_frame, hr.saved)),
+                    queued: NONE,
+                    wait_prev: NONE,
+                    wait_next: NONE,
+                    ..hr
+                })
+                &&& forall|x: usize| x != head && #[trigger] mid1.threads.records@.contains_key(x)
+                    ==> same_record_perm_but_links(pre.threads.records@[x], mid1.threads.records@[x])
+                &&& post == (CapKernel { endpoints: post.endpoints, threads: post.threads, resched_ipis: post.resched_ipis, ..mid1 })
+                &&& post.threads == (Threads { records: post.threads.records, ..mid1.threads })
+                &&& post.threads.records@.dom() == mid1.threads.records@.dom()
+                &&& forall|x: usize| x != next && #[trigger] post.threads.records@.contains_key(x)
+                    ==> post.threads.records@[x] == mid1.threads.records@[x]
+                &&& next != NONE ==> {
+                    &&& mid1.threads.records@.contains_key(next)
+                    &&& post.threads.records@[next].addr() == mid1.threads.records@[next].addr()
+                    &&& post.threads.records@[next].is_init()
+                    &&& post.threads.records@[next].value() == (ThreadRecord { wait_prev: NONE, ..mid1.threads.records@[next].value() })
+                }
+                &&& post.endpoints == (Endpoints { records: post.endpoints.records, ..pre.endpoints })
+                &&& post.endpoints.records@.dom() == pre.endpoints.records@.dom()
+                &&& forall|x: usize| x != e && #[trigger] post.endpoints.records@.contains_key(x)
+                    ==> post.endpoints.records@[x] == pre.endpoints.records@[x]
+                &&& post.endpoints.records@[e].addr() == pre.endpoints.records@[e].addr()
+                &&& post.endpoints.records@[e].is_init()
+                &&& post.endpoints.records@[e].value() == (QueueRecord {
+                    head: next,
+                    tail: if next == NONE { NONE } else { r0.tail },
+                    waiters: Ghost(r0.waiters@.skip(1)),
+                    word: new_word,
+                    ..r0
+                })
+                &&& post.resched_ipis@ == if pre.outranks_current(core as int, prio) {
+                    pre.resched_ipis@.push(core)
+                } else {
+                    pre.resched_ipis@
+                }
+            }),
+        ensures
+            post.wf(),
+            Self::signal_woke(pre, post, root, i),
+    {
+        let n = pre.tables.node_of(root, i);
+        let e = pre.notification_at(root, i);
+        let r0 = pre.endpoints.records@[e].value();
+        let head = r0.head;
+        let hr = pre.threads.records@[head].value();
+        let pl = hr.placement->Some_0;
+        let core = pl.core;
+        let prio = pl.priority;
+        let next = hr.wait_next;
+        assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies u != NONE by {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
+        }
+        assert(endpoint_wf(&pre.endpoints, &pre.blocks, e));
+        lemma_waits_head(pre.endpoints.records@, pre.threads.records@, e);
+        assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+        assert(post.endpoints.records@.dom() =~= pre.endpoints.records@.dom());
+        if next != NONE {
+            assert(next != head);
+            assert(post.threads.records@[head] == mid1.threads.records@[head]);
+        }
+        lemma_waits_head_removed(pre.endpoints.records@, post.endpoints.records@, pre.threads.records@, post.threads.records@, e);
+        assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) && !(mid1.threads.records@[u].value().state is Runnable)
+            implies !(post.threads.records@[u].value().state is Runnable) by {
+            if u != next {
+                assert(post.threads.records@[u] == mid1.threads.records@[u]);
+            }
+        }
+        assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) && post.threads.records@[u].value().state is Runnable implies {
+            let r1 = mid1.threads.records@[u].value();
+            let r2 = post.threads.records@[u].value();
+            &&& mid1.threads.records@.contains_key(u)
+            &&& r2.state == r1.state
+            &&& r2.placement == r1.placement
+            &&& r2.process == r1.process
+            &&& r2.run_prev == r1.run_prev
+            &&& r2.run_next == r1.run_next
+        } by {
+            if u != next {
+                assert(post.threads.records@[u] == mid1.threads.records@[u]);
+            }
+        }
+        lemma_queues_same_wait(&mid1.threads.queues, mid1.threads.records@, post.threads.records@);
+        assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
+            implies thread_wf(&post.list, &post.threads, &post.blocks, u) by {
+            assert(thread_wf(&mid1.list, &mid1.threads, &mid1.blocks, u));
+            if u != next {
+                assert(post.threads.records@[u] == mid1.threads.records@[u]);
+            }
+        }
+        assert forall|x: usize| #[trigger] post.endpoints.records@.contains_key(x)
+            implies endpoint_wf(&post.endpoints, &post.blocks, x) by {
+            assert(endpoint_wf(&pre.endpoints, &pre.blocks, x));
+            if x == e {
+                if r0.waiters@.len() > 1 {
+                    assert(WAITER_BIT & WAITER_BIT != 0) by (compute_only);
+                } else {
+                    assert(0u64 & WAITER_BIT == 0) by (compute_only);
+                }
+            }
+        }
+        assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) && u != head implies {
+            &&& post.threads.records@[u].addr() == pre.threads.records@[u].addr()
+            &&& post.threads.records@[u].is_init()
+            &&& same_thread_but_links(post.threads.records@[u].value(), ThreadRecord {
+                wait_prev: if r0.waiters@.len() > 1 && u == r0.waiters@[1] {
+                    NONE
+                } else {
+                    pre.threads.records@[u].value().wait_prev
+                },
+                ..pre.threads.records@[u].value()
+            })
+        } by {
+            assert(same_record_perm_but_links(pre.threads.records@[u], mid1.threads.records@[u]));
+            if u != next {
+                assert(post.threads.records@[u] == mid1.threads.records@[u]);
+            }
+        }
+        assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies {
+            &&& post.threads.records@.contains_key(u)
+            &&& post.threads.records@[u].value().process == pre.threads.records@[u].value().process
+            &&& post.threads.records@[u].value().placement == pre.threads.records@[u].value().placement
+        } by {
+            assert(post.threads.records@.contains_key(u));
+        }
+        assert(placed_running_wf(post.threads.records@)) by {
+            reveal(placed_running_wf);
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
+                implies thread_placed_running(post.threads.records@[u].value()) by {
+                assert(thread_placed_running(pre.threads.records@[u].value()));
+            }
+        }
+        assert(current_wf(post.cores@, post.threads.records@)) by {
+            reveal(current_wf);
+            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
+            } by {
+                assert(runs(pre.cores@, d, x));
+                assert(x != head);
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let c = post.threads.records@[x].value().state->Running_core;
+                &&& c < NUM_CPUS
+                &&& post.cores@[c as int].current_thread == Some(x)
+            } by {
+                assert(x != head);
+                assert(pre.threads.records@.contains_key(x));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
+                implies post.threads.records@[x].value().state is Running by {
+                assert(pre.threads.records@.contains_key(x));
+                if x == head {
+                    reveal(placed_running_wf);
+                    assert(thread_placed_running(hr));
+                    assert(pre.threads.records@[x].value().pending_stop);
+                }
+            }
+        }
+        assert forall|d: int| 0 <= d < NUM_CPUS implies {
+            &&& #[trigger] post.cores@[d].current_thread == pre.cores@[d].current_thread
+            &&& post.cores@[d].space == pre.cores@[d].space
+        } by {
+            assert(post.cores@[d] == pre.cores@[d]);
+        }
+        assert(post.cores.wf());
+        assert(post.cores@.len() == pre.cores@.len());
+        lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+        lemma_placements_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|u: usize|
+            #[trigger] post.threads.records@.contains_key(u) && post.threads.records@[u].value().process is Some
+            implies pre.threads.records@.contains_key(u) by {}
+        assert forall|u: usize|
+            #[trigger] post.threads.records@.contains_key(u) && post.threads.records@[u].value().placement is Some
+            implies pre.threads.records@.contains_key(u) by {}
+        Self::lemma_queue_edit_wf(pre, post, 0);
+        assert(!post.endpoints.records@[e].value().waiters@.contains(head)) by {
+            reveal(waits_wf);
+            assert(wait_queue_wf(r0, pre.threads.records@, e));
+        }
+        assert(at_back_of_priority(&post.threads.queues, post.threads.records@, core as int, prio, head)) by {
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u)
+                && post.threads.records@[u].value().state == (ThreadState::Runnable { core })
+                && thread_priority(post.threads.records@[u].value()) == prio
+                && u != head
+                implies exists|k: int| 0 <= k < post.threads.queues.queue(core as int, prio as int).len() - 1
+                    && post.threads.queues.queue(core as int, prio as int)[k] == u by {
+                assert(mid1.threads.records@.contains_key(u));
+                if u != next {
+                    assert(post.threads.records@[u] == mid1.threads.records@[u]);
+                }
+            }
+        }
+        assert(Self::consumed_kept(pre, post));
+        Self::lemma_signal_woke_view(pre, post, root, i);
+    }
+
+    /// Proves that waking live head `head` of notification `e` through capability `n` keeps every
+    /// other view object unchanged, adds no waiter, and discharges `Effect::Signal { cap: n, waiter: Some(head) }`.
+    proof fn lemma_signal_woke_view(pre: Self, post: Self, root: usize, i: usize)
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            pre.root_live(root),
+            pre.holds_notification(root, i, SEND_RIGHT),
+            ({
+                let e = pre.notification_at(root, i);
+                let head = pre.endpoints.records@[e].value().head;
+                &&& pre.signal_has_live_waiter(e)
+                &&& pre.threads.records@.contains_key(head)
+                &&& post == (CapKernel { endpoints: post.endpoints, threads: post.threads, resched_ipis: post.resched_ipis, ..pre })
+                &&& post.threads.records@.dom() == pre.threads.records@.dom()
+                &&& !(post.threads.records@[head].value().state is Blocked)
+                &&& forall|u: usize| u != head && #[trigger] post.threads.records@.contains_key(u) ==> {
+                    let ur = pre.threads.records@[u].value();
+                    let vr = post.threads.records@[u].value();
+                    &&& vr.state == ur.state
+                    &&& vr.frame == ur.frame
+                }
+            }),
+        ensures
+            ({
+                let n = pre.tables.node_of(root, i);
+                let e = pre.notification_at(root, i);
+                let head = pre.endpoints.records@[e].value().head;
+                discharges(pre.view(), post.view(), root, Effect::Signal { cap: n, waiter: Some(head) })
+            }),
+    {
+        let n = pre.tables.node_of(root, i);
+        let e = pre.notification_at(root, i);
+        let head = pre.endpoints.records@[e].value().head;
+        let a = pre.view();
+        let b = post.view();
+        assert(b == (State { contents: b.contents, waiting: b.waiting, ..a }));
+        assert forall|o: ObjectId| #[trigger] State::changed(a, b, o) implies o == head by {
+            if o != head {
+                assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
+                if saved_registers(&pre.threads).contains_key(o) {
+                    assert(saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o]);
+                }
+                assert(contents_of(saved_registers(&post.threads), post.frames@, o)
+                    == contents_of(saved_registers(&pre.threads), pre.frames@, o));
+            }
+        }
+        assert forall|w: (ObjectId, ObjectId)| #[trigger] b.waiting.contains(w) implies a.waiting.contains(w) by {
+            assert(waits_on(&post.threads, w.1) == Some(w.0));
+            assert(w.1 != head);
+            assert(waits_on(&post.threads, w.1) == waits_on(&pre.threads, w.1));
+        }
+        assert(adds_no_waiter(a, b));
+        assert(unwaits(a, b));
+        pre.lemma_slot(root, i);
+        assert(SEND_RIGHT == right_bit(Right::Send)) by (compute_only);
+        assert(a.holds_right(root, n, Right::Send));
+        pre.lemma_endpoint_cap(n);
+        assert(a.names[n] == e);
+        assert(waits_on(&pre.threads, head) == Some(e));
+        assert(a.waiting.contains((e, head)));
+        assert(authorized(a, root, Effect::Signal { cap: n, waiter: Some(head) }));
+        lemma_unwaits_discharges(a, b, root, Effect::Signal { cap: n, waiter: Some(head) });
     }
 
     /// Waits from core `c` (with partial frame `frame` saved if blocking) on the notification the

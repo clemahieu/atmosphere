@@ -384,12 +384,33 @@ pub proof fn lemma_waits_head(queues: Map<usize, PointsTo<QueueRecord>>, threads
         forall|t: usize| #[trigger] threads.contains_key(t) ==> t != NONE,
     ensures
         (queues[e].value().head == NONE) == (queues[e].value().waiters@.len() == 0),
+        queues[e].value().head != NONE ==> {
+            let s = queues[e].value().waiters@;
+            let h = queues[e].value().head;
+            &&& s.len() > 0
+            &&& h == s[0]
+            &&& threads.contains_key(h)
+            &&& threads[h].value().queued == e
+            &&& threads[h].value().wait_prev == NONE
+            &&& (threads[h].value().wait_next == NONE <==> s.len() == 1)
+            &&& (threads[h].value().wait_next != NONE ==> {
+                let next = threads[h].value().wait_next;
+                &&& next == s[1]
+                &&& next != NONE
+                &&& next != h
+                &&& threads.contains_key(next)
+                &&& threads[next].value().queued == e
+            })
+        },
 {
     reveal(waits_wf);
     let s = queues[e].value().waiters@;
     assert(wait_queue_wf(queues[e].value(), threads, e));
     if s.len() > 0 {
         assert(waiter_linked(s, threads, e, 0));
+        if s.len() > 1 {
+            assert(waiter_linked(s, threads, e, 1));
+        }
     }
 }
 
@@ -642,6 +663,120 @@ pub proof fn lemma_waits_unlinked(
     }
 }
 
+/// Removing head thread `h = qa[q].value().head` from queue `q`'s wait queue, unlinking `h` and
+/// clearing `h`'s wait queue links and `Blocked` state, while every other thread keeps its wait
+/// queue links and is `Blocked` only as before, keeps `waits_wf`.
+pub proof fn lemma_waits_head_removed(
+    qa: Map<usize, PointsTo<QueueRecord>>,
+    qb: Map<usize, PointsTo<QueueRecord>>,
+    ta: Map<usize, PointsTo<ThreadRecord>>,
+    tb: Map<usize, PointsTo<ThreadRecord>>,
+    q: usize,
+)
+    requires
+        waits_wf(qa, ta),
+        qa.contains_key(q),
+        qa[q].value().head != NONE,
+        forall|u: usize| #[trigger] ta.contains_key(u) ==> u != NONE,
+        ({
+            let r0 = qa[q].value();
+            let h = r0.head;
+            let next = ta[h].value().wait_next;
+            &&& tb.dom() == ta.dom()
+            &&& forall|u: usize| u != h && u != next && #[trigger] tb.contains_key(u)
+                ==> keeps_wait(ta[u].value(), tb[u].value())
+            &&& tb[h].value().queued == NONE
+            &&& tb[h].value().wait_prev == NONE
+            &&& tb[h].value().wait_next == NONE
+            &&& !(tb[h].value().state is Blocked)
+            &&& (next != NONE ==> {
+                &&& tb[next].value().queued == ta[next].value().queued
+                &&& tb[next].value().wait_prev == NONE
+                &&& tb[next].value().wait_next == ta[next].value().wait_next
+                &&& (tb[next].value().state is Blocked ==> tb[next].value().state == ta[next].value().state)
+            })
+            &&& qb.dom() == qa.dom()
+            &&& forall|x: usize| x != q && #[trigger] qb.contains_key(x) ==> same_queue(qa[x].value(), qb[x].value())
+            &&& qb[q].value().head == next
+            &&& qb[q].value().tail == if next == NONE { NONE } else { r0.tail }
+            &&& qb[q].value().waiters@ == r0.waiters@.skip(1)
+        }),
+    ensures
+        waits_wf(qb, tb),
+{
+    reveal(waits_wf);
+    lemma_waits_head(qa, ta, q);
+    let r0 = qa[q].value();
+    let h = r0.head;
+    let s0 = r0.waiters@;
+    let s1 = s0.skip(1);
+    let next = ta[h].value().wait_next;
+    assert(s1.len() == s0.len() - 1);
+    assert(wait_queue_wf(qb[q].value(), tb, q)) by {
+        assert(s1.no_duplicates()) by {
+            assert forall|i: int, j: int| 0 <= i < j < s1.len() implies s1[i] != s1[j] by {
+                assert(0 <= i + 1 < j + 1 < s0.len());
+                assert(s0[i + 1] != s0[j + 1]);
+            }
+        }
+        assert forall|j: int| 0 <= j < s1.len() implies #[trigger] waiter_linked(s1, tb, q, j) by {
+            assert(waiter_linked(s0, ta, q, j + 1));
+            let u = s1[j];
+            assert(u == s0[j + 1]);
+            assert(u != h);
+            if j == 0 {
+                assert(u == s0[1] == next);
+                assert(next != NONE);
+            } else {
+                assert(u != next);
+                assert(keeps_wait(ta[u].value(), tb[u].value()));
+                if j + 1 < s1.len() {
+                    assert(s1[j + 1] == s0[j + 2]);
+                }
+            }
+        }
+        if s1.len() > 0 {
+            assert(s1.last() == s1[s1.len() - 1]);
+            assert(s0.last() == s0[s0.len() - 1]);
+        }
+    }
+    assert forall|x: usize| #[trigger] qb.contains_key(x) implies wait_queue_wf(qb[x].value(), tb, x) by {
+        if x != q {
+            assert(qa.contains_key(x));
+            assert(wait_queue_wf(qa[x].value(), ta, x));
+            let sx = qb[x].value().waiters@;
+            assert forall|j: int| 0 <= j < sx.len() implies #[trigger] waiter_linked(sx, tb, x, j) by {
+                assert(waiter_linked(sx, ta, x, j));
+                let u = sx[j];
+                assert(ta[u].value().queued == x);
+                assert(u != h && u != next);
+            }
+        }
+    }
+    assert forall|u: usize| #[trigger] tb.contains_key(u) && tb[u].value().queued != NONE implies {
+        &&& qb.contains_key(tb[u].value().queued)
+        &&& qb[tb[u].value().queued].value().waiters@.contains(u)
+    } by {
+        assert(u != h);
+        let qu = tb[u].value().queued;
+        assert(ta[u].value().queued == qu);
+        if qu == q {
+            let k = choose|k: int| 0 <= k < s0.len() && s0[k] == u;
+            assert(k > 0);
+            assert(s1[k - 1] == u);
+        } else {
+            assert(qb[qu].value().waiters@ == qa[qu].value().waiters@);
+        }
+    }
+    assert forall|u: usize| #[trigger] tb.contains_key(u) && tb[u].value().state is Blocked implies {
+        &&& tb[u].value().state->Blocked_object != NONE
+        &&& tb[u].value().queued == tb[u].value().state->Blocked_object
+    } by {
+        assert(u != h);
+        assert(ta[u].value().state is Blocked);
+    }
+}
+
 /// Appending thread `t` (currently `queued == NONE` and not `Blocked`) at the tail of `e`'s queue
 /// while setting `t`'s state to `Blocked { object: e }` keeps `waits_wf` across every queue and thread.
 pub proof fn lemma_waits_appended(
@@ -763,7 +898,7 @@ pub proof fn lemma_waits_appended(
 /// Preserves `queues_wf` across updates that only touch wait-queue fields or non-`Runnable` thread
 /// records.
 #[verifier::spinoff_prover]
-proof fn lemma_queues_same_wait(
+pub(crate) proof fn lemma_queues_same_wait(
     queues: &RunQueues,
     a: Map<usize, PointsTo<ThreadRecord>>,
     b: Map<usize, PointsTo<ThreadRecord>>,
@@ -1559,6 +1694,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
+        &&& post.spaces == pre.spaces
         &&& post.threads == pre.threads
         &&& post.processes == pre.processes
         &&& post.mappings == pre.mappings
@@ -1838,13 +1974,19 @@ impl CapKernel {
     /// TLB, the IOMMU model and the binding parents read those fields and the thread records, so
     /// they are re-established rather than left for congruence on a kernel value that differs.
     #[verifier::spinoff_prover]
-    proof fn lemma_queue_edit_wf(pre: Self, post: Self, c: int)
+    pub(crate) proof fn lemma_queue_edit_wf(pre: Self, post: Self, c: int)
         requires
             post.blocks.pages@.len() == pre.blocks.pages@.len(),
             pre.wf(),
             0 <= c < NUM_CPUS,
-            post == (CapKernel { endpoints: post.endpoints, threads: post.threads, cores: post.cores, ..pre }),
-            post.threads == (Threads { records: post.threads.records, ..pre.threads }),
+            post == (CapKernel {
+                endpoints: post.endpoints,
+                threads: post.threads,
+                cores: post.cores,
+                resched_ipis: post.resched_ipis,
+                ..pre
+            }),
+            post.threads == (Threads { records: post.threads.records, queues: post.threads.queues, ..pre.threads }),
             post.endpoints == (Endpoints { records: post.endpoints.records, ..pre.endpoints }),
             post.cores.wf(),
             post.cores@.len() == pre.cores@.len(),
@@ -2255,6 +2397,7 @@ impl CapKernel {
         }
     }
 
+    #[verifier::spinoff_prover]
     pub(crate) fn unlink_waiter(&mut self, t: usize)
         requires
             old(self).wf(),
@@ -2263,9 +2406,12 @@ impl CapKernel {
         ensures
             Self::unlinked_waiter(*old(self), *final(self), t),
     {
+        hide(CapKernel::wf);
         let ghost pre = *self;
         proof {
-            assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+            assert(thread_wf(&self.list, &self.threads, &self.blocks, t)) by {
+                reveal(CapKernel::wf);
+            }
         }
         let ptr_t = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ);
         let record = *ptr_t.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
@@ -2273,6 +2419,7 @@ impl CapKernel {
         if q == NONE {
             proof {
                 assert(Self::unlinked_waiter(pre, *self, t)) by {
+                    reveal(CapKernel::wf);
                     reveal(CapKernel::unlinked_waiter);
                 }
             }
@@ -2282,11 +2429,19 @@ impl CapKernel {
         let next = record.wait_next;
         let ghost idx: int;
         proof {
+            assert(waits_wf(pre.endpoints.records@, pre.threads.records@)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(threads_wf(&pre.list, &pre.tables, &pre.threads, &pre.blocks)) by {
+                reveal(CapKernel::wf);
+            }
             assert forall|u: usize| #[trigger] pre.threads.records@.contains_key(u) implies u != NONE by {
                 assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, u));
             }
             idx = lemma_waits_neighbors(pre.endpoints.records@, pre.threads.records@, t);
-            assert(endpoint_wf(&pre.endpoints, &pre.blocks, q));
+            assert(endpoint_wf(&pre.endpoints, &pre.blocks, q)) by {
+                reveal(CapKernel::wf);
+            }
             if prev != NONE {
                 assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, prev));
             }
