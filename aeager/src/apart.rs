@@ -165,7 +165,7 @@ proof fn lemma_untyped_page_index(memory: u64, i: int)
 
 /// Two windows at distinct level-4-aligned addresses below the lower half's end have distinct level-4
 /// entries, each the window's address over the level-4 span.
-proof fn lemma_windows_apart(window: usize, o_window: usize)
+pub(crate) proof fn lemma_windows_apart(window: usize, o_window: usize)
     requires
         window as int % SIZE_512G as int == 0,
         o_window as int % SIZE_512G as int == 0,
@@ -913,7 +913,7 @@ pub proof fn lemma_other_window_unclaimed(
 /// One step of a back in its window, accepted or refused, keeps every slot of `root`'s table
 /// naming the caller's own space: it either leaves the table unchanged or inserts a `Frame`
 /// capability, which writes no space.
-proof fn lemma_step_keeps_slot_names_own_space(
+pub(crate) proof fn lemma_step_keeps_slot_names_own_space(
     s: AcallStep,
     space: u64,
     untyped: u64,

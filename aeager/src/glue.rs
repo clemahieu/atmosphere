@@ -1382,7 +1382,7 @@ proof fn lemma_frame_blocks_keep_count(pre: CapKernel, post: CapKernel, root: us
 
 /// A step that leaves every table's view but root's as it was and every tracked page in its block
 /// keeps each block that no other table holds a capability of so.
-proof fn lemma_held_kept(pre: CapKernel, post: CapKernel, root: usize, x: BlockRef)
+pub(crate) proof fn lemma_held_kept(pre: CapKernel, post: CapKernel, root: usize, x: BlockRef)
     requires
         pre.wf(),
         forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t),

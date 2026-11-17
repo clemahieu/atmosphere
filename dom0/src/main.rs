@@ -542,97 +542,6 @@ fn rdtsc() -> u64 {
     }
 }
 
-/// How many free entries of the level 1 table at PATH_ADDRESS the timed maps fill, one page each.
-/// Entry 0 is the frame's existing mapping. Entries 1..=64 are free: revoke cleared them.
-const TIMED_MAPS: u64 = 64;
-
-/// The before number for a 4K map, one page per call, logs/cutover-before.log: 66926 TSC cycles per page.
-const MAP_TAIL: &[u8] = b"/p before 66926\n";
-
-/// Performance counters 0 to 3 as RDPMC reads them, where the kernel counts on them: cycles not in
-/// halt, retired instructions, data cache fills, and the fills that came from another CCX's cache.
-/// The kernel programs them at boot where CPUID offers the extended core counters, and dom0 tests the
-/// same bit first, since RDPMC faults in a process where the kernel did not; aarch64 has none here.
-fn counters() -> Option<[u64; 4]> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        /// CPUID Fn8000_0001 ECX bit 23, PerfCtrExtCore. AMD APM 2 §13.2.2.
-        const PERF_CTR_EXT_CORE: u32 = 1 << 23;
-        if core::arch::x86_64::__cpuid(0x8000_0001).ecx & PERF_CTR_EXT_CORE == 0 {
-            return None;
-        }
-        let mut counts = [0; 4];
-        for (n, count) in counts.iter_mut().enumerate() {
-            let lo: u32;
-            let hi: u32;
-            unsafe {
-                core::arch::asm!(
-                    "rdpmc",
-                    in("ecx") n as u32,
-                    out("eax") lo,
-                    out("edx") hi,
-                    options(nomem, nostack, preserves_flags)
-                );
-            }
-            *count = ((hi as u64) << 32) | lo as u64;
-        }
-        Some(counts)
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        None
-    }
-}
-
-/// The head of the line for each counter counters() reads, after the head of what was counted.
-const COUNTER_HEADS: [&[u8]; 4] = [b"cycles ", b"instructions ", b"fills ", b"ccx fills "];
-
-/// Whether, when both `before` and `after` are some, a line for each counter prints `what`, the
-/// counter's head, how far it moved from `before` to `after`, and `tail`; or both are none, and
-/// nothing is printed.
-fn print_counters(what: &[u8], before: Option<[u64; 4]>, after: Option<[u64; 4]>, tail: &[u8]) -> bool {
-    match (before, after) {
-        (Some(before), Some(after)) => (0..4).all(|n| {
-            let mut head = [0u8; 18];
-            head[..what.len()].copy_from_slice(what);
-            head[what.len()..what.len() + COUNTER_HEADS[n].len()].copy_from_slice(COUNTER_HEADS[n]);
-            print_count(&head[..what.len() + COUNTER_HEADS[n].len()], after[n] - before[n], tail)
-                == operation::STATUS_OK
-        }),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-/// The tail of a counter line for the timed maps: the count is over all TIMED_MAPS of them.
-const MAPS_COUNTER_TAIL: &[u8] = b"/64\n";
-const _: () = assert!(TIMED_MAPS == 64);
-
-/// Whether dom0 checks that an unassigned operation number returns unknown and times one 4K map of
-/// `frame` into each of TIMED_MAPS free entries of the level 1 table, printing its cycle count
-/// beside its before number and performance counter deltas where present. The counts are not
-/// checked against those numbers. The timed maps start at the page after PATH_ADDRESS, which
-/// already holds `frame`. The unassigned invocation itself is timed by `benchmarks_held`.
-fn timed_beside_before(frame: u64) -> bool {
-    let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
-    if unknown != operation::STATUS_UNKNOWN {
-        return false;
-    }
-    let maps_before = counters();
-    let start = rdtsc();
-    for k in 1..=TIMED_MAPS {
-        let address = PATH_ADDRESS + 4096 * k;
-        if operation::map(operation::ROOT_PROCESS_SLOT, address, 1, frame, 0) != operation::STATUS_OK {
-            return false;
-        }
-    }
-    let maps_cycles = rdtsc() - start;
-    let maps_after = counters();
-    print_count(b"4k ", maps_cycles / TIMED_MAPS, MAP_TAIL) == operation::STATUS_OK
-        && print_count(b"4k tsc ", maps_cycles, MAPS_COUNTER_TAIL) == operation::STATUS_OK
-        && print_counters(b"4k ", maps_before, maps_after, MAPS_COUNTER_TAIL)
-}
-
 /// Chunked console writer flushing 39-byte slices over `ROOT_CONSOLE_SLOT`.
 struct ConsoleWriter {
     buf: [u8; 39],
@@ -739,15 +648,14 @@ fn benchmarks_held() -> bool {
     console.flush().is_ok() && ok
 }
 
-/// The entry of the level 1 table at PATH_ADDRESS that the probe check maps, the one after the timed
-/// maps'.
-const PROBED_ENTRY: u64 = TIMED_MAPS + 1;
+/// The entry of the level 1 table at PATH_ADDRESS that the probe check maps. Entries 1..PROBED_ENTRY
+/// were revoked clear before this check runs.
+const PROBED_ENTRY: u64 = 65;
 
 /// The first of the operation::PROBE_MAX entries the probe check reads, which start at PROBED_ENTRY, so
 /// that no other entry they cover is present while it probes. A present entry may have its accessed bit
 /// set by a speculative or prefetching access no instruction asked for (Arm ARM D8.5.1.2, rules RLHQRX and
-/// ILLCCB), which the timed maps' entries below PROBED_ENTRY took on the Orange Pi when dom0 read the
-/// page above them; an entry that is not present has no bits for that to set.
+/// ILLCCB); an entry that is not present has no bits for that to set.
 const PROBE_FIRST: u64 = PROBED_ENTRY;
 
 /// The bit of each mask that is PROBED_ENTRY's.
@@ -1245,7 +1153,7 @@ const CHILD_OWN_ENTRY: u64 = 1;
 const SWITCH_BELOW_TOP: u64 = EAGER_BELOW_TOP - EAGER_PAGES as u64 * 4096;
 
 /// The execute right, which a frame dom0 runs from carries.
-const RIGHT_EXECUTE: u64 = 4;
+pub(crate) const RIGHT_EXECUTE: u64 = 4;
 
 /// The words of a thread's saved frame that hold its first three argument registers, in the order the
 /// table under Thread and process operations in design/syscall-abi-in-registers/ gives: rdi, rsi and
@@ -2786,7 +2694,6 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                                 && revoked_frame_held(caller, empty + 2, empty, empty + 3)
                                 && deleted_frames_held(caller, empty + 2, empty + 3)
                                 && derived_power_held(caller, empty + 2)
-                                && timed_beside_before(empty + 1)
                                 && probed_bits_held(empty + 1)
                                 && unmapped_bits_held(empty + 1)
                                 && remapped_other_frame_held(caller, untyped, empty + 2)

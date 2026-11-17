@@ -69,6 +69,7 @@ impl<S: SpanSource> Allocator<S> {
     pub fn source(&self) -> (r: &S)
         ensures
             *r == self.src(),
+        no_unwind
     {
         &self.src
     }
@@ -286,6 +287,7 @@ impl<S: SpanSource> Allocator<S> {
             final(self).live() == old(self).live(),
             old(self).held() <==> r is Some,
             r matches Some(token) ==> Some(token@) == old(self).token() && old(self).src_serves(token@),
+        no_unwind
     {
         proof {
             use_type_invariant(&*self);
@@ -305,6 +307,7 @@ impl<S: SpanSource> Allocator<S> {
             final(self).src_view() == old(self).src_view(),
             final(self).spares() == old(self).spares(),
             final(self).live() == old(self).live(),
+        no_unwind
     {
         proof {
             use_type_invariant(&*self);

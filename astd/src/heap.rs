@@ -114,6 +114,41 @@ pub fn install_with(make: impl FnOnce(Tracked<Caller>) -> AllocatorInit) -> bool
     store_allocator(make(caller))
 }
 
+#[inline(never)]
+fn take_global_allocator(slot: &mut Option<Allocator<Eager>>) -> bool {
+    let mut held = GLOBAL.held.lock();
+    let Some(allocator) = held.allocator.take() else {
+        return false;
+    };
+    *slot = Some(allocator);
+    true
+}
+
+#[inline(never)]
+fn restore_global_allocator(slot: &mut Option<Allocator<Eager>>) {
+    let allocator = slot.take().expect("taken allocator must remain in slot when f returns");
+    let mut held = GLOBAL.held.lock();
+    assert!(held.allocator.is_none(), "the heap's allocator was reinstalled while taken");
+    held.allocator = Some(allocator);
+}
+
+/// Moves the installed `Allocator<Eager>` out of `GLOBAL` into `slot` (which must hold `None`),
+/// runs `f(slot)` while `GLOBAL` holds no allocator, then moves the allocator back out of `slot`
+/// into `GLOBAL`. `f` must not allocate or deallocate through `GLOBAL` while running.
+#[inline(never)]
+pub fn with_taken_allocator<R>(
+    slot: &mut Option<Allocator<Eager>>,
+    f: impl FnOnce(&mut Option<Allocator<Eager>>) -> R,
+) -> Option<R> {
+    assert!(slot.is_none(), "taken allocator destination must be empty");
+    if !take_global_allocator(slot) {
+        return None;
+    }
+    let r = f(slot);
+    restore_global_allocator(slot);
+    Some(r)
+}
+
 fn alloc_in<S: SpanSource>(allocator: &mut Allocator<S>, layout: Layout) -> *mut u8 {
     match allocator.alloc(layout.size(), layout.align()) {
         Some((object, _bytes)) => object,

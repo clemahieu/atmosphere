@@ -35,6 +35,9 @@ use acall::step::{caller_alone, pages_kept, PageToken};
 use vstd::resource::Loc;
 #[cfg(verus_keep_ghost)]
 use verified::capability::map::address_path;
+use verified::capability::map::LOWER_HALF_END;
+#[cfg(verus_keep_ghost)]
+use verified::capability::map::frame_map_entry;
 #[cfg(verus_keep_ghost)]
 use verified::capability::mapping::SpacePath;
 use aheap::arch::*;
@@ -49,8 +52,8 @@ use verified::capability::mapping::space_mapping;
 use verified::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use verified::capability::operation::{
-    RETYPE_FRAME, RETYPE_LARGE_FRAME, RETYPE_PROCESS, RETYPE_TABLE_PAGE, RETYPE_THREAD, STATUS_OK,
-    STATUS_REFUSED,
+    RETYPE_FRAME, RETYPE_LARGE_FRAME, RETYPE_PROCESS, RETYPE_TABLE_PAGE,
+    RETYPE_THREAD, STATUS_OK, STATUS_REFUSED,
 };
 #[cfg(verus_keep_ghost)]
 use verified::capability::position::{spec_position, POSITION_INDEX_MASK};
@@ -66,12 +69,15 @@ use acall::step::slot_names_own_space;
 #[cfg(verus_keep_ghost)]
 use verified::capability::caller::view_frame;
 #[cfg(verus_keep_ghost)]
-use verified::capability::refs::{block_ref, block_refs};
+use verified::capability::refs::{block_dead, block_ref, block_refs, blocks_refs_changed};
 #[cfg(verus_keep_ghost)]
 use verified::capability::table::block_bytes;
 #[cfg(verus_keep_ghost)]
 use verified::define::PAGE_SZ;
+use verified::define::SIZE_512G;
 
+#[cfg(verus_keep_ghost)]
+use crate::apart::{lemma_step_keeps_slot_names_own_space, lemma_windows_apart, sources_apart};
 use crate::glue::*;
 use crate::invoke::GuardedCall;
 #[cfg(verus_keep_ghost)]
@@ -1945,6 +1951,22 @@ impl Record {
 
     spec fn addr_block(&self, addr: usize) -> int {
         (addr - self.window) as int / BLOCK_BYTES as int
+    }
+
+    proof fn lemma_frame_in_window(&self, k: int)
+        requires
+            self.inv(),
+            self.frames().contains_key(k),
+        ensures
+            0 <= k < self.pages,
+            0 <= frame_slot(self.slots as int, k) < TABLE_INDICES,
+            self.frames()[k].0 == frame_slot(self.slots as int, k) as usize,
+            self.frames()[k].1 is Some
+                ==> self.window <= self.frames()[k].1->0 && self.frames()[k].1->0 < self.window + WINDOW_BYTES,
+    {
+        reveal(slots_ok);
+        lemma_frame_slot(self.slots as int, k, k);
+        lemma_frame_slot(self.slots as int, k, self.pages - 1);
     }
 
     spec fn inv(&self) -> bool {
@@ -5919,6 +5941,7 @@ impl Eager {
     pub(crate) fn exec_space(&self) -> (r: u64)
         ensures
             r == self.space(),
+        no_unwind
     {
         self.record.space
     }
@@ -5939,6 +5962,73 @@ impl Eager {
             use_type_invariant(self);
         }
         self.spans.window
+    }
+
+    pub(crate) fn exec_apart_from(&self, other: &Eager) -> (r: bool)
+        ensures
+            r ==> {
+                &&& self.window() as int % SIZE_512G as int == 0
+                &&& self.window() + WINDOW_BYTES <= LOWER_HALF_END as usize
+                &&& other.window() as int % SIZE_512G as int == 0
+                &&& other.window() + WINDOW_BYTES <= LOWER_HALF_END as usize
+                &&& sources_apart(
+                    self.memory(),
+                    self.pages(),
+                    self.slots(),
+                    self.window(),
+                    other.memory(),
+                    other.pages(),
+                    other.slots(),
+                    other.window(),
+                )
+            },
+    {
+        proof {
+            use_type_invariant(self);
+            use_type_invariant(other);
+        }
+        if self.spans.window == other.spans.window
+            || self.spans.window == 0
+            || other.spans.window == 0
+            || self.spans.window % SIZE_512G != 0
+            || other.spans.window % SIZE_512G != 0
+            || self.spans.window > LOWER_HALF_END as usize - WINDOW_BYTES
+            || other.spans.window > LOWER_HALF_END as usize - WINDOW_BYTES
+        {
+            return false;
+        }
+        let self_start = self.record.memory / PAGE_BYTES as u64;
+        let other_start = other.record.memory / PAGE_BYTES as u64;
+        if self_start > u64::MAX - self.record.pages as u64
+            || other_start > u64::MAX - other.record.pages as u64
+        {
+            return false;
+        }
+        if self_start + self.record.pages as u64 > other_start
+            && other_start + other.record.pages as u64 > self_start
+        {
+            return false;
+        }
+        if self.record.pages > 0 && other.record.pages > 0 {
+            let self_first = frame_slot_at(self.record.slots, 0);
+            let self_last = frame_slot_at(self.record.slots, self.record.pages - 1);
+            let other_first = frame_slot_at(other.record.slots, 0);
+            let other_last = frame_slot_at(other.record.slots, other.record.pages - 1);
+            if self_last >= other_first && other_last >= self_first {
+                return false;
+            }
+            proof {
+                assert forall|i: int, j: int|
+                    0 <= i < self.pages() && 0 <= j < other.pages()
+                    implies frame_slot(self.slots() as int, i) != frame_slot(other.slots() as int, j) by {
+                    lemma_frame_slot(self.slots() as int, 0, i);
+                    lemma_frame_slot(self.slots() as int, i, self.pages() - 1);
+                    lemma_frame_slot(other.slots() as int, 0, j);
+                    lemma_frame_slot(other.slots() as int, j, other.pages() - 1);
+                };
+            }
+        }
+        true
     }
 
     pub(crate) fn exec_is_source_slot(&self, slot: usize) -> (r: bool)
@@ -6164,6 +6254,615 @@ impl Eager {
                 self.lemma_shrunk_step_serves(pre, post);
             },
         }
+    }
+
+    #[verifier::spinoff_prover]
+    proof fn lemma_step_retype_keeps_other_held(
+        &self,
+        other: &Eager,
+        s: AcallStep,
+        start: int,
+        count: nat,
+        u: u64,
+        kind: u64,
+        base: u64,
+        word: u64,
+        level: u64,
+    )
+        requires
+            self.record.inv(),
+            other.record.inv(),
+            s.valid(),
+            s.call == (AcallCall::Retype { untyped: u, kind, base, word, level }),
+            frames_held(s.pre, s.root, other.record.frames()),
+            acall_call_in_window(
+                s,
+                self.space(),
+                self.untyped(),
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                start,
+                count,
+            ),
+            sources_apart(
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                other.memory(),
+                other.pages(),
+                other.slots(),
+                other.window(),
+            ),
+        ensures
+            frames_held(s.post, s.root, other.record.frames()),
+    {
+        reveal(AcallStep::valid);
+        reveal(acall_call_in_window);
+        reveal(acall_setup_call);
+        reveal(slots_ok);
+        let frames = other.record.frames();
+        if kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME || kind == RETYPE_PROCESS
+            || kind == RETYPE_THREAD
+        {
+            assert(kind == RETYPE_FRAME);
+            let i = choose|i: int|
+                0 <= i < self.pages() && word as int == #[trigger] frame_slot(self.slots() as int, i);
+            assert forall|k: int| #[trigger] frames.contains_key(k) implies frames[k].0 != word as usize by {
+                assert(0 <= k < other.pages());
+                assert(0 <= frame_slot(other.slots() as int, k) < TABLE_INDICES);
+                assert(frames[k].0 == frame_slot(other.slots() as int, k) as usize);
+                assert(frame_slot(self.slots() as int, i) != frame_slot(other.slots() as int, k));
+            };
+        }
+        lemma_frames_retype_call(
+            s.pre,
+            s.post,
+            s.root,
+            frames,
+            kind,
+            u as usize,
+            base as usize,
+            word,
+            level as usize,
+            s.out,
+        );
+    }
+
+    #[verifier::spinoff_prover]
+    proof fn lemma_step_unmap_keeps_other_held(
+        &self,
+        other: &Eager,
+        s: AcallStep,
+        slot: u64,
+        va: u64,
+        level: u64,
+    )
+        requires
+            self.record.inv(),
+            other.record.inv(),
+            s.valid(),
+            s.call == (AcallCall::Unmap { slot, va, level }),
+            slot == self.space(),
+            frames_held(s.pre, s.root, other.record.frames()),
+            names_space(s.pre, s.root, self.space()),
+        ensures
+            frames_held(s.post, s.root, other.record.frames()),
+    {
+        reveal(AcallStep::valid);
+        reveal(CapKernel::unmap_contract_fields);
+        let pre = s.pre;
+        let post = s.post;
+        let root = s.root;
+        let frames = other.record.frames();
+        if pre.unmap_allowed(root, slot as usize, va, level) && s.out.status == STATUS_OK {
+            pre.lemma_page_span();
+            let v = pre.table_view(root);
+            assert(v[slot as usize].base == root);
+            let a = space_mapping(tree_of(&pre.table_pages, &pre.spaces), root);
+            let b = space_mapping(tree_of(&post.table_pages, &post.spaces), root);
+            let p = address_path(va);
+            let br = block_ref(&pre.blocks, a[p].addr / PAGE_SZ);
+            #[verifier::truncate]
+            let refs = (block_refs(&pre.blocks, br) - 1) as usize;
+            assert(b == a.remove(p));
+            CapKernel::lemma_counted_keeps_count(
+                pre,
+                post,
+                root,
+                br,
+                refs,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            );
+            lemma_frames_shrunk(pre, post, root, frames);
+        } else {
+            assert(post.blocks == pre.blocks);
+            assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+                == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
+            lemma_frames_same(pre, post, root, frames);
+        }
+    }
+
+    #[verifier::spinoff_prover]
+    proof fn lemma_frames_map_disjoint(
+        pre: CapKernel,
+        post: CapKernel,
+        root: usize,
+        space: u64,
+        va: u64,
+        level: u64,
+        from: usize,
+        page: usize,
+        out: Outcome,
+        frames: Map<int, (usize, Option<usize>)>,
+    )
+        requires
+            pre.wf(),
+            pre.sealed(root),
+            frames_held(pre, root, frames),
+            names_space(pre, root, space),
+            CapKernel::map_contract(pre, post, root, space as usize, va, level, from, page, out),
+            forall|k: int| #[trigger] frames.contains_key(k) ==> frames[k].0 != from,
+            forall|k: int|
+                #[trigger] frames.contains_key(k) && frames[k].1 is Some
+                    ==> address_path(frames[k].1->0 as u64) != address_path(va),
+        ensures
+            frames_held(post, root, frames),
+    {
+        if pre.map_allowed(root, space as usize, va, level, from, page) && out.status == STATUS_OK {
+            pre.lemma_page_span();
+            vstd::arithmetic::power2::lemma2_to64();
+            let v = pre.table_view(root);
+            assert(v[space as usize].base == root);
+            let a = space_mapping(tree_of(&pre.table_pages, &pre.spaces), root);
+            let b = space_mapping(tree_of(&post.table_pages, &post.spaces), root);
+            let p = address_path(va);
+            assert(v[from].kind is Frame);
+            vstd::arithmetic::power2::lemma_pow2_pos(v[from].order as nat);
+            assert((0usize as int) * PAGE_SZ < block_bytes(v[from].order));
+            pre.lemma_table_view(root, from);
+            pre.lemma_view_frame_counted(root, from, page);
+            let br = block_ref(&pre.blocks, view_frame(v[from], page));
+            assert(b == a.insert(p, frame_map_entry(view_frame(v[from], page), v[from].rights, level == 2)));
+            assert(blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) + 1) as usize,
+                block_dead(&pre.blocks, br),
+            ));
+            assert forall|k: int| #[trigger] frames.contains_key(k) implies frame_held(post, root, frames[k]) by {
+                assert(frame_held(pre, root, frames[k]));
+                assert(frames[k].0 != from);
+                if post.table_view(root).contains_key(frames[k].0) {
+                    assert(pre.table_view(root).contains_key(frames[k].0));
+                    lemma_slot_page(pre, root, frames[k].0);
+                    let x = block_ref(&pre.blocks, slot_page(pre, root, frames[k].0));
+                    assert(x != br);
+                    lemma_held_kept(pre, post, root, x);
+                    assert(block_ref(&post.blocks, slot_page(pre, root, frames[k].0)) == x);
+                    assert(block_refs(&post.blocks, x) == block_refs(&pre.blocks, x));
+                    if frames[k].1 is Some && b.contains_key(address_path(frames[k].1->0 as u64)) {
+                        assert(address_path(frames[k].1->0 as u64) != p);
+                        assert(a.contains_key(address_path(frames[k].1->0 as u64)));
+                    }
+                }
+            };
+            assert forall|k1: int, k2: int|
+                frames.contains_key(k1) && frames.contains_key(k2) && k1 != k2
+                    && post.table_view(root).contains_key(#[trigger] frames[k1].0)
+                    && post.table_view(root).contains_key(#[trigger] frames[k2].0)
+                implies block_ref(&post.blocks, slot_page(post, root, frames[k1].0))
+                    != block_ref(&post.blocks, slot_page(post, root, frames[k2].0)) by {
+                assert(frames.contains_key(k1) && frames.contains_key(k2));
+                lemma_slot_page(pre, root, frames[k1].0);
+                lemma_slot_page(pre, root, frames[k2].0);
+            };
+            assert forall|k: int, j: usize, p_idx: usize|
+                #[trigger] frames.contains_key(k) && post.table_view(root).contains_key(frames[k].0)
+                    && post.table_view(root).contains_key(j) && j != frames[k].0
+                    && post.table_view(root)[j].kind is Frame
+                    && (p_idx as int) * PAGE_SZ < block_bytes(post.table_view(root)[j].order)
+                implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(root)[j], p_idx))
+                    != block_ref(&post.blocks, slot_page(post, root, frames[k].0)) by {
+                assert(frames.contains_key(k));
+                lemma_slot_page(pre, root, frames[k].0);
+                pre.lemma_view_frame_counted(root, j, p_idx);
+                pre.lemma_view_frame_counted(root, frames[k].0, 0);
+            };
+        } else {
+            assert(post.blocks == pre.blocks);
+            assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+                == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
+            lemma_frames_same(pre, post, root, frames);
+        }
+    }
+
+    #[verifier::spinoff_prover]
+    proof fn lemma_acall_map_in_window(
+        &self,
+        s: AcallStep,
+        start: int,
+        count: nat,
+        slot: u64,
+        va: u64,
+        level: u64,
+        from: u64,
+        page: u64,
+    ) -> (i: int)
+        requires
+            self.record.inv(),
+            s.valid(),
+            s.call == (AcallCall::Map { slot, va, level, from, page }),
+            acall_call_in_window(
+                s,
+                self.space(),
+                self.untyped(),
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                start,
+                count,
+            ),
+            self.window() <= start,
+            start + count * PAGE_BYTES <= self.window() + WINDOW_BYTES,
+        ensures
+            s.pre.wf(),
+            s.pre.sealed(s.root),
+            slot == self.space(),
+            0 <= i < self.pages(),
+            from as int == frame_slot(self.slots() as int, i),
+            0 <= frame_slot(self.slots() as int, i) < TABLE_INDICES,
+            self.window() <= va && (va as int) < self.window() + WINDOW_BYTES,
+            CapKernel::map_contract(
+                s.pre,
+                s.post,
+                s.root,
+                slot as usize,
+                va,
+                level,
+                from as usize,
+                page as usize,
+                s.out,
+            ),
+    {
+        reveal(AcallStep::valid);
+        reveal(acall_call_in_window);
+        reveal(acall_setup_call);
+        reveal(slots_ok);
+        let i = choose|i: int|
+            0 <= i < self.pages() && from as int == #[trigger] frame_slot(self.slots() as int, i);
+        lemma_frame_slot(self.slots() as int, i, i);
+        lemma_frame_slot(self.slots() as int, i, self.pages() - 1);
+        assert(run_pages(start, count).contains(va as int));
+        i
+    }
+
+    #[verifier::spinoff_prover]
+    proof fn lemma_step_map_keeps_other_held(
+        &self,
+        other: &Eager,
+        s: AcallStep,
+        start: int,
+        count: nat,
+        slot: u64,
+        va: u64,
+        level: u64,
+        from: u64,
+        page: u64,
+    )
+        requires
+            self.record.inv(),
+            other.record.inv(),
+            other.record.window == other.window(),
+            s.valid(),
+            s.call == (AcallCall::Map { slot, va, level, from, page }),
+            frames_held(s.pre, s.root, other.record.frames()),
+            names_space(s.pre, s.root, self.space()),
+            acall_call_in_window(
+                s,
+                self.space(),
+                self.untyped(),
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                start,
+                count,
+            ),
+            sources_apart(
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                other.memory(),
+                other.pages(),
+                other.slots(),
+                other.window(),
+            ),
+            self.window() as int % SIZE_512G as int == 0,
+            self.window() + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            other.window() as int % SIZE_512G as int == 0,
+            other.window() + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            self.window() <= start,
+            start + count * PAGE_BYTES <= self.window() + WINDOW_BYTES,
+        ensures
+            frames_held(s.post, s.root, other.record.frames()),
+    {
+        let frames = other.record.frames();
+        let i = self.lemma_acall_map_in_window(s, start, count, slot, va, level, from, page);
+        lemma_window_level4(self.window(), va as int);
+        lemma_windows_apart(self.window(), other.window());
+        assert forall|k: int| #[trigger] frames.contains_key(k) implies frames[k].0 != from as usize by {
+            other.record.lemma_frame_in_window(k);
+            assert(frame_slot(self.slots() as int, i) != frame_slot(other.slots() as int, k));
+        };
+        assert forall|k: int|
+            #[trigger] frames.contains_key(k) && frames[k].1 is Some
+                implies address_path(frames[k].1->0 as u64) != address_path(va) by {
+            other.record.lemma_frame_in_window(k);
+            let addr = frames[k].1->0;
+            lemma_window_level4(other.window(), addr as int);
+            assert(address_path(addr as u64).l4 != address_path(va).l4);
+        };
+        Self::lemma_frames_map_disjoint(
+            s.pre,
+            s.post,
+            s.root,
+            self.space(),
+            va,
+            level,
+            from as usize,
+            page as usize,
+            s.out,
+            frames,
+        );
+    }
+
+    /// One `back` step of `self` in its window keeps every frame `other` holds when their frame
+    /// slots and windows are apart and `self.space()` names the caller's own space before the step.
+    #[verifier::spinoff_prover]
+    proof fn lemma_step_keeps_other_held(
+        &self,
+        other: &Eager,
+        s: AcallStep,
+        start: int,
+        count: nat,
+    )
+        requires
+            self.record.inv(),
+            other.record.inv(),
+            other.record.window == other.window(),
+            s.valid(),
+            frames_held(s.pre, s.root, other.record.frames()),
+            names_space(s.pre, s.root, self.space()),
+            acall_call_in_window(
+                s,
+                self.space(),
+                self.untyped(),
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                start,
+                count,
+            ),
+            sources_apart(
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                other.memory(),
+                other.pages(),
+                other.slots(),
+                other.window(),
+            ),
+            self.window() as int % SIZE_512G as int == 0,
+            self.window() + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            other.window() as int % SIZE_512G as int == 0,
+            other.window() + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            self.window() <= start,
+            start + count * PAGE_BYTES <= self.window() + WINDOW_BYTES,
+        ensures
+            frames_held(s.post, s.root, other.record.frames()),
+    {
+        reveal(AcallStep::valid);
+        reveal(acall_call_in_window);
+        reveal(acall_setup_call);
+        reveal(CapKernel::inspect_contract_fields);
+        reveal(CapKernel::link_contract_fields);
+        let pre = s.pre;
+        let post = s.post;
+        let root = s.root;
+        let frames = other.record.frames();
+        match s.call {
+            AcallCall::Retype { untyped: u, kind, base, word, level } => {
+                self.lemma_step_retype_keeps_other_held(other, s, start, count, u, kind, base, word, level);
+            },
+            AcallCall::Inspect { .. } => {
+                CapKernel::lemma_views_same(pre, post);
+                assert(post.blocks == pre.blocks);
+                assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+                    == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
+                lemma_frames_same(pre, post, root, frames);
+            },
+            AcallCall::Link { .. } => {
+                assert(post.blocks == pre.blocks);
+                assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+                    == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
+                lemma_frames_same(pre, post, root, frames);
+            },
+            AcallCall::Unmap { slot, va, level } => {
+                self.lemma_step_unmap_keeps_other_held(other, s, slot, va, level);
+            },
+            AcallCall::Map { slot, va, level, from, page } => {
+                self.lemma_step_map_keeps_other_held(other, s, start, count, slot, va, level, from, page);
+            },
+        }
+    }
+
+    proof fn lemma_steps_keep_other_held_upto(
+        &self,
+        other: &Eager,
+        init: CapKernel,
+        root: usize,
+        steps: Seq<AcallStep>,
+        n: int,
+        start: int,
+        count: nat,
+    )
+        requires
+            self.record.inv(),
+            other.record.inv(),
+            other.record.window == other.window(),
+            0 <= n <= steps.len(),
+            init.wf(),
+            init.sealed(root),
+            init.processes.records@.contains_key(root),
+            frames_held(init, root, other.record.frames()),
+            names_space(init, root, self.space()),
+            names_space(init, root, other.space()),
+            steps.len() > 0 ==> CapKernel::rely(init, steps[0].pre, root),
+            forall|k: int| 0 <= k < steps.len() ==> (#[trigger] steps[k]).root == root && steps[k].valid(),
+            forall|j: int, k: int|
+                0 <= j && k == j + 1 && k < steps.len() ==> CapKernel::rely(
+                    (#[trigger] steps[j]).post,
+                    (#[trigger] steps[k]).pre,
+                    root,
+                ),
+            forall|k: int| 0 <= k < steps.len() ==> acall_call_in_window(
+                #[trigger] steps[k],
+                self.space(),
+                self.untyped(),
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                start,
+                count,
+            ),
+            sources_apart(
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                other.memory(),
+                other.pages(),
+                other.slots(),
+                other.window(),
+            ),
+            self.window() as int % SIZE_512G as int == 0,
+            self.window() + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            other.window() as int % SIZE_512G as int == 0,
+            other.window() + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            self.window() <= start,
+            start + count * PAGE_BYTES <= self.window() + WINDOW_BYTES,
+        ensures
+            ({
+                let st = if n == 0 { init } else { steps[n - 1].post };
+                &&& frames_held(st, root, other.record.frames())
+                &&& names_space(st, root, self.space())
+                &&& names_space(st, root, other.space())
+            }),
+        decreases n,
+    {
+        reveal(AcallStep::valid);
+        if n > 0 {
+            self.lemma_steps_keep_other_held_upto(other, init, root, steps, n - 1, start, count);
+            let prev = if n == 1 { init } else { steps[n - 2].post };
+            let last = steps[n - 1];
+            assert(last.valid());
+            lemma_frames_rely(prev, last.pre, root, other.record.frames());
+            lemma_space_rely(prev, last.pre, root, self.space());
+            lemma_space_rely(prev, last.pre, root, other.space());
+            self.lemma_step_keeps_other_held(other, last, start, count);
+            lemma_step_keeps_slot_names_own_space(
+                last,
+                self.space(),
+                self.untyped(),
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                start,
+                count,
+            );
+            assert(slot_names_own_space(last.pre, root, self.space() as usize));
+            assert(slot_names_own_space(last.pre, root, other.space() as usize));
+        }
+    }
+
+    /// `back` steps of `self` preserve `other.serves(post)` when `self` and `other` are apart over
+    /// `SIZE_512G`-aligned lower-half windows and `self.space()` named the caller's own space.
+    pub(crate) proof fn lemma_steps_keep_other_serves(
+        tracked &self,
+        tracked other: &Eager,
+        pre: Caller,
+        post: Caller,
+        steps: Seq<AcallStep>,
+        start: int,
+        count: nat,
+    )
+        requires
+            pre.wf(),
+            own_process(pre),
+            pre.pages_wf(),
+            names_own_space(pre, self.space()),
+            other.serves(pre),
+            post.wf(),
+            own_process(post),
+            post.pages_wf(),
+            post.pages_id() == pre.pages_id(),
+            acall_steps(pre, post, steps),
+            forall|k: int| 0 <= k < steps.len() ==> acall_call_in_window(
+                #[trigger] steps[k],
+                self.space(),
+                self.untyped(),
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                start,
+                count,
+            ),
+            sources_apart(
+                self.memory(),
+                self.pages(),
+                self.slots(),
+                self.window(),
+                other.memory(),
+                other.pages(),
+                other.slots(),
+                other.window(),
+            ),
+            self.window() as int % SIZE_512G as int == 0,
+            self.window() + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            other.window() as int % SIZE_512G as int == 0,
+            other.window() + WINDOW_BYTES <= LOWER_HALF_END as usize,
+            self.window() <= start,
+            start + count * PAGE_BYTES <= self.window() + WINDOW_BYTES,
+        ensures
+            other.serves(post),
+    {
+        use_type_invariant(self);
+        use_type_invariant(other);
+        reveal(acall_steps);
+        self.lemma_steps_keep_other_held_upto(
+            other,
+            pre.kernel(),
+            pre.root(),
+            steps,
+            steps.len() as int,
+            start,
+            count,
+        );
+        if steps.len() > 0 {
+            assert(steps.last() == steps[steps.len() - 1]);
+        }
+        other.lemma_serves_parts(pre, post);
     }
 }
 

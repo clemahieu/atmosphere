@@ -113,7 +113,7 @@ const fn child_slot(index: usize) -> u64 {
 }
 
 #[inline]
-const fn align_up(value: u64, align: u64) -> u64 {
+pub(crate) const fn align_up(value: u64, align: u64) -> u64 {
     (value + align - 1) & !(align - 1)
 }
 
@@ -140,7 +140,7 @@ fn find_gigabyte_untyped() -> Option<(u64, operation::Capability)> {
 }
 
 #[inline]
-fn retype_process(untyped: u64, base: u64, destination: u64) -> u64 {
+pub(crate) fn retype_process(untyped: u64, base: u64, destination: u64) -> u64 {
     // Process creation allocates an order-3 block and updates capability tables only.
     operation::status(unsafe {
         operation::invoke(
@@ -152,7 +152,7 @@ fn retype_process(untyped: u64, base: u64, destination: u64) -> u64 {
 }
 
 #[inline]
-fn retype_thread(untyped: u64, base: u64, destination: u64, process: u64) -> u64 {
+pub(crate) fn retype_thread(untyped: u64, base: u64, destination: u64, process: u64) -> u64 {
     // Thread creation allocates an order-1 block bound to `process`, changing no address space.
     operation::status(unsafe {
         operation::invoke(
@@ -170,14 +170,14 @@ fn destroy_cap(slot: u64) -> u64 {
 }
 
 #[inline]
-fn place_thread(thread: u64, core: u64, priority: u64) -> u64 {
+pub(crate) fn place_thread(thread: u64, core: u64, priority: u64) -> u64 {
     operation::status(unsafe {
         operation::invoke(operation::PLACE, thread, [core, priority, 0, 0, 0])
     })
 }
 
 #[inline]
-fn start_thread(thread: u64) -> u64 {
+pub(crate) fn start_thread(thread: u64) -> u64 {
     operation::status(unsafe { operation::invoke(operation::START, thread, [0; 5]) })
 }
 
@@ -196,7 +196,7 @@ fn read_window(thread: u64, index: u64) -> Result<[u64; 4], u64> {
     }
 }
 
-fn set_frame_word(thread: u64, word: u64, value: u64) -> u64 {
+pub(crate) fn set_frame_word(thread: u64, word: u64, value: u64) -> u64 {
     match read_window(thread, word & !3) {
         Ok(mut words) => {
             words[(word & 3) as usize] = value;
@@ -212,7 +212,7 @@ fn set_frame_word(thread: u64, word: u64, value: u64) -> u64 {
     }
 }
 
-fn stopped(thread: u64) -> bool {
+pub(crate) fn stopped(thread: u64) -> bool {
     let mut again = 0;
     loop {
         match suspend_thread(thread) {
