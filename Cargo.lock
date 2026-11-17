@@ -162,6 +162,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "apacket"
+version = "0.1.0"
+dependencies = [
+ "awire",
+ "vstd",
+]
+
+[[package]]
 name = "argon2"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

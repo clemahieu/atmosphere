@@ -601,6 +601,7 @@ VERIFIED_CRATES = (
     "pager-policy/**",
     "adivider/**",
     "awire/**",
+    "apacket/**",
     "asys/**",
 )
 BOUNDARY_CRATES = tuple(dict.fromkeys((
@@ -643,6 +644,7 @@ WORKSPACE_CRATES = tuple(dict.fromkeys((
     "pager-policy/**",
     "adivider/**",
     "awire/**",
+    "apacket/**",
     "file-service/**",
     "boot-host-tests/**",
 )))
@@ -657,6 +659,7 @@ WORKSPACE_MANIFESTS = (
     "aheap/Cargo.toml",
     "aloader/Cargo.toml",
     "amailbox/Cargo.toml",
+    "apacket/Cargo.toml",
     "aring/Cargo.toml",
     "astd/Cargo.toml",
     "asys/Cargo.toml",

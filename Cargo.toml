@@ -26,6 +26,7 @@ members = [
   "aeager",
   "acall",
   "awire",
+  "apacket",
 ]
 
 [workspace.package]

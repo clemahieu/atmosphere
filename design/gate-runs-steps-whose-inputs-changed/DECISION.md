@@ -20,10 +20,10 @@ confidence: high
    - `TOOLCHAIN_PINS`: `("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/toolchain.py")` because workspace manifests, crate lock versions, the pinned `vstd` revision (checked against `../verus`), the Rust toolchain and `rust-src` sysroot, and the Verus environment the tools derive govern builds, verification, and boots.
 
    Using shorthand constants:
-   - `VERIFIED_CRATES` = the crates carrying `[package.metadata.atmosphere] verified = true` (`kernel/verified/**`, `aheap/**`, `acall/**`, `aeager/**`, `aring/**`, `amailbox/**`, `afanin/**`, `pager-policy/**`, `adivider/**`, `awire/**`) plus their non-dev workspace dependency `asys/**`.
+   - `VERIFIED_CRATES` = the crates carrying `[package.metadata.atmosphere] verified = true` (`kernel/verified/**`, `aheap/**`, `acall/**`, `aeager/**`, `aring/**`, `amailbox/**`, `afanin/**`, `pager-policy/**`, `adivider/**`, `awire/**`, `apacket/**`) plus their non-dev workspace dependency `asys/**`.
    - `BOUNDARY_CRATES` = the boundary crates (`kernel/**`, `dom0/**`, `astd/**`), all their transitive workspace dependencies (`abench/**`, `acontext/**`, `asys/**`, `kernel-logger/**`, `machine/**`, `ns16550a/**`), and all verified crates (`VERIFIED_CRATES`).
    - `IMAGE_CRATES` = every crate linked by the boot images (`aloader`, `kernel`, `dom0`, `user/hello`) plus their transitive workspace dependencies and target configs: `aloader/**`, `aelf/**`, `kernel/**`, `dom0/**`, `user/hello/**`, `user/.cargo/**`, `user/*-unknown-aloader.json`, `astd/**`, `acall/**`, `aeager/**`, `aheap/**`, `asys/**`, `kernel-logger/**`, `machine/**`, `ns16550a/**`, `abench/**`, `acontext/**`, `kernel/verified/**`. (Note that `kernel/**` covers `kernel/.cargo/**`, `kernel/src/*.json`, `kernel/src/logo.txt`, and `kernel/verified/**`.)
-   - `WORKSPACE_CRATES` = every workspace member in `Cargo.toml` (`IMAGE_CRATES` plus `aring/**`, `amailbox/**`, `afanin/**`, `pager-policy/**`, `adivider/**`, `awire/**`, `file-service/**`, `boot-host-tests/**`).
+   - `WORKSPACE_CRATES` = every workspace member in `Cargo.toml` (`IMAGE_CRATES` plus `aring/**`, `amailbox/**`, `afanin/**`, `pager-policy/**`, `adivider/**`, `awire/**`, `apacket/**`, `file-service/**`, `boot-host-tests/**`).
 
    Each of the 28 steps declares:
 
