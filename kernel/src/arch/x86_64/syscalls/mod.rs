@@ -55,7 +55,9 @@ const _: () = {
     assert!(user::PLACE == operation::OPERATION_PLACE);
     assert!(user::START == operation::OPERATION_START);
     assert!(user::SUSPEND == operation::OPERATION_SUSPEND);
+    assert!(user::PRESENCE == operation::OPERATION_PRESENCE);
     assert!(user::PROBE_MAX == verified::capability::probe::PROBE_MAX);
+    assert!(user::PRESENCE_MAX == verified::capability::presence::PRESENCE_MAX);
     assert!(user::RETYPE_FRAME == operation::RETYPE_FRAME);
     assert!(user::RETYPE_LARGE_FRAME == operation::RETYPE_LARGE_FRAME);
     assert!(user::RETYPE_TABLE_PAGE == operation::RETYPE_TABLE_PAGE);

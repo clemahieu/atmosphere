@@ -361,13 +361,15 @@ proof fn lemma_aligned(b: usize)
 }
 
 /// The address of the first page under entry l4 of a space's level 4 table, for l4 in the lower half:
-/// it names an entry at level 1 and at level 4, and its path is l4 with zeroes below.
-proof fn lemma_top_entry_address(l4: usize)
+/// it names an entry at every level, and its path is l4 with zeroes below.
+pub proof fn lemma_top_entry_address(l4: usize)
     requires
         l4 < ENTRIES / 2,
     ensures
         l4 * SIZE_512G < LOWER_HALF_END,
         names_entry((l4 * SIZE_512G) as u64, 1),
+        names_entry((l4 * SIZE_512G) as u64, 2),
+        names_entry((l4 * SIZE_512G) as u64, 3),
         names_entry((l4 * SIZE_512G) as u64, 4),
         address_path((l4 * SIZE_512G) as u64) == (SpacePath { l4, l3: 0, l2: 0, l1: 0 }),
 {

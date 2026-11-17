@@ -35,6 +35,9 @@ pub mod notification;
 pub mod operation;
 pub mod position;
 pub mod power;
+pub mod presence;
+#[cfg(verus_keep_ghost)]
+pub mod presence_witness;
 pub mod probe;
 pub mod process;
 pub mod reach;

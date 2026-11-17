@@ -28,6 +28,7 @@ use crate::capability::list::NODE_SPACE;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::space_mapping;
 use crate::capability::position::*;
+use crate::capability::presence::*;
 use crate::capability::probe::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::process::PROCESS_ORDER;
@@ -131,6 +132,7 @@ pub proof fn lemma_revoke_bounds_the_operations()
         crate::capability::console::PRINT_BYTES <= INVOKE_REVOKE_STEPS,
         crate::capability::power::POWER_OFF_STEPS <= INVOKE_REVOKE_STEPS,
         crate::capability::inspect::INSPECT_STEPS <= INVOKE_REVOKE_STEPS,
+        PRESENCE_STEPS <= INVOKE_REVOKE_STEPS,
         ACKNOWLEDGE_STEPS <= ENTRY_STEPS,
         crate::capability::switch::TICK_STEPS <= ENTRY_STEPS,
 {
@@ -216,6 +218,7 @@ pub const OPERATION_WRITE_REGISTERS: u64 = 20;
 pub const OPERATION_PLACE: u64 = 21;
 pub const OPERATION_START: u64 = 22;
 pub const OPERATION_SUSPEND: u64 = 23;
+pub const OPERATION_PRESENCE: u64 = 24;
 
 /// Retype's kind in argument 1 for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
@@ -292,6 +295,7 @@ pub enum Operation {
     Place,
     Start,
     Suspend,
+    Presence,
 }
 
 impl Operation {
@@ -320,6 +324,7 @@ impl Operation {
             Operation::Place => OPERATION_PLACE,
             Operation::Start => OPERATION_START,
             Operation::Suspend => OPERATION_SUSPEND,
+            Operation::Presence => OPERATION_PRESENCE,
         }
     }
 }
@@ -368,6 +373,7 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_PLACE => Some(Operation::Place),
         OPERATION_START => Some(Operation::Start),
         OPERATION_SUSPEND => Some(Operation::Suspend),
+        OPERATION_PRESENCE => Some(Operation::Presence),
         _ => None,
     };
     proof {
@@ -407,6 +413,19 @@ pub fn probe_outcome(r: Probed) -> (ret: Outcome)
         result_4: if r.dirty_maintained { 1 } else { 0 },
         result_5: 0,
     }
+}
+
+/// The outcome of a presence read: ok, with the present mask in result 1 and the leaf mask in result 2.
+pub open spec fn presented(r: Presence) -> Outcome {
+    Outcome { status: STATUS_OK, result_1: r.present, result_2: r.leaves, result_3: 0, result_4: 0, result_5: 0 }
+}
+
+/// The outcome of a presence read, as presented says.
+pub fn presence_outcome(r: Presence) -> (ret: Outcome)
+    ensures
+        ret == presented(r),
+{
+    Outcome { status: STATUS_OK, result_1: r.present, result_2: r.leaves, result_3: 0, result_4: 0, result_5: 0 }
 }
 
 /// What an unmap's outcome says, with the word it read: the accessed and dirty bits in results 1 and 2,
@@ -602,8 +621,9 @@ impl CapKernel {
     /// operation that leaves the kernel unchanged: for print, ok exactly when the slot holds a console
     /// capability and refused otherwise; for power-off, ok exactly when the slot holds a power capability
     /// and refused otherwise; for inspect, its outcome at the position the slot's word names, and
-    /// refused for a word that names none; for read registers, spec_read_registers; refused for every
-    /// operation not wired yet;
+    /// refused for a word that names none; for read registers, spec_read_registers; for presence, the
+    /// masks spec_presence reads, over the address in argument 1, the level in argument 2 and the count in
+    /// argument 3, and refused when it reads none; refused for every operation not wired yet;
     /// and unknown for a number no operation has. Print's words are arguments 1 to 5 and power-off's
     /// word is argument 1, as design/syscall-abi-in-registers/ places them; neither decides the status.
     /// The predicates those operations ensure are conjuncts of spec_outcome_carried, which is the arm:
@@ -623,13 +643,17 @@ impl CapKernel {
                 None => status_only(STATUS_REFUSED),
             },
             Some(Operation::ReadRegisters) => self.spec_read_registers(root, frame),
+            Some(Operation::Presence) => match self.spec_presence(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3)) {
+                Some(r) => presented(r),
+                None => status_only(STATUS_REFUSED),
+            },
             Some(_) => status_only(STATUS_REFUSED),
             None => status_only(STATUS_UNKNOWN),
         }
     }
 
     /// The last arm of invoked. The kernel is unchanged and the outcome is spec_outcome, and print,
-    /// power-off, inspect and read registers call here the predicates their ensures call, as conjuncts,
+    /// power-off, inspect, read registers and presence call here the predicates their ensures call, as conjuncts,
     /// so the arm's value depends on each of them.
     /// design/invoked-arm-is-the-operation-postcondition/. The discharge of an unchanged kernel is this
     /// kernel with itself; inspect's payload is the one the position holds, and the frame read registers
@@ -670,6 +694,11 @@ impl CapKernel {
                 };
                 &&& pre.read_registers_answered(root, i, saved)
                 &&& pre.read_registers_done(root, i, saved)
+            },
+            Some(Operation::Presence) => {
+                let (slot, va, level, count) = (frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3));
+                &&& pre.presence_read(root, slot, va, level, count, pre.spec_presence(root, slot, va, level, count))
+                &&& discharges(pre.view(), pre.view(), root, Effect::Local)
             },
             _ => true,
         }
@@ -775,6 +804,9 @@ impl CapKernel {
             },
             Some(Operation::ReadRegisters) => {
                 pre.lemma_read_registers_carried(root, frame.slot() as usize);
+            },
+            Some(Operation::Presence) => {
+                pre.lemma_presence_read(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3));
             },
             _ => {},
         }
@@ -2121,6 +2153,26 @@ impl CapKernel {
     {
     }
 
+    /// A presence read reaches presence: the kernel is unchanged; refused exactly when
+    /// can_read_presence fails over the address in argument 1, the level in argument 2 and the count in
+    /// argument 3; ok when it holds, with the masks spec_presence reads in results 1 and 2.
+    /// design/witness-per-way-an-operation-succeeds/.
+    pub proof fn lemma_entry_reaches_presence(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Presence),
+        ensures
+            post == pre,
+            ({
+                let (slot, va, level, count) = (frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3));
+                &&& !pre.can_read_presence(root, slot, va, level, count) ==> out == status_only(STATUS_REFUSED)
+                &&& pre.can_read_presence(root, slot, va, level, count)
+                    ==> out.status == STATUS_OK && out == presented(pre.spec_presence(root, slot, va, level, count)->0)
+                &&& pre.presence_read(root, slot, va, level, count, pre.spec_presence(root, slot, va, level, count))
+            }),
+    {
+    }
+
     /// invoked's inspect arm carries inspect_reads for the payload the position holds, the predicate
     /// inspect ensures, so a caller that has invoked is told that the caller commands the capability
     /// whose payload inspect returned.
@@ -2452,6 +2504,25 @@ impl CapKernel {
             Some(Operation::PowerOff) => {
                 let ok = self.power_off(root, frame.slot() as usize, Tracked(steps));
                 let out = status_only_outcome(if ok { STATUS_OK } else { STATUS_REFUSED });
+                proof {
+                    assert(*self == *old(self));
+                    assert(out == old(self).spec_outcome(root, frame));
+                    Self::lemma_spec_outcome_carried(*old(self), *self, root, frame, out);
+                }
+                Some(out)
+            },
+            Some(Operation::Presence) => {
+                let out = match self.presence(
+                    root,
+                    frame.slot() as usize,
+                    frame.argument(1),
+                    frame.argument(2),
+                    frame.argument(3),
+                    Tracked(steps),
+                ) {
+                    Some(r) => presence_outcome(r),
+                    None => status_only_outcome(STATUS_REFUSED),
+                };
                 proof {
                     assert(*self == *old(self));
                     assert(out == old(self).spec_outcome(root, frame));

@@ -103,6 +103,7 @@ pub mod switch_space_returns;
 pub mod flush_iommu_returns;
 pub mod acknowledge_returns;
 pub mod probe_at_some;
+pub mod presence_none;
 pub mod add_devices_ok;
 pub mod bind_device_ok;
 pub mod unbind_device_ok;
@@ -164,6 +165,7 @@ use crate::capability::revoke::{RevokeStep, REVOKE_BUDGET, REVOKE_STEP_STEPS, UN
 use crate::capability::retype::RetypeStep;
 use crate::capability::link::tree_of;
 use crate::capability::mapping::{space_mapping, space_says, SpacePath};
+use crate::capability::presence::Presence;
 use crate::capability::probe::Probed;
 use crate::capability::reach::{discharges, Effect, Right, saves_own_frame};
 use crate::capability::schedule::{at_back_of_priority, queued_at_back, thread_priority};
@@ -1437,6 +1439,34 @@ pub trait AcknowledgeReturns {
             post.cores@[c as int].next_pcid == pre.cores@[c as int].next_pcid,
             post.tlb@.tags(c as int) == Set::<usize>::empty(),
             forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@.tags(d) == pre.tlb@.tags(d),
+    ;
+}
+
+/// `presence`'s Some answered wrong. The read is allowed: None in its place, and the masks the
+/// kernel reads with entry 0's present bit flipped, each fail presence_read, so the specification
+/// fixes both the answer and every bit of it.
+pub trait PresenceNone {
+    proof fn wrong(kernel: CapKernel, root: usize, slot: usize, va: u64, level: u64, count: u64, ret: Option<Presence>)
+        requires
+            kernel.wf(),
+            kernel.tables.roots@.contains_key(root),
+            kernel.root_live(root),
+            kernel.can_read_presence(root, slot, va, level, count),
+            ret is None,
+        ensures
+            kernel.presence_read(root, slot, va, level, count, ret),
+    ;
+
+    proof fn flipped(kernel: CapKernel, root: usize, slot: usize, va: u64, level: u64, count: u64, ret: Option<Presence>)
+        requires
+            kernel.wf(),
+            kernel.tables.roots@.contains_key(root),
+            kernel.root_live(root),
+            kernel.can_read_presence(root, slot, va, level, count),
+            ret is Some,
+            (ret->0).present == (kernel.spec_presence(root, slot, va, level, count)->0).present ^ 1u64,
+        ensures
+            kernel.presence_read(root, slot, va, level, count, ret),
     ;
 }
 

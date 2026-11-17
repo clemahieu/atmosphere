@@ -104,11 +104,22 @@ pub const START: u64 = 22;
 /// outcome STATUS_AGAIN until it is. Refused unless the slot holds a thread with control that is not
 /// blocked or dead.
 pub const SUSPEND: u64 = 23;
+/// Reads which of the count in argument 3, 1 to PRESENCE_MAX, of the entries at the level in argument 2,
+/// 1 to 4, from the one the virtual address in argument 1 names, in the space of the capability in the
+/// slot, which must allow writing it, are present, and which are leaves, where a walk stops: a 4K page, a
+/// 2M frame or a kernel slot. The entries lie in one table. Returns the present mask in result 1 and the
+/// leaf mask in result 2, bit i for entry i. Refused, with nothing changed, unless the address names an
+/// entry at the level, the count is in range and stays in the table, and the path reaches a table at
+/// that level. An absent entry means nothing under it is mapped.
+pub const PRESENCE: u64 = 24;
 
 pub use crate::arch::{FRAME_WORDS, PC_WORD, SP_WORD};
 
 /// The most entries one probe reads.
 pub const PROBE_MAX: u64 = 64;
+
+/// The most entries one presence read covers.
+pub const PRESENCE_MAX: u64 = 64;
 
 /// Retype's kind in argument 1 for a 4K frame: a frame capability of order 0 for the page at the base in
 /// argument 2, in the empty slot in argument 3.
@@ -369,6 +380,26 @@ pub fn probe(space: u64, address: u64, count: u64) -> Result<Probed, u64> {
             accessed_maintained: accessed_maintained == 1,
             dirty_maintained: dirty_maintained == 1,
         }),
+        refused => Err(refused),
+    }
+}
+
+/// What a presence read found: bit i of `present` is set when entry i is present, and bit i of `leaves`
+/// when it is present and a walk stops there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Present {
+    pub present: u64,
+    pub leaves: u64,
+}
+
+/// Reads which of `count` entries at `level` from the one `address` names, in the space of the
+/// capability at `space`, are present and which are leaves: what it found, or the status presence
+/// returned when it was refused.
+pub fn presence(space: u64, address: u64, level: u64, count: u64) -> Result<Present, u64> {
+    // A presence read changes nothing, so no address the caller reads changes.
+    let (word, [present, leaves, _, _, _]) = unsafe { invoke_returning(PRESENCE, space, [address, level, count, 0, 0]) };
+    match status(word) {
+        STATUS_OK => Ok(Present { present, leaves }),
         refused => Err(refused),
     }
 }
