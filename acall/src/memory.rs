@@ -28,6 +28,8 @@ use verified::capability::refs::{block_dead, block_ref, block_refs, blocks_refs_
 use verified::capability::table::block_bytes;
 #[cfg(verus_keep_ghost)]
 use verified::define::PAGE_SZ;
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::lemma_pow2_pos;
 
 use crate::step::*;
 
@@ -107,6 +109,59 @@ proof fn lemma_returned_unmap_fields(pre: CapKernel, mid: CapKernel, post: CapKe
     reveal(CapKernel::unmap_contract_fields);
 }
 
+/// A retype from a state where the caller's process is sealed keeps the caller's table agreeing with
+/// every frame token: it changes no slot of the table but the one at `to`, and a frame it puts there is
+/// one whose block no other table holds a capability of, at a count of one.
+proof fn lemma_retype_keeps_frames(entry: CapKernel, mid: CapKernel, root: usize, frame: Registers, out: Outcome, frames: Map<usize, (usize, Option<SpacePath>)>)
+    requires
+        entry.wf(),
+        entry.sealed(root),
+        CapKernel::spec_retyped(entry, mid, root, frame, out),
+        frames_agree(entry, root, frames),
+    ensures
+        frames_agree(mid, root, frames),
+{
+    CapKernel::lemma_retype_contract(entry, mid, root, frame, out);
+    CapKernel::lemma_retype_keeps_count(entry, mid, root, frame, out, root);
+    let kind = frame.argument(1);
+    let to = frame.argument(3) as usize;
+    let base = frame.argument(2) as usize;
+    let u = mid.table_view(root);
+    let v = entry.table_view(root);
+    let added = out == status_only(STATUS_OK)
+        && (kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME || kind == RETYPE_PROCESS || kind == RETYPE_THREAD);
+    if added {
+        assert forall|j: usize| #[trigger] u.contains_key(j) && Some(to) != Some(j)
+            implies v.contains_key(j) && same_cap(u[j], v[j]) by {
+            assert(u[j] == v[j]);
+        }
+        lemma_frames_agree_kept(entry, mid, root, frames, Some(to));
+        assert forall|s: usize| #[trigger] frames.contains_key(s) implies frame_agrees(mid, root, s, frames[s].0, frames[s].1) by {
+            if s == to && u.contains_key(to) && u[to].kind is Frame && view_frame(u[to], 0) == frames[s].0 {
+                let nv = u[to];
+                let br = block_ref(&mid.blocks, frames[s].0);
+                assert(kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME);
+                assert(frames[s].0 == base / PAGE_SZ);
+                lemma_pow2_pos(nv.order as nat);
+                assert((0usize as int) * PAGE_SZ < block_bytes(nv.order));
+                assert forall|t: usize, j: usize, page: usize|
+                    t != root && mid.table_view(t).contains_key(j) && mid.table_view(t)[j].kind is Frame
+                        && (page as int) * PAGE_SZ < block_bytes(mid.table_view(t)[j].order)
+                        implies #[trigger] block_ref(&mid.blocks, view_frame(mid.table_view(t)[j], page)) != br by {
+                    assert(mid.table_view(t) == entry.table_view(t));
+                    assert(block_ref(&mid.blocks, view_frame(entry.table_view(t)[j], page))
+                        == block_ref(&entry.blocks, view_frame(entry.table_view(t)[j], page)));
+                    assert(block_ref(&mid.blocks, view_frame(nv, 0usize))
+                        != block_ref(&entry.blocks, view_frame(entry.table_view(t)[j], page)));
+                }
+            }
+        }
+    } else {
+        assert(u == v);
+        lemma_frames_agree_kept(entry, mid, root, frames, None);
+    }
+}
+
 /// Retypes, on the authority of the untyped at index `untyped` of the caller's table, the block at
 /// `base` as `kind`: a frame into the empty slot at index `word`, a 2M frame the same, a table page of
 /// `level`, a leaf into the root entry the position `word` names, a process into the empty slot at index
@@ -120,8 +175,9 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
         final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-        pages_kept(old(caller)@, final(caller)@),
+        tokens_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+        old(caller)@.frames_wf() ==> final(caller)@.frames_wf(),
         CapKernel::retype_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), kind, untyped as usize, base as usize, word, level as usize, out),
         CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -170,6 +226,11 @@ pub fn retype(caller: &mut Tracked<Caller>, untyped: u64, kind: u64, base: u64, 
             lemma_entry_agrees(pre, caller@);
             lemma_space_kept_agrees(entry, mid, pre.root(), pre.pages());
             lemma_returned_agrees(caller@, mid, c);
+        }
+        if pre.frames_wf() {
+            lemma_frames_entry_agrees(pre, caller@);
+            lemma_retype_keeps_frames(entry, mid, pre.root(), frame, out, pre.frames());
+            lemma_returned_frames_agree(mid, caller@.kernel(), c, pre.root(), pre.frames());
         }
     }
     out
@@ -308,7 +369,7 @@ pub fn derive(caller: &mut Tracked<Caller>, from: u64, to: u64, rights: u64, bas
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
         final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-        pages_kept(old(caller)@, final(caller)@),
+        tokens_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() && !reaches_through(to) ==> final(caller)@.pages_wf(),
         CapKernel::derive_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
         CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -407,8 +468,9 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
         final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-        pages_kept(old(caller)@, final(caller)@),
+        tokens_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+        old(caller)@.frames_wf() ==> final(caller)@.frames_wf(),
         CapKernel::inspect_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
         CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -442,6 +504,9 @@ pub fn inspect(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
             assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
                 ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
             lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+            if pre.frames_wf() {
+                lemma_frames_kept(pre, caller@);
+            }
         }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
@@ -464,8 +529,9 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
         final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-        pages_kept(old(caller)@, final(caller)@),
+        tokens_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+        old(caller)@.frames_wf() ==> final(caller)@.frames_wf(),
         CapKernel::link_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, child as usize, out),
         CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
         CapKernel::count_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -499,6 +565,9 @@ pub fn link(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: 
             assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
                 ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
             lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+            if pre.frames_wf() {
+                lemma_frames_kept(pre, caller@);
+            }
         }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
@@ -522,7 +591,7 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
         final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-        pages_kept(old(caller)@, final(caller)@),
+        tokens_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
         CapKernel::map_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, page as usize, out),
         returned_on(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -587,8 +656,9 @@ pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (o
         final(caller)@.entry().wf(),
         CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
         final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-        pages_kept(old(caller)@, final(caller)@),
+        tokens_kept(old(caller)@, final(caller)@),
         old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
+        old(caller)@.frames_wf() ==> final(caller)@.frames_wf(),
         CapKernel::unmap_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, out),
         old(caller)@.kernel().sealed(old(caller)@.root()) ==> final(caller)@.kernel().sealed(final(caller)@.root()),
         old(caller)@.kernel().sealed(old(caller)@.root()) && old(caller)@.kernel().processes.records@.contains_key(old(caller)@.root())
@@ -616,6 +686,11 @@ pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (o
             assert(forall|j: usize| #[trigger] caller@.kernel().table_view(pre.root()).contains_key(j)
                 ==> entry.table_view(pre.root()).contains_key(j) && same_cap(caller@.kernel().table_view(pre.root())[j], entry.table_view(pre.root())[j]));
             lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), pre.root());
+            if pre.frames_wf() {
+                CapKernel::lemma_unmap_keeps_count(entry, mid, pre.root(), frame, out, pre.root());
+                lemma_returned_count_kept(entry, mid, caller@.kernel(), c, pre.root());
+                lemma_frames_kept(pre, caller@);
+            }
         }
         if pre.pages_wf() {
             lemma_entry_agrees(pre, caller@);
@@ -653,6 +728,8 @@ pub fn map_own(caller: &mut Tracked<Caller>, token: &mut Tracked<PageToken>, slo
         final(caller)@.pages_id() == old(caller)@.pages_id(),
         final(caller)@.pages() == old(caller)@.pages().insert(final(token)@.path(), final(token)@.frame()),
         final(caller)@.pages_wf(),
+        final(caller)@.frames() == old(caller)@.frames(),
+        final(caller)@.frames_id() == old(caller)@.frames_id(),
         final(token)@.id() == old(token)@.id(),
         final(token)@.path() == old(token)@.path(),
         out.status == STATUS_OK ==> final(token)@.frame()
@@ -750,6 +827,9 @@ pub fn unmap_own(caller: &mut Tracked<Caller>, token: &mut Tracked<PageToken>, s
         final(caller)@.pages_id() == old(caller)@.pages_id(),
         final(caller)@.pages() == old(caller)@.pages().insert(final(token)@.path(), final(token)@.frame()),
         final(caller)@.pages_wf(),
+        final(caller)@.frames() == old(caller)@.frames(),
+        final(caller)@.frames_id() == old(caller)@.frames_id(),
+        old(caller)@.frames_wf() ==> final(caller)@.frames_wf(),
         final(token)@.id() == old(token)@.id(),
         final(token)@.path() == old(token)@.path(),
         out.status == STATUS_OK ==> final(token)@.frame() is None,
@@ -782,6 +862,10 @@ pub fn unmap_own(caller: &mut Tracked<Caller>, token: &mut Tracked<PageToken>, s
         assert(forall|j: usize| #[trigger] caller@.kernel().table_view(root).contains_key(j)
             ==> entry.table_view(root).contains_key(j) && same_cap(caller@.kernel().table_view(root)[j], entry.table_view(root)[j]));
         lemma_shrunk_view_keeps_slot_names_own_space(pre.kernel(), entry, caller@.kernel(), root);
+        if pre.frames_wf() {
+            CapKernel::lemma_unmap_keeps_count(entry, mid, root, frame, out, root);
+            lemma_returned_count_kept(entry, mid, caller@.kernel(), c, root);
+        }
         let p = address_path(va);
         let a = space_mapping(tree_of(&entry.table_pages, &entry.spaces), root);
         let b = space_mapping(tree_of(&mid.table_pages, &mid.spaces), root);
@@ -806,6 +890,9 @@ pub fn unmap_own(caller: &mut Tracked<Caller>, token: &mut Tracked<PageToken>, s
             assert(pre.pages().insert(p, pre.pages()[p]) =~= pre.pages());
         }
         lemma_returned_agrees(caller@, mid, c);
+        if pre.frames_wf() {
+            lemma_frames_kept(pre, caller@);
+        }
     }
     out
 }

@@ -30,7 +30,7 @@ use vstd::raw_ptr::*;
 
 use acall::step::Caller;
 #[cfg(verus_keep_ghost)]
-use acall::step::{caller_alone, pages_kept, PageToken};
+use acall::step::{caller_alone, tokens_kept, PageToken};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::Loc;
 #[cfg(verus_keep_ghost)]
@@ -6136,7 +6136,7 @@ impl Eager {
             post.root() == pre.root(),
             post.entry().wf(),
             CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
-            pages_kept(pre, post),
+            tokens_kept(pre, post),
             post.pages_wf(),
             own_process(post),
             slot_names_own_space(post.kernel(), post.root(), self.record.space as usize),
@@ -6154,7 +6154,7 @@ impl Eager {
     }
 
     /// Public form of `lemma_shrunk_step_serves`: a step that keeps `space_kept`, `count_kept`,
-    /// `slot_names_own_space` for `self.space()`, `own_process`, `pages_kept` and `pages_wf` while
+    /// `slot_names_own_space` for `self.space()`, `own_process`, `tokens_kept` and `pages_wf` while
     /// only shrinking `table_view(root)` keeps `self` serving the returned token.
     pub proof fn lemma_shrunk_serves(&self, pre: Caller, post: Caller)
         requires
@@ -6163,7 +6163,7 @@ impl Eager {
             post.root() == pre.root(),
             post.entry().wf(),
             CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
-            pages_kept(pre, post),
+            tokens_kept(pre, post),
             post.pages_wf(),
             own_process(post),
             slot_names_own_space(post.kernel(), post.root(), self.space() as usize),
@@ -6189,7 +6189,7 @@ impl Eager {
             post.root() == pre.root(),
             post.entry().wf(),
             CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
-            pages_kept(pre, post),
+            tokens_kept(pre, post),
             post.pages_wf(),
             own_process(post),
             call_contract(post.entry(), post.kernel(), post.root(), call, out),
@@ -6884,7 +6884,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::retype_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), kind, untyped as usize, base as usize, word, level as usize, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -6944,7 +6944,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::derive_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), rights, base as usize, order, 0, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7007,7 +7007,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::move_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7053,7 +7053,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::delete_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7083,7 +7083,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::revoke_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7113,7 +7113,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::destroy_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7143,7 +7143,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::place_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, core as usize, priority as usize, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7173,7 +7173,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::start_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7203,7 +7203,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::suspend_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7233,7 +7233,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::read_registers_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, index, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7263,7 +7263,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::write_registers_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, index, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7293,7 +7293,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::inspect_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7323,7 +7323,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             old(caller)@.pages_wf() ==> final(caller)@.pages_wf(),
             CapKernel::link_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, from as usize, child as usize, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),
@@ -7355,7 +7355,7 @@ impl Eager {
             final(caller)@.entry().wf(),
             CapKernel::rely(old(caller)@.kernel(), final(caller)@.entry(), final(caller)@.root()),
             final(caller)@.history() == old(caller)@.history().push((final(caller)@.entry(), final(caller)@.kernel())),
-            pages_kept(old(caller)@, final(caller)@),
+            tokens_kept(old(caller)@, final(caller)@),
             final(caller)@.pages_wf(),
             call_contract(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), call, out),
             CapKernel::space_kept(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root()),

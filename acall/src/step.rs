@@ -53,6 +53,8 @@ use verified::pagetable::entry::PageEntry;
 use vstd::resource::map::{GhostMapAuth, GhostPointsTo, GhostSubmap};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::Loc;
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::lemma_pow2_pos;
 
 verus! {
 
@@ -60,7 +62,8 @@ verus! {
 /// that call entered from, the root of its own table, which names the process to the kernel and
 /// never changes, the kernel's state when its first call through acall entered (pinned by the first
 /// step; before any step, whatever state was conjured, on the vouched claim that the process's Rust
-/// memory is mapped when that first call enters), and the authority over its page tokens.
+/// memory is mapped when that first call enters), and the authorities over its page tokens and its
+/// frame tokens.
 /// A token: its fields are private and it has
 /// no constructor and no copy, so verified code holds only the one it was handed at the process's
 /// start and cannot keep an old one to call with again. Only specifications read its fields, so only
@@ -78,6 +81,8 @@ pub tracked struct Caller {
     ghost start: CapKernel,
     #[cfg(verus_keep_ghost)]
     tracked pages: GhostMapAuth<SpacePath, Option<usize>>,
+    #[cfg(verus_keep_ghost)]
+    tracked frames: GhostMapAuth<usize, (usize, Option<SpacePath>)>,
 }
 
 /// The token for one page of the caller's own space, at a path of the space keyed at the caller's
@@ -209,6 +214,51 @@ impl PageSet {
     }
 }
 
+/// The token for one slot of the caller's own table holding a frame capability: it says which frame
+/// page the slot held when the token was claimed, its first, and the path of the page of the caller's
+/// own space it is mapped at, or that it is mapped at none (design/region-map-owns-the-address-space/).
+/// Its field is private and it has no constructor and no copy: verified code outside this crate gets
+/// one only from claim_frame, once per slot, and the caller token's authority holds what every token
+/// says, so Caller::frames_wf ties each to the kernel's state. A slot emptied or refilled with another
+/// frame leaves its token true of nothing.
+pub tracked struct FrameToken {
+    #[cfg(verus_keep_ghost)]
+    tracked token: GhostPointsTo<usize, (usize, Option<SpacePath>)>,
+}
+
+impl FrameToken {
+    /// The index of the slot of the caller's own table this token is for.
+    pub closed spec fn slot(self) -> usize {
+        self.token.key()
+    }
+
+    /// The first page of the frame the slot held when the token was claimed, by page number.
+    pub closed spec fn frame(self) -> usize {
+        self.token.value().0
+    }
+
+    /// The path of the page of the caller's own space the frame is mapped at, or none.
+    pub closed spec fn page(self) -> Option<SpacePath> {
+        self.token.value().1
+    }
+
+    /// The authority this token belongs to.
+    pub closed spec fn id(self) -> Loc {
+        self.token.id()
+    }
+
+    /// The authority holds what this token says.
+    pub proof fn agree(tracked &self, tracked caller: &Caller)
+        requires
+            self.id() == caller.frames_id(),
+        ensures
+            caller.frames().contains_key(self.slot()),
+            caller.frames()[self.slot()] == (self.frame(), self.page()),
+    {
+        self.token.agree(&caller.frames);
+    }
+}
+
 /// Every page of `s`, its token saying no frame is mapped there.
 pub open spec fn none_at(s: Set<SpacePath>) -> Map<SpacePath, Option<usize>> {
     Map::new(s, |p: SpacePath| None::<usize>)
@@ -227,6 +277,8 @@ pub(crate) proof fn set_page(tracked caller: &mut Caller, tracked token: &mut Pa
         final(caller).start() == old(caller).start(),
         final(caller).pages_id() == old(caller).pages_id(),
         final(caller).pages() == old(caller).pages().insert(old(token).path(), frame),
+        final(caller).frames() == old(caller).frames(),
+        final(caller).frames_id() == old(caller).frames_id(),
         final(token).path() == old(token).path(),
         final(token).id() == old(token).id(),
         final(token).frame() == frame,
@@ -279,6 +331,25 @@ pub open spec fn page_agrees(m: IMap<SpacePath, PageEntry>, p: SpacePath, frame:
 pub open spec fn pages_agree(k: CapKernel, root: usize, pages: Map<SpacePath, Option<usize>>) -> bool {
     let m = space_mapping(tree_of(&k.table_pages, &k.spaces), root);
     forall|p: SpacePath| #[trigger] pages.contains_key(p) ==> page_agrees(m, p, pages[p])
+}
+
+/// The frame token for the slot at `s` of the table at `root` in `k`, saying first page `f` and
+/// mapped at `m`, agrees with `k`: while the slot holds a frame capability whose first page is `f`, no
+/// other table holds a capability of `f`'s block (CapKernel::held_by), and the block's count is at
+/// most one, the capability's, and one more when the token names a page, so with the capability
+/// counted at most that one entry maps it.
+pub open spec fn frame_agrees(k: CapKernel, root: usize, s: usize, f: usize, m: Option<SpacePath>) -> bool {
+    let v = k.table_view(root);
+    v.contains_key(s) && v[s].kind is Frame && view_frame(v[s], 0) == f ==> {
+        let br = block_ref(&k.blocks, f);
+        &&& k.held_by(br, root)
+        &&& block_refs(&k.blocks, br) <= (if m is Some { 2usize } else { 1usize })
+    }
+}
+
+/// The table at `root` in `k` agrees with every frame token `frames` holds.
+pub open spec fn frames_agree(k: CapKernel, root: usize, frames: Map<usize, (usize, Option<SpacePath>)>) -> bool {
+    forall|s: usize| #[trigger] frames.contains_key(s) ==> frame_agrees(k, root, s, frames[s].0, frames[s].1)
 }
 
 /// A mapping that only lost entries, keeping the others' values, still agrees with every token.
@@ -338,6 +409,16 @@ impl Caller {
         self.pages.id()
     }
 
+    /// What every frame token of this caller says, by the index of its slot.
+    pub closed spec fn frames(self) -> Map<usize, (usize, Option<SpacePath>)> {
+        self.frames@
+    }
+
+    /// The authority the caller's frame tokens belong to.
+    pub closed spec fn frames_id(self) -> Loc {
+        self.frames.id()
+    }
+
     /// The kernel's state is one its steps keep: every step returns one.
     pub open spec fn wf(&self) -> bool {
         self.kernel().wf()
@@ -353,22 +434,39 @@ impl Caller {
         &&& pages_agree(self.kernel(), self.root(), self.pages())
     }
 
-    /// Takes the authority out for the length of a call, leaving one with no page in its place.
-    proof fn take_pages(tracked &mut self) -> (tracked pages: GhostMapAuth<SpacePath, Option<usize>>)
+    /// The caller's process is sealed and a process, so other callers only take slots from its table
+    /// and raise the count of no block only it holds (CapKernel::rely), and its table agrees with every
+    /// frame token.
+    pub open spec fn frames_wf(&self) -> bool {
+        &&& self.kernel().sealed(self.root())
+        &&& self.kernel().processes.records@.contains_key(self.root())
+        &&& frames_agree(self.kernel(), self.root(), self.frames())
+    }
+
+    /// Takes the authorities out for the length of a call, leaving ones with no token in their place.
+    proof fn take_tokens(tracked &mut self) -> (tracked tokens: (GhostMapAuth<SpacePath, Option<usize>>, GhostMapAuth<usize, (usize, Option<SpacePath>)>))
         ensures
-            pages == old(self).pages,
+            tokens.0 == old(self).pages,
+            tokens.1 == old(self).frames,
             final(self).kernel == old(self).kernel,
             final(self).entry == old(self).entry,
             final(self).root == old(self).root,
             final(self).history == old(self).history,
             final(self).start == old(self).start,
     {
-        self.pages.take()
+        let tracked pages = self.pages.take();
+        let tracked frames = self.frames.take();
+        (pages, frames)
     }
 
-    /// Puts back what the call left aside: the authority and the pinned start state, which a
-    /// system call does not touch, since neither exists at run time.
-    proof fn restore(tracked &mut self, tracked pages: GhostMapAuth<SpacePath, Option<usize>>, start: CapKernel)
+    /// Puts back what the call left aside: the authorities and the pinned start state, which a
+    /// system call does not touch, since none exists at run time.
+    proof fn restore(
+        tracked &mut self,
+        tracked pages: GhostMapAuth<SpacePath, Option<usize>>,
+        tracked frames: GhostMapAuth<usize, (usize, Option<SpacePath>)>,
+        start: CapKernel,
+    )
         ensures
             final(self).kernel == old(self).kernel,
             final(self).entry == old(self).entry,
@@ -376,21 +474,25 @@ impl Caller {
             final(self).history == old(self).history,
             final(self).start == start,
             final(self).pages == pages,
+            final(self).frames == frames,
     {
         self.pages = pages;
+        self.frames = frames;
         self.start = start;
     }
 }
 
-/// From `pre` to `post`, a call kept the page tokens: `history` only grows, `start` stays what it
-/// was once a step is in `history` and is pinned to the first step's entry when `history` was empty,
-/// and the authority and what every token says are as they were.
-pub open spec fn pages_kept(pre: Caller, post: Caller) -> bool {
+/// From `pre` to `post`, a call kept the tokens: `history` only grows, `start` stays what it was once
+/// a step is in `history` and is pinned to the first step's entry when `history` was empty, and the
+/// authorities and what every page token and frame token says are as they were.
+pub open spec fn tokens_kept(pre: Caller, post: Caller) -> bool {
     &&& pre.history().len() <= post.history().len()
     &&& pre.history().len() > 0 ==> post.start() == pre.start()
     &&& pre.history().len() == 0 && post.history().len() > 0 ==> post.start() == post.history()[0].0
     &&& post.pages() == pre.pages()
     &&& post.pages_id() == pre.pages_id()
+    &&& post.frames() == pre.frames()
+    &&& post.frames_id() == pre.frames_id()
 }
 
 /// The state a call entered from agrees with every page token, and keeps the caller's process sealed
@@ -399,7 +501,7 @@ pub proof fn lemma_entry_agrees(pre: Caller, post: Caller)
     requires
         pre.pages_wf(),
         post.root() == pre.root(),
-        pages_kept(pre, post),
+        tokens_kept(pre, post),
         CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
     ensures
         post.entry().sealed(pre.root()),
@@ -497,6 +599,100 @@ pub proof fn lemma_returned_count_kept(entry: CapKernel, mid: CapKernel, post: C
     }
 }
 
+/// A step that keeps the counts of the blocks of the caller's frame capabilities (count_kept) from a
+/// state where its process is sealed, and leaves in its table only slots it held, with the same
+/// capability, but at `w` when `w` is some, keeps every frame token but the one at `w` agreeing.
+pub proof fn lemma_frames_agree_kept(a: CapKernel, b: CapKernel, root: usize, frames: Map<usize, (usize, Option<SpacePath>)>, w: Option<usize>)
+    requires
+        frames_agree(a, root, frames),
+        a.sealed(root),
+        CapKernel::count_kept(a, b, root),
+        forall|j: usize| #[trigger] b.table_view(root).contains_key(j) && w != Some(j)
+            ==> a.table_view(root).contains_key(j) && same_cap(b.table_view(root)[j], a.table_view(root)[j]),
+    ensures
+        forall|s: usize| #[trigger] frames.contains_key(s) && w != Some(s) ==> frame_agrees(b, root, s, frames[s].0, frames[s].1),
+{
+    assert forall|s: usize| #[trigger] frames.contains_key(s) && w != Some(s) implies frame_agrees(b, root, s, frames[s].0, frames[s].1) by {
+        let f = frames[s].0;
+        let m = frames[s].1;
+        let va = a.table_view(root);
+        let vb = b.table_view(root);
+        if vb.contains_key(s) && vb[s].kind is Frame && view_frame(vb[s], 0) == f {
+            assert(va.contains_key(s) && same_cap(vb[s], va[s]));
+            assert(view_frame(va[s], 0) == f);
+            assert(frame_agrees(a, root, s, f, m));
+            lemma_pow2_pos(va[s].order as nat);
+            assert((0usize as int) * PAGE_SZ < block_bytes(va[s].order));
+            assert(block_ref(&b.blocks, view_frame(va[s], 0usize)) == block_ref(&a.blocks, view_frame(va[s], 0usize)));
+        }
+    }
+}
+
+/// The state a call entered from keeps the caller's process sealed and agrees with every frame token:
+/// the rely took it there from the state the caller token last held.
+pub proof fn lemma_frames_entry_agrees(pre: Caller, post: Caller)
+    requires
+        pre.frames_wf(),
+        CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
+    ensures
+        post.entry().sealed(pre.root()),
+        post.entry().processes.records@.contains_key(pre.root()),
+        frames_agree(post.entry(), pre.root(), pre.frames()),
+{
+    let root = pre.root();
+    lemma_frames_agree_kept(pre.kernel(), post.entry(), root, pre.frames(), None);
+}
+
+/// The calling core's catching up changes no table's view and no block, so `mid` agreeing with every
+/// frame token, `post` does.
+pub proof fn lemma_returned_frames_agree(mid: CapKernel, post: CapKernel, c: int, root: usize, frames: Map<usize, (usize, Option<SpacePath>)>)
+    requires
+        frames_agree(mid, root, frames),
+        CapKernel::flushed_step(mid, post, c),
+        forall|t: usize| #[trigger] post.table_view(t) == mid.table_view(t),
+    ensures
+        frames_agree(post, root, frames),
+{
+    assert forall|s: usize| #[trigger] frames.contains_key(s) implies frame_agrees(post, root, s, frames[s].0, frames[s].1) by {
+        assert(post.table_view(root) == mid.table_view(root));
+        assert(frame_agrees(mid, root, s, frames[s].0, frames[s].1));
+        let br = block_ref(&post.blocks, frames[s].0);
+        if mid.held_by(br, root) {
+            assert forall|t: usize, j: usize, page: usize|
+                t != root && post.table_view(t).contains_key(j) && post.table_view(t)[j].kind is Frame
+                    && (page as int) * PAGE_SZ < block_bytes(post.table_view(t)[j].order)
+                    implies #[trigger] block_ref(&post.blocks, view_frame(post.table_view(t)[j], page)) != br by {
+                assert(post.table_view(t) == mid.table_view(t));
+                assert(block_ref(&mid.blocks, view_frame(mid.table_view(t)[j], page)) != br);
+            }
+        }
+    }
+}
+
+/// A call whose step kept the counts of the caller's blocks from the state it entered from to the
+/// state it returned, and left in the caller's table only slots it held there with the same
+/// capability, keeps the caller's table agreeing with every frame token, the process sealed and a
+/// process.
+pub proof fn lemma_frames_kept(pre: Caller, post: Caller)
+    requires
+        pre.frames_wf(),
+        post.root() == pre.root(),
+        post.frames() == pre.frames(),
+        CapKernel::rely(pre.kernel(), post.entry(), pre.root()),
+        CapKernel::count_kept(post.entry(), post.kernel(), pre.root()),
+        post.kernel().sealed(pre.root()),
+        post.kernel().processes.records@.contains_key(pre.root()),
+        forall|j: usize| #[trigger] post.kernel().table_view(pre.root()).contains_key(j)
+            ==> post.entry().table_view(pre.root()).contains_key(j)
+                && same_cap(post.kernel().table_view(pre.root())[j], post.entry().table_view(pre.root())[j]),
+    ensures
+        post.frames_wf(),
+{
+    let root = pre.root();
+    lemma_frames_entry_agrees(pre, post);
+    lemma_frames_agree_kept(post.entry(), post.kernel(), root, pre.frames(), None);
+}
+
 /// Other callers' steps keep every slot that names the caller's own space naming its own space
 /// while the caller's process stays sealed: CapKernel::rely removes slots only and leaves every
 /// surviving slot's kind, base and rights unchanged.
@@ -587,6 +783,8 @@ pub proof fn claim(tracked caller: &mut Caller, p: SpacePath) -> (tracked token:
         final(caller).pages_id() == old(caller).pages_id(),
         final(caller).pages() == old(caller).pages().insert(p, None),
         final(caller).pages_wf(),
+        final(caller).frames() == old(caller).frames(),
+        final(caller).frames_id() == old(caller).frames_id(),
         token.path() == p,
         token.frame() is None,
         token.id() == final(caller).pages_id(),
@@ -623,6 +821,8 @@ pub proof fn claim_set(tracked caller: &mut Caller, s: Set<SpacePath>) -> (track
         final(caller).pages_id() == old(caller).pages_id(),
         final(caller).pages() == old(caller).pages().union_prefer_right(none_at(s)),
         final(caller).pages_wf(),
+        final(caller).frames() == old(caller).frames(),
+        final(caller).frames_id() == old(caller).frames_id(),
         set.pages() == none_at(s),
         set.id() == final(caller).pages_id(),
 {
@@ -639,6 +839,54 @@ pub proof fn claim_set(tracked caller: &mut Caller, s: Set<SpacePath>) -> (track
         }
     }
     PageSet { tokens }
+}
+
+/// Claims the token for the slot at `s` of the caller's own table, saying the frame it holds is mapped
+/// at no page. The slot holds a frame capability whose block no other table holds a capability of, at
+/// a count of one, the capability's own, as retype's contract leaves a frame it makes; and no token
+/// for the slot was claimed before, so the token is the only one.
+pub proof fn claim_frame(tracked caller: &mut Caller, s: usize) -> (tracked token: FrameToken)
+    requires
+        old(caller).frames_wf(),
+        !old(caller).frames().contains_key(s),
+        old(caller).kernel().table_view(old(caller).root()).contains_key(s),
+        old(caller).kernel().table_view(old(caller).root())[s].kind is Frame,
+        old(caller).kernel().held_by(
+            block_ref(&old(caller).kernel().blocks, view_frame(old(caller).kernel().table_view(old(caller).root())[s], 0)),
+            old(caller).root(),
+        ),
+        block_refs(
+            &old(caller).kernel().blocks,
+            block_ref(&old(caller).kernel().blocks, view_frame(old(caller).kernel().table_view(old(caller).root())[s], 0)),
+        ) == 1,
+    ensures
+        final(caller).kernel() == old(caller).kernel(),
+        final(caller).entry() == old(caller).entry(),
+        final(caller).root() == old(caller).root(),
+        final(caller).history() == old(caller).history(),
+        final(caller).start() == old(caller).start(),
+        final(caller).pages() == old(caller).pages(),
+        final(caller).pages_id() == old(caller).pages_id(),
+        final(caller).frames_id() == old(caller).frames_id(),
+        final(caller).frames() == old(caller).frames().insert(
+            s,
+            (view_frame(old(caller).kernel().table_view(old(caller).root())[s], 0), None),
+        ),
+        final(caller).frames_wf(),
+        token.slot() == s,
+        token.frame() == view_frame(old(caller).kernel().table_view(old(caller).root())[s], 0),
+        token.page() is None,
+        token.id() == final(caller).frames_id(),
+{
+    let ghost f = view_frame(caller.kernel.table_view(caller.root)[s], 0);
+    let tracked token = caller.frames.insert(s, (f, None));
+    assert forall|q: usize| #[trigger] caller.frames@.contains_key(q)
+        implies frame_agrees(caller.kernel, caller.root, q, caller.frames@[q].0, caller.frames@[q].1) by {
+        if q != s {
+            assert(old(caller).frames().contains_key(q));
+        }
+    }
+    FrameToken { token }
 }
 
 /// No other caller stepped on the token between `pre` and `post`: `post`'s step history extends `pre`'s,
@@ -720,7 +968,7 @@ pub proof fn lemma_entered(pre: CapKernel, post: CapKernel, root: usize, frame: 
 /// the kernel put in the status and result registers. The call enters from a well-formed state the rely
 /// relates to the one the token last held, which the token now carries as its entry. When the token's
 /// history was empty, this first step pins `start` to that entry state; later steps keep `start`.
-/// The page tokens' authority exists only in the proof, so the call keeps it.
+/// The tokens' authorities exist only in the proof, so the call keeps them.
 pub(crate) fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
@@ -733,17 +981,17 @@ pub(crate) fn step(caller: &mut Tracked<Caller>, number: u64, slot: u64, a1: u64
         exists|frame: Registers, c: int, mid: CapKernel|
             carries(frame, number, slot, a1, a2, a3, a4, a5)
                 && #[trigger] entered(final(caller)@.entry(), final(caller)@.kernel(), final(caller)@.root(), frame, out, c, mid),
-        pages_kept(old(caller)@, final(caller)@),
+        tokens_kept(old(caller)@, final(caller)@),
     no_unwind
 {
     let ghost old_start = caller@.start;
     let ghost empty_history = caller@.history.len() == 0;
-    let tracked pages = caller.borrow_mut().take_pages();
+    let tracked (pages, frames) = caller.borrow_mut().take_tokens();
     let out = system_call(caller, number, slot, a1, a2, a3, a4, a5);
     let ghost called = caller@;
     proof {
         let ghost start = if empty_history { called.entry } else { old_start };
-        caller.borrow_mut().restore(pages, start);
+        caller.borrow_mut().restore(pages, frames, start);
         assert(caller@.kernel() == called.kernel());
         assert(caller@.entry() == called.entry());
         assert(caller@.root() == called.root());

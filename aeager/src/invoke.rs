@@ -14,7 +14,7 @@ use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use acall::memory::derive_from_frame;
 #[cfg(verus_keep_ghost)]
-use acall::step::{pages_kept, slot_names_own_space};
+use acall::step::{tokens_kept, slot_names_own_space};
 use aheap::allocator::Allocator;
 #[cfg(verus_keep_ghost)]
 use aheap::source::SpanSource;
@@ -259,7 +259,7 @@ pub fn invoke(alloc: &mut Allocator<Eager>, call: GuardedCall) -> (out: Outcome)
             &&& post.entry().wf()
             &&& CapKernel::rely(pre.kernel(), post.entry(), post.root())
             &&& post.history() == pre.history().push((post.entry(), post.kernel()))
-            &&& pages_kept(pre, post)
+            &&& tokens_kept(pre, post)
             &&& post.pages_wf()
             &&& call_contract(post.entry(), post.kernel(), post.root(), call, out)
             &&& CapKernel::space_kept(post.entry(), post.kernel(), post.root())
