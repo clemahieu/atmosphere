@@ -20,6 +20,8 @@ pub mod elements_get;
 pub mod elements_len;
 pub mod elements_new;
 pub mod elements_push;
+pub mod filled_length;
+pub mod filled_round;
 pub mod fold_add;
 pub mod length_prefixed_length;
 pub mod length_prefixed_new;
@@ -165,6 +167,34 @@ pub trait BoundedRound<'a, L: Length<'a>, I: Combinator<'a>, const N: usize> whe
 /// `Bounded::length`'s Some at a length that is not the serialisation's.
 pub trait BoundedLength<'a, L: Length<'a>, I: Combinator<'a>, const N: usize> where I::T: Copy {
     proof fn wrong(c: &Bounded<L, I, N>, v: Seq<I::V>, n: nat)
+        requires
+            c.wf(),
+        ensures
+            n != c.spec_serialize(v).len(),
+    ;
+}
+
+/// `Filled`'s parse and serialize at the round trip they exclude.
+pub trait FilledRound<'a, I: Combinator<'a>, const N: usize> where I::T: Copy {
+    proof fn parse_trip(c: &Filled<I, N>, s: Seq<u8>)
+        requires
+            c.wf(),
+        ensures
+            c.spec_parse(s) matches Some((n, v)) ==> c.spec_serialize(v) != s.take(n as int),
+    ;
+
+    proof fn serialize_trip(c: &Filled<I, N>, v: Seq<I::V>, rest: Seq<u8>)
+        requires
+            c.wf(),
+            c.valid(v),
+        ensures
+            c.spec_parse(c.spec_serialize(v) + rest) != Some((c.spec_serialize(v).len(), v)),
+    ;
+}
+
+/// `Filled::length`'s Some at a length that is not the serialisation's.
+pub trait FilledLength<'a, I: Combinator<'a>, const N: usize> where I::T: Copy {
+    proof fn wrong(c: &Filled<I, N>, v: Seq<I::V>, n: nat)
         requires
             c.wf(),
         ensures

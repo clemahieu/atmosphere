@@ -531,6 +531,29 @@ pub fn witness_bounded(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Elem
     (parsed, wrote, room)
 }
 
+/// Reads two `u8`s filling a two-byte region, at most three of them, and writes them back.
+pub fn witness_filled(input: &[u8], out: &mut [u8]) -> (r: (Option<(usize, Elements<u8, 4>)>, Option<usize>, Option<usize>))
+    requires
+        input.len() >= 2,
+        old(out).len() >= 2,
+    ensures
+        r.0 is Some,
+        r.1 is Some,
+        r.2 is Some,
+        final(out)@.take(2) == input@.take(2),
+{
+    let c: Filled<U8, 4> = Filled { inner: U8, len: 2, bound: 3 };
+    proof {
+        reveal_with_fuel(parse_fill, 3);
+    }
+    let tracked mut steps = Steps::fresh();
+    let parsed = c.parse(input, Tracked(&mut steps));
+    let room = c.length(accepted(&parsed), out.len(), Tracked(&mut steps));
+    let wrote = c.serialize(accepted(&parsed), out, 0, Tracked(&mut steps));
+    assert(out@.take(2) =~= input@.take(2));
+    (parsed, wrote, room)
+}
+
 /// Builds two values in place and reads them back.
 pub fn witness_elements() -> (r: (usize, u8, u8))
     ensures

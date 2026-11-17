@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 
-//! Bounded repetition: `Count`, a combinator exactly a count of times, and `Bounded`, a combinator at
-//! most a bound of times filling exactly the bytes a `Length` counts in front of them. Their value is
-//! `Elements`, at most a capacity `N` of values held in place, `N` fixed when the format is written,
-//! so nothing allocates (design/network-stack-proven-at-tier-1/, rules 2 and 5).
+//! Bounded repetition: `Count`, a combinator exactly a count of times, `Bounded`, a combinator at
+//! most a bound of times filling exactly the bytes a `Length` counts in front of them, and
+//! `Filled`, a combinator at most a bound of times filling exactly a byte count given as a
+//! parameter. Their value is `Elements`, at most a capacity `N` of values held in place, `N` fixed
+//! when the format is written, so nothing allocates (design/network-stack-proven-at-tier-1/, rules
+//! 2 and 5).
 //!
 //! The count and the bound are parameters, each at most the capacity. A region holding more elements
 //! than the bound is refused, as soon as the element past the bound would start. `Bounded` is
 //! delimited by a length because a repetition that runs to the end of its input does not parse back
-//! to itself when bytes follow it.
+//! to itself when bytes follow it; `Filled` takes that byte count as a parameter instead, when
+//! another field of an enclosing header already gave it.
 //!
 //! Each requires its element to consume at least one byte whenever it accepts, so a repetition runs
 //! at most one iteration per byte it reads, and its step constants are its element's and its
@@ -725,6 +728,299 @@ impl<'a, I: Combinator<'a>, const N: usize> Combinator<'a> for Count<I, N> where
     }
 }
 
+/// Values of `inner`, at most `bound` of them, filling `len` bytes at the start of `s`.
+pub open spec fn spec_filled<'a, I: Combinator<'a>>(inner: &I, s: Seq<u8>, len: nat, bound: nat) -> Option<(nat, Seq<I::V>)> {
+    if len <= s.len() {
+        match parse_fill(inner, s.take(len as int)) {
+            Some(vs) => if vs.len() <= bound {
+                Some((len, vs))
+            } else {
+                None
+            },
+            None => None,
+        }
+    } else {
+        None
+    }
+}
+
+/// A filled parse consumes `len` bytes, no more than its input, and gives at most `bound` values
+/// `inner` can carry, which serialise to those `len` bytes.
+proof fn lemma_filled_parse<'a, I: Combinator<'a>>(inner: &I, s: Seq<u8>, len: nat, bound: nat)
+    requires
+        inner.wf(),
+    ensures
+        spec_filled(inner, s, len, bound) matches Some((n, vs)) ==> {
+            &&& n == len
+            &&& n <= s.len()
+            &&& vs.len() <= bound
+            &&& all_valid(inner, vs)
+            &&& serialize_all(inner, vs) == s.take(n as int)
+        },
+{
+    if len <= s.len() {
+        lemma_fill_parse(inner, s.take(len as int));
+    }
+}
+
+/// At most `bound` values `inner` can carry whose serialisation is `len` bytes parse back to
+/// themselves as filled `len` bytes, whatever follows them.
+proof fn lemma_filled_serialize<'a, I: Combinator<'a>>(inner: &I, vs: Seq<I::V>, len: nat, bound: nat, rest: Seq<u8>)
+    requires
+        inner.wf(),
+        consumes(inner),
+        vs.len() <= bound,
+        all_valid(inner, vs),
+        serialize_all(inner, vs).len() == len,
+    ensures
+        spec_filled(inner, serialize_all(inner, vs) + rest, len, bound) == Some((len, vs)),
+{
+    let b = serialize_all(inner, vs);
+    assert((b + rest).take(len as int) =~= b);
+    lemma_fill_serialize(inner, vs);
+}
+
+/// Parses values of `inner`, at most `bound` of them, filling all of `region`; at most `per_byte`
+/// steps a byte of `region`, plus `inner`'s constant when `inner` refuses.
+fn parse_filled<'a, I: Combinator<'a>, const N: usize>(
+    inner: &I,
+    region: &'a [u8],
+    bound: usize,
+    Tracked(steps): Tracked<&mut Steps>,
+) -> (r: Option<Elements<I::T, N>>)
+where
+    I::T: Copy,
+requires
+    inner.wf(),
+    consumes(inner),
+    bound <= N,
+ensures
+    match r {
+        None => {
+            &&& match parse_fill(inner, region@) {
+                Some(vs) => vs.len() > bound,
+                None => true,
+            }
+            &&& final(steps).count <= old(steps).count + per_byte(inner) * region.len() + inner.c()
+        },
+        Some(v) => {
+            &&& parse_fill(inner, region@) == Some(v@)
+            &&& v@.len() <= bound
+            &&& all_valid(inner, v@)
+            &&& serialize_all(inner, v@) == region@
+            &&& final(steps).count <= old(steps).count + per_byte(inner) * region.len()
+        },
+    },
+{
+    let ghost body = region@;
+    let ghost start = steps.count;
+    let ghost whole = parse_fill(inner, body);
+    let ghost mut vs: Seq<I::V> = Seq::empty();
+    let mut items: [Option<I::T>; N] = [None; N];
+    let mut i: usize = 0;
+    let mut pos: usize = 0;
+    proof {
+        assert(body.skip(0) =~= body);
+        if let Some(ws) = whole {
+            assert(vs + ws =~= ws);
+        }
+    }
+    while pos < region.len()
+        invariant
+            inner.wf(),
+            consumes(inner),
+            bound <= N,
+            body == region@,
+            start == old(steps).count,
+            whole == parse_fill(inner, body),
+            i <= bound,
+            pos <= body.len(),
+            i <= pos,
+            vs.len() == i,
+            items@.len() == N,
+            forall|j: int| 0 <= j < i ==> (#[trigger] items@[j]) is Some && items@[j]->0@ == vs[j],
+            whole == match parse_fill(inner, body.skip(pos as int)) {
+                None => None,
+                Some(ws) => Some(vs + ws),
+            },
+            steps.count <= start + inner.k() * pos + (inner.c() + 1) * i,
+        decreases body.len() - pos,
+    {
+        let rest = slice_subrange(region, pos, region.len());
+        assert(rest@ =~= body.skip(pos as int));
+        if i == bound {
+            proof {
+                lemma_fill_nonempty(inner, rest@);
+                lemma_linear(inner.k(), inner.c(), pos as nat, i as nat, 0, pos as nat);
+                lemma_more(per_byte(inner), per_byte(inner), pos as nat, body.len());
+            }
+            return None;
+        }
+        let (n, t) = match inner.parse(rest, Tracked(&mut *steps)) {
+            Some(p) => p,
+            None => {
+                proof {
+                    lemma_linear(inner.k(), inner.c(), pos as nat, i as nat, (body.len() - pos) as nat, body.len());
+                }
+                return None;
+            },
+        };
+        proof {
+            steps.step();
+            lemma_add(inner.k(), inner.c(), pos as nat, n as nat, i as nat);
+            assert(rest@.skip(n as int) =~= body.skip(pos + n));
+            if let Some(ws) = parse_fill(inner, body.skip(pos + n)) {
+                assert(vs + (seq![t@] + ws) =~= vs.push(t@) + ws);
+            }
+            vs = vs.push(t@);
+        }
+        items[i] = Some(t);
+        i = i + 1;
+        pos = pos + n;
+    }
+    let r = Elements { items, count: i };
+    proof {
+        assert(r@ =~= vs);
+        assert(body.skip(pos as int) =~= Seq::<u8>::empty());
+        assert(vs + Seq::<I::V>::empty() =~= vs);
+        lemma_fill_parse(inner, body);
+        lemma_linear(inner.k(), inner.c(), pos as nat, i as nat, 0, pos as nat);
+    }
+    Some(r)
+}
+
+/// `inner`, at most `bound` times, filling exactly `len` bytes; `bound` at most the capacity `N`.
+pub struct Filled<I, const N: usize> {
+    pub inner: I,
+    pub len: usize,
+    pub bound: usize,
+}
+
+impl<'a, I: Combinator<'a>, const N: usize> Filled<I, N> where I::T: Copy {
+    /// A region whose values number more than the bound is refused, whatever they are.
+    pub proof fn lemma_past_bound(&self, s: Seq<u8>)
+        ensures
+            self.len <= s.len() ==> (parse_fill(&self.inner, s.take(self.len as int)) matches Some(vs)
+                ==> (vs.len() > self.bound ==> self.spec_parse(s) is None)),
+    {
+    }
+}
+
+impl<'a, I: Combinator<'a>, const N: usize> Combinator<'a> for Filled<I, N> where I::T: Copy {
+    type V = Seq<I::V>;
+
+    type T = Elements<I::T, N>;
+
+    open spec fn wf(&self) -> bool {
+        &&& self.inner.wf()
+        &&& consumes(&self.inner)
+        &&& self.bound <= N
+    }
+
+    open spec fn spec_parse(&self, s: Seq<u8>) -> Option<(nat, Seq<I::V>)> {
+        spec_filled(&self.inner, s, self.len as nat, self.bound as nat)
+    }
+
+    open spec fn spec_serialize(&self, v: Seq<I::V>) -> Seq<u8> {
+        serialize_all(&self.inner, v)
+    }
+
+    open spec fn valid(&self, v: Seq<I::V>) -> bool {
+        &&& v.len() <= self.bound
+        &&& all_valid(&self.inner, v)
+        &&& serialize_all(&self.inner, v).len() == self.len
+    }
+
+    open spec fn k(&self) -> nat {
+        2 * per_byte(&self.inner)
+    }
+
+    open spec fn c(&self) -> nat {
+        self.inner.c() + 1
+    }
+
+    proof fn lemma_parse_serialize(&self, s: Seq<u8>) {
+        lemma_filled_parse(&self.inner, s, self.len as nat, self.bound as nat);
+    }
+
+    proof fn lemma_serialize_parse(&self, v: Seq<I::V>, rest: Seq<u8>) {
+        lemma_filled_serialize(&self.inner, v, self.len as nat, self.bound as nat, rest);
+    }
+
+    fn parse(&self, input: &'a [u8], Tracked(steps): Tracked<&mut Steps>) -> (r: Option<(usize, Elements<I::T, N>)>) {
+        if self.len > input.len() {
+            return None;
+        }
+        let region = slice_subrange(input, 0, self.len);
+        assert(region@ =~= input@.take(self.len as int));
+        let r = match parse_filled(&self.inner, region, self.bound, Tracked(steps)) {
+            Some(r) => r,
+            None => {
+                proof {
+                    lemma_more(per_byte(&self.inner), self.k(), region.len() as nat, input.len() as nat);
+                }
+                return None;
+            },
+        };
+        proof {
+            lemma_more(per_byte(&self.inner), self.k(), region.len() as nat, region.len() as nat);
+        }
+        Some((self.len, r))
+    }
+
+    fn length(&self, v: &Elements<I::T, N>, cap: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if v.len() > self.bound || cap < self.len {
+            return None;
+        }
+        let n = match length_all(&self.inner, v, self.len, Tracked(steps)) {
+            Some(n) => n,
+            None => {
+                proof {
+                    lemma_more(per_byte(&self.inner), self.k(), self.len as nat, cap as nat);
+                }
+                return None;
+            },
+        };
+        if n != self.len {
+            proof {
+                lemma_more(per_byte(&self.inner), self.k(), n as nat, cap as nat);
+            }
+            return None;
+        }
+        proof {
+            lemma_more(per_byte(&self.inner), self.k(), n as nat, n as nat);
+        }
+        Some(n)
+    }
+
+    fn serialize(&self, v: &Elements<I::T, N>, out: &mut [u8], pos: usize, Tracked(steps): Tracked<&mut Steps>) -> (r: Option<usize>) {
+        if pos > out.len() || out.len() - pos < self.len || v.len() > self.bound {
+            return None;
+        }
+        let ghost room = out.len() - pos;
+        let n = match length_all(&self.inner, v, self.len, Tracked(&mut *steps)) {
+            Some(n) => n,
+            None => {
+                proof {
+                    lemma_more(per_byte(&self.inner), self.k(), self.len as nat, room as nat);
+                }
+                return None;
+            },
+        };
+        if n != self.len {
+            proof {
+                lemma_more(per_byte(&self.inner), self.k(), n as nat, room as nat);
+            }
+            return None;
+        }
+        write_all(&self.inner, v, out, pos, Tracked(&mut *steps));
+        proof {
+            assert(per_byte(&self.inner) * n + per_byte(&self.inner) * n == self.k() * n) by (nonlinear_arith);
+        }
+        Some(n)
+    }
+}
+
 /// `inner`, at most `bound` times, filling exactly the bytes a length read with `length` counts in
 /// front of them; `bound` at most the capacity `N`.
 pub struct Bounded<L, I, const N: usize> {
@@ -743,6 +1039,12 @@ impl<'a, L: Length<'a>, I: Combinator<'a>, const N: usize> Bounded<L, I, N> wher
                     ==> (vs.len() > self.bound ==> self.spec_parse(s) is None))
             },
     {
+        if let Some((m, l)) = self.length.spec_parse(s) {
+            let len = self.length.spec_len(l);
+            if m + len <= s.len() {
+                assert(s.skip(m as int).take(len as int) =~= s.subrange(m as int, (m + len) as int));
+            }
+        }
     }
 }
 
@@ -761,20 +1063,14 @@ impl<'a, L: Length<'a>, I: Combinator<'a>, const N: usize> Combinator<'a> for Bo
     open spec fn spec_parse(&self, s: Seq<u8>) -> Option<(nat, Seq<I::V>)> {
         match self.length.spec_parse(s) {
             None => None,
-            Some((m, l)) => {
+            Some((m, l)) => if m <= s.len() {
                 let len = self.length.spec_len(l);
-                if m + len <= s.len() {
-                    match parse_fill(&self.inner, s.subrange(m as int, (m + len) as int)) {
-                        Some(vs) => if vs.len() <= self.bound {
-                            Some(((m + len) as nat, vs))
-                        } else {
-                            None
-                        },
-                        None => None,
-                    }
-                } else {
-                    None
+                match spec_filled(&self.inner, s.skip(m as int), len, self.bound as nat) {
+                    None => None,
+                    Some((_, vs)) => Some(((m + len) as nat, vs)),
                 }
+            } else {
+                None
             },
         }
     }
@@ -805,10 +1101,10 @@ impl<'a, L: Length<'a>, I: Combinator<'a>, const N: usize> Combinator<'a> for Bo
             Some((m, l)) => {
                 self.length.lemma_length(l);
                 let len = self.length.spec_len(l);
+                lemma_filled_parse(&self.inner, s.skip(m as int), len, self.bound as nat);
                 if m + len <= s.len() {
-                    let body = s.subrange(m as int, (m + len) as int);
-                    lemma_fill_parse(&self.inner, body);
-                    if let Some(vs) = parse_fill(&self.inner, body) {
+                    let body = s.skip(m as int).take(len as int);
+                    if let Some((_, vs)) = spec_filled(&self.inner, s.skip(m as int), len, self.bound as nat) {
                         assert(s.take(m as int) + body =~= s.take((m + len) as int));
                     }
                 }
@@ -823,14 +1119,12 @@ impl<'a, L: Length<'a>, I: Combinator<'a>, const N: usize> Combinator<'a> for Bo
         let p = self.length.spec_serialize(l);
         self.length.lemma_serialize_parse(l, b + rest);
         assert(p + b + rest =~= p + (b + rest));
-        let body = (p + b + rest).subrange(p.len() as int, (p.len() + b.len()) as int);
-        assert(body =~= b);
-        lemma_fill_serialize(&self.inner, v);
+        assert((p + (b + rest)).skip(p.len() as int) =~= b + rest);
+        lemma_filled_serialize(&self.inner, v, b.len(), self.bound as nat, rest);
     }
 
     fn parse(&self, input: &'a [u8], Tracked(steps): Tracked<&mut Steps>) -> (r: Option<(usize, Elements<I::T, N>)>) {
         let ghost s = input@;
-        let ghost start = steps.count;
         let (m, l) = match self.length.parse(input, Tracked(&mut *steps)) {
             Some(p) => p,
             None => {
@@ -849,85 +1143,18 @@ impl<'a, L: Length<'a>, I: Combinator<'a>, const N: usize> Combinator<'a> for Bo
             return None;
         }
         let region = slice_subrange(input, m, m + len);
-        let ghost body = region@;
-        assert(body =~= s.subrange(m as int, (m + len) as int));
-        let ghost after_length = steps.count;
-        let ghost whole = parse_fill(&self.inner, body);
-        let ghost mut vs: Seq<I::V> = Seq::empty();
-        let mut items: [Option<I::T>; N] = [None; N];
-        let mut i: usize = 0;
-        let mut pos: usize = 0;
-        proof {
-            assert(body.skip(0) =~= body);
-            if let Some(ws) = whole {
-                assert(vs + ws =~= ws);
-            }
-        }
-        while pos < region.len()
-            invariant
-                self.wf(),
-                body == region@,
-                s == input@,
-                start == old(steps).count,
-                self.length.spec_parse(s) == Some((m as nat, l@)),
-                len == self.length.spec_len(l@),
-                m + len <= s.len(),
-                body == s.subrange(m as int, (m + len) as int),
-                after_length <= start + self.length.k() * m + self.length.c(),
-                whole == parse_fill(&self.inner, body),
-                i <= self.bound,
-                pos <= body.len(),
-                i <= pos,
-                vs.len() == i,
-                items@.len() == N,
-                forall|j: int| 0 <= j < i ==> (#[trigger] items@[j]) is Some && items@[j]->0@ == vs[j],
-                whole == match parse_fill(&self.inner, body.skip(pos as int)) {
-                    None => None,
-                    Some(ws) => Some(vs + ws),
-                },
-                steps.count <= after_length + self.inner.k() * pos + (self.inner.c() + 1) * i,
-            decreases body.len() - pos,
-        {
-            let rest = slice_subrange(region, pos, region.len());
-            assert(rest@ =~= body.skip(pos as int));
-            if i == self.bound {
+        assert(region@ =~= s.skip(m as int).take(len as int));
+        let r = match parse_filled(&self.inner, region, self.bound, Tracked(steps)) {
+            Some(r) => r,
+            None => {
                 proof {
-                    lemma_fill_nonempty(&self.inner, rest@);
-                    lemma_linear(self.inner.k(), self.inner.c(), pos as nat, i as nat, 0, pos as nat);
-                    lemma_bounded(self.length.k(), per_byte(&self.inner), m as nat, pos as nat, s.len());
+                    lemma_bounded(self.length.k(), per_byte(&self.inner), m as nat, len as nat, s.len());
                 }
                 return None;
-            }
-            let (n, t) = match self.inner.parse(rest, Tracked(&mut *steps)) {
-                Some(p) => p,
-                None => {
-                    proof {
-                        lemma_linear(self.inner.k(), self.inner.c(), pos as nat, i as nat, (body.len() - pos) as nat, body.len());
-                        lemma_bounded(self.length.k(), per_byte(&self.inner), m as nat, body.len(), s.len());
-                    }
-                    return None;
-                },
-            };
-            proof {
-                steps.step();
-                lemma_add(self.inner.k(), self.inner.c(), pos as nat, n as nat, i as nat);
-                assert(rest@.skip(n as int) =~= body.skip(pos + n));
-                if let Some(ws) = parse_fill(&self.inner, body.skip(pos + n)) {
-                    assert(vs + (seq![t@] + ws) =~= vs.push(t@) + ws);
-                }
-                vs = vs.push(t@);
-            }
-            items[i] = Some(t);
-            i = i + 1;
-            pos = pos + n;
-        }
-        let r = Elements { items, count: i };
+            },
+        };
         proof {
-            assert(r@ =~= vs);
-            assert(body.skip(pos as int) =~= Seq::<u8>::empty());
-            assert(vs + Seq::<I::V>::empty() =~= vs);
-            self.lemma_parse_serialize(s);
-            lemma_linear(self.inner.k(), self.inner.c(), pos as nat, i as nat, 0, pos as nat);
+            assert(s.take(m as int) + region@ =~= s.take((m + len) as int));
             lemma_bounded(self.length.k(), per_byte(&self.inner), m as nat, len as nat, (m + len) as nat);
         }
         Some((m + len, r))

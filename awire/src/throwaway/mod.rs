@@ -10,6 +10,7 @@ pub mod choice_first;
 pub mod choice_second;
 pub mod count;
 pub mod elements;
+pub mod filled;
 pub mod fold_add;
 pub mod length_prefixed;
 pub mod length_u16_be;

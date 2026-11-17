@@ -21,12 +21,13 @@
 //! `Pair`, one combinator then another, its value the pair of theirs; `Choice`, the first of two
 //! disjoint alternatives that accepts; and `LengthPrefixed`, a length read with a `Length`, one of
 //! those integers, then another combinator over exactly the bytes it counts; `Count`, a combinator
-//! exactly a count of times, and `Bounded`, a combinator at most a bound of times over exactly the
-//! bytes a `Length` counts, their value `Elements`, an array of a fixed capacity holding them in
+//! exactly a count of times, `Bounded`, a combinator at most a bound of times over exactly the
+//! bytes a `Length` counts, and `Filled`, a combinator at most a bound of times over a byte count
+//! given as a parameter, their value `Elements`, an array of a fixed capacity holding them in
 //! place; and `Mapped`, another combinator with its value through a proven bijection, which gives a
-//! format's value named fields. `Pair`, `Choice`, `LengthPrefixed`, `Count`, `Bounded` and `Mapped`
-//! are proven from their parts' properties for any parts. `checksum` computes the RFC 1071 16-bit
-//! ones'-complement sum of a byte string. Nothing allocates.
+//! format's value named fields. `Pair`, `Choice`, `LengthPrefixed`, `Count`, `Bounded`, `Filled`
+//! and `Mapped` are proven from their parts' properties for any parts. `checksum` computes the RFC
+//! 1071 16-bit ones'-complement sum of a byte string. Nothing allocates.
 #![cfg_attr(not(test), no_std)]
 
 use vstd::prelude::*;
