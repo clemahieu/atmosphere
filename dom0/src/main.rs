@@ -90,10 +90,12 @@
 //! It gives the seventh thread a capability to itself in the same leaf and places it through the root's
 //! capability for core 1 with an entry that inspects that capability over and over, counting each
 //! inspect in the shared frame, and suspends itself at a count dom0 gives it. While it does, dom0 inspects
-//! its console capability over and over on core 0, until it has seen the thread's count reach that end
-//! after seeing it change between two of its own inspects at least three times, and prints both counts.
-//! It inspects the thread when it first sees the count move and again once the thread suspended itself,
-//! and prints the thread's consumed cycles from each and that the second is larger.
+//! its console capability over and over on core 0, in batches it times with a fenced counter, until it
+//! has seen the thread's count reach that end after seeing it change across one of its own batches at
+//! least three times, and prints both counts; it inspects the thread when it first sees the count move
+//! and again once the thread suspended itself, and prints the thread's consumed cycles from each and
+//! that the second is larger, then prints the minimum, median and mean cycles per inspect over batches
+//! timed before the thread started and over batches the thread's inspects spanned.
 //! It maps a new frame into the child's space and starts the eighth thread on core 1 the same way; the
 //! thread writes the frame's page and spins in the child's space. dom0 unmaps the page and deletes the
 //! frame's capability, and the free of the frame returns again until CPU 1, sent the unmap's flush IPI,
@@ -178,6 +180,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 
+use abench::counter::read_tsc_fenced;
 use acall::capability::{delete, destroy, move_cap, place, read_registers, revoke, start, suspend, write_registers};
 use acall::memory::{derive, link, map, retype, unmap};
 use acall::step::Caller;
@@ -1563,20 +1566,70 @@ fn thread_consumed(caller: &mut Tracked<Caller>, thread: u64) -> Option<u64> {
     }
 }
 
+/// What a count of read_tsc_fenced() is, in the lines that print one.
+#[cfg(target_arch = "x86_64")]
+const COUNTER_UNIT: &[u8] = b" TSC cycles";
+#[cfg(target_arch = "aarch64")]
+const COUNTER_UNIT: &[u8] = b" counter ticks";
+
+/// How many inspects of the console dom0 times between two reads of read_tsc_fenced(), and how many such
+/// batches it times with core 1 running nothing and keeps with core 1 inspecting. A host interrupt or a
+/// preemption lands in the batch it hit, which the minimum and the median leave out and the mean does
+/// not.
+const BATCH_CALLS: u64 = 256;
+const TIMED_BATCHES: usize = 100;
+
+/// The cycles one batch of BATCH_CALLS inspects of dom0's console slot took, each accepted and naming a
+/// console, or none when one was not.
+fn timed_inspects(caller: &mut Tracked<Caller>) -> Option<u64> {
+    let start = read_tsc_fenced();
+    for _ in 0..BATCH_CALLS {
+        if inspect(caller, operation::ROOT_CONSOLE_SLOT).map(|held| held.kind) != Ok(operation::KIND_CONSOLE) {
+            return None;
+        }
+    }
+    Some(read_tsc_fenced().wrapping_sub(start))
+}
+
+/// Whether, for `batches`, the cycles of some batches of BATCH_CALLS inspects, dom0 prints one line
+/// `dom0 inspect <what>:` with the minimum, the median and the mean cycles per call over them, the unit,
+/// and how many batches of how many calls they were. `batches` comes back sorted.
+fn print_batches(what: &[u8], batches: &mut [u64]) -> bool {
+    if batches.is_empty() {
+        return false;
+    }
+    let count = batches.len() as u64;
+    batches.sort_unstable();
+    let middle = batches.len() / 2;
+    let median = if batches.len() % 2 == 0 { (batches[middle - 1] + batches[middle]) / 2 } else { batches[middle] };
+    let total: u64 = batches.iter().sum();
+    print_parts(&[b"dom0 inspect ", what, b":"]) == operation::STATUS_OK
+        && print_count(b" min ", batches[0] / BATCH_CALLS, b"") == operation::STATUS_OK
+        && print_count(b", median ", median / BATCH_CALLS, b"") == operation::STATUS_OK
+        && print_count(b", mean ", total / (count * BATCH_CALLS), b"") == operation::STATUS_OK
+        && print_parts(&[COUNTER_UNIT, b" per call"]) == operation::STATUS_OK
+        && print_count(b" over ", count, b" batches") == operation::STATUS_OK
+        && print_count(b" of ", BATCH_CALLS, b" calls\n") == operation::STATUS_OK
+}
+
 /// Whether a thread of dom0's child on core 1 makes invocations while dom0 makes its own on core 0. It
 /// reuses what switched_thread_held set up in the space of the child whose capability is in `process`, as
 /// core_1_thread_held does: the leaf in the child's root entry CHILD_OWN_ENTRY takes in its third slot a
 /// capability with control to the seventh thread the thread check bound to the child. That thread's frame
 /// gets the entry dom0_child_invoke, CHILD_INVOKED_ADDRESS, CORE_1_INVOCATIONS and its own slot; dom0
 /// places it through the root's capability for core 1, the fifth thread having left that core running
-/// nothing, reads its count as zero and starts it. dom0 then inspects its console capability, each inspect
-/// accepted and naming a console, and after each reads the thread's count, until the count reaches
-/// CORE_1_INVOCATIONS, at which the thread suspends itself. The thread counts only inspects the kernel
-/// accepted, and dom0 must see its count change between two of its own inspects INVOKED_TURNS times, so
-/// both cores were invoking at once. dom0 prints its own count and the thread's. The first time it sees the
-/// count move, the thread has entered the kernel, and dom0 inspects the thread for its consumed cycles;
-/// once the thread suspended itself it inspects it again, every entry of the thread since having charged
-/// it, and prints both and that the second is larger.
+/// nothing, reads its count as zero and starts it. Before the start, with core 1 running nothing, dom0
+/// times TIMED_BATCHES batches of BATCH_CALLS inspects of its console capability. After it, dom0 inspects
+/// its console capability in timed batches, each inspect accepted and naming a console, and after each
+/// batch reads the thread's count, until the count reaches CORE_1_INVOCATIONS, at which the thread
+/// suspends itself. The thread counts only inspects the kernel accepted, and dom0 must see its count
+/// change across one of its own batches INVOKED_TURNS times, so both cores were invoking at once. It keeps
+/// the first TIMED_BATCHES batches across which the count moved from above zero to below
+/// CORE_1_INVOCATIONS, so the thread was inspecting from the batch's start to its end. The first time it
+/// sees the count move, dom0 inspects the thread for its consumed cycles; once the thread suspended itself
+/// it inspects it again, every entry of the thread since having charged it. dom0 prints its own count and
+/// the thread's, the consumed cycles before and after and that the second is larger, then the batches
+/// alone and the batches contended by print_batches.
 fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> bool {
     let entry = dom0_child_entry as *const () as u64;
     let invoke = dom0_child_invoke as *const () as u64;
@@ -1587,6 +1640,13 @@ fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> boo
         return false;
     };
     let arguments = [CHILD_INVOKED_ADDRESS, CORE_1_INVOCATIONS, own];
+    let mut alone = [0u64; TIMED_BATCHES];
+    for batch in alone.iter_mut() {
+        let Some(cycles) = timed_inspects(caller) else {
+            return false;
+        };
+        *batch = cycles;
+    }
     let started = invoke & !0xfff == entry & !0xfff
         && derive(caller, thread, operation::through(process, own), RIGHT_CONTROL, held.base, held.order).status
             == operation::STATUS_OK
@@ -1604,15 +1664,21 @@ fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> boo
     let mut turns = 0;
     let mut last = 0;
     let mut before = None;
+    let mut contended = [0u64; TIMED_BATCHES];
+    let mut kept = 0;
     while last < CORE_1_INVOCATIONS && ours < CORE_0_INVOCATIONS {
-        if inspect(caller, operation::ROOT_CONSOLE_SLOT).map(|held| held.kind) != Ok(operation::KIND_CONSOLE) {
+        let Some(cycles) = timed_inspects(caller) else {
             return false;
-        }
-        ours += 1;
+        };
+        ours += BATCH_CALLS;
         // As above: the thread on core 1 is the only other writer of this word.
         let now = unsafe { theirs.read_volatile() };
         if now != last {
             turns += 1;
+            if last > 0 && now < CORE_1_INVOCATIONS && kept < TIMED_BATCHES {
+                contended[kept] = cycles;
+                kept += 1;
+            }
             last = now;
             if before.is_none() {
                 before = thread_consumed(caller, thread);
@@ -1624,12 +1690,15 @@ fn invoked_beside_core_1_held(caller: &mut Tracked<Caller>, process: u64) -> boo
     };
     last == CORE_1_INVOCATIONS
         && turns >= INVOKED_TURNS
+        && kept > 0
         && print_count(INVOKED_DOM0_HEAD, ours, INVOKED_DOM0_TAIL) == operation::STATUS_OK
         && print_count(INVOKED_THREAD_HEAD, last, INVOKED_THREAD_TAIL) == operation::STATUS_OK
         && print_count(CONSUMED_BEFORE_HEAD, before, b"\n") == operation::STATUS_OK
         && print_count(CONSUMED_AFTER_HEAD, after, b"\n") == operation::STATUS_OK
         && after > before
         && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, CONSUMED_GREW) } == operation::STATUS_OK
+        && print_batches(b"alone", &mut alone)
+        && print_batches(b"contended", &mut contended[..kept])
 }
 
 /// What dom0 prints before it unmaps a page in its child's space that a thread of the child on core 1

@@ -84,7 +84,8 @@ impl CounterSource for HardwareCounters {
     }
 }
 
-/// Reads a serialized timestamp counter (`lfence; rdtsc; lfence` on x86_64, `isb; mrs cntvct_el0` on aarch64).
+/// Reads a serialized timestamp counter (`lfence; rdtsc; lfence` on x86_64, `isb; mrs cntvct_el0; isb` on aarch64),
+/// fenced on both sides so the read cannot reorder across instructions around it (Intel SDM Vol. 2B, RDTSC; Arm ARM, Generic Timer).
 #[inline]
 pub fn read_tsc_fenced() -> u64 {
     #[cfg(target_arch = "x86_64")]
@@ -110,6 +111,7 @@ pub fn read_tsc_fenced() -> u64 {
             asm!(
                 "isb",
                 "mrs {ticks}, cntvct_el0",
+                "isb",
                 ticks = out(reg) ticks,
                 options(nomem, nostack, preserves_flags)
             );
