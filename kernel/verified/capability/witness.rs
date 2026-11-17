@@ -518,7 +518,10 @@ proof fn lemma_sealed_held_once(k: CapKernel, p: usize, pn: usize, x: usize, tn:
 /// rest from the state boot left.
 pub open spec fn witness_entered(pre: CapKernel, post: CapKernel, process: usize, t: usize) -> bool {
     &&& post.list.seq@[0] == pre.list.seq@[0]
-    &&& forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live ==> post.list.nodes@[j].live
+    &&& forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live ==> {
+        &&& post.list.nodes@[j].live
+        &&& post.list.nodes@[j].depth == pre.list.nodes@[j].depth
+    }
     &&& forall|r: usize, i: usize, n: usize, p: Payload|
         #[trigger] pre.slot_holds(r, i, n, p) ==> post.slot_holds(r, i, n, p)
     &&& post.tables == pre.tables
@@ -1667,9 +1670,11 @@ impl CapKernel {
             assert(pn != core_cap && pn != leaf@);
             assert(s1.list.nodes@[leaf@ as int].depth == 1);
             assert(s1.list.nodes@[core_cap as int].depth == 1);
-            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] s0.list.nodes@[j].live implies s1.list.nodes@[j].live by {
+            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] s0.list.nodes@[j].live
+                implies s1.list.nodes@[j].live && s1.list.nodes@[j].depth == s0.list.nodes@[j].depth by {
                 if j != pn {
                     assert(s1.list.nodes@[j].live == s0.list.nodes@[j].live);
+                    assert(s1.list.nodes@[j].depth == s0.list.nodes@[j].depth);
                 }
             }
             assert forall|r: usize, i: usize, n: usize, p: Payload|
@@ -7609,34 +7614,85 @@ impl CapKernel {
         r
     }
 
-    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
-    /// free one past those boot's tables took from the first untyped: retype a leaf into root entry 2
-    /// of the root's table at the block's third and fourth pages, and a notification at its first page
-    /// into slot 3 of the leaf. Both steps succeed, and at the end the root holds the notification's
-    /// capability, with badge 0, which names a live notification with no thread waiting and a word of 0.
-    pub fn witness_root_retypes_a_notification(
+    /// Exposes the untyped capability and free block at `base` from `booted` so callers can keep
+    /// `CapKernel::booted` hidden across notification witness proofs.
+    proof fn lemma_booted_notification_setup(
+        &self,
+        root: usize,
+        process: usize,
+        leaf: usize,
+        frames: usize,
+        t: usize,
+        free: Seq<(usize, usize)>,
+        image: Seq<ImageRun>,
+        untyped: usize,
+        frame: usize,
+        present: Seq<bool>,
+        kernel_root: usize,
+        base: usize,
+    )
+        requires
+            self.booted(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root),
+            image_tables_bound(image) + 1 <= untyped_tables(page_block_payload(runs_blocks(free, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free, MAX_ORDER as nat)[0]).base, image_tables_bound(image)),
+        ensures
+            0 < untyped,
+            ({
+                let first = page_block_payload(runs_blocks(free, MAX_ORDER as nat)[0]);
+                let u = (leaf + ROOT_UNTYPED_SLOT) as usize;
+                &&& self.slot_holds(process, ROOT_UNTYPED_SLOT, u, first)
+                &&& self.list.nodes@[u as int].live
+                &&& self.list.nodes@[u as int].depth == 1
+                &&& self.tables.leaf(process, 2) == NO_LEAF
+                &&& self.root_table_block(process, base)
+            }),
+    {
+        lemma_tables_bound_nonneg(image);
+    }
+
+    /// Helper shared by the notification witnesses: retype leaf 2 of `process`'s table and a
+    /// fresh notification at `base` in `WITNESS_FRAME_SLOT`, keeping `cores`, `threads`, and
+    /// `processes.records` as they were. Named `witness_` so a root witness that returns its
+    /// pair still reaches `retype_leaf` and `retype_notification`.
+    #[verifier::spinoff_prover]
+    fn witness_retype_notification(
         &mut self,
-        root: Ghost<usize>,
         process: usize,
         leaf: Ghost<usize>,
-        frames: Ghost<usize>,
-        t: Ghost<usize>,
         free: Ghost<Seq<(usize, usize)>>,
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
-        frame: Ghost<usize>,
-        present: Ghost<Seq<bool>>,
-        kernel_root: Ghost<usize>,
         base: usize,
     ) -> (ret: (bool, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(process),
+            old(self).root_live(process),
+            old(self).processes.records@.contains_key(process),
+            !old(self).processes.records@[process].value().dead,
+            0 < untyped@,
+            leaf@ + LEAF_BYTES <= NODE_SPACE,
+            old(self).tables.leaf(process, 0) == leaf@,
+            old(self).tables.leaf(process, 2) == NO_LEAF,
+            old(self).slot_holds(
+                process,
+                ROOT_UNTYPED_SLOT,
+                (leaf@ + ROOT_UNTYPED_SLOT) as usize,
+                page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]),
+            ),
+            old(self).list.nodes@[(leaf@ + ROOT_UNTYPED_SLOT) as int].live,
+            old(self).list.nodes@[(leaf@ + ROOT_UNTYPED_SLOT) as int].depth == 1,
+            old(self).slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)),
             image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            old(self).root_table_block(process, base),
         ensures
             final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
             ret.0,
             ret.1,
+            final(self).cores == old(self).cores,
+            final(self).threads == old(self).threads,
+            final(self).processes.records == old(self).processes.records,
             ({
                 let ne = (base + 2 * PAGE_SZ + 3) as usize;
                 &&& final(self).wf()
@@ -7651,6 +7707,7 @@ impl CapKernel {
                 &&& witness_empty(*final(self), process, WITNESS_BADGED_SLOT, (base + 2 * PAGE_SZ + 2) as usize)
                 &&& witness_retyped_kept(*final(self), process, base, ne)
                 &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].object is Notification
+                &&& base + PROCESS_BYTES <= NODE_SPACE
             }),
     {
         hide(CapKernel::wf);
@@ -7663,8 +7720,6 @@ impl CapKernel {
         proof {
             lemma2_to64();
             lemma_tables_bound_nonneg(image@);
-            // The root's first untyped, its process capability and its record.
-            assert(0 < untyped@);
             assert(s0.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
             assert(s0.list.nodes@[u as int].depth == 1);
             assert(s0.tables.is_cap(&s0.list, u));
@@ -7680,7 +7735,6 @@ impl CapKernel {
             s0.lemma_process_cap(pn);
             assert(s0.processes.records@.contains_key(process));
             assert(!s0.processes.records@[process].value().dead);
-            // The free block.
             assert(s0.root_untyped(process) == u);
             lemma_pow2_pos(first.order as nat);
             lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
@@ -7689,7 +7743,6 @@ impl CapKernel {
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
             assert(base == first.base + itb * PROCESS_BYTES);
             assert(cursor_block(first.base, itb) == cursor_block(base, 0));
-            assert(s0.root_table_block(process, cursor_block(first.base, itb)));
             assert(witness_block(s0, cursor_block(base, 0), first));
             assert(block_bytes(3) == PROCESS_BYTES);
             assert(block_bytes(1) == 2 * PAGE_SZ);
@@ -7825,6 +7878,160 @@ impl CapKernel {
             assert(witness_retyped_kept(s2, process, base, ne));
         }
         (ok1, ok2)
+    }
+
+    /// Helper shared by the badged-notification witnesses: derive a send capability with badge 2^62
+    /// from the notification at `WITNESS_FRAME_SLOT` into `WITNESS_BADGED_SLOT`, keeping `cores`,
+    /// `threads.records`, `processes.records`, and `endpoints.records` as they were.
+    fn derive_witness_badged_notification(&mut self, process: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(process),
+            old(self).root_live(process),
+            base % PAGE_SZ == 0,
+            base + PROCESS_BYTES <= NODE_SPACE,
+            old(self).blocks.tracks((base / PAGE_SZ) as int),
+            old(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1,
+            old(self).blocks.pages@[(base / PAGE_SZ) as int].object is Notification,
+            old(self).endpoints.records@.contains_key(base),
+            old(self).endpoints.records@[base].value() == fresh_record(),
+            old(self).slot_holds(process, WITNESS_FRAME_SLOT, (base + 2 * PAGE_SZ + 3) as usize, notification_of(base)),
+            old(self).list.nodes@[base + 2 * PAGE_SZ + 3].depth == 2,
+            witness_empty(*old(self), process, WITNESS_BADGED_SLOT, (base + 2 * PAGE_SZ + 2) as usize),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            ret,
+            final(self).cores == old(self).cores,
+            final(self).threads.records == old(self).threads.records,
+            final(self).processes.records == old(self).processes.records,
+            final(self).endpoints.records == old(self).endpoints.records,
+            ({
+                let ne = (base + 2 * PAGE_SZ + 3) as usize;
+                let n = (base + 2 * PAGE_SZ + 2) as usize;
+                let p = final(self).payload_of(n);
+                &&& final(self).wf()
+                &&& final(self).slot_holds(process, WITNESS_BADGED_SLOT, n, p)
+                &&& p.kind is Notification
+                &&& p.base == base
+                &&& p.rights == right_bit(Right::Send)
+                &&& p.badge == 0x4000_0000_0000_0000 // not a page size: bit 62 of the word
+                &&& final(self).list.is_child(ne, n)
+                &&& final(self).list.nodes@[n as int].depth == 3
+                &&& final(self).slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base))
+                &&& final(self).endpoints.records@.contains_key(base)
+                &&& final(self).endpoints.records@[base].value() == fresh_record()
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& final(self).root_live(process)
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s1 = *self;
+        let send: u32 = 16;
+        let badge: usize = 0x4000_0000_0000_0000; // not a page size: bit 62 of the word
+        let to = Position { through: None, index: WITNESS_BADGED_SLOT };
+        let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
+        let ghost n = (base + 2 * PAGE_SZ + 2) as usize;
+        proof {
+            lemma2_to64();
+            assert(right_bit(Right::Send) == 16) by (compute_only);
+            assert(notification_of(base).rights == NOTIFICATION_RIGHTS);
+            assert(16u32 & !NOTIFICATION_RIGHTS == 0) by (compute_only);
+            assert(notification_of(base).badge == 0);
+            assert(notification_of(base).order == 0);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_FRAME_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_FRAME_SLOT) == ne);
+            assert(s1.is_cap(ne));
+            assert(s1.payload_of(ne).kind is Notification);
+            assert(s1.list.nodes@[ne as int].depth == 2);
+            assert(2usize < MAX_DEPTH) by (compute_only);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_BADGED_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_BADGED_SLOT) == n);
+            assert(!s1.list.nodes@[n as int].live);
+            s1.lemma_notification_derive(process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge);
+            assert(badge < NOTIFICATION_BADGE_LIMIT);
+            assert(block_refs(&s1.blocks, BlockRef::Small(base / PAGE_SZ)) == 1);
+            assert(s1.can_derive_between(process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge));
+            assert(s1.table_at(process, None) == Some(process));
+            assert(s1.can_derive_at(process, WITNESS_FRAME_SLOT, to, send, base, 0, badge));
+        }
+        let ok = self.derive(process, WITNESS_FRAME_SLOT, to, send, base, 0, badge);
+        proof {
+            let s2 = *self;
+            assert(ok);
+            assert(Self::cap_derived_between(s1, s2, process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge));
+            assert(s2.payload_of(n) == badged_child_of(notification_of(base), send, base, 0, badge));
+            assert(s2.payload_of(n).rights == 16);
+            assert(s2.payload_of(n).badge == badge);
+            assert(s2.list.nodes@[n as int].depth == 3);
+            assert(Self::derive_step(s1, s2, n));
+            Self::lemma_slot_stays(s1, s2, process, WITNESS_BADGED_SLOT);
+            assert(s2.slot_holds(process, WITNESS_BADGED_SLOT, n, s2.payload_of(n)));
+            assert(Self::cap_derived_at(s1, s2, process, WITNESS_FRAME_SLOT, to, send, base, 0, badge));
+            assert(s2.processes.records == s1.processes.records);
+            assert(s2.root_live(process));
+            assert(Self::derive_kept(s1, s2));
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.endpoints.records@[base].value() == fresh_record());
+            Self::lemma_slot_stays(s1, s2, process, WITNESS_FRAME_SLOT);
+            Self::lemma_caps_frame(s1, s2, n, n, ne);
+            assert(s2.slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base)));
+        }
+        ok
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: retype a leaf into root entry 2
+    /// of the root's table at the block's third and fourth pages, and a notification at its first page
+    /// into slot 3 of the leaf. Both steps succeed, and at the end the root holds the notification's
+    /// capability, with badge 0, which names a live notification with no thread waiting and a word of 0.
+    pub fn witness_root_retypes_a_notification(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+    ) -> (ret: (bool, bool))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            ret.0,
+            ret.1,
+            ({
+                let ne = (base + 2 * PAGE_SZ + 3) as usize;
+                &&& final(self).wf()
+                &&& final(self).slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base))
+                &&& final(self).view().holds(process, ne)
+                &&& final(self).endpoints.records@.contains_key(base)
+                &&& final(self).endpoints.records@[base].value() == fresh_record()
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& final(self).root_live(process)
+                &&& final(self).list.nodes@[ne as int].depth == 2
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
+                &&& witness_empty(*final(self), process, WITNESS_BADGED_SLOT, (base + 2 * PAGE_SZ + 2) as usize)
+                &&& witness_retyped_kept(*final(self), process, base, ne)
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].object is Notification
+                &&& base + PROCESS_BYTES <= NODE_SPACE
+            }),
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@);
+            s0.lemma_booted_notification_setup(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@, base);
+        }
+        self.witness_retype_notification(process, leaf, free, image, untyped, base)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
@@ -7973,65 +8180,25 @@ impl CapKernel {
     {
         hide(CapKernel::wf);
         let _ = self.witness_root_retypes_a_notification(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
-        let ghost s1 = *self;
-        let send: u32 = 16;
-        let badge: usize = 0x4000_0000_0000_0000; // not a page size: bit 62 of the word
-        let to = Position { through: None, index: WITNESS_BADGED_SLOT };
-        let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
-        let ghost n = (base + 2 * PAGE_SZ + 2) as usize;
+        let ghost ep = (base / PAGE_SZ) as int;
         proof {
-            lemma2_to64();
-            assert(right_bit(Right::Send) == 16) by (compute_only);
-            assert(notification_of(base).rights == NOTIFICATION_RIGHTS);
-            assert(16u32 & !NOTIFICATION_RIGHTS == 0) by (compute_only);
-            assert(notification_of(base).badge == 0);
-            assert(notification_of(base).order == 0);
-            assert(s1.tables.has_slot(&s1.list, process, WITNESS_FRAME_SLOT));
-            assert(s1.tables.node_of(process, WITNESS_FRAME_SLOT) == ne);
-            assert(s1.is_cap(ne));
-            assert(s1.payload_of(ne).kind is Notification);
-            assert(s1.tables.has_slot(&s1.list, process, WITNESS_BADGED_SLOT));
-            assert(s1.tables.node_of(process, WITNESS_BADGED_SLOT) == n);
-            assert(!s1.list.nodes@[n as int].live);
-            s1.lemma_notification_derive(process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge);
-            assert(badge < NOTIFICATION_BADGE_LIMIT);
-            assert(block_refs(&s1.blocks, BlockRef::Small(base / PAGE_SZ)) == 1);
-            assert(s1.can_derive_between(process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge));
-            assert(s1.table_at(process, None) == Some(process));
-            assert(s1.can_derive_at(process, WITNESS_FRAME_SLOT, to, send, base, 0, badge));
+            assert(base % PAGE_SZ == 0) by {
+                reveal(CapKernel::wf);
+            }
+            assert(self.blocks.tracks(ep)) by {
+                reveal(CapKernel::wf);
+            }
         }
-        let ok = self.derive(process, WITNESS_FRAME_SLOT, to, send, base, 0, badge);
-        proof {
-            let s2 = *self;
-            assert(ok);
-            assert(Self::cap_derived_between(s1, s2, process, WITNESS_FRAME_SLOT, process, WITNESS_BADGED_SLOT, send, base, 0, badge));
-            assert(s2.payload_of(n) == badged_child_of(notification_of(base), send, base, 0, badge));
-            assert(s2.payload_of(n).rights == 16);
-            assert(s2.payload_of(n).badge == badge);
-            assert(s2.list.nodes@[n as int].depth == 3);
-            assert(Self::derive_step(s1, s2, n));
-            Self::lemma_slot_stays(s1, s2, process, WITNESS_BADGED_SLOT);
-            assert(s2.slot_holds(process, WITNESS_BADGED_SLOT, n, s2.payload_of(n)));
-            assert(Self::cap_derived_at(s1, s2, process, WITNESS_FRAME_SLOT, to, send, base, 0, badge));
-            assert(s2.processes.records == s1.processes.records);
-            assert(s2.root_live(process));
-            assert(Self::derive_kept(s1, s2));
-            assert(s2.tables.roots@.contains_key(process));
-            assert(s2.endpoints.records@[base].value() == fresh_record());
-            Self::lemma_slot_stays(s1, s2, process, WITNESS_FRAME_SLOT);
-            Self::lemma_caps_frame(s1, s2, n, n, ne);
-            assert(s2.slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base)));
-        }
-        ok
+        self.derive_witness_badged_notification(process, base)
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
-    /// free one past those boot's tables took from the first untyped: retype a notification and derive
-    /// from it a send capability with badge 2^62, as witness_root_derives_a_badged_notification does,
-    /// then signal through the badged capability, which no thread waits behind, and wait through the
-    /// notification's own capability, which has the receive right. Both succeed: the wait returns the
-    /// badge at once and leaves the word zero. The use is a source telling a waiter which source
-    /// signalled. design/witness-per-way-an-operation-succeeds/,
+    /// free one past those boot's tables took from the first untyped: enter the root's thread on core 0
+    /// with `report`, retype a notification and derive from it a send capability with badge 2^62,
+    /// then signal through the badged capability, which no thread waits behind, and wait from core 0
+    /// with frame `registers` through the notification's own capability, which has the receive right.
+    /// Both succeed: the wait returns `Returned(2^62)` at once and leaves the word zero. The use is a
+    /// source telling a waiter which source signalled. design/witness-per-way-an-operation-succeeds/,
     /// design/notification-word-reserves-the-waiter-bit/.
     #[verifier::spinoff_prover]
     pub fn witness_root_signals_and_waits_on_a_notification(
@@ -8040,7 +8207,7 @@ impl CapKernel {
         process: usize,
         leaf: Ghost<usize>,
         frames: Ghost<usize>,
-        t: Ghost<usize>,
+        t: usize,
         free: Ghost<Seq<(usize, usize)>>,
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
@@ -8048,24 +8215,59 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         base: usize,
-    ) -> (ret: (bool, Option<u64>))
+        registers: Registers,
+        report: Processor,
+    ) -> (ret: (bool, WaitStep))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            report_tags_tlb(0, report),
         ensures
             ret.0,
-            ret.1 is Some,
-            ret.1->0 == 0x4000_0000_0000_0000u64, // not a page size: bit 62 of the word
+            ret.1 is Returned,
+            ret.1->Returned_0 == 0x4000_0000_0000_0000u64, // not a page size: bit 62 of the word
             final(self).wf(),
             final(self).endpoints.records@[base].value().word == 0,
     {
         hide(CapKernel::wf);
-        let _ = self.witness_root_derives_a_badged_notification(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
+            s0.lemma_booted_notification_setup(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@, base);
+        }
+        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, report);
+        let ghost s_ent = *self;
+        proof {
+            assert(s_ent.tables == s0.tables);
+            assert(s_ent.blocks == s0.blocks);
+            assert(s_ent.processes == s0.processes);
+            assert(s_ent.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s_ent.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            assert(s_ent.list.nodes@[u as int].live);
+            assert(s_ent.list.nodes@[u as int].depth == 1);
+            assert(s_ent.root_table_block(process, base));
+            assert(s_ent.caller_live(0, process));
+        }
+        let _ = self.witness_retype_notification(process, leaf, free, image, untyped, base);
+        let ghost s_ret = *self;
+        proof {
+            assert(base % PAGE_SZ == 0) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s_ret.blocks.tracks((base / PAGE_SZ) as int)) by {
+                reveal(CapKernel::wf);
+            }
+        }
+        let _ = self.derive_witness_badged_notification(process, base);
         let ghost s1 = *self;
         let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
-        let ghost n = (base + 2 * PAGE_SZ + 2) as usize;
         proof {
+            assert(s1.caller_live(0, process));
             assert(right_bit(Right::Send) == 16) by (compute_only);
             assert(16u32 & SEND_RIGHT != 0) by (compute_only);
             assert(NOTIFICATION_RIGHTS & RECEIVE_RIGHT != 0) by (compute_only);
@@ -8084,13 +8286,214 @@ impl CapKernel {
             assert(0x4000_0000_0000_0000u64 & !SIGNAL_BITS == 0) by (compute_only); // not a page size: the badge
             assert(s2.endpoints.records@[base].value().word == w);
             assert(s2.tables == s1.tables && s2.list == s1.list && s2.processes == s1.processes);
+            assert(s2.threads == s1.threads && s2.cores == s1.cores);
+            assert(s2.caller_live(0, process));
             assert(s2.slot_holds(process, WITNESS_FRAME_SLOT, ne, notification_of(base)));
             assert(s2.holds_notification(process, WITNESS_FRAME_SLOT, RECEIVE_RIGHT));
             assert(s2.notification_at(process, WITNESS_FRAME_SLOT) == base);
-            assert(s2.can_wait(process, WITNESS_FRAME_SLOT));
+            assert(s2.wait_signalled(process, WITNESS_FRAME_SLOT));
         }
-        let word = self.wait(process, WITNESS_FRAME_SLOT);
-        (ok, word)
+        let step = self.wait(0, process, WITNESS_FRAME_SLOT, registers);
+        (ok, step)
+    }
+
+    /// `base` is a free page of the root's untyped, so it is not a queue and `t` is not listed on it.
+    #[verifier::spinoff_prover]
+    proof fn lemma_blocks_on_a_notification_unqueued(&self, process: usize, base: usize, t: usize)
+        requires
+            self.wf(),
+            self.root_table_block(process, base),
+            self.threads.records@.contains_key(t),
+        ensures
+            !self.endpoints.records@.contains_key(base),
+            self.threads.records@[t].value().queued != base,
+    {
+        reveal(CapKernel::wf);
+        let page = (base / PAGE_SZ) as int;
+        assert(block_within(base, 3, self.payload_of(self.root_untyped(process))));
+        lemma2_to64();
+        assert(pow2(3) == 8);
+        assert(block_bytes(3) == PROCESS_BYTES as int);
+        assert(base as int % (PROCESS_BYTES as int) == 0);
+        lemma_block_page(base, 0);
+        assert(base % PAGE_SZ == 0);
+        assert(NONE % PAGE_SZ == PAGE_MASK);
+        assert(base != NONE);
+        assert(self.blocks.pages@[page].kind is Free);
+        assert(endpoints_wf(&self.list, &self.tables, &self.endpoints, &self.blocks));
+        if self.endpoints.records@.contains_key(base) {
+            assert(endpoint_wf(&self.endpoints, &self.blocks, base));
+            assert(self.blocks.pages@[page].kind is Base);
+        }
+        assert(!self.endpoints.records@.contains_key(base));
+        reveal(waits_wf);
+        let q = self.threads.records@[t].value().queued;
+        if q == base {
+            assert(q != NONE);
+            assert(self.endpoints.records@.contains_key(q));
+        }
+        assert(self.threads.records@[t].value().queued != base);
+    }
+
+    /// From a live caller `t` on core 0 that holds a receive right on a fresh notification at `base`
+    /// and is not already queued there: wait blocks on that notification.
+    #[verifier::spinoff_prover]
+    fn witness_root_blocks_on_a_notification_wait(
+        &mut self,
+        process: usize,
+        t: usize,
+        base: usize,
+        registers: Registers,
+    ) -> (ret: WaitStep)
+        requires
+            old(self).wf(),
+            old(self).caller_live(0, process),
+            old(self).cores@[0].current_thread == Some(t),
+            old(self).holds_notification(process, WITNESS_FRAME_SLOT, RECEIVE_RIGHT),
+            old(self).notification_at(process, WITNESS_FRAME_SLOT) == base,
+            old(self).notification_record(process, WITNESS_FRAME_SLOT) == fresh_record(),
+            old(self).threads.records@.contains_key(t),
+            old(self).threads.records@[t].value().queued != base,
+            old(self).endpoints.records@.contains_key(base),
+            old(self).endpoints.records@[base].value() == fresh_record(),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            ret is Blocked,
+            final(self).wf(),
+            final(self).cores@[0].current_thread is None,
+            final(self).threads.records@[t].value().state == (ThreadState::Blocked { object: base }),
+            final(self).threads.records@[t].value().frame == partial_frame(registers),
+            final(self).threads.records@[t].value().saved is Partial,
+            final(self).threads.records@[t].value().save@ == (FrameSave::Syscall { frame: registers }),
+            final(self).endpoints.records@[base].value().waiters@ == seq![t],
+            final(self).endpoints.records@[base].value().word == WAITER_BIT,
+    {
+        hide(CapKernel::wf);
+        let ghost s1 = *self;
+        proof {
+            assert(0u64 & SIGNAL_BITS == 0) by (compute_only); // not a page size: zero signal bits
+            assert(s1.can_wait(0, process, WITNESS_FRAME_SLOT));
+            assert(!s1.wait_signalled(process, WITNESS_FRAME_SLOT));
+        }
+        let step = self.wait(0, process, WITNESS_FRAME_SLOT, registers);
+        proof {
+            let s2 = *self;
+            assert(step is Blocked);
+            assert(Self::wait_blocked(s1, s2, 0, process, WITNESS_FRAME_SLOT, registers));
+            let post_e = s2.endpoints.records@[base].value();
+            assert(s1.cores@[0].current_thread->Some_0 == t);
+            assert(post_e.word == fresh_record().word | WAITER_BIT);
+            assert(0u64 | WAITER_BIT == WAITER_BIT) by (compute_only); // not a page size: WAITER_BIT
+            assert(post_e.word == WAITER_BIT);
+            assert(fresh_record().waiters@ == Seq::<usize>::empty());
+            assert(post_e.waiters@ == fresh_record().waiters@.push(t));
+            assert(post_e.waiters@ =~= seq![t]);
+            assert(s2.threads.records@[t].value().state == (ThreadState::Blocked { object: base }));
+            assert(s2.threads.records@[t].value().frame == partial_frame(registers));
+            assert(s2.threads.records@[t].value().saved is Partial);
+            assert(entry_frame_save(registers, FrameKind::Partial) == (FrameSave::Syscall { frame: registers }));
+            assert(s2.threads.records@[t].value().save@ == (FrameSave::Syscall { frame: registers }));
+            assert(s2.cores@[0].current_thread is None);
+            assert(s2.wf());
+            assert(s2.blocks.pages@.len() == s1.blocks.pages@.len());
+        }
+        step
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// free one past those boot's tables took from the first untyped: enter the root's thread on core 0
+    /// with `report`, retype a notification at `base` into `WITNESS_FRAME_SLOT`, and wait from core 0
+    /// with frame `registers` through that capability while its word is 0. Wait blocks the caller on
+    /// the notification's queue: returns `Blocked`, leaves core 0 idle (`current_thread is None`),
+    /// saves `partial_frame(registers)` as `FrameKind::Partial` / `FrameSave::Syscall { frame: registers }`,
+    /// sets the thread `Blocked` on `base`, places it alone in `base`'s queue, and sets `WAITER_BIT`.
+    /// The use is a receiver blocking until a source signals.
+    /// design/witness-per-way-an-operation-succeeds/,
+    /// design/notification-word-reserves-the-waiter-bit/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_blocks_on_a_notification(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: Ghost<usize>,
+        base: usize,
+        registers: Registers,
+        report: Processor,
+    ) -> (ret: WaitStep)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
+            image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            report_tags_tlb(0, report),
+        ensures
+            final(self).blocks.pages@.len() == old(self).blocks.pages@.len(),
+            ret is Blocked,
+            final(self).wf(),
+            final(self).cores@[0].current_thread is None,
+            final(self).threads.records@[t].value().state == (ThreadState::Blocked { object: base }),
+            final(self).threads.records@[t].value().frame == partial_frame(registers),
+            final(self).threads.records@[t].value().saved is Partial,
+            final(self).threads.records@[t].value().save@ == (FrameSave::Syscall { frame: registers }),
+            final(self).endpoints.records@[base].value().waiters@ == seq![t],
+            final(self).endpoints.records@[base].value().word == WAITER_BIT,
+    {
+        hide(CapKernel::wf);
+        hide(CapKernel::booted);
+        let ghost s0 = *self;
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        proof {
+            lemma_booted_entry(s0, root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@);
+            s0.lemma_booted_notification_setup(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@, base);
+        }
+        self.witness_root_thread_enters(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, report);
+        let ghost s_ent = *self;
+        proof {
+            assert(s_ent.tables == s0.tables);
+            assert(s_ent.blocks == s0.blocks);
+            assert(s_ent.processes == s0.processes);
+            assert(s_ent.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s_ent.slot_holds(process, ROOT_PROCESS_SLOT, (leaf@ + 1) as usize, process_of(process)));
+            assert(s_ent.list.nodes@[u as int].live);
+            assert(s_ent.list.nodes@[u as int].depth == 1);
+            assert(s_ent.root_table_block(process, base));
+            assert(s_ent.caller_live(0, process));
+            assert(s_ent.threads.records@.contains_key(t));
+            s_ent.lemma_blocks_on_a_notification_unqueued(process, base, t);
+        }
+        let _ = self.witness_retype_notification(process, leaf, free, image, untyped, base);
+        let ghost s1 = *self;
+        let ghost ne = (base + 2 * PAGE_SZ + 3) as usize;
+        proof {
+            assert(s_ent.cores@[0].current_thread == Some(t));
+            assert(s1.cores == s_ent.cores);
+            assert(s1.cores@[0].current_thread == Some(t));
+            assert(s_ent.blocks.pages@.len() == s0.blocks.pages@.len());
+            assert(s1.blocks.pages@.len() == s0.blocks.pages@.len());
+            assert(s1.caller_live(0, process));
+            assert(s1.threads.records@.contains_key(t));
+            assert(s1.threads.records@[t].value().queued != base);
+            assert(NOTIFICATION_RIGHTS & RECEIVE_RIGHT != 0) by (compute_only);
+            assert(s1.holds_notification(process, WITNESS_FRAME_SLOT, RECEIVE_RIGHT));
+            assert(s1.notification_at(process, WITNESS_FRAME_SLOT) == base);
+            assert(s1.notification_record(process, WITNESS_FRAME_SLOT) == fresh_record());
+            assert(s1.endpoints.records@.contains_key(base));
+            assert(s1.endpoints.records@[base].value() == fresh_record());
+        }
+        let step = self.witness_root_blocks_on_a_notification_wait(process, t, base, registers);
+        proof {
+            assert(self.blocks.pages@.len() == s0.blocks.pages@.len());
+        }
+        step
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

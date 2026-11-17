@@ -65,7 +65,7 @@ impl CapKernel {
         process: usize,
         leaf: Ghost<usize>,
         frames: Ghost<usize>,
-        t: Ghost<usize>,
+        t: usize,
         free: Ghost<Seq<(usize, usize)>>,
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
@@ -73,15 +73,18 @@ impl CapKernel {
         present: Ghost<Seq<bool>>,
         kernel_root: Ghost<usize>,
         base: usize,
+        registers: Registers,
+        report: Processor,
     )
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@, kernel_root@),
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@, kernel_root@),
             image_tables_bound(image@) + 1 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            report_tags_tlb(0, report),
         ensures
             false,
     {
-        self.witness_root_signals_and_waits_on_a_notification(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base);
+        self.witness_root_signals_and_waits_on_a_notification(root, process, leaf, frames, t, free, image, untyped, frame, present, kernel_root, base, registers, report);
     }
 }
 

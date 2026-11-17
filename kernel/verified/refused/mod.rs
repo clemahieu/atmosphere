@@ -8,7 +8,8 @@
 //! not name change. QueueLock::new's ensures fails for a core that holds the lock rather than sitting idle, and acquire's
 //! and release's ensures fail for an unchanged core on the lock the operation borrows. kernel_init's
 //! Some at an unchanged kernel is not the booted state, charge does not leave the counter it was
-//! given, signal and wait do not write the notification word, print and power_off at the other bool
+//! given, signal does not write the notification word, wait neither clears signalled bits nor
+//! blocks the caller on its queue, print and power_off at the other bool
 //! are not what the slot holds, inspect's Some is not the slot's payload, and enter_flush does not
 //! bring a core that is behind the epoch up to it. tick's Switched and Dropped meet no unchanged
 //! kernel, and tick's Kept, where no selected thread preempts, is another result. switch_thread and
@@ -83,7 +84,8 @@ pub mod queue_lock_release;
 pub mod kernel_init_some;
 pub mod charge_returns;
 pub mod signal_ok;
-pub mod wait_some;
+pub mod wait_returned;
+pub mod wait_blocked;
 pub mod print_false;
 pub mod power_off_false;
 pub mod inspect_other;
@@ -167,6 +169,7 @@ use crate::capability::reach::{discharges, Effect, Right, saves_own_frame};
 use crate::capability::schedule::{at_back_of_priority, queued_at_back, thread_priority};
 use crate::capability::space::{fresh_root, space_of, SPACE_ROOT_PAGE, SpaceKind, Spaces};
 use crate::capability::reply::{fresh_reply, reply_of};
+use crate::capability::notification::WaitStep;
 use crate::capability::switch::TickStep;
 use crate::capability::view::bound_threads;
 use crate::capability::block::{Large, ObjectType, PageKind, SMALL_PAGES_MAX};
@@ -748,22 +751,63 @@ pub trait SignalOk {
     ;
 }
 
-/// `wait`'s Some where the word has a signalled bit and the kernel does not clear it.
-pub trait WaitSome {
-    proof fn unchanged(pre: CapKernel, post: CapKernel, root: usize, i: usize, ret: Option<u64>)
+/// `wait`'s Returned where the word has a signalled bit and the kernel does not clear it.
+pub trait WaitReturned {
+    proof fn unchanged(
+        pre: CapKernel,
+        post: CapKernel,
+        c: usize,
+        root: usize,
+        i: usize,
+        frame: Registers,
+        ret: WaitStep,
+    )
         requires
             pre.wf(),
-            pre.tables.roots@.contains_key(root),
-            pre.root_live(root),
-            pre.can_wait(root, i),
+            pre.caller_live(c as int, root),
+            pre.wait_signalled(root, i),
             post == pre,
-            ret is Some,
+            ret is Returned,
         ensures
             post.blocks.pages@.len() == pre.blocks.pages@.len(),
             post.wf(),
-            ret is Some == pre.can_wait(root, i),
-            ret is None ==> post == pre,
-            ret is Some ==> CapKernel::waited(pre, post, root, i, ret->0),
+            !(ret is Refused) == pre.can_wait(c as int, root, i),
+            ret is Returned == pre.wait_signalled(root, i),
+            ret is Blocked == (pre.can_wait(c as int, root, i) && !pre.wait_signalled(root, i)),
+            ret is Refused ==> post == pre,
+            ret is Returned ==> CapKernel::waited(pre, post, root, i, ret->Returned_0),
+            ret is Blocked ==> CapKernel::wait_blocked(pre, post, c as int, root, i, frame),
+    ;
+}
+
+/// `wait`'s Blocked where the word has no signalled bit and the kernel leaves the caller on its
+/// core instead of blocking it on the notification's queue.
+pub trait WaitBlocked {
+    proof fn unchanged(
+        pre: CapKernel,
+        post: CapKernel,
+        c: usize,
+        root: usize,
+        i: usize,
+        frame: Registers,
+        ret: WaitStep,
+    )
+        requires
+            pre.wf(),
+            pre.caller_live(c as int, root),
+            pre.can_wait(c as int, root, i),
+            !pre.wait_signalled(root, i),
+            post == pre,
+            ret is Blocked,
+        ensures
+            post.blocks.pages@.len() == pre.blocks.pages@.len(),
+            post.wf(),
+            !(ret is Refused) == pre.can_wait(c as int, root, i),
+            ret is Returned == pre.wait_signalled(root, i),
+            ret is Blocked == (pre.can_wait(c as int, root, i) && !pre.wait_signalled(root, i)),
+            ret is Refused ==> post == pre,
+            ret is Returned ==> CapKernel::waited(pre, post, root, i, ret->Returned_0),
+            ret is Blocked ==> CapKernel::wait_blocked(pre, post, c as int, root, i, frame),
     ;
 }
 

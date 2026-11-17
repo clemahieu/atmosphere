@@ -415,14 +415,17 @@ pub proof fn lemma_current_same(pre: Seq<CoreState>, post: Seq<CoreState>, a: Ma
     }
 }
 
-/// Thread record r, if Runnable or Running without a stop pending, has a placement on that core.
+/// Thread record r, if Runnable or Running without a stop pending, has a placement on that core,
+/// and if Blocked has both a placement and a process binding.
 pub open spec fn thread_placed_running(r: ThreadRecord) -> bool {
     &&& r.state is Runnable ==> r.placement is Some && r.placement->Some_0.core == r.state->Runnable_core
     &&& (r.state is Running && !r.pending_stop) ==> r.placement is Some && r.placement->Some_0.core == r.state->Running_core
+    &&& r.state is Blocked ==> r.placement is Some && r.process is Some
 }
 
 /// Every thread that is Runnable on a core, or Running on a core with no stop pending, has a
-/// placement on that core; one whose placement went has a stop pending. The boot thread too: boot
+/// placement on that core, and every Blocked thread keeps its placement and process binding; one
+/// whose placement or binding went has a stop pending or left Blocked. The boot thread too: boot
 /// places it before core 0 enters it. See design/cpu-time-as-capability/ and
 /// design/root-process-at-boot/.
 #[verifier::opaque]
@@ -430,7 +433,7 @@ pub open spec fn placed_running_wf(records: Map<usize, PointsTo<ThreadRecord>>) 
     forall|t: usize| #[trigger] records.contains_key(t) ==> thread_placed_running(records[t].value())
 }
 
-/// Each thread kept its state, its pending stop and its placement.
+/// Each thread kept its state, its pending stop, its placement, and any process binding it had.
 pub proof fn lemma_placed_running_same(
     a: Map<usize, PointsTo<ThreadRecord>>,
     b: Map<usize, PointsTo<ThreadRecord>>,
@@ -442,6 +445,7 @@ pub proof fn lemma_placed_running_same(
             &&& b[t].value().state == a[t].value().state
             &&& b[t].value().pending_stop == a[t].value().pending_stop
             &&& b[t].value().placement == a[t].value().placement
+            &&& a[t].value().process is Some ==> b[t].value().process is Some
         },
     ensures
         placed_running_wf(b),
@@ -3373,6 +3377,7 @@ impl CapKernel {
                         (r0.state is Runnable && r0.state->Runnable_core == r1.state->Running_core)
                         || (r0.state is Running && !r0.pending_stop && r0.state->Running_core == r1.state->Running_core)
                     )
+                    &&& r1.state is Blocked ==> r0.state is Blocked
                 }),
         ensures
             post.wf(),

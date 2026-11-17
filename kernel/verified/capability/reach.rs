@@ -218,6 +218,9 @@ pub ghost enum Effect {
     Reply { cap: NodeId },
     /// Set bits in a notification, and perhaps wake a waiter.
     Signal { cap: NodeId, waiter: Option<ObjectId> },
+    /// Block the caller on a notification capability with the receive right, saving its own frame
+    /// and listing it as waiting.
+    Wait { cap: NodeId, caller: ObjectId },
     /// One step of revoking the descendants of cap, which the caller commands.
     Revoke { cap: NodeId },
     /// Mark the target dead through a control capability.
@@ -267,6 +270,11 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
         Effect::Signal { cap, waiter } => {
             &&& s.holds_right(p, cap, Right::Send)
             &&& waiter is Some ==> s.waiting.contains((s.names[cap], waiter->0))
+        },
+        Effect::Wait { cap, caller } => {
+            &&& s.holds_right(p, cap, Right::Receive)
+            &&& s.process_of.contains_key(caller)
+            &&& s.process_of[caller] == p
         },
         Effect::Revoke { cap } => s.commands(p, cap) && s.names.contains_key(cap),
         Effect::Destroy { cap } => s.holds_right(p, cap, Right::Control),
@@ -324,6 +332,7 @@ pub open spec fn may_change(s: State, e: Effect, o: ObjectId) -> bool {
         Effect::Deliver { receiver, .. } => o == receiver,
         Effect::Reply { cap } => o == s.bound[s.names[cap]],
         Effect::Signal { cap, waiter } => o == s.names[cap] || (waiter is Some && o == waiter->0),
+        Effect::Wait { caller, .. } => o == caller,
         Effect::Retype { object, pages, .. } => in_pages(object, pages, o),
         Effect::Teardown { block, pages, .. } => s.waiting.contains((block, o)) || in_pages(block, pages, o),
         _ => false,
@@ -4093,6 +4102,45 @@ pub proof fn lemma_unwaits_unbound_discharges(a: State, b: State, p: ObjectId, e
         implies b.process_behind(w.1) == a.process_behind(w.1) by {
         assert(!b.waiting.contains((w.0, t)));
         assert(w.1 != t);
+    }
+}
+
+/// a and b differ only in what a process sees of thread t's saved frame and in listing t as waiting
+/// on object o: wait saves the caller's partial frame and blocks it on the notification's queue.
+pub open spec fn blocks_waiting(a: State, b: State, o: ObjectId, t: ObjectId) -> bool {
+    &&& b == (State { contents: b.contents, waiting: b.waiting, ..a })
+    &&& forall|x: ObjectId| #[trigger] State::changed(a, b, x) ==> x == t
+    &&& forall|w: (ObjectId, ObjectId)| #[trigger] b.waiting.contains(w)
+        ==> a.waiting.contains(w) || w == (o, t)
+}
+
+/// Such a step, by a process e authorizes when cap covers the object it names, discharges Wait:
+/// saving the caller's own frame changes nothing outside it, and blocking on a notification the
+/// caller's process holds a receive capability to reaches what it waits on.
+pub proof fn lemma_blocks_waiting_discharges(a: State, b: State, p: ObjectId, e: Effect)
+    requires
+        e is Wait,
+        authorized(a, p, e),
+        a.covers(e->Wait_cap, a.names[e->Wait_cap]),
+        blocks_waiting(a, b, a.names[e->Wait_cap], e->Wait_caller),
+    ensures
+        discharges(a, b, p, e),
+{
+    let cap = e->Wait_cap;
+    let caller = e->Wait_caller;
+    assert(b.held == a.held && b.names == a.names && b.pages == a.pages && b.rights == a.rights);
+    assert(b.parent == a.parent && b.maps == a.maps && b.process_of == a.process_of);
+    assert(b.shares == a.shares && b.binds == a.binds);
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] b.reach(r, o) && !a.reach(r, o) implies may_grow(a, p, e, r, o) by {
+        lemma_same_authority_same_reach(b, a, r, o);
+    }
+    assert(a.descends(cap, cap, 0));
+    assert(a.direct(p, a.names[cap]));
+    assert(a.controlled(p, p, 0));
+    assert(a.reach(p, a.names[cap]));
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] b.waiting.contains(w) && !a.waiting.contains(w)
+        implies may_wait(a, p, w) by {
+        assert(w == (a.names[cap], caller));
     }
 }
 
